@@ -75,6 +75,8 @@ actions!(
         Clear,
         Submit,
         Queue,
+        InsertNewline,
+        ShiftSpace,
     ]
 );
 
@@ -82,6 +84,9 @@ pub fn bind_keys(cx: &mut App) {
     crate::text_selection::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("PromptInput")),
+        // GPUI matches modifiers exactly, so Shift+Backspace needs its own
+        // binding or it falls through to the platform and is dropped.
+        KeyBinding::new("shift-backspace", Backspace, Some("PromptInput")),
         KeyBinding::new("delete", Delete, Some("PromptInput")),
         KeyBinding::new("left", Left, Some("PromptInput")),
         KeyBinding::new("right", Right, Some("PromptInput")),
@@ -145,6 +150,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-home", Home, Some("PromptInput")),
         KeyBinding::new("ctrl-end", End, Some("PromptInput")),
         KeyBinding::new("enter", Submit, Some("PromptInput")),
+        KeyBinding::new("shift-enter", InsertNewline, Some("PromptInput")),
+        // Outranks the ChatPanel shift-space jump. With a draft it types a
+        // space (Shift is often still held mid-sentence), otherwise it
+        // propagates so an empty composer still jumps to latest.
+        KeyBinding::new("shift-space", ShiftSpace, Some("PromptInput")),
         KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
     ]);
     // Registered after the composer keys so the effort chords outrank word
@@ -907,6 +917,18 @@ impl PromptInput {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         self.submit_prompt(false, window, cx);
+    }
+
+    fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_text_in_range(None, "\n", window, cx);
+    }
+
+    fn shift_space(&mut self, _: &ShiftSpace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content.is_empty() {
+            cx.propagate();
+        } else {
+            self.replace_text_in_range(None, " ", window, cx);
+        }
     }
 
     fn queue(&mut self, _: &Queue, window: &mut Window, cx: &mut Context<Self>) {
@@ -2416,6 +2438,8 @@ impl Render for PromptInput {
             })
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
+            .on_action(cx.listener(Self::insert_newline))
+            .on_action(cx.listener(Self::shift_space))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
@@ -3591,6 +3615,33 @@ mod pending_session_tests {
             assert!(input.attachment_notice.is_none());
             assert_eq!(input.content.as_ref(), "/onboarding-sim");
         });
+    }
+
+    #[gpui::test]
+    fn shift_modified_enter_space_backspace_edit_the_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(bind_keys);
+        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = submitted.clone();
+        let (input, vcx) = cx.add_window_view(move |_, cx| {
+            PromptInput::new(cx, "test", move |text, _, _, _| {
+                sink.borrow_mut().push(text.to_string());
+            })
+        });
+        vcx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.simulate_input("ab");
+        vcx.simulate_keystrokes("shift-enter");
+        vcx.simulate_input("c");
+        vcx.simulate_keystrokes("shift-space");
+        vcx.simulate_input("dx");
+        vcx.simulate_keystrokes("shift-backspace");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "ab\nc d")
+        });
+        assert!(submitted.borrow().is_empty());
+        vcx.simulate_keystrokes("enter");
+        assert_eq!(submitted.borrow().as_slice(), ["ab\nc d".to_string()]);
     }
 }
 

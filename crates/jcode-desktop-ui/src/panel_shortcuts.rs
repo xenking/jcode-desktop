@@ -175,19 +175,28 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shift_space_jumps_to_latest_from_composer(cx: &mut gpui::TestAppContext) {
+    fn shift_space_types_with_draft_and_jumps_when_empty(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = scrolled_up_panel(cx);
         assert!(vcx.debug_bounds("jump-to-latest-shift").is_some());
         assert!(vcx.debug_bounds("jump-to-latest-space").is_some());
-        vcx.simulate_input("keep this draft");
+        vcx.simulate_input("draft");
+        vcx.simulate_keystrokes("shift-space");
+        vcx.run_until_parked();
+        assert!(!panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "draft "
+        );
+        panel.update(vcx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content(String::new(), cx));
+        });
+        vcx.run_until_parked();
         vcx.simulate_keystrokes("shift-space");
         vcx.run_until_parked();
         assert!(panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
         assert!(vcx.debug_bounds("jump-to-latest").is_none());
-        assert_eq!(
-            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-            "keep this draft"
-        );
     }
 
     #[gpui::test]
