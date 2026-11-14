@@ -3,8 +3,21 @@ use anyhow::{Context, Result, bail, ensure};
 use semver::Version;
 use std::{io::Read, time::Duration};
 
-pub const PUBLIC_RELEASES: &str =
-    "https://github.com/1jehuang/jcode-desktop-releases/releases/download";
+/// Default release download base: the xenking fork. Override at build time
+/// with `JCODE_DESKTOP_RELEASES_URL` or at runtime with the same env var.
+pub const DEFAULT_PUBLIC_RELEASES: &str = match option_env!("JCODE_DESKTOP_RELEASES_URL") {
+    Some(url) => url,
+    None => "https://github.com/xenking/jcode-desktop/releases/download",
+};
+
+/// Release download base (`JCODE_DESKTOP_RELEASES_URL` overrides the default).
+pub fn public_releases() -> String {
+    std::env::var("JCODE_DESKTOP_RELEASES_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| url.starts_with("https://"))
+        .unwrap_or_else(|| DEFAULT_PUBLIC_RELEASES.to_string())
+}
 
 pub fn parse_version(text: &str) -> Result<Version> {
     let text = text
@@ -56,7 +69,7 @@ pub fn latest() -> Result<Version> {
     let client = client("Jcode-Desktop-Release-Check", Duration::from_secs(20))?;
     fetch(
         &client,
-        &format!("{PUBLIC_RELEASES}/desktop-latest/latest.json"),
+        &format!("{}/desktop-latest/latest.json", public_releases()),
     )
 }
 

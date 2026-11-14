@@ -168,7 +168,7 @@ pub fn update(running: &Version, progress: &mut dyn FnMut(Progress)) -> Result<O
     let latest = latest().stage("check", None)?;
     let client = release::client("Jcode-Desktop-Updater", Duration::from_secs(600))
         .stage("platform", None)?;
-    let base = format!("{}/desktop-v{latest}", release::PUBLIC_RELEASES);
+    let base = format!("{}/desktop-v{latest}", release::public_releases());
     let fetch = |asset: &str, writer: &mut dyn std::io::Write| -> Result<()> {
         let limit = if asset.starts_with("SHA256SUMS") {
             64 * 1024
