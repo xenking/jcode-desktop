@@ -2,10 +2,49 @@
 use super::Panel;
 use crate::theme::Theme;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
-use jcode_desktop_openrig::{Snapshot, default_base_url, fetch_snapshot};
-use std::{collections::HashSet, time::Duration};
+use jcode_desktop_openrig::{
+    LiveEvent, Snapshot, default_base_url, fetch_snapshot, subscribe_events,
+};
+use std::{
+    collections::{HashSet, VecDeque},
+    time::Duration,
+};
 
 pub(crate) const SESSION_ID: &str = "openrig://mission-control";
+
+fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::Object(fields) if !fields.is_empty() => {
+            for (name, value) in fields {
+                detail_lines(&format!("{key} · {name}"), value, out);
+            }
+        }
+        serde_json::Value::Array(items) if !items.is_empty() => {
+            for (index, value) in items.iter().enumerate() {
+                detail_lines(&format!("{key} {}", index + 1), value, out);
+            }
+        }
+        serde_json::Value::String(text) => out.push((key.into(), text.clone())),
+        value => out.push((key.into(), value.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod openrig_tests {
+    use super::*;
+
+    #[test]
+    fn nested_usage_details_keep_window_information() {
+        let mut lines = Vec::new();
+        detail_lines(
+            "windows",
+            &serde_json::json!([{ "window": "weekly", "remainingPercent": 42, "resetsAt": "tomorrow" }]),
+            &mut lines,
+        );
+        assert!(lines.contains(&("windows 1 · remainingPercent".into(), "42".into())));
+        assert!(lines.contains(&("windows 1 · resetsAt".into(), "tomorrow".into())));
+    }
+}
 
 pub(super) struct State {
     snapshot: Snapshot,
@@ -16,7 +55,10 @@ pub(super) struct State {
     explorer: bool,
     expanded: HashSet<String>,
     scroll: ScrollHandle,
+    events: VecDeque<LiveEvent>,
+    event_lifetime: std::sync::Arc<()>,
     _poll: Option<Task<()>>,
+    _events: Option<Task<()>>,
 }
 impl State {
     pub(super) fn fixture() -> Self {
@@ -29,7 +71,16 @@ impl State {
             explorer: true,
             expanded: HashSet::new(),
             scroll: ScrollHandle::new(),
+            events: [LiveEvent {
+                ts: "12:04".into(),
+                kind: "seat.started".into(),
+                summary: "Seat started".into(),
+                rig: Some("example".into()),
+            }]
+            .into(),
+            event_lifetime: std::sync::Arc::new(()),
             _poll: None,
+            _events: None,
         }
     }
     fn visible(&self) -> Vec<usize> {
@@ -154,6 +205,51 @@ impl Panel {
         let fixture = crate::harness::screenshot_mode() || cfg!(test);
         let mut state = State::fixture();
         if !fixture {
+            state.events.clear();
+            let (tx, rx) = std::sync::mpsc::sync_channel(128);
+            let lifetime = std::sync::Arc::downgrade(&state.event_lifetime);
+            std::thread::spawn(move || {
+                let mut delay = 1;
+                loop {
+                    let result =
+                        subscribe_events(&default_base_url(), |event| tx.send(event).is_ok());
+                    if result.is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(delay));
+                    delay = (delay * 2).min(30);
+                    if lifetime.upgrade().is_none() {
+                        break;
+                    }
+                }
+            });
+            state._events = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    let events: Vec<_> = rx.try_iter().collect();
+                    if this
+                        .update(cx, |panel, cx| {
+                            if events.is_empty() {
+                                return;
+                            }
+                            if let Some(state) = panel.openrig.as_mut() {
+                                for event in events {
+                                    state.events.push_back(event);
+                                }
+                                while state.events.len() > 50 {
+                                    state.events.pop_front();
+                                }
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
+                }
+            }));
             state.snapshot = Snapshot {
                 sections: Vec::new(),
                 error: None,
@@ -296,8 +392,10 @@ impl Panel {
             }
         }
         let mut detail = div()
+            .id("openrig-detail")
             .w(px(220.))
             .flex_none()
+            .overflow_y_scroll()
             .p_3()
             .flex()
             .flex_col()
@@ -314,7 +412,45 @@ impl Panel {
                     .child(row.label.clone()),
             );
             for (key, value) in &row.detail {
-                detail = detail.child(div().child(format!("{key}: {value}")));
+                let mut lines = Vec::new();
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+                    detail_lines(key, &json, &mut lines);
+                } else {
+                    lines.push((key.clone(), value.clone()));
+                }
+                for (label, text) in lines {
+                    let percentage = if label.to_lowercase().contains("percent") {
+                        text.parse::<f32>().ok().filter(|n| n.is_finite())
+                    } else {
+                        None
+                    };
+                    let mut item = div()
+                        .rounded_full()
+                        .bg(theme.HEADER_BG)
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_color(theme.TEXT_FAINT).child(label))
+                        .child(div().text_color(theme.TEXT).child(text));
+                    if let Some(percent) = percentage {
+                        item = item.child(
+                            div()
+                                .w_full()
+                                .h(px(4.))
+                                .rounded_full()
+                                .bg(theme.PANEL_BG)
+                                .child(
+                                    div()
+                                        .w(gpui::relative(percent.clamp(0., 100.) / 100.))
+                                        .h_full()
+                                        .rounded_full()
+                                        .bg(theme.ACCENT_DIM),
+                                ),
+                        );
+                    }
+                    detail = detail.child(item);
+                }
             }
         }
         let status = state
@@ -346,6 +482,11 @@ impl Panel {
                         key
                     };
                     state.key(key, text);
+                    if !state.explorer
+                        && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
+                    {
+                        state.scroll.scroll_to_item(state.selected);
+                    }
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -392,6 +533,23 @@ impl Panel {
                         "{status}   ·   j/k navigate   enter select   esc back"
                     )),
             )
+            .children(state.events.iter().rev().take(3).map(|event| {
+                div()
+                    .px_4()
+                    .text_size(px(11.))
+                    .text_color(theme.TEXT_DIM)
+                    .child(format!(
+                        "{}  {}  {}{}",
+                        event.ts,
+                        event.kind,
+                        event.summary,
+                        event
+                            .rig
+                            .as_ref()
+                            .map(|rig| format!(" · {rig}"))
+                            .unwrap_or_default()
+                    ))
+            }))
             .into_any_element()
     }
 }
