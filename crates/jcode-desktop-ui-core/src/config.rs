@@ -550,6 +550,55 @@ fn persist_value_at(
     } else {
         format!("[desktop.{section_name}]")
     };
+    persist_value_with_header(path, standalone, &section, key, value)
+}
+
+/// Shared jcode config (`$JCODE_HOME/config.toml`), never the standalone
+/// Desktop file: `[dictation]` is read by jcode-voice for every client.
+fn shared_jcode_config_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("JCODE_HOME") {
+        return PathBuf::from(home).join("config.toml");
+    }
+    jcode_desktop_model::platform_dirs::jcode_home()
+        .unwrap_or_else(|| PathBuf::from(".jcode"))
+        .join("config.toml")
+}
+
+/// Persist one `[dictation]` string value (`backend`, `base_url`, `command`)
+/// in the shared jcode config without reserializing the rest of the file.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn persist_dictation_value(key: &str, value: &str) -> std::io::Result<()> {
+    persist_dictation_value_at(&shared_jcode_config_path(), key, value)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn persist_dictation_value(_key: &str, _value: &str) -> std::io::Result<()> {
+    let _ = shared_jcode_config_path;
+    Ok(())
+}
+
+fn persist_dictation_value_at(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
+    if !matches!(key, "backend" | "base_url" | "command") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unsupported dictation key {key}"),
+        ));
+    }
+    let value = toml::Value::String(value.to_owned()).to_string();
+    persist_value_with_header(path, false, "[dictation]", key, &value)
+}
+
+fn persist_value_with_header(
+    path: &std::path::Path,
+    standalone: bool,
+    section: &str,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
     let mut text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -908,6 +957,26 @@ mod tests {
                 assert_eq!(text.matches("enabled =").count(), 1);
             }
         }
+    }
+
+    #[test]
+    fn dictation_values_persist_in_the_shared_dictation_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "model = 'keep-me'\n\n[dictation]\nmode = \"send\" # keep\n";
+        fs::write(&path, original).unwrap();
+        persist_dictation_value_at(&path, "backend", "soniox").unwrap();
+        persist_dictation_value_at(&path, "base_url", "ws://127.0.0.1:9/\"x\"").unwrap();
+        persist_dictation_value_at(&path, "backend", "nari").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&text).unwrap();
+        let dictation = &value["dictation"];
+        assert_eq!(dictation["backend"].as_str(), Some("nari"));
+        assert_eq!(dictation["base_url"].as_str(), Some("ws://127.0.0.1:9/\"x\""));
+        assert_eq!(dictation["mode"].as_str(), Some("send"));
+        assert_eq!(value["model"].as_str(), Some("keep-me"));
+        assert_eq!(text.matches("backend =").count(), 1);
+        assert!(persist_dictation_value_at(&path, "key", "x").is_err());
     }
 
     #[test]
