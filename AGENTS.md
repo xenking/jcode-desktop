@@ -77,3 +77,8 @@
 - After every significant edit, verify the change, then rebuild and reload the running desktop application so the user immediately receives the updated behavior. Do this throughout the task, not only at the end.
 - In a hot-reload desktop session, use the application's **Ctrl+R** rebuild-and-reload action after verification. Treat a successful rebuild and reload as part of completion, not as an optional follow-up. Do not use `selfdev build`, which rebuilds the Jcode CLI rather than Jcode Desktop.
 - If rebuilding or reloading fails, diagnose and fix it before reporting the change complete. Do not silently leave the running application on stale code.
+
+## Fork notes (xenking/jcode-desktop, keep at end for clean upstream merges)
+- Fork-only features: composer prompt autocompletion via jcode-cloud `/v1/completions/prompt`, inline ask card for the agent's `ask` tool, voice backend picker (`[dictation]`, Soniox, SuperWhisper bridge), updater/Sparkle feed pointing at the xenking fork.
+- Builds on macOS need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, e.g. `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer justrust check`.
+- Depends on the sibling `../jcode` checkout, so jcode edits rebuild Desktop.
