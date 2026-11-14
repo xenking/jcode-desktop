@@ -6,6 +6,7 @@ members = [
     "crates/jcode-desktop-harness",
     "crates/jcode-desktop-model",
     "crates/jcode-desktop-motion",
+    "crates/jcode-desktop-openrig",
     "crates/jcode-desktop-ui",
     "crates/jcode-desktop-ui-core",
     "crates/jcode-desktop-updater",
@@ -29,6 +30,7 @@ jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-harness = { path = "crates/jcode-desktop-harness" }
 jcode-desktop-model = { path = "crates/jcode-desktop-model" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
+jcode-desktop-openrig = { path = "crates/jcode-desktop-openrig" }
 jcode-desktop-ui-core = { path = "crates/jcode-desktop-ui-core" }
 jcode-desktop-updater = { path = "crates/jcode-desktop-updater" }
 jcode-desktop-voice = { path = "crates/jcode-desktop-voice" }
