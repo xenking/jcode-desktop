@@ -2458,13 +2458,16 @@ impl Panel {
         if self.is_side_document() || self.preview_state.is_some() {
             return;
         }
+        let compact = matches!(operation, SessionOperation::Compact);
         self.bridge.send(Command::SessionOperation {
             session_id: self.session_id.clone(),
             operation,
         });
-        self.items.push(Item::Assistant(
-            "Requested the session change. The conversation will refresh after the runtime confirms it.".into(),
-        ));
+        self.items.push(Item::Assistant(if compact {
+            "Requesting context compaction…".into()
+        } else {
+            "Requested the session change. The conversation will refresh after the runtime confirms it.".into()
+        }));
     }
 
     fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
@@ -2943,6 +2946,15 @@ impl Panel {
                         error: error.clone(),
                     });
                 }
+            }
+            ApiEvent::Compacted { message, .. } => {
+                self.items.push(Item::BackgroundTask {
+                    task_id: "context-compaction".into(),
+                    label: "Context compaction".into(),
+                    summary: message.clone(),
+                    percent: None,
+                    done: false,
+                });
             }
             ApiEvent::BackgroundProgress {
                 task_id,
@@ -8137,6 +8149,26 @@ mod tests {
             .and_then(|item| item.text())
             .expect("clicking copy fills the clipboard");
         assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
+    }
+
+    #[gpui::test]
+    fn compaction_start_and_result_share_a_card(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&ApiEvent::Compacted { session_id: "session-a".into(), message: "Compacting".into() }, cx);
+            panel.apply(&ApiEvent::BackgroundProgress { session_id: "session-a".into(), task_id: "context-compaction".into(), label: "Context compaction".into(), percent: Some(100.0), summary: "10000 → 4000 tokens".into(), done: true }, cx);
+            let cards: Vec<_> = panel.items.iter().filter(|item| matches!(item, Item::BackgroundTask { task_id, .. } if task_id == "context-compaction")).collect();
+            assert_eq!(cards.len(), 1);
+            assert!(matches!(cards[0], Item::BackgroundTask { summary, done: true, .. } if summary.contains("10000") && summary.contains("4000")));
+        });
     }
 
     /// Progress reuses a quiet row, then finishes as a compact result card.

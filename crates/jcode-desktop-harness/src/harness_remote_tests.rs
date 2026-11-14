@@ -289,6 +289,10 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         assert_eq!(request["session_id"], "same-id", "{expected}: {request}");
         assert_eq!(request["req"], expected, "{request}");
     }
+    wait_update(&updates, |u| {
+        matches!(u, Update::Event { session_id, event: ApiEvent::Compacted { message, .. } }
+            if session_id == &ui_id && message == "scheduled")
+    });
     wait_update(
         &updates,
         |u| matches!(u, Update::SessionForked { session } if session.session_id == remote::namespace("user@desktop", "fork-id")),

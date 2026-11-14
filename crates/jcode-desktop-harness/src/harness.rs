@@ -2415,7 +2415,15 @@ fn session_worker_with_connector(
                         }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
-                            SessionOperation::Compact => client.compact(real_id).map(|_| ()),
+                            SessionOperation::Compact => client.compact(real_id).map(|message| {
+                                let _ = updates.send(Update::Event {
+                                    session_id: session_id.clone(),
+                                    event: ApiEvent::Compacted {
+                                        session_id: session_id.clone(),
+                                        message,
+                                    },
+                                });
+                            }),
                             SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }
