@@ -105,6 +105,8 @@ mod login;
 mod preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
+#[path = "panel_ask.rs"]
+mod ask;
 #[path = "panel_queue.rs"]
 mod queue;
 #[path = "panel_recovery.rs"]
@@ -599,6 +601,8 @@ pub struct Panel {
     /// Live sessions, their run state and todos. Never shows chat content.
     orchestration: Option<orchestration::State>,
     recovery_picker_open: bool,
+    /// Pending `ask` tool questions, answered from an inline card.
+    ask_card: Option<ask::AskCard>,
     model_picker_open: bool,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
@@ -1040,6 +1044,7 @@ impl Panel {
                 && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
+            ask_card: None,
             model_picker_open: false,
             focus_pending: false,
             transcript_only: false,
@@ -2797,6 +2802,14 @@ impl Panel {
             crate::sounds::play(cue, cx);
         }
         match event {
+            ApiEvent::AskRequest {
+                request_id,
+                questions,
+                ..
+            } => {
+                self.ask_card = Some(ask::AskCard::new(request_id.clone(), questions.clone()));
+                self.stick_to_bottom = true;
+            }
             ApiEvent::RuntimeCommandResult {
                 session_id,
                 command,

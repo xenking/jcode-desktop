@@ -217,6 +217,12 @@ pub enum Command {
     BackgroundTool {
         session_id: String,
     },
+    /// Answer an `ask` tool request. `AskResponse::default()` declines.
+    AskResponse {
+        session_id: String,
+        request_id: String,
+        response: jcode_sdk::AskResponse,
+    },
     Fork {
         session_id: String,
     },
@@ -303,6 +309,10 @@ enum SessionCommand {
     },
     Cancel,
     BackgroundTool,
+    AskResponse {
+        request_id: String,
+        response: jcode_sdk::AskResponse,
+    },
     Fork,
     ForkWithPrompt {
         prompt: String,
@@ -959,6 +969,18 @@ fn run_with_transports(
             Command::BackgroundTool { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
                     let _ = worker.send(SessionCommand::BackgroundTool);
+                }
+            }
+            Command::AskResponse {
+                session_id,
+                request_id,
+                response,
+            } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::AskResponse {
+                        request_id,
+                        response,
+                    });
                 }
             }
             Command::SetModel { session_id, model } => {
@@ -2239,6 +2261,17 @@ fn session_worker_with_connector(
                             });
                         }
                     }
+                    SessionCommand::AskResponse {
+                        request_id,
+                        response,
+                    } => {
+                        if let Err(error) = client.respond_to_ask(real_id, &request_id, response) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Could not send your answer: {error}"),
+                            });
+                        }
+                    }
                     SessionCommand::BackgroundTool => {
                         if let Err(error) = client.background_tool(real_id) {
                             let _ = updates.send(Update::CommandFailed {
@@ -2696,6 +2729,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
+        | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
         | ApiEvent::ConnectionPhase { session_id, .. }
@@ -2735,6 +2769,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
+        | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
         | ApiEvent::ConnectionPhase { session_id, .. }
