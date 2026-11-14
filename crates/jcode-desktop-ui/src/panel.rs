@@ -80,6 +80,8 @@ mod steady_activity;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
+#[path = "panel_ask.rs"]
+mod ask;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_composer.rs"]
@@ -105,8 +107,6 @@ mod login;
 mod preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
-#[path = "panel_ask.rs"]
-mod ask;
 #[path = "panel_queue.rs"]
 mod queue;
 #[path = "panel_recovery.rs"]
@@ -184,6 +184,34 @@ fn command_unavailable_message(input: &str) -> String {
 pub struct Transcript {
     items: Vec<Item>,
     revision: u64,
+}
+
+/// Last few user/assistant turns, newest last, for inline completion.
+fn completion_turns(items: &[Item]) -> Vec<crate::prompt_completion::Turn> {
+    let mut turns: Vec<_> = items
+        .iter()
+        .rev()
+        .filter_map(|item| match item {
+            Item::User(text) => Some(("user", text)),
+            Item::Assistant(text) => Some(("assistant", text)),
+            _ => None,
+        })
+        .filter(|(_, text)| !text.trim().is_empty())
+        .take(6)
+        .map(|(role, text)| {
+            // Keep the end of long turns: it is what the user is replying to.
+            let start = text.len().saturating_sub(600);
+            let start = (start..text.len())
+                .find(|i| text.is_char_boundary(*i))
+                .unwrap_or(0);
+            crate::prompt_completion::Turn {
+                role,
+                text: text[start..].to_owned(),
+            }
+        })
+        .collect();
+    turns.reverse();
+    turns
 }
 
 fn next_transcript_revision() -> u64 {
@@ -821,6 +849,10 @@ impl Panel {
 
     pub(crate) fn is_pending_session_id(id: &str) -> bool {
         id == Self::STARTUP_SESSION_ID || id.starts_with("startup://draft/")
+    }
+
+    pub(crate) fn completion_context(&self) -> Vec<crate::prompt_completion::Turn> {
+        completion_turns(&self.items)
     }
 
     pub(crate) fn is_pending_session(&self) -> bool {
@@ -1907,6 +1939,14 @@ impl Panel {
                     },
                 )
                 .with_example_prompts()
+                .with_ghost_completions({
+                    let weak = change_weak.clone();
+                    move |app| {
+                        weak.upgrade()
+                            .map(|panel| panel.read(app).completion_context())
+                            .unwrap_or_default()
+                    }
+                })
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {

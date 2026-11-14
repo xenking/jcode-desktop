@@ -56,7 +56,7 @@ pub(crate) use jcode_desktop_harness::{
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;
 pub(crate) use jcode_desktop_model::{
-    diff, diff_model, friendly_error, learning, pdf_render, platform_dirs,
+    diff, diff_model, friendly_error, learning, pdf_render, platform_dirs, prompt_completion,
 };
 // The shared UI foundation every view uses, in its own crate so feature view
 // crates can depend on it without the whole UI.

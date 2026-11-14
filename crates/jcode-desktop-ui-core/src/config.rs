@@ -12,6 +12,28 @@ pub struct DesktopConfig {
     pub sounds: SoundsConfig,
     pub voice: VoiceConfig,
     pub display: DisplayConfig,
+    pub completions: CompletionsConfig,
+}
+
+/// Inline composer autocomplete (ghost text, Tab accepts).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CompletionsConfig {
+    pub enabled: bool,
+    /// Quiet time after the last keystroke before asking.
+    pub debounce_ms: u64,
+    /// Override the backend's default completion model.
+    pub model: Option<String>,
+}
+
+impl Default for CompletionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            debounce_ms: 250,
+            model: None,
+        }
+    }
 }
 
 /// Background microphone access and physical input devices require explicit opt-in.
@@ -98,6 +120,7 @@ impl Default for DesktopConfig {
             sounds: SoundsConfig::default(),
             voice: VoiceConfig::default(),
             display: DisplayConfig::default(),
+            completions: CompletionsConfig::default(),
         }
     }
 }

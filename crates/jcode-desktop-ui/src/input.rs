@@ -77,6 +77,7 @@ actions!(
         Queue,
         InsertNewline,
         ShiftSpace,
+        AcceptCompletion,
     ]
 );
 
@@ -145,6 +146,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
+        // Falls through (propagates) unless ghost text is showing.
+        KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
         KeyBinding::new("home", Home, Some("PromptInput")),
         KeyBinding::new("end", End, Some("PromptInput")),
         KeyBinding::new("ctrl-home", Home, Some("PromptInput")),
@@ -232,6 +235,20 @@ pub struct PromptInput {
     /// retains views between frames and builds again a view whose entities
     /// were updated.
     motion: std::rc::Rc<std::cell::RefCell<MotionState>>,
+    /// Inline autocomplete. `None` for composers that never suggest.
+    ghost: Option<GhostState>,
+}
+
+/// Recent transcript turns for the completion request.
+type CompletionContext = Box<dyn Fn(&App) -> Vec<crate::prompt_completion::Turn>>;
+
+struct GhostState {
+    machine: crate::prompt_completion::GhostCompletion,
+    context: CompletionContext,
+    /// Debounce plus request. Dropping it cancels both.
+    task: Option<gpui::Task<()>>,
+    /// The backend refused (unsupported or signed out). Stop asking.
+    disabled: bool,
 }
 
 /// Example prompts chosen for one seed, project and personalized catalog.
@@ -581,6 +598,129 @@ impl PromptInput {
             example_prompts: false,
             working_dir: None,
             motion: Default::default(),
+            ghost: None,
+        }
+    }
+
+    /// Suggest inline completions (ghost text, Tab accepts) when enabled in
+    /// `[desktop.completions]`. `context` supplies recent transcript turns.
+    pub(crate) fn with_ghost_completions(
+        mut self,
+        context: impl Fn(&App) -> Vec<crate::prompt_completion::Turn> + 'static,
+    ) -> Self {
+        if crate::config::get().completions.enabled {
+            self.ghost = Some(GhostState {
+                machine: Default::default(),
+                context: Box::new(context),
+                task: None,
+                disabled: false,
+            });
+        }
+        self
+    }
+
+    fn cursor_at_end(&self) -> bool {
+        self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
+    }
+
+    /// Suggested remainder to paint after the caret.
+    pub(crate) fn ghost_text(&self) -> Option<&str> {
+        if self.marked_range.is_some() {
+            return None;
+        }
+        self.ghost
+            .as_ref()?
+            .machine
+            .visible(&self.content, self.cursor_at_end())
+    }
+
+    fn dismiss_ghost(&mut self) -> bool {
+        let Some(ghost) = self.ghost.as_mut() else {
+            return false;
+        };
+        ghost.task = None;
+        ghost.machine.dismiss()
+    }
+
+    /// The draft changed: drop stale work and schedule a debounced request.
+    fn ghost_on_edit(&mut self, cx: &mut Context<Self>) {
+        let at_end = self.cursor_at_end();
+        let draft = self.content.to_string();
+        let working_dir = self.working_dir.clone();
+        let Some(ghost) = self.ghost.as_mut() else {
+            return;
+        };
+        ghost.task = None;
+        let Some(generation) = ghost.machine.on_edit(&draft, at_end) else {
+            return;
+        };
+        if ghost.disabled {
+            return;
+        }
+        let context = (ghost.context)(cx);
+        let settings = &crate::config::get().completions;
+        let debounce = Duration::from_millis(settings.debounce_ms);
+        let model = settings.model.clone();
+        ghost.task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(debounce).await;
+            let Some(key) = jcode_base::subscription_catalog::configured_api_key()
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty())
+            else {
+                return;
+            };
+            let base = jcode_base::subscription_api::configured_api_base();
+            let project = working_dir.as_deref().and_then(|dir| {
+                std::path::Path::new(dir)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+            let request = crate::prompt_completion::Request {
+                draft,
+                context,
+                cwd: working_dir,
+                project,
+                model,
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::prompt_completion::fetch(&base, &key, &request) })
+                .await;
+            let _ = this.update(cx, |input, cx| {
+                let Some(ghost) = input.ghost.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(completion) => {
+                        if ghost.machine.on_response(generation, &completion) {
+                            cx.notify();
+                        }
+                    }
+                    Err(crate::prompt_completion::FetchError::Unsupported) => {
+                        ghost.disabled = true;
+                    }
+                    Err(crate::prompt_completion::FetchError::Other(error)) => {
+                        eprintln!("jcode desktop: prompt completion failed: {error}");
+                    }
+                }
+            });
+        }));
+    }
+
+    fn accept_completion(
+        &mut self,
+        _: &AcceptCompletion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let at_end = self.cursor_at_end() && self.marked_range.is_none();
+        let accepted = self
+            .ghost
+            .as_mut()
+            .and_then(|ghost| ghost.machine.accept(&self.content, at_end));
+        match accepted {
+            Some(suffix) => self.replace_text_in_range(None, &suffix, window, cx),
+            None => cx.propagate(),
         }
     }
 
@@ -1229,6 +1369,11 @@ impl PromptInput {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if self.ghost_text().is_some() {
+            self.dismiss_ghost();
+            cx.notify();
+            return;
+        }
         if let Some(cancel) = &self.on_overlay_cancel {
             if cancel(cx) {
                 return;
@@ -1447,6 +1592,7 @@ impl PromptInput {
     }
 
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.dismiss_ghost();
         self.content = content.into();
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
@@ -1499,6 +1645,7 @@ impl PromptInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = offset.min(self.content.len());
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -1527,6 +1674,8 @@ impl PromptInput {
         }
         line.closest_index_for_position(position - bounds.origin, line_height)
             .unwrap_or_else(|index| index)
+            // The layout includes ghost text past the draft.
+            .min(self.content.len())
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -1732,6 +1881,7 @@ impl EntityInputHandler for PromptInput {
         self.marked_range.take();
         self.command_selection = 0;
         self.reveal_command(0);
+        self.ghost_on_edit(cx);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
         }
@@ -1776,6 +1926,7 @@ impl EntityInputHandler for PromptInput {
             })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.selection_reversed = false;
+        self.dismiss_ghost();
 
         self.command_selection = 0;
         self.reveal_command(0);
@@ -1816,7 +1967,8 @@ impl EntityInputHandler for PromptInput {
         let last_layout = self.last_layout.as_ref()?;
         let utf8_index = last_layout
             .closest_index_for_position(local, _window.line_height())
-            .unwrap_or_else(|index| index);
+            .unwrap_or_else(|index| index)
+            .min(self.content.len());
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -1948,9 +2100,18 @@ impl Element for TextElement {
         } else {
             (content, style.color)
         };
+        let ghost = (!input.content.is_empty())
+            .then(|| input.ghost_text())
+            .flatten()
+            .map(str::to_owned);
+        let draft_len = display_text.len();
+        let display_text: SharedString = match &ghost {
+            Some(ghost) => format!("{display_text}{ghost}").into(),
+            None => display_text,
+        };
 
         let run = TextRun {
-            len: display_text.len(),
+            len: draft_len,
             font: style.font(),
             color: text_color,
             background_color: None,
@@ -1966,6 +2127,7 @@ impl Element for TextElement {
                 && display_text.is_char_boundary(marked.start)
                 && display_text.is_char_boundary(marked.end)
         });
+        let ghost_run = run.clone();
         let runs = if let Some(marked_range) = marked_range {
             vec![
                 TextRun {
@@ -1982,7 +2144,7 @@ impl Element for TextElement {
                     ..run.clone()
                 },
                 TextRun {
-                    len: display_text.len() - marked_range.end,
+                    len: draft_len - marked_range.end,
                     ..run
                 },
             ]
@@ -1992,6 +2154,14 @@ impl Element for TextElement {
         } else {
             vec![run]
         };
+        let mut runs: Vec<TextRun> = runs;
+        if let Some(ghost) = &ghost {
+            runs.push(TextRun {
+                len: ghost.len(),
+                color: to_hsla(Theme::global().TEXT_FAINT),
+                ..ghost_run
+            });
+        }
 
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = PromptLayout::new(
@@ -2464,6 +2634,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::accept_completion))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::queue))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
@@ -2804,6 +2975,82 @@ mod tests {
                 assert!(input.history_index.is_none());
             });
         }
+    }
+
+    /// Simulate a completion arriving for the current draft, bypassing network.
+    fn show_ghost(input: &mut PromptInput, suffix: &str) {
+        let draft = input.content.to_string();
+        let ghost = input.ghost.get_or_insert_with(|| GhostState {
+            machine: Default::default(),
+            context: Box::new(|_| Vec::new()),
+            task: None,
+            disabled: true,
+        });
+        let generation = ghost.machine.on_edit(&draft, true).unwrap();
+        assert!(ghost.machine.on_response(generation, suffix));
+    }
+
+    #[gpui::test]
+    fn ghost_completion_tab_accepts_escape_dismisses(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "исправь баг");
+        window
+            .update(cx, |input, _, _| show_ghost(input, " в композере"))
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.ghost_text(), Some(" в композере"))
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "исправь баг в композере");
+                assert_eq!(input.ghost_text(), None);
+            })
+            .unwrap();
+
+        // Esc hides the ghost but keeps the draft (a second Esc clears it).
+        window
+            .update(cx, |input, _, _| show_ghost(input, " now"))
+            .unwrap();
+        cx.simulate_keystrokes(*window, "escape");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "исправь баг в композере");
+                assert_eq!(input.ghost_text(), None);
+            })
+            .unwrap();
+
+        // Typing a diverging character dismisses; moving the caret hides it.
+        window
+            .update(cx, |input, _, _| show_ghost(input, " now"))
+            .unwrap();
+        cx.simulate_input(*window, "!");
+        window
+            .update(cx, |input, _, _| assert_eq!(input.ghost_text(), None))
+            .unwrap();
+        window
+            .update(cx, |input, _, _| show_ghost(input, " now"))
+            .unwrap();
+        cx.simulate_keystrokes(*window, "left");
+        window
+            .update(cx, |input, _, _| assert_eq!(input.ghost_text(), None))
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn tab_without_ghost_leaves_draft_alone(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "hello");
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            // Tab propagates to its pre-existing handling (plain text input).
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.trim_end(), "hello")
+            })
+            .unwrap();
     }
 
     #[gpui::test]
