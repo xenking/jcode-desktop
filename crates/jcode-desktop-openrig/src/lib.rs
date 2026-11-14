@@ -1,5 +1,88 @@
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader},
+    time::Duration,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveEvent {
+    pub ts: String,
+    pub kind: String,
+    pub summary: String,
+    pub rig: Option<String>,
+}
+
+fn live_event(v: &Value) -> Option<LiveEvent> {
+    let kind = field(v, &["kind", "type"]).unwrap_or_else(|| "activity".into());
+    let summary = field(v, &["summary", "body", "seatNodeId"]).unwrap_or_else(|| kind.clone());
+    v.is_object().then(|| LiveEvent {
+        ts: field(v, &["ts", "tsEmitted", "timestamp"]).unwrap_or_default(),
+        kind,
+        summary,
+        rig: field(v, &["rig", "rigId"]),
+    })
+}
+
+/// Read one activity SSE connection. The caller decides whether and when to reconnect.
+pub fn subscribe_events(
+    base_url: &str,
+    mut on_event: impl FnMut(LiveEvent) -> bool + Send,
+) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .build();
+    let mut req = agent
+        .get(&format!(
+            "{}/api/activity/events",
+            base_url.trim_end_matches('/')
+        ))
+        .set("Accept", "text/event-stream");
+    if let Some(token) = token(false) {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    let response = req.call().map_err(|e| format!("activity events: {e}"))?;
+    if !response
+        .header("content-type")
+        .unwrap_or("")
+        .contains("text/event-stream")
+    {
+        return Err("activity events: expected event stream".into());
+    }
+    let mut reader = BufReader::new(response.into_reader());
+    let mut line = String::new();
+    let mut data = Vec::new();
+    let mut size = 0usize;
+    loop {
+        line.clear();
+        if reader
+            .read_line(&mut line)
+            .map_err(|e| format!("activity events: {e}"))?
+            == 0
+        {
+            return Err("activity events: stream ended".into());
+        }
+        size += line.len();
+        if size > 1_048_576 {
+            return Err("activity events: frame too large".into());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            if let Ok(value) = serde_json::from_str::<Value>(&data.join("\n"))
+                && let Some(event) = live_event(&value)
+                && !on_event(event)
+            {
+                return Ok(());
+            }
+            data.clear();
+            size = 0;
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value).to_owned());
+        } else if line == "data" {
+            data.push(String::new());
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SectionKind {
@@ -242,6 +325,64 @@ fn generic_rows(v: &Value, keys: &[&str]) -> Vec<Row> {
         _ => vec![],
     }
 }
+
+// Preserve nested projections in details, and expose their collections as navigable rows.
+fn rich_rows(v: &Value, groups: &[&str]) -> Vec<Row> {
+    fn append(value: &Value, depth: u8, prefix: &str, out: &mut Vec<Row>) {
+        let mut r = row(value, depth, prefix);
+        r.id = format!("{prefix}/{}", r.id);
+        if let Some(object) = value.as_object() {
+            for (key, value) in object {
+                if value.is_object() || value.is_array() {
+                    r.detail.push((key.clone(), value.to_string()));
+                }
+            }
+            let children: Vec<_> = object
+                .iter()
+                .filter_map(|(key, value)| value.as_array().map(|a| (key, a)))
+                .collect();
+            r.children_count = children.iter().map(|(_, a)| a.len()).sum();
+            let id = r.id.clone();
+            out.push(r);
+            for (key, values) in children {
+                for (index, child) in values.iter().enumerate() {
+                    append(
+                        child,
+                        depth.saturating_add(1),
+                        &format!("{id}/{key}/{index}"),
+                        out,
+                    );
+                }
+            }
+        } else {
+            out.push(r);
+        }
+    }
+    let mut rows = Vec::new();
+    if let Some(values) = v.as_array() {
+        for (i, value) in values.iter().enumerate() {
+            append(value, 0, &i.to_string(), &mut rows);
+        }
+    } else {
+        let mut overview = row(v, 0, "Overview");
+        overview.id = "overview".into();
+        if let Some(object) = v.as_object() {
+            for (key, value) in object {
+                if !groups.contains(&key.as_str()) && (value.is_object() || value.is_array()) {
+                    overview.detail.push((key.clone(), value.to_string()));
+                }
+            }
+        }
+        overview.children_count = groups.iter().map(|key| array(v, key).len()).sum();
+        rows.push(overview);
+        for key in groups {
+            for (i, value) in array(v, key).iter().enumerate() {
+                append(value, 1, &format!("{key}/{i}"), &mut rows);
+            }
+        }
+    }
+    rows
+}
 fn make_section(kind: SectionKind, title: &str, rows: Vec<Row>) -> Section {
     Section {
         kind,
@@ -412,6 +553,21 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                     rows.push(r);
                     rows.extend(slices.iter().map(|s| row(s, 1, "slice")));
                 }
+            } else if matches!(
+                kind,
+                SectionKind::Usage
+                    | SectionKind::UsageHosts
+                    | SectionKind::Cost
+                    | SectionKind::Connections
+            ) {
+                let groups: &[&str] = match kind {
+                    SectionKind::Usage => &["usage", "seatAccounts"],
+                    SectionKind::UsageHosts => &["hosts", "items", "skipped", "seatAccounts"],
+                    SectionKind::Cost => &["seats"],
+                    SectionKind::Connections => &["humans"],
+                    _ => &[],
+                };
+                rows = rich_rows(v, groups);
             } else {
                 rows = generic_rows(v, &keys);
             }
@@ -462,6 +618,28 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_usage_and_seats_remain_visible() {
+        let data = json!({"usage":[{"provider":"codex","identity":{"accountId":"a"},"windows":[{"window":"weekly","remainingPercent":42}]}],"seatAccounts":[{"seatSession":"seat-a","configured":{"source":"registry"}}]});
+        let rows = rich_rows(&data, &["usage", "seatAccounts"]);
+        assert!(rows.iter().any(|r| {
+            r.depth == 2
+                && r.detail
+                    .iter()
+                    .any(|(k, v)| k == "remainingPercent" && v == "42")
+        }));
+        assert!(
+            rows.iter()
+                .any(|r| r.label == "seat-a" && r.detail.iter().any(|(k, _)| k == "configured"))
+        );
+    }
+    #[test]
+    fn parses_activity_notification() {
+        let e = live_event(&json!({"type":"seat_changed","seatNodeId":"node-1","seq":3})).unwrap();
+        assert_eq!(e.kind, "seat_changed");
+        assert_eq!(e.summary, "node-1");
+        assert!(live_event(&json!(null)).is_none());
+    }
     #[test]
     fn fixture_has_all_sections_and_topology() {
         let s = Snapshot::fixture();
