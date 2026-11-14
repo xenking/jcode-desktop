@@ -105,9 +105,6 @@ pub(crate) mod restart;
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
-#[path = "workspace_lone_panel_tests.rs"]
-mod workspace_lone_panel_tests;
-#[cfg(test)]
 #[path = "fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
@@ -142,6 +139,9 @@ mod window_navigation;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
+#[cfg(test)]
+#[path = "workspace_lone_panel_tests.rs"]
+mod workspace_lone_panel_tests;
 
 #[path = "workspace_usage_reset.rs"]
 mod usage_reset;
@@ -887,6 +887,7 @@ pub struct Workspace {
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
+    voice_settings: voice_settings::VoiceSettings,
     rename_editor: Option<rename::Editor>,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
@@ -1191,6 +1192,7 @@ impl Workspace {
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            voice_settings: Default::default(),
             rename_editor: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
@@ -1579,6 +1581,7 @@ impl Workspace {
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            voice_settings: Default::default(),
             rename_editor: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
@@ -7553,6 +7556,7 @@ impl Workspace {
             .child(self.render_account_settings(cx))
             .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
+            .child(self.render_voice_settings(cx))
             .children(applet_settings)
             .child(
                 div()
@@ -15633,6 +15637,8 @@ mod pending;
 mod pending_tests;
 #[path = "workspace_sounds.rs"]
 mod sound_settings;
+#[path = "workspace_voice_settings.rs"]
+mod voice_settings;
 
 #[cfg(test)]
 #[path = "workspace_login_tests.rs"]
