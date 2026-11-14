@@ -155,9 +155,10 @@ fn footer_usage_labels(accounts: &[Account]) -> Vec<String> {
             continue;
         };
         let stale = account.active_report().is_some_and(|report| {
-            report.extra_info.iter().any(|(key, value)| {
-                key == "Last updated" && value.contains("cached;")
-            })
+            report
+                .extra_info
+                .iter()
+                .any(|(key, value)| key == "Last updated" && value.contains("cached;"))
         });
         for limit in limits {
             let name = limit.name.to_ascii_lowercase();
