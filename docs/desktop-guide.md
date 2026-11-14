@@ -179,7 +179,7 @@ tabs carry their workspace number, and the selected tab has a filled badge and
 stronger border. The optional minimap uses the same colors and clickable numbers.
 
 The sidebar's **Theme** tab selects a palette and saves it automatically.
-Choose from Warm neutral, Warm studio, Neutral dark, Neutral light, Midnight
+Choose from Monokai Pro Ristretto, Warm neutral, Warm studio, Neutral dark, Neutral light, Midnight
 (ink blue), Ocean (teal), Forest (sage), Plum (mauve), Rose dawn (blush paper),
 and Parchment (cream and sepia). Code, input, and status colors follow the palette.
 The separate **Settings** tab toggles the workspace minimap and pressed-shortcut

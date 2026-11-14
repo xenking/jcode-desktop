@@ -270,6 +270,56 @@ pub(super) const PARCHMENT: Palette = Palette {
     warn: 0x805d16,
 };
 
+/// Soft Ristretto colors matching the user's terminal palette.
+pub(super) fn monokai_pro_ristretto() -> Theme {
+    let mut theme = Theme::defaults();
+    theme.BG = rgb_c(0x211c1c);
+    theme.CANVAS_DOT = rgba_c(0xfff1f30a);
+    theme.PANEL_BG = rgb_c(0x2c2525);
+    theme.PANEL_BORDER = rgb_c(0x403838);
+    theme.PANEL_BORDER_FOCUS = rgb_c(0x948a8b);
+    theme.HEADER_BG = rgb_c(0x393131);
+    theme.TEXT = rgb_c(0xfff1f3);
+    theme.TEXT_USER = theme.TEXT;
+    theme.TEXT_DIM = rgb_c(0xc0b5b6);
+    theme.TEXT_FAINT = rgb_c(0x9c9293);
+    theme.ACCENT = rgb_c(0xf66f88);
+    theme.ACCENT_DIM = rgba_c(0xf66f8820);
+    theme.ACCENT_MUTED = rgb_c(0xec9177);
+    theme.USER_ACCENT = rgb_c(0x89d6c9);
+    theme.AI_ACCENT = rgb_c(0xadd57d);
+    theme.USER_BG = rgb_c(0x302828);
+    theme.TOOL_BG = rgb_c(0x292323);
+    theme.TOOL_TEXT = theme.TEXT_DIM;
+    theme.TOOL_BORDER = rgb_c(0x403838);
+    theme.REASONING = rgb_c(0xabace8);
+    theme.REASONING_BG = rgba_c(0xfff1f306);
+    theme.ERROR_BG = rgba_c(0xf66f8814);
+    theme.CODE_BG = rgb_c(0x211c1c);
+    theme.INLINE_CODE_BG = rgb_c(0x403838);
+    theme.CODE_BORDER = theme.TOOL_BORDER;
+    theme.CODE_HEADER_BG = theme.TOOL_BG;
+    theme.CODE_GUTTER = rgb_c(0x948a8b);
+    theme.QUOTE_BG = rgba_c(0xfff1f307);
+    theme.TABLE_STRIPE = rgba_c(0xfff1f306);
+    theme.INPUT_BG = rgb_c(0x241f1f);
+    theme.INPUT_BORDER = rgb_c(0x514848);
+    theme.CURSOR = theme.TEXT;
+    theme.SELECTION = rgba_c(0x72696a80);
+    theme.ERROR = rgb_c(0xf66f88);
+    theme.OK = rgb_c(0xadd57d);
+    theme.WARN = rgb_c(0xf2c973);
+    theme.HEADING = rgb_c(0xec9177);
+    theme.LINK = rgb_c(0x89d6c9);
+    theme.MINIMAP_TRACK = rgba_c(0xfff1f306);
+    theme.MINIMAP_TRACK_ACTIVE = rgba_c(0xfff1f30d);
+    theme.MINIMAP_VIEWPORT = rgba_c(0x948a8b66);
+    theme.MINIMAP_PANEL = rgb_c(0x514848);
+    theme.MINIMAP_PANEL_BUSY = rgb_c(0x72696a);
+    theme.MINIMAP_BG = rgba_c(0x302828e6);
+    theme
+}
+
 /// VS Code Dark+ / Light+ token colors, independent of the application's surfaces.
 /// Apply to raw presets before configuration so explicit user colors always win.
 pub(super) fn apply_code_colors(theme: &mut Theme) {

@@ -361,6 +361,7 @@ impl Theme {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemePreset {
     WarmNeutral,
+    MonokaiProRistretto,
     WarmStudio,
     NeutralDark,
     NeutralLight,
@@ -382,7 +383,7 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -401,10 +402,12 @@ impl ThemePreset {
         Self::DarkNeutral,
         Self::PureBlack,
         Self::Glass,
+        Self::MonokaiProRistretto,
     ];
     pub const fn id(self) -> &'static str {
         match self {
             Self::WarmNeutral => "warm-neutral",
+            Self::MonokaiProRistretto => "monokai-pro-ristretto",
             Self::WarmStudio => "warm-studio",
             Self::NeutralDark => "neutral-dark",
             Self::NeutralLight => "neutral-light",
@@ -427,6 +430,7 @@ impl ThemePreset {
     pub const fn label(self) -> &'static str {
         match self {
             Self::WarmNeutral => "Warm neutral",
+            Self::MonokaiProRistretto => "Monokai Pro Ristretto",
             Self::WarmStudio => "Warm studio",
             Self::NeutralDark => "Neutral dark",
             Self::NeutralLight => "Neutral light",
@@ -466,6 +470,7 @@ impl ThemePreset {
             Self::DarkNeutral => 15,
             Self::PureBlack => 16,
             Self::Glass => 17,
+            Self::MonokaiProRistretto => 18,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -686,6 +691,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::dark_neutral(),
         palettes::pure_black(),
         palettes::glass(),
+        palettes::monokai_pro_ristretto(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -1095,6 +1101,17 @@ mod tests {
             );
         }
         assert!(contrast(theme.HEADING, theme.USER_BG) >= 7.0);
+    }
+
+    #[test]
+    fn ristretto_preset_has_soft_semantic_colors() {
+        let preset = ThemePreset::MonokaiProRistretto;
+        assert_eq!(ThemePreset::from_id("monokai-pro-ristretto"), preset);
+        let theme = &raw_themes()[preset.index()];
+        assert_eq!(theme.PANEL_BG, rgb_c(0x2c2525));
+        assert_eq!(theme.TEXT, rgb_c(0xfff1f3));
+        assert_eq!(theme.ACCENT, rgb_c(0xf66f88));
+        assert_eq!(theme.OK, rgb_c(0xadd57d));
     }
 
     #[test]
