@@ -193,7 +193,12 @@ impl Panel {
                                 cx.stop_propagation();
                             })),
                     )
-                    .children(self.render_context_meter()),
+                    .children(self.render_context_meter())
+                    .children(
+                        (!screenshot_mode)
+                            .then(|| self.render_provider_usage_footer(cx))
+                            .flatten(),
+                    ),
             )
             .child(
                 div()

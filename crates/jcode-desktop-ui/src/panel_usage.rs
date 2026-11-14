@@ -142,6 +142,74 @@ fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
     }
 }
 
+fn footer_usage_labels(accounts: &[Account]) -> Vec<String> {
+    let mut labels = Vec::new();
+    for (id, provider) in [("claude", "Claude"), ("openai", "Codex")] {
+        let Some(account) = accounts
+            .iter()
+            .find(|account| account.id == id && account.status == "available")
+        else {
+            continue;
+        };
+        let Some(limits) = account.active_limits() else {
+            continue;
+        };
+        let stale = account.active_report().is_some_and(|report| {
+            report.extra_info.iter().any(|(key, value)| {
+                key == "Last updated" && value.contains("cached;")
+            })
+        });
+        for limit in limits {
+            let name = limit.name.to_ascii_lowercase();
+            let window = if name.contains("5-hour") {
+                "5h"
+            } else if name == "7-day window" {
+                "7d"
+            } else {
+                continue;
+            };
+            if !limit.usage_percent.is_finite() {
+                continue;
+            }
+            let reset = limit
+                .reset_in
+                .as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default();
+            let cached = if stale { " cached" } else { "" };
+            labels.push(format!(
+                "{provider} {window} {:.0}%{reset}{cached}",
+                limit.usage_percent.clamp(0., 100.)
+            ));
+        }
+    }
+    labels
+}
+
+impl Panel {
+    pub(super) fn render_provider_usage_footer(&self, cx: &App) -> Option<gpui::Div> {
+        if crate::harness::remote_host(&self.session_id).is_some() {
+            return None;
+        }
+        let labels = footer_usage_labels(&cx.try_global::<StatusAccounts>()?.0);
+        if labels.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .debug_selector(|| "panel-provider-usage".into())
+                .flex()
+                .flex_shrink_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(10.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(labels.join(" · ")),
+        )
+    }
+}
+
 /// Filled annulus segment from 12 o'clock, clockwise, `fraction` of a turn.
 fn ring_path(
     center: gpui::Point<gpui::Pixels>,
@@ -461,6 +529,27 @@ impl Panel {
 mod tests {
     use super::*;
 
+    #[test]
+    fn footer_shows_provider_windows_and_reset_without_fabricating_limits() {
+        let mut accounts = crate::accounts::parse(r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#).unwrap();
+        accounts[0].limits.push(UsageLimit {
+            name: "5-hour window".into(),
+            usage_percent: 37.,
+            reset_in: Some("2h".into()),
+        });
+        accounts[1].limits.push(UsageLimit {
+            name: "7-day window".into(),
+            usage_percent: 94.,
+            reset_in: Some("17h".into()),
+        });
+        assert_eq!(
+            footer_usage_labels(&accounts),
+            vec!["Claude 5h 37% 2h", "Codex 7d 94% 17h"]
+        );
+        accounts[0].limits[0].usage_percent = f32::NAN;
+        assert_eq!(footer_usage_labels(&accounts), vec!["Codex 7d 94% 17h"]);
+    }
+
     #[gpui::test]
     fn context_meter_uses_prompt_occupancy_not_billing_totals(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|_, cx| {
@@ -572,8 +661,8 @@ mod tests {
         cx.update(|cx| {
             let mut accounts = crate::accounts::parse(r#"{"providers":[{"id":"openai","status":"available"},{"id":"openai-api","status":"available"}]}"#).unwrap();
             accounts[0].limits = vec![
-                UsageLimit { name: "5 hour".into(), usage_percent: 25., reset_in: Some("2h".into()) },
-                UsageLimit { name: "Weekly".into(), usage_percent: 75., reset_in: Some("3d".into()) },
+                UsageLimit { name: "5-hour window".into(), usage_percent: 25., reset_in: Some("2h".into()) },
+                UsageLimit { name: "7-day window".into(), usage_percent: 75., reset_in: Some("3d".into()) },
             ];
             cx.set_global(StatusAccounts(accounts));
         });
@@ -606,6 +695,11 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
         let context = vcx.debug_bounds("panel-context-meter").unwrap();
+        let usage = vcx
+            .debug_bounds("panel-provider-usage")
+            .expect("inline quota footer");
+        assert!(context.right() <= usage.left());
+        assert!(usage.size.width > px(0.));
         let login = vcx.debug_bounds("panel-login").unwrap();
         assert!(vcx.debug_bounds("panel-model").unwrap().size.width > px(20.));
         // The context ring rides in the composer's pill row, after the method.
