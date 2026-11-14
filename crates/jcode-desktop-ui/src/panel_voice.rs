@@ -399,10 +399,76 @@ impl Panel {
         // handshake runs in the background while PCM buffers. The press is
         // the start of recording, so the UI shows Listening immediately.
         let attempt = self.voice.canceled.clone();
-        let result = voice::nari_api_key()
-            .ok_or(VoiceError::NariNotConfigured)
-            .and_then(|key| NariRecording::start_cancellable(attempt.clone(), &key));
+        let (backend, _) = voice::configured_backend();
+        match backend {
+            voice::DictationBackend::Command => return self.start_command_voice(&attempt, cx),
+            voice::DictationBackend::Subscription => {
+                voice_log(format_args!(
+                    "subscription backend has no streaming capture"
+                ));
+                self.voice.phase = Phase::Idle;
+                self.voice.hold_capture = false;
+                self.voice.error = Some(
+                    "Jcode subscription voice is not streamed yet. Pick Nari, Soniox, or an external command in Settings."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
+        // `[dictation] backend` picks Nari or Soniox (Auto: whichever key exists).
+        let result = NariRecording::start_configured(attempt.clone());
         self.finish_voice_startup(&attempt, result, cx);
+    }
+
+    /// `[dictation] backend = "command"`: the external command owns the
+    /// microphone (SuperWhisper, whisper.cpp, ...) and prints the transcript.
+    /// Pressing voice again cancels the wait.
+    fn start_command_voice(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        let cfg = jcode_base::config::config().dictation.clone();
+        let command = cfg.command.trim().to_owned();
+        if command.is_empty() {
+            self.voice.phase = Phase::Idle;
+            self.voice.hold_capture = false;
+            self.voice.error =
+                Some("Set an external dictation command in Settings > Voice.".into());
+            cx.notify();
+            return;
+        }
+        voice_log(format_args!("external dictation command started"));
+        self.voice.phase = Phase::Transcribing;
+        self.voice.started = Some(Instant::now());
+        let task = cx.background_executor().spawn(async move {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(anyhow::Error::from)?
+                .block_on(voice::dictation::run_command(&command, cfg.timeout_secs))
+        });
+        let attempt = attempt.clone();
+        self.voice.task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |panel, cx| {
+                if !Arc::ptr_eq(&attempt, &panel.voice.canceled)
+                    || attempt.load(Ordering::SeqCst)
+                    || panel.voice.phase != Phase::Transcribing
+                {
+                    return;
+                }
+                panel.voice.stop_reason = Some("external command finished");
+                match result {
+                    Ok(text) => panel.finish_voice(Ok(text), cx),
+                    Err(error) => {
+                        panel.voice.log_end(false, "external command failed", None);
+                        panel.finish_voice(Err(VoiceError::CaptureFailed), cx);
+                        panel.voice.error = Some(format!("Dictation command failed: {error:#}"));
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+        cx.notify();
     }
 
     fn finish_voice_startup(
