@@ -972,7 +972,10 @@ mod tests {
         let value: toml::Value = toml::from_str(&text).unwrap();
         let dictation = &value["dictation"];
         assert_eq!(dictation["backend"].as_str(), Some("nari"));
-        assert_eq!(dictation["base_url"].as_str(), Some("ws://127.0.0.1:9/\"x\""));
+        assert_eq!(
+            dictation["base_url"].as_str(),
+            Some("ws://127.0.0.1:9/\"x\"")
+        );
         assert_eq!(dictation["mode"].as_str(), Some("send"));
         assert_eq!(value["model"].as_str(), Some("keep-me"));
         assert_eq!(text.matches("backend =").count(), 1);
