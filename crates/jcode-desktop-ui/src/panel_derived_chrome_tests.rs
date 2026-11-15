@@ -9,6 +9,8 @@ fn payload() -> TodoCardPayload {
             blocked_by: vec![],
             confidence: None,
             completion_confidence: None,
+            stage: None,
+            assigned_to: None,
         }],
         plan: TodoCardPlan::default(),
         goals: vec![],

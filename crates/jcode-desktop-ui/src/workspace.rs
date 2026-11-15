@@ -12335,7 +12335,7 @@ mod tests {
             let sidebar = vcx.debug_bounds("sidebar").unwrap();
             assert_eq!(
                 destinations.top(),
-                sidebar.top(),
+                sidebar.top() + px(sidebar_roller::sidebar_traffic_light_inset(false)),
                 "the destination and directory row is the only header line"
             );
             assert!(header.top() >= destinations.top());
