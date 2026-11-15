@@ -1267,9 +1267,24 @@ struct PersistedSession {
     /// owner is gone crashed without writing its final status.
     #[serde(default)]
     last_pid: Option<u32>,
+    /// Session this one was created from: a swarm coordinator, or a user fork.
+    #[serde(default)]
+    parent_id: Option<String>,
+    /// Set for sessions the daemon spawns headless as swarm workers.
+    #[serde(default)]
+    is_debug: bool,
 }
 
 impl PersistedSession {
+    /// The coordinator that owns this session. A transcript fork also has a
+    /// `parent_id`, but only daemon-spawned workers are `is_debug`, and only
+    /// swarm ownership may nest a session under another in the sidebar.
+    fn swarm_parent(&self) -> Option<String> {
+        self.parent_id
+            .clone()
+            .filter(|parent| self.is_debug && !parent.trim().is_empty())
+    }
+
     /// Lifecycle status as the TUI picker reports it, including crashes the
     /// dead process never had the chance to persist.
     fn lifecycle_status(&self) -> String {
@@ -1582,6 +1597,10 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         last_pid: json_value_field(&tail, "last_pid", true)
             .and_then(|value| value.as_u64())
             .and_then(|pid| u32::try_from(pid).ok()),
+        parent_id: json_string_field(&head, "parent_id", false),
+        is_debug: json_value_field(&tail, "is_debug", true)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -1668,6 +1687,9 @@ pub fn merge_persisted_sessions(
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
             session.status = record.lifecycle_status();
+            if session.parent_session_id.is_none() {
+                session.parent_session_id = record.swarm_parent();
+            }
         }
     }
 
@@ -1741,6 +1763,7 @@ pub fn merge_persisted_sessions(
             continue;
         };
         let status = record.lifecycle_status();
+        let parent_session_id = record.swarm_parent();
         let save_label = record
             .saved
             .then_some(record.save_label)
@@ -1767,7 +1790,7 @@ pub fn merge_persisted_sessions(
                 archived: false,
                 archived_at_ms: None,
                 save_label,
-                parent_session_id: None,
+                parent_session_id,
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
@@ -3416,6 +3439,86 @@ mod tests {
         }
     }
 
+    /// Real files copied from the user's `~/.jcode`: the coordinator
+    /// `session_microbe_...` with 45 daemon-spawned workers. Only the
+    /// per-session metadata and the swarm snapshot are kept, not transcripts.
+    fn microbe_home() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/microbe_home")
+    }
+
+    const MICROBE: &str = "session_microbe_1794670947943_2648f3bbec7c7e5e";
+
+    #[test]
+    fn real_coordinator_workers_nest_under_it_with_swarm_status() {
+        let home = microbe_home();
+        let mut sessions = merge_persisted_sessions(Vec::new(), Some(&home));
+        jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
+        let by_id = |id: &str| {
+            sessions
+                .iter()
+                .find(|s| s.session_id.starts_with(id))
+                .unwrap_or_else(|| panic!("{id} missing"))
+        };
+        let workers = sessions
+            .iter()
+            .filter(|s| s.parent_session_id.as_deref() == Some(MICROBE))
+            .count();
+        assert_eq!(workers, 45, "every spawned worker is owned by the coordinator");
+        // The coordinator itself is a user session, not nested under its own
+        // transcript parent.
+        assert_eq!(by_id(MICROBE).parent_session_id, None);
+        // Live swarm snapshot status wins over the transcript lifecycle.
+        assert_eq!(by_id("session_badger").swarm_status.as_deref(), Some("running"));
+        assert_eq!(by_id("session_frog").swarm_status.as_deref(), Some("ready"));
+        assert_eq!(
+            by_id("session_crab").agent_label.as_deref(),
+            Some("queued-msg-wait")
+        );
+        // Workers absent from the snapshot keep no swarm status.
+        assert_eq!(by_id("session_rose").swarm_status, None);
+    }
+
+    #[test]
+    fn transcript_forks_do_not_nest_as_swarm_workers() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("fork.json"),
+            r#"{"parent_id":"root","is_debug":false,"status":"Closed"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("worker.json"),
+            r#"{"parent_id":"root","is_debug":true,"status":"Active","last_pid":999999}"#,
+        )
+        .unwrap();
+        let sessions = merge_persisted_sessions(Vec::new(), Some(home.path()));
+        let parent = |id: &str| {
+            sessions
+                .iter()
+                .find(|s| s.session_id == id)
+                .unwrap()
+                .parent_session_id
+                .clone()
+        };
+        assert_eq!(parent("fork"), None);
+        assert_eq!(parent("worker").as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn large_worker_transcripts_still_report_their_coordinator() {
+        let path = std::env::temp_dir().join(format!("jcode-worker-large-{}.json", std::process::id()));
+        let padding = "x".repeat(SIDEBAR_METADATA_WINDOW * 3);
+        let document = format!(
+            r#"{{"id":"w","parent_id":"root","title":"t","messages":[{{"text":"{padding}"}}],"working_dir":"/p","status":"Closed","is_debug":true,"saved":false}}"#
+        );
+        std::fs::write(&path, &document).unwrap();
+        let record = read_persisted_session(&path, document.len() as u64).unwrap();
+        assert_eq!(record.swarm_parent().as_deref(), Some("root"));
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn sdk_connection_presence_survives_lifecycle_enrichment() {
         let home = tempfile::tempdir().unwrap();
@@ -3494,6 +3597,8 @@ mod tests {
             save_label: None,
             status: serde_json::json!("Active"),
             last_pid,
+            parent_id: None,
+            is_debug: false,
         };
         // A pid beyond the kernel's pid_max can never be alive.
         assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");

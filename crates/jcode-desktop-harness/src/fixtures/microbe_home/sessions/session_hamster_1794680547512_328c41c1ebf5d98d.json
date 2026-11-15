@@ -1,0 +1,19 @@
+{
+ "id": "session_hamster_1794680547512_328c41c1ebf5d98d",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "jcode fork ~/projects/github.com/xenking/jcode master (load ",
+ "created_at": "2026-11-14T18:22:27.512755Z",
+ "updated_at": "2026-11-14T19:01:46.706137Z",
+ "model_usage_turn_id": "session_hamster_1794680547512_328c41c1ebf5d98d:message_1794680547539_7536026356305302203",
+ "provider_key": "openai-oauth",
+ "model": "gpt-6.1-terra",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking/.jcode/scratch/probe",
+ "short_name": "hamster",
+ "status": "Closed",
+ "last_pid": 84375,
+ "last_active_at": "2026-11-14T18:22:27.513165Z",
+ "is_debug": true,
+ "saved": false
+}

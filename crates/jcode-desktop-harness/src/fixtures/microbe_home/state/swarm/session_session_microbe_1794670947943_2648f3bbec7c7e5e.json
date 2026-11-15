@@ -1,0 +1,84 @@
+{
+ "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "coordinator_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "members": [
+  {
+   "session_id": "session_badger_1794720615830_8c546c8d2a5870c4",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "running",
+   "detail": "Use model claude-opus-5-5. Repo ~/projec",
+   "task_label": "swarm-ui-compact",
+   "friendly_name": "badger",
+   "report_back_to_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "role": "agent",
+   "is_headless": true
+  },
+  {
+   "session_id": "session_crab_1794721604663_947a5a63a4e52d4b",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "running",
+   "detail": "Use model claude-opus-5-5. Repo ~/projec",
+   "task_label": "queued-msg-wait",
+   "friendly_name": "crab",
+   "report_back_to_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "role": "agent",
+   "is_headless": true
+  },
+  {
+   "session_id": "session_duck_1794721971687_30da53d7efacfdc9",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "running",
+   "detail": "Use model claude-opus-5-5. Repo ~/projec",
+   "task_label": "poke-assigned",
+   "friendly_name": "duck",
+   "report_back_to_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "role": "agent",
+   "is_headless": true
+  },
+  {
+   "session_id": "session_fox_1794718668160_87674d9271df588d",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "running",
+   "detail": "Use model claude-opus-5-5. The user's Cl",
+   "task_label": "claude-resets",
+   "friendly_name": "fox",
+   "report_back_to_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "role": "agent",
+   "is_headless": true
+  },
+  {
+   "session_id": "session_frog_1794721971786_6d65770e896d4c49",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "ready",
+   "detail": "",
+   "task_label": "desktop-ts-input",
+   "friendly_name": "frog",
+   "report_back_to_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "role": "agent",
+   "is_headless": true
+  },
+  {
+   "session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "working_dir": "/Users/xenking",
+   "swarm_id": "session:session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_enabled": true,
+   "status": "running",
+   "detail": "\u043d\u0443 \u044d\u0442\u043e \u043f\u0438\u0437\u0434\u0435\u0446 \u043a\u0441\u0442\u0430\u0442\u0438. \u0442\u0438\u043f\u0430 \u0435\u0431\u0430\u043d\u044b\u0439 todo p",
+   "friendly_name": "microbe",
+   "report_back_to_session_id": null,
+   "role": "coordinator",
+   "is_headless": false
+  }
+ ],
+ "updated_at_unix_ms": 1794721971815
+}
