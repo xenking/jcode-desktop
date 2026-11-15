@@ -607,9 +607,8 @@ fn icon_reset(color: gpui::Rgba) -> gpui::Div {
 /// Caption for a login's banked resets, e.g. "2 resets banked".
 pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
     match (reset.provider, reset.available_count) {
-        (ResetProvider::OpenAi, 1) => "1 reset banked".into(),
-        (ResetProvider::OpenAi, n) if n > 1 => format!("{n} resets banked"),
-        (ResetProvider::Claude, n) if n > 0 => "Session reset ready".into(),
+        (_, 1) => "1 reset banked".into(),
+        (_, n) if n > 1 => format!("{n} resets banked"),
         _ => match reset.next_available_at.as_deref() {
             Some(at) => format!(
                 "0 banked resets · next in {}",
@@ -1785,8 +1784,8 @@ mod tests {
             "3 resets banked"
         );
         assert_eq!(
-            banked_reset_label(&reset(ResetProvider::Claude, 1, None)),
-            "Session reset ready"
+            banked_reset_label(&reset(ResetProvider::Claude, 2, None)),
+            "2 resets banked"
         );
         assert!(
             banked_reset_label(&reset(
