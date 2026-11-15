@@ -45,6 +45,31 @@ fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContex
 }
 
 #[gpui::test]
+fn prompt_before_history_and_queue_handshake_does_not_use_legacy_send(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("queue-test".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        assert!(!panel.history_loaded);
+        panel.submit_or_queue("early send".into(), vec![], false, cx);
+    });
+    assert!(
+        commands.try_recv().is_err(),
+        "must not issue legacy Send before queue support is known"
+    );
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.send_queued_prompts(cx);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.content == "early send" && prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer)
+    );
+}
+
+#[gpui::test]
 fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| {
@@ -57,10 +82,12 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
             QueuedPrompt {
                 content: "one".into(),
                 images: vec![],
+                after_yield: true,
             },
             QueuedPrompt {
                 content: "two".into(),
                 images: vec![],
+                after_yield: true,
             },
         ];
         panel

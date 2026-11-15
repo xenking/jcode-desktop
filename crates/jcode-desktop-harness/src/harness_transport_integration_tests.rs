@@ -41,6 +41,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_queue(false)
+    }
+
+    fn with_queue(queue: bool) -> Self {
         let (connections_tx, connections) = channel();
         let (requests_tx, requests) = channel();
         let (closed_tx, closed) = channel();
@@ -61,7 +65,11 @@ impl Fixture {
                         ApiRequest::Hello { .. } => ApiEvent::HelloOk {
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "pool-integration-test".into(),
-                            capabilities: vec!["runtime_commands".into()],
+                            capabilities: if queue {
+                                vec!["runtime_commands".into(), "queued_prompts".into()]
+                            } else {
+                                vec!["runtime_commands".into()]
+                            },
                         },
                         ApiRequest::Ping => ApiEvent::Pong,
                         ApiRequest::CreateSession { .. } => ApiEvent::Attached {
@@ -74,6 +82,10 @@ impl Fixture {
                             session_id: session_id.clone(),
                             messages: vec![],
                             images: vec![],
+                        },
+                        ApiRequest::GetQueuedPrompts { session_id } => ApiEvent::QueuedPrompts {
+                            session_id: session_id.clone(),
+                            prompts: vec![],
                         },
                         ApiRequest::GetRuntimeInfo { session_id } => ApiEvent::RuntimeInfo {
                             session_id: session_id.clone(),
@@ -148,6 +160,45 @@ fn until(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) -> Updat
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+#[test]
+fn queue_capability_precedes_connected_and_history() {
+    let fixture = Fixture::with_queue(true);
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    commands
+        .send(Command::CreateRemoteSession {
+            host: "queue-host".into(),
+            working_dir: None,
+            request_id: Some("draft".into()),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut capability = false;
+    let mut connected = false;
+    while !connected {
+        assert!(Instant::now() < deadline, "connection deadline");
+        match updates.try_recv() {
+            Ok(Update::Event {
+                event: ApiEvent::QueuedPrompts { .. },
+                ..
+            }) => capability = true,
+            Ok(Update::SessionConnected { .. }) => {
+                assert!(
+                    capability,
+                    "queue capability must precede connection readiness"
+                );
+                connected = true;
+            }
+            Ok(Update::History { .. }) => {
+                assert!(capability, "queue capability must precede history")
+            }
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
 }
 
 #[test]
@@ -407,12 +458,13 @@ fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
         }
     }
     // Dismissing drops the child connection without deleting the archived fork.
-    commands.send(Command::DismissSideQuestion { session_id: child_id }).unwrap();
+    commands
+        .send(Command::DismissSideQuestion {
+            session_id: child_id,
+        })
+        .unwrap();
     assert_eq!(
-        fixture
-            .closed
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap(),
+        fixture.closed.recv_timeout(Duration::from_secs(3)).unwrap(),
         child_index
     );
     commands.send(Command::Shutdown).unwrap();

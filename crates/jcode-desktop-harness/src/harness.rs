@@ -2505,6 +2505,17 @@ fn session_worker_with_connector(
         let mut unaccepted_sends = VecDeque::new();
         let mut retry_countdown = None;
         eprintln!("jcode desktop: session {session_id} connected");
+        // Publish the capability before history can unblock composer sends.
+        // The authoritative snapshot follows history recovery below.
+        if client.supports("queued_prompts") {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::QueuedPrompts {
+                    session_id: session_id.clone(),
+                    prompts: Vec::new(),
+                },
+            });
+        }
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
         });

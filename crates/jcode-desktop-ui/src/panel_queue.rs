@@ -41,6 +41,12 @@ pub struct PromptQueue {
 struct QueuedPrompt {
     content: String,
     images: Vec<(String, String)>,
+    #[serde(default = "default_follow_up")]
+    after_yield: bool,
+}
+
+fn default_follow_up() -> bool {
+    true
 }
 
 impl Panel {
@@ -139,6 +145,7 @@ impl Panel {
                     format!("{sample} (round {})", round + 1)
                 },
                 images: Vec::new(),
+                after_yield: false,
             });
         }
     }
@@ -161,62 +168,82 @@ impl Panel {
             && !self.is_pending_session()
             && !self.prompt_queue.waiting_for_connection
         {
-            if !self.activity_active() {
-                self.prompt_queue.paused = false;
-                self.prompt_queue.auto_poke.start(self.items.len());
-            }
-            self.prepare_prompt(&content);
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-            let id = format!(
-                "desktop-{}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos(),
-                NEXT_ID.fetch_add(1, Ordering::Relaxed)
-            );
-            let prompt = jcode_sdk::api::QueuedPrompt {
-                client_id: id,
+            self.send_remote_prompt(
                 content,
                 images,
-                mode: if queued || self.prompt_queue.default_after_yield {
-                    jcode_sdk::api::QueuedPromptMode::AfterYield
-                } else {
-                    jcode_sdk::api::QueuedPromptMode::Steer
-                },
-            };
-            let history_count = self
-                .items
-                .iter()
-                .filter(|item| matches!(item, Item::User(text) if text == &prompt.content))
-                .count();
-            self.prompt_queue
-                .pending_remote_history_counts
-                .insert(prompt.client_id.clone(), history_count);
-            self.prompt_queue.pending_remote.push(prompt.clone());
-            self.bridge.send(Command::QueuePrompt {
-                session_id: self.session_id.clone(),
-                prompt,
-            });
-            crate::sounds::play(crate::sounds::Cue::Sent, cx);
-            cx.notify();
+                queued || self.prompt_queue.default_after_yield,
+                cx,
+            );
             return;
         }
+        let waiting_for_bootstrap = !self.prompt_queue.remote_supported && !self.history_loaded;
         if self.is_pending_session()
             || self.prompt_queue.waiting_for_connection
+            || waiting_for_bootstrap
             || (queued && (self.activity_active() || !self.pending_users.is_empty()))
         {
-            self.prompt_queue.waiting_for_connection |= self.is_pending_session();
-            self.prompt_queue
-                .prompts
-                .push(QueuedPrompt { content, images });
+            self.prompt_queue.waiting_for_connection |=
+                self.is_pending_session() || waiting_for_bootstrap;
+            self.prompt_queue.prompts.push(QueuedPrompt {
+                content,
+                images,
+                after_yield: queued || self.prompt_queue.default_after_yield,
+            });
             self.prompt_queue.paused = false;
             self.send_queued_prompts(cx);
         } else {
             self.send_composer_prompt(content, images, cx);
         }
+        cx.notify();
+    }
+
+    fn send_remote_prompt(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        after_yield: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.activity_active() {
+            self.prompt_queue.paused = false;
+            self.prompt_queue.auto_poke.start(self.items.len());
+        }
+        self.prepare_prompt(&content);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let id = format!(
+            "desktop-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        let prompt = jcode_sdk::api::QueuedPrompt {
+            client_id: id,
+            content,
+            images,
+            mode: if after_yield {
+                jcode_sdk::api::QueuedPromptMode::AfterYield
+            } else {
+                jcode_sdk::api::QueuedPromptMode::Steer
+            },
+        };
+        let history_count = self
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::User(text) if text == &prompt.content))
+            .count();
+        self.prompt_queue
+            .pending_remote_history_counts
+            .insert(prompt.client_id.clone(), history_count);
+        self.prompt_queue.pending_remote.push(prompt.clone());
+        self.bridge.send(Command::QueuePrompt {
+            session_id: self.session_id.clone(),
+            prompt,
+        });
+        crate::sounds::play(crate::sounds::Cue::Sent, cx);
         cx.notify();
     }
 
@@ -247,9 +274,11 @@ impl Panel {
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
             // take it once the model has seen it.
-            self.prompt_queue
-                .steered
-                .push(QueuedPrompt { content, images });
+            self.prompt_queue.steered.push(QueuedPrompt {
+                content,
+                images,
+                after_yield: false,
+            });
             crate::sounds::play(crate::sounds::Cue::Sent, cx);
             return;
         }
@@ -410,13 +439,14 @@ impl Panel {
             }
             return;
         }
-        if self.prompt_queue.paused
-            || !(self.status == "idle"
+        if self.prompt_queue.paused || self.is_pending_session() || !self.history_loaded {
+            return;
+        }
+        if !self.prompt_queue.remote_supported
+            && (!(self.status == "idle"
                 || (self.prompt_queue.waiting_for_connection && self.status == "connected"))
-            || self.activity_active()
-            || !self.pending_users.is_empty()
-            || self.is_pending_session()
-            || !self.history_loaded
+                || self.activity_active()
+                || !self.pending_users.is_empty())
         {
             return;
         }
@@ -426,7 +456,7 @@ impl Panel {
             // Preserve independent follow-up turns when the daemon owns the
             // queue, including prompts typed before the session attached.
             for prompt in prompts {
-                self.submit_or_queue(prompt.content, prompt.images, true, cx);
+                self.send_remote_prompt(prompt.content, prompt.images, prompt.after_yield, cx);
             }
             cx.notify();
             return;
@@ -446,7 +476,10 @@ impl Panel {
     /// Send one queued prompt immediately. During an active turn the harness
     /// delivers it as an urgent steer rather than waiting for the turn to end.
     pub(super) fn send_queued_prompt_now(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.prompt_queue.prompts.len() || self.is_pending_session() {
+        if index >= self.prompt_queue.prompts.len()
+            || self.is_pending_session()
+            || self.prompt_queue.waiting_for_connection
+        {
             return;
         }
         let prompt = self.prompt_queue.prompts.remove(index);
@@ -739,14 +772,41 @@ impl Panel {
                                             .child(format!("{}.", index + 1)),
                                     )
                                     .child(div().flex_1().min_w_0().truncate().child(label))
-                                    .child(queue_action(
-                                        "send-queued-prompt",
-                                        index,
-                                        include_bytes!("../../../assets/icons/arrow-up.svg"),
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.send_queued_prompt_now(index, cx)
-                                        }),
-                                    ))
+                                    .child(
+                                        div()
+                                            .id(("local-queue-mode", index))
+                                            .cursor_pointer()
+                                            .text_color(theme.TEXT_DIM)
+                                            .child(if prompt.after_yield {
+                                                "Follow-up"
+                                            } else {
+                                                "Steer"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(prompt) =
+                                                    this.prompt_queue.prompts.get_mut(index)
+                                                {
+                                                    prompt.after_yield = !prompt.after_yield;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .when(
+                                        !self.prompt_queue.waiting_for_connection
+                                            && !self.is_pending_session(),
+                                        |el| {
+                                            el.child(queue_action(
+                                                "send-queued-prompt",
+                                                index,
+                                                include_bytes!(
+                                                    "../../../assets/icons/arrow-up.svg"
+                                                ),
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.send_queued_prompt_now(index, cx)
+                                                }),
+                                            ))
+                                        },
+                                    )
                                     .child(queue_action(
                                         "recall-queued-prompt",
                                         index,
