@@ -411,14 +411,45 @@ struct TodoCardPlan {
 struct TodoCardItem {
     content: String,
     status: String,
-    #[serde(default)]
+    #[serde(default, alias = "lane")]
     group: Option<String>,
+    #[serde(
+        default,
+        alias = "phase",
+        alias = "wave",
+        deserialize_with = "deserialize_todo_stage"
+    )]
+    stage: Option<u32>,
+    #[serde(default)]
+    assigned_to: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
     #[serde(default)]
     confidence: Option<jcode_base::todo::ConfidenceState>,
     #[serde(default)]
     completion_confidence: Option<jcode_base::todo::ConfidenceState>,
+}
+
+fn deserialize_todo_stage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| match value {
+            serde_json::Value::Number(number) => {
+                number.as_u64().and_then(|n| u32::try_from(n).ok())
+            }
+            serde_json::Value::String(text) => text
+                .trim()
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .ok(),
+            _ => None,
+        })
+        .filter(|stage| *stage > 0))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -592,6 +623,8 @@ pub struct Panel {
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
     publish_armed_at: Option<Instant>,
+    /// Whether the session's pinned todo card is hidden by its sidebar button.
+    todo_card_hidden: bool,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -1104,6 +1137,7 @@ impl Panel {
             expanded_prompts: HashSet::new(),
             publish_tracker: false,
             publish_armed_at: None,
+            todo_card_hidden: false,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -3567,20 +3601,40 @@ impl Panel {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_set_todos(&mut self, json: &str, cx: &mut Context<Self>) {
+        self.items
+            .push(Item::Todos(parse_todo_tool_output(json).unwrap()));
+        cx.notify();
+    }
+
+    pub(crate) fn show_or_toggle_todos(&mut self, toggle: bool, cx: &mut Context<Self>) {
+        self.todo_card_hidden = toggle && !self.todo_card_hidden;
+        cx.notify();
+    }
+
     pub(crate) fn latest_todo_progress(&self) -> Option<(usize, usize)> {
-        self.items.iter().rev().find_map(|item| {
-            let Item::Todos(payload) = item else {
-                return None;
-            };
-            Some((
-                payload
-                    .todos
-                    .iter()
-                    .filter(|todo| todo.status == "completed")
-                    .count(),
-                payload.todos.len(),
-            ))
-        })
+        self.items
+            .iter()
+            .rev()
+            .find_map(|item| {
+                let Item::Todos(payload) = item else {
+                    return None;
+                };
+                Some((
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status == "completed")
+                        .count(),
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status != "cancelled")
+                        .count(),
+                ))
+            })
+            .filter(|(_, total)| *total > 0)
     }
 
     pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
@@ -5270,8 +5324,9 @@ impl Render for Panel {
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
-        let pinned_todo =
-            latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
+        let pinned_todo = latest_todo.filter(|payload| {
+            !payload.todos.is_empty() && publish_tracker.is_none() && !self.todo_card_hidden
+        });
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
         let tail_header = {
@@ -6791,20 +6846,23 @@ fn render_todo_card_with_style(
         completed as f32 / total as f32
     };
 
-    let mut groups: Vec<(Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
+    let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
     for todo in &payload.todos {
         let group = todo
             .group
             .as_deref()
             .map(str::trim)
             .filter(|g| !g.is_empty());
-        if let Some((_, items)) = groups.iter_mut().find(|(known, _)| *known == group) {
+        if let Some((_, _, items)) = groups
+            .iter_mut()
+            .find(|(stage, known, _)| *stage == todo.stage && *known == group)
+        {
             items.push(todo);
         } else {
-            groups.push((group, vec![todo]));
+            groups.push((todo.stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(group, _)| group.is_none());
+    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -6823,7 +6881,7 @@ fn render_todo_card_with_style(
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
-        for (group_index, (group, todos)) in groups.into_iter().enumerate() {
+        for (group_index, (stage, group, todos)) in groups.into_iter().enumerate() {
             let done = todos
                 .iter()
                 .filter(|todo| todo.status == "completed")
@@ -6832,6 +6890,15 @@ fn render_todo_card_with_style(
             // column. Give every level an explicit width so each row's flex_1
             // text child receives space instead of collapsing to zero width.
             let mut section = div().flex().flex_col().w_full();
+            if let Some(stage) = stage {
+                section = section.child(
+                    div()
+                        .debug_selector(move || format!("pinned-todo-phase-{stage}"))
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(format!("Phase {stage}")),
+                );
+            }
             let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
                 section = section.child(
@@ -6902,7 +6969,29 @@ fn render_todo_card_with_style(
                                     window,
                                     cx,
                                 )),
-                        ),
+                        )
+                        .children(todo.assigned_to.as_ref().map(|assignee| {
+                            let full = assignee.clone();
+                            let label = assignee
+                                .strip_prefix("session_")
+                                .and_then(|rest| rest.split('_').next())
+                                .unwrap_or(assignee)
+                                .to_owned();
+                            div()
+                                .id(gpui::SharedString::from(format!(
+                                    "{key}-assignee-{group_index}-{todo_index}"
+                                )))
+                                .debug_selector(move || {
+                                    format!("pinned-todo-assignee-{group_index}-{todo_index}")
+                                })
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(Theme::global().TEXT_FAINT)
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| usage::MeterTooltip(full.clone())).into()
+                                })
+                                .child(label)
+                        })),
                 );
             }
             body = body.child(section);
@@ -7270,6 +7359,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "next".into(),
@@ -7278,6 +7369,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -7294,6 +7387,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -7400,6 +7495,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "remaining".into(),
@@ -7408,6 +7505,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -7442,6 +7541,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -10401,6 +10502,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 })
                 .collect(),
                 plan: TodoCardPlan::default(),
@@ -10421,6 +10524,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
@@ -10692,6 +10797,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Plausible),
                     completion_confidence: Some(jcode_base::todo::ConfidenceState::Verified),
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
@@ -10700,6 +10807,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Validated),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Inspect the real offline screenshot".into(),
@@ -10708,6 +10817,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Speculative),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Retired task".into(),
@@ -10716,6 +10827,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
             ],
             plan: TodoCardPlan {

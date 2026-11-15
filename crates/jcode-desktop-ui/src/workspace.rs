@@ -6025,7 +6025,12 @@ impl Workspace {
         let mut folded_workers: HashMap<String, usize> = HashMap::new();
         for (root, workers) in nested_workers.iter_mut() {
             let (shown, hidden) = sidebar_swarm::visible(workers);
-            *workers = shown;
+            if !self
+                .expanded_lines
+                .contains(&sidebar_swarm::finished_key(root))
+            {
+                *workers = shown;
+            }
             if hidden > 0 {
                 folded_workers.insert(root.clone(), hidden);
             }
@@ -6469,6 +6474,7 @@ impl Workspace {
                                 .copied()
                                 .flatten()
                                 .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
+                            let todo_session = session.clone();
                             let meta = sidebar_session_meta(session);
                             let edits = session.edit_stats.as_ref().filter(|stats| sidebar_edits::has_changes(stats)).map(|stats| {
                                 sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
@@ -6763,11 +6769,22 @@ impl Workspace {
                                                         .whitespace_nowrap()
                                                         .when_some(todo_progress, |line, (done, total)| line.child(
                                                             div()
+                                                                .id(("sidebar-todos", sidebar_index))
                                                                 .flex_none()
                                                                 .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
                                                                 .when(details.is_some(), |el| el.mr_1())
                                                                 .when(done == total, |el| el.text_color(Theme::global().OK))
-                                                                .child(format!("{done}/{total}")),
+                                                                .rounded_md().px_1().cursor_pointer()
+                                                                .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                                .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
+                                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                                    window.prevent_default();
+                                                                    cx.stop_propagation();
+                                                                    this.sidebar_gesture = None;
+                                                                    this.activate_session(todo_session.clone(), window, cx);
+                                                                    this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
+                                                                }))
+                                                                .child(format!("☑ {done}/{total}")),
                                                         ))
                                                         .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
                                                             line.child(div().min_w_0().truncate().child(details))
@@ -6782,6 +6799,7 @@ impl Workspace {
                                 let expanded_lines = this.expanded_lines.clone();
                                 list = list.child(sidebar_swarm::render_workers(
                                     sidebar_index,
+                                    &menu_session,
                                     workers,
                                     folded,
                                     under_checkout,

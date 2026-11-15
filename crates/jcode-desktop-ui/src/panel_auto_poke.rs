@@ -91,6 +91,8 @@ fn snapshot_from_card(payload: TodoCardPayload) -> TodoSnapshot {
                 status: todo.status,
                 priority: "medium".into(),
                 group: todo.group,
+                stage: todo.stage,
+                assigned_to: todo.assigned_to,
                 confidence: todo.confidence,
                 completion_confidence: todo.completion_confidence,
                 blocked_by: todo.blocked_by,
