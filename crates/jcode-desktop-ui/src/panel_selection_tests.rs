@@ -237,6 +237,19 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
+fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("todo-owner".into(), None, None, crate::harness::spawn_inert(), cx);
+        let payload = parse_todo_tool_output(r#"[{"content":"Ship","status":"in_progress","group":"desktop","stage":2,"assigned_to":"session_fox_123_a"}]"#).unwrap();
+        *panel.items = vec![Item::Todos(payload)];
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pinned-todo-phase-2").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-assignee-0-0").is_some());
+}
+
+#[gpui::test]
 fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {

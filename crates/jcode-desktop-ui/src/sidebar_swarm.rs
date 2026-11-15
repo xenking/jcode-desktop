@@ -1086,6 +1086,14 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-worker-0-3").is_some());
         assert!(vcx.debug_bounds("sidebar-worker-0-4").is_none());
         assert!(vcx.debug_bounds("sidebar-workers-folded-0").is_some());
+        let toggle = vcx.debug_bounds("sidebar-workers-folded-0").unwrap().center();
+        vcx.simulate_click(toggle, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-0-8").is_some(), "all finished workers expand");
+        let toggle = vcx.debug_bounds("sidebar-workers-folded-0").unwrap().center();
+        vcx.simulate_click(toggle, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-0-4").is_none(), "second click collapses");
         assert!(
             vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
                 .is_some()
