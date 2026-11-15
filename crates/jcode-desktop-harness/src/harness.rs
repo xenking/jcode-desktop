@@ -2759,6 +2759,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
@@ -2799,6 +2800,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }

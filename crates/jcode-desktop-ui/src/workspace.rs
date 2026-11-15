@@ -2367,6 +2367,12 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if let jcode_sdk::ApiEvent::FocusRequested { .. } = &event {
+                    // Another session (an agent) asked the user to look at this
+                    // one: select its tab and bring the app forward.
+                    self.raise_session(&session_id, cx);
+                    return true;
+                }
                 if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
                     return self.apply_side_panel(&session_id, snapshot, cx);
                 }
@@ -2694,6 +2700,23 @@ impl Workspace {
             slot.panel
                 .update(cx, |panel, cx| panel.set_swarm_strip(strip, cx));
         }
+        cx.notify();
+    }
+
+    /// Select an open session's tab and activate the app, so an agent that
+    /// messages the user about another session can raise it. No-op when the
+    /// session has no open panel here.
+    fn raise_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+        else {
+            return;
+        };
+        self.set_active(index, cx);
+        self.overview = false;
+        cx.activate(true);
         cx.notify();
     }
 
