@@ -941,12 +941,16 @@ impl Panel {
             .debug_selector(move || provider_selector.clone())
             .flex()
             .items_center()
-            .gap_3()
-            .pl(px(10.))
-            .pr(px(10.))
-            .py_1p5()
-            .min_h(px(if connected { 56. } else { 44. }))
-            .rounded_xl()
+            .gap(px(if selecting { 8. } else { 12. }))
+            .pl(px(if selecting { 8. } else { 10. }))
+            .pr(px(if selecting { 8. } else { 10. }))
+            .py(px(if selecting { 4. } else { 6. }))
+            .min_h(px(match (selecting, connected) {
+                (true, _) => 36.,
+                (false, true) => 56.,
+                (false, false) => 44.,
+            }))
+            .rounded(px(if selecting { 8. } else { 12. }))
             .bg(if connected {
                 theme.HEADER_BG
             } else {

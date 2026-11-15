@@ -221,9 +221,10 @@ impl Panel {
             .flex_none()
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .gap_1()
+            .px_2()
+            .py_1p5()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
             .child(

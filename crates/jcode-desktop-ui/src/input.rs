@@ -2561,7 +2561,10 @@ impl Render for PromptInput {
                                                 window.viewport_size().height,
                                                 self.content.trim_start().starts_with("/model"),
                                             ))
-                                            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                                            .on_scroll_wheel(cx.listener(|_, _, _, cx| {
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }))
                                             .pr(px(crate::scrollbar::GUTTER - 4.0))
                                             .when(suggestions.is_empty(), |el| {
                                                 el.child(

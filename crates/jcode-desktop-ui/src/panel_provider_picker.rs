@@ -91,7 +91,7 @@ impl Panel {
             .collect();
         let visible = Rc::new(Vec::new());
         let remote = self.login_is_remote();
-        let mut body = div().flex().flex_col().gap_2();
+        let mut body = div().flex().flex_col().gap_1();
         if remote {
             body = body.child("Select a remote provider through the model picker. Local sign-ins are not available on this machine.");
         } else if rows.is_empty() {
@@ -118,38 +118,35 @@ impl Panel {
                 .debug_selector(|| "composer-provider-picker".into())
                 .w_full()
                 .min_w_0()
-                .mb_2()
-                .p_3()
-                .rounded_xl()
+                .mb_1()
+                .p_2()
+                .rounded_lg()
                 .bg(theme.PANEL_BG)
                 .border_1()
                 .border_color(theme.PANEL_BORDER)
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_1()
                 .text_size(px(12.))
                 .text_color(theme.TEXT_DIM)
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // The picker floats over the transcript inside a dock that lets
+                // wheel events through. Keep them here so the rows scroll alone.
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(
                     div()
+                        .debug_selector(|| "provider-picker-search".into())
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_color(theme.TEXT)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Select provider"),
-                        )
-                        .child(login_button("provider-picker-close", "Close").on_click(
+                        .child(div().flex_1().min_w_0().child(state.search.clone()))
+                        .child(login_button("provider-picker-close", "Close").px_2().py_0p5().on_click(
                             cx.listener(|this, _, window, cx| {
                                 this.close_login_picker(cx);
                                 this.focus_input(window, cx);
                             }),
                         )),
                 )
-                .child(state.search.clone())
                 .child(
                     div()
                         .id("provider-picker-rows")

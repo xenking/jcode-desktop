@@ -64,3 +64,79 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
     assert!(vcx.debug_bounds("composer-provider-picker").is_none());
     assert!(vcx.debug_bounds("login-busy").is_none());
 }
+
+#[gpui::test]
+fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| crate::input::bind_keys(cx));
+    let (bridge, _commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("session-a", cx);
+        workspace
+    });
+    let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.items.clear();
+        for n in 0..80 {
+            panel
+                .items
+                .push(crate::panel::Item::Assistant(format!("message {n}")));
+        }
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let pill = vcx.debug_bounds("panel-login").unwrap();
+    vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let picker = vcx
+        .debug_bounds("composer-provider-picker")
+        .expect("inline picker");
+    // Leave the live tail first so tail following cannot mask a leak.
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: gpui::point(picker.center().x, picker.top() - px(80.)),
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., 6.)),
+        modifiers: gpui::Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Started,
+    });
+    for _ in 0..120 {
+        vcx.executor().advance_clock(std::time::Duration::from_millis(16));
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+    }
+    vcx.run_until_parked();
+    let before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    assert!(!panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+    let points = [
+        gpui::point(picker.left() + px(6.), picker.top() + px(4.)),
+        picker.center(),
+        gpui::point(picker.right() - px(6.), picker.bottom() - px(4.)),
+    ];
+    for (point, precise) in points
+        .into_iter()
+        .flat_map(|point| [(point, true), (point, false)])
+    {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: point,
+            delta: if precise {
+                gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(120.)))
+            } else {
+                gpui::ScrollDelta::Lines(gpui::point(0., 3.))
+            },
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Started,
+        });
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            vcx.executor().advance_clock(std::time::Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+        }
+        vcx.run_until_parked();
+    }
+    let after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    assert_eq!(before, after, "wheel over the picker must not scroll the transcript");
+    // The search row holds the Close button; no separate title row.
+    let close = vcx.debug_bounds("provider-picker-close").expect("close");
+    let search = vcx.debug_bounds("provider-picker-search").expect("search row");
+    assert!(close.top() >= search.top() && close.bottom() <= search.bottom());
+}

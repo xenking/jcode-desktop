@@ -262,6 +262,9 @@ impl Panel {
                         .gap_1()
                         .max_h(px(144.))
                         .overflow_y_scroll()
+                        // The dock passes wheel input to the transcript; the
+                        // queue scrolls on its own.
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .children(self.prompt_queue.prompts.iter().enumerate().map(
                             |(index, prompt)| {
                                 let label = if prompt.images.is_empty() {

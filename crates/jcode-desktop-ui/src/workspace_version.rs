@@ -61,6 +61,26 @@ fn visible_feedback() -> Option<(String, Tone)> {
 
 const CHAR_WIDTH: f32 = 5.4;
 
+/// The bottom strip only appears while it offers something to do: Update,
+/// Restart, or Retry. Otherwise the version lives in Settings → About and the
+/// strip's height goes back to the sessions.
+pub(super) fn footer_visible() -> bool {
+    status_label(
+        &updates::release_status(),
+        &updates::current(),
+        updates::is_source_build(),
+    )
+    .1
+    .is_some()
+}
+
+/// Height the footer reserves below the session canvas.
+pub(super) fn footer_height() -> f32 {
+    if footer_visible() { FOOTER_HEIGHT } else { 0.0 }
+}
+
+const FOOTER_HEIGHT: f32 = 24.0;
+
 /// Size the pill to its short version string, with room for an optional action
 /// and the result of a check the user asked for.
 pub(super) fn pill_width() -> f32 {
@@ -93,6 +113,71 @@ impl Workspace {
                 message: "Automatic updates are unavailable in this build. Install the latest Desktop release manually.".into(),
             });
         }
+    }
+
+    /// Settings → About: the version, its release status, and a manual check.
+    pub(super) fn render_about_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        updates::ensure_release_check();
+        let release = updates::release_status();
+        let update = updates::current();
+        let (label, action) = status_label(&release, &update, updates::is_source_build());
+        let theme = Theme::global();
+        let feedback = visible_feedback();
+        div()
+            .id("settings-about")
+            .debug_selector(|| "settings-about".into())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_color(theme.TEXT_DIM).child("About"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(theme.PANEL_BG)
+                    .child(
+                        div()
+                            .id("settings-about-version")
+                            .debug_selector(|| "settings-about-version".into())
+                            .flex_none()
+                            .font_family(theme.FONT_MONO)
+                            .text_color(theme.TEXT)
+                            .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
+                            .child(crate::build_info::version()),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-about-status".into())
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.TEXT_DIM)
+                            .child(feedback.map_or(label, |(text, _)| text)),
+                    )
+                    .child(
+                        div()
+                            .id("settings-check-updates")
+                            .debug_selector(|| "settings-check-updates".into())
+                            .flex_none()
+                            .px_2()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(theme.ACCENT.opacity(0.12))
+                            .text_color(theme.ACCENT)
+                            .hover(|el| el.bg(theme.ACCENT.opacity(0.22)))
+                            .child(action.unwrap_or("Check"))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.stop_propagation();
+                                Self::check_and_apply_update();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_version_footer(
@@ -344,7 +429,7 @@ mod tests {
         );
     }
     #[gpui::test]
-    fn workspace_version_lives_in_footer_and_update_button_runs_platform_action(
+    fn update_footer_shows_only_when_actionable_and_version_lives_in_settings(
         cx: &mut gpui::TestAppContext,
     ) {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -354,6 +439,7 @@ mod tests {
         }
         let _guard = updates::test_lock();
         updates::clear_test_actions();
+        updates::set(UpdateState::Idle);
         updates::set_release_status(ReleaseStatus::Current {
             latest: "1.0.0".into(),
         });
@@ -372,23 +458,13 @@ mod tests {
             vcx.run_until_parked();
         };
         draw(vcx);
-        let header = vcx
-            .debug_bounds("workspace-version")
-            .expect("version in footer");
-        assert!(header.origin.y > px(700.));
-        assert_eq!(header.size.height, px(18.0));
-        assert!(header.size.width < px(132.0), "idle version stays compact");
-        let fps = vcx.debug_bounds("fps-counter").unwrap();
-        let build = vcx.debug_bounds("workspace-build").unwrap();
-        assert!(header.top() > fps.bottom());
-        assert!(build.size.height <= px(16.0));
-        assert!(build.top() >= header.top() && build.bottom() <= header.bottom());
-        assert!(vcx.debug_bounds("workspace-version-status").is_none());
-        assert!(
-            vcx.debug_bounds("panel-build").is_none(),
-            "workspace footer must not duplicate version"
-        );
-        assert!(vcx.debug_bounds("workspace-update-button").is_none());
+        // Nothing to do: no strip, and the canvas keeps the full height.
+        assert!(vcx.debug_bounds("workspace-version").is_none());
+        assert!(!footer_visible());
+        assert_eq!(footer_height(), 0.0);
+        assert!(vcx.debug_bounds("panel-build").is_none());
+
+        // A newer release offers Update in the footer.
         updates::set_release_status(ReleaseStatus::Newer {
             version: "1.1.0".into(),
         });
@@ -396,16 +472,13 @@ mod tests {
             updates::jcode_update_register_actions(check, check);
         }
         draw(vcx);
+        assert_eq!(footer_height(), FOOTER_HEIGHT);
         let header = vcx.debug_bounds("workspace-version").unwrap();
         let button = vcx
             .debug_bounds("workspace-update-button")
             .expect("new release offers Update");
-        let build = vcx.debug_bounds("workspace-build").unwrap();
-        assert!(build.right() <= button.left());
-        assert!((build.center().y - button.center().y).abs() < px(1.0));
+        assert!(header.origin.y > px(700.));
         assert!(button.right() <= header.right());
-        assert!(button.origin.y >= header.origin.y);
-        assert!(button.bottom() <= header.bottom());
         let before = REQUESTS.load(Ordering::SeqCst);
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         draw(vcx);
@@ -414,44 +487,35 @@ mod tests {
             vcx.debug_bounds("workspace-update-button").is_none(),
             "busy update cannot be clicked twice"
         );
-        assert!(
-            vcx.debug_bounds("update-chip").is_none(),
-            "workspace uses footer pill, not update overlay"
-        );
-        // Clicking the version text itself also checks for and applies updates.
-        updates::clear_test_actions();
-        updates::set_release_status(ReleaseStatus::Current {
-            latest: "1.0.0".into(),
+
+        // A failed update keeps Retry.
+        updates::set(UpdateState::Failed {
+            message: "boom".into(),
         });
-        unsafe {
-            updates::jcode_update_register_actions(check, check);
-        }
         draw(vcx);
-        let build = vcx.debug_bounds("workspace-build").unwrap();
-        let compact = vcx.debug_bounds("workspace-version").unwrap().size.width;
-        assert!(vcx.debug_bounds("workspace-version-check").is_none());
-        let before = REQUESTS.load(Ordering::SeqCst);
-        vcx.simulate_click(build.center(), gpui::Modifiers::default());
-        draw(vcx);
-        assert_eq!(REQUESTS.load(Ordering::SeqCst), before + 1);
-        assert_eq!(updates::current(), UpdateState::Checking);
-        assert_eq!(updates::release_status(), ReleaseStatus::Checking);
-        // The click is visible: the pill grows to show the running check.
-        let check = vcx
-            .debug_bounds("workspace-version-check")
-            .expect("clicking shows the check in progress");
-        let header = vcx.debug_bounds("workspace-version").unwrap();
-        assert!(header.size.width > compact);
-        assert!(check.right() <= header.right());
-        // Its result stays visible once the check settles.
+        assert!(vcx.debug_bounds("workspace-update-button").is_some());
+
+        // Settings → About shows the version and a manual check.
         updates::set(UpdateState::Idle);
         updates::set_release_status(ReleaseStatus::Current {
             latest: "1.0.0".into(),
         });
+        workspace.update(vcx, |w, cx| {
+            w.show_sidebar = true;
+            w.sidebar_view = SidebarView::Settings;
+            cx.notify();
+        });
         draw(vcx);
-        assert!(vcx.debug_bounds("workspace-version-check").is_some());
-        assert_eq!(visible_feedback(), Some(("Up to date".into(), Tone::Good)));
+        assert!(vcx.debug_bounds("workspace-version").is_none());
+        assert!(vcx.debug_bounds("settings-about").is_some());
+        assert!(vcx.debug_bounds("settings-about-version").is_some());
+        let check_button = vcx.debug_bounds("settings-check-updates").unwrap();
+        let before = REQUESTS.load(Ordering::SeqCst);
+        vcx.simulate_click(check_button.center(), gpui::Modifiers::default());
+        draw(vcx);
+        assert_eq!(REQUESTS.load(Ordering::SeqCst), before + 1);
         updates::clear_test_actions();
+        updates::set(UpdateState::Idle);
         updates::set_release_status(ReleaseStatus::Source);
     }
 }
