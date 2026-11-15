@@ -890,6 +890,12 @@ impl PromptInput {
         if ghost.disabled {
             return;
         }
+        // GPUI's deterministic scheduler cannot be woken by Tokio's real
+        // network thread. Tests explicitly opt into a fake request counter.
+        #[cfg(test)]
+        if ghost.request_counter.is_none() {
+            return;
+        }
         let context = (ghost.context)(cx);
         let settings = &crate::config::get().completions;
         let debounce = Duration::from_millis(settings.debounce_ms.max(400));
@@ -3959,6 +3965,29 @@ mod tests {
                 vec!["next"]
             );
         });
+    }
+
+    #[gpui::test]
+    fn ghost_does_not_start_real_requests_in_gpui_tests(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, _| {
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: Default::default(),
+                    request_counter: None,
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "a realistic draft");
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.ghost.as_ref().unwrap().task.is_none());
+            })
+            .unwrap();
     }
 
     #[gpui::test]
