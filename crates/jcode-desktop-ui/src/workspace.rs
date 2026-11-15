@@ -6632,12 +6632,14 @@ impl Workspace {
                             );
                             if let Some(workers) = nested_workers.get(&menu_session) {
                                 let folded = folded_workers.get(&menu_session).copied().unwrap_or(0);
+                                let expanded_lines = this.expanded_lines.clone();
                                 list = list.child(sidebar_swarm::render_workers(
                                     sidebar_index,
                                     workers,
                                     folded,
                                     under_checkout,
                                     &mut this.swarm_marks,
+                                    &expanded_lines,
                                     cx,
                                 ));
                             }

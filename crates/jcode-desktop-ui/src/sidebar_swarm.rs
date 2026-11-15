@@ -117,6 +117,7 @@ pub(super) fn render_workers(
     folded: usize,
     under_checkout: bool,
     marks: &mut crate::swarm_glyph::Marks,
+    expanded_lines: &HashSet<String>,
     cx: &mut Context<Workspace>,
 ) -> gpui::AnyElement {
     let theme = Theme::global();
@@ -132,11 +133,7 @@ pub(super) fn render_workers(
             // does not fit gets a chevron that wraps it in place, so the whole
             // assignment is readable without leaving the sidebar.
             let expand_key = expandable::key::worker(&worker.session_id);
-            let expanded = cx
-                .entity()
-                .read(&*cx)
-                .expanded_lines
-                .contains(&expand_key);
+            let expanded = expanded_lines.contains(&expand_key);
             let toggle_key = expand_key.clone();
             let label_truncated = worker
                 .label
