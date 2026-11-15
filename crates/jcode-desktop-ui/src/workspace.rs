@@ -5890,6 +5890,11 @@ impl Workspace {
             })
             .map(|session| session.session_id.clone())
             .collect::<HashSet<_>>();
+        // The TUI shows a coordinator's workers while nobody has that
+        // coordinator open here. A live swarm is live work, not a window's
+        // property, so list it wherever it is driven from.
+        let live_swarms = sidebar_swarm::live_swarm_roots(&catalog);
+        kept.extend(live_swarms.iter().cloned());
         // Headless swarm workers are never opened or closed in this window,
         // but they belong under a coordinator that is listed here.
         sidebar_swarm::keep_workers_of(&catalog, &mut kept);
@@ -5959,7 +5964,12 @@ impl Workspace {
                     && !closing_sessions.contains(&session.session_id)
             })
             .partition(|session| {
-                open_marks.contains_key(&session.session_id) || session.user_connected
+                open_marks.contains_key(&session.session_id)
+                    || session.user_connected
+                    // A coordinator with live workers is live work even when
+                    // this window has no panel for it: putting it in history
+                    // would fold it into a collapsed project.
+                    || live_swarms.contains(&session.session_id)
             });
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));

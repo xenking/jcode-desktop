@@ -1,0 +1,451 @@
+{
+ "v": 1,
+ "source": "live /list_sessions from the shared daemon (read-only probe)",
+ "sessions": [
+  {
+   "edit_stats": {
+    "added": 57,
+    "removed": 15,
+    "approximate": true
+   },
+   "session_id": "session_ant_1794738669324_7d5e619780c0284d",
+   "parent_session_id": "session_shark_1794724670890_6b48665715bce735",
+   "agent_label": "desktop-worker-visibility",
+   "swarm_status": "running",
+   "working_dir": "/Users/xenking",
+   "title": "Repos ~/projects/github.com/xenking/jcode-desktop (main) and ../\u2026",
+   "status": "idle",
+   "transcript_bytes": 57345,
+   "updated_at_ms": 1794738833869,
+   "last_active_at_ms": 1794738691650
+  },
+  {
+   "edit_stats": {
+    "added": 682,
+    "removed": 6,
+    "approximate": true
+   },
+   "session_id": "session_bonehound_1794731749019_183ff8d4058278c0",
+   "parent_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "agent_label": "btw-tui",
+   "swarm_status": "running",
+   "working_dir": "/Users/xenking",
+   "title": "Continue the dead hedgehog's work. Its diff is in ~/.jcode/migra\u2026",
+   "status": "idle",
+   "transcript_bytes": 967834,
+   "updated_at_ms": 1794738832849,
+   "last_active_at_ms": 1794738691746
+  },
+  {
+   "session_id": "session_buffalo_1794723029999_8315f695f3a4628a",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn, label \"oc-verify\", spawn_mode\u2026",
+   "status": "idle",
+   "transcript_bytes": 16338,
+   "updated_at_ms": 1794723077846,
+   "last_active_at_ms": 1794723030000
+  },
+  {
+   "session_id": "session_butterfly_1794723380324_0bd40bd5e9ae6455",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn with NO model param, working_di\u2026",
+   "status": "idle",
+   "transcript_bytes": 11023,
+   "updated_at_ms": 1794723407393,
+   "last_active_at_ms": 1794723395126
+  },
+  {
+   "edit_stats": {
+    "added": 502,
+    "removed": 100,
+    "approximate": true
+   },
+   "session_id": "session_calf_1794729858023_e3a95f4d78ff82f0",
+   "parent_session_id": "session_shark_1794724670890_6b48665715bce735",
+   "agent_label": "codemode-green",
+   "swarm_status": "running",
+   "working_dir": "/Users/xenking",
+   "title": "Use model claude-opus-5-5. Repo ~/projects/github.com/xenking/jc\u2026",
+   "status": "idle",
+   "transcript_bytes": 926941,
+   "updated_at_ms": 1794738804411,
+   "last_active_at_ms": 1794738692501
+  },
+  {
+   "edit_stats": {
+    "added": 347,
+    "removed": 60,
+    "approximate": true
+   },
+   "session_id": "session_daisy_1794734439227_988176cac4bfbc44",
+   "parent_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "agent_label": "effort-dots",
+   "swarm_status": "running",
+   "working_dir": "/Users/xenking",
+   "title": "The user wants reasoning effort shown as dots everywhere, like o\u2026",
+   "status": "idle",
+   "transcript_bytes": 3369164,
+   "updated_at_ms": 1794738822722,
+   "last_active_at_ms": 1794738691999
+  },
+  {
+   "session_id": "session_dragon_1794723398439_04d37ddecd91db37",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn, label \"oc-fb2\", spawn_mode hea\u2026",
+   "status": "idle",
+   "transcript_bytes": 5894,
+   "updated_at_ms": 1794723412435,
+   "last_active_at_ms": 1794723398443
+  },
+  {
+   "session_id": "session_fox_1794682203386_bab67c9129f649a1",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/projects/github.com/xenking/jcode",
+   "title": "Remember this fact throughout our session: the codeword is RISTR\u2026",
+   "status": "idle",
+   "transcript_bytes": 346504,
+   "updated_at_ms": 1794710081270,
+   "last_active_at_ms": 1794682203387
+  },
+  {
+   "user_connected": true,
+   "edit_stats": {
+    "added": 81,
+    "removed": 29,
+    "approximate": false
+   },
+   "session_id": "session_gorilla_1794666193796_b8454e80f02b77c0",
+   "working_dir": "/Users/xenking/Projects/playground",
+   "title": "\u0438\u0437\u0443\u0447\u0438 \u043a\u0440\u0447 https://github.com/mvschwarz/openrig/discussions/43 \u0438\u2026",
+   "status": "idle",
+   "transcript_bytes": 930674,
+   "updated_at_ms": 1794738692115,
+   "last_active_at_ms": 1794738691905
+  },
+  {
+   "session_id": "session_guppy_1794723510242_53c69dd0a56a549c",
+   "parent_session_id": "session_stallion_1794723505158_5d75a15cdc821bf8",
+   "agent_label": "oc-fb2",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply with exactly: PONG and state your model id. Authoritative\u2026",
+   "status": "idle",
+   "transcript_bytes": 37315,
+   "updated_at_ms": 1794723658028,
+   "last_active_at_ms": 1794723510243
+  },
+  {
+   "edit_stats": {
+    "added": 86,
+    "removed": 27,
+    "approximate": true
+   },
+   "session_id": "session_hamster_1794680547512_328c41c1ebf5d98d",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/.jcode/scratch/probe",
+   "title": "jcode fork ~/projects/github.com/xenking/jcode master (load skil\u2026",
+   "status": "idle",
+   "transcript_bytes": 586100,
+   "updated_at_ms": 1794682906706,
+   "last_active_at_ms": 1794680547513
+  },
+  {
+   "session_id": "session_hatchling_1794723037428_0858310bf3114bee",
+   "parent_session_id": "session_buffalo_1794723029999_8315f695f3a4628a",
+   "agent_label": "oc-verify",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply with exactly: PONG and state your model id. Authoritative\u2026",
+   "status": "idle",
+   "transcript_bytes": 3847,
+   "updated_at_ms": 1794723052405,
+   "last_active_at_ms": 1794723037436
+  },
+  {
+   "session_id": "session_hippo_1794722933316_d1e0c62e3345f13d",
+   "parent_session_id": "session_rose_1794722928691_8478f0227e676ad9",
+   "agent_label": "oc-verify",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply with exactly one short sentence saying hello and name the\u2026",
+   "status": "idle",
+   "transcript_bytes": 3926,
+   "updated_at_ms": 1794722943546,
+   "last_active_at_ms": 1794722933317
+  },
+  {
+   "session_id": "session_horse_1794679658588_6c6f17dbbe06427a",
+   "parent_session_id": "session_rooster_1794679655222_a02942c6b04c855d",
+   "agent_label": "probe",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply DONE and stop Authoritative assigned todo lane: Your todo\u2026",
+   "status": "idle",
+   "transcript_bytes": 3549,
+   "updated_at_ms": 1794679665826,
+   "last_active_at_ms": 1794679658589
+  },
+  {
+   "session_id": "session_horse_1794723385815_e86b7c65d35e58c1",
+   "parent_session_id": "session_butterfly_1794723380324_0bd40bd5e9ae6455",
+   "agent_label": "worker-ok-check",
+   "swarm_status": "ready",
+   "working_dir": "/tmp",
+   "title": "Reply with exactly one line: WORKER_OK and the name of the model\u2026",
+   "status": "idle",
+   "transcript_bytes": 37396,
+   "updated_at_ms": 1794723401897,
+   "last_active_at_ms": 1794723385817
+  },
+  {
+   "session_id": "session_koala_1794679673828_baad0f7a7a4bebd4",
+   "parent_session_id": "session_skunk_1794679671003_fa5830e6007a9ab7",
+   "agent_label": "probe",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply DONE and stop Authoritative assigned todo lane: Your todo\u2026",
+   "status": "idle",
+   "transcript_bytes": 3347,
+   "updated_at_ms": 1794679676522,
+   "last_active_at_ms": 1794679673828
+  },
+  {
+   "user_connected": true,
+   "edit_stats": {
+    "added": 259,
+    "removed": 72,
+    "approximate": true
+   },
+   "session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking",
+   "title": "\u044b\u0432\u044b\u0432 /selfdev requires a local Desktop self-development checkout\u2026",
+   "status": "idle",
+   "transcript_bytes": 47896738,
+   "updated_at_ms": 1794738726504,
+   "last_active_at_ms": 1794738692089
+  },
+  {
+   "session_id": "session_monkey_1794719175133_b1df43639f6d1725",
+   "swarm_status": "ready",
+   "working_dir": "/tmp/cciso",
+   "status": "idle",
+   "transcript_bytes": 1252,
+   "updated_at_ms": 1794723150607,
+   "last_active_at_ms": 1794719175134
+  },
+  {
+   "session_id": "session_nautilus_1794723404395_38f7623ca929795d",
+   "parent_session_id": "session_dragon_1794723398439_04d37ddecd91db37",
+   "agent_label": "oc-fb2",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply with exactly: PONG2 and state your model id. Authoritative\u2026",
+   "status": "idle",
+   "transcript_bytes": 35884,
+   "updated_at_ms": 1794723657993,
+   "last_active_at_ms": 1794723404395
+  },
+  {
+   "session_id": "session_ox_1794723340271_c0740c788ee29e9d",
+   "parent_session_id": "session_palmtree_1794723334715_e0174f1130724b70",
+   "agent_label": "oc-fb",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Reply with exactly: PONG and state your model id. Authoritative\u2026",
+   "status": "idle",
+   "transcript_bytes": 44888,
+   "updated_at_ms": 1794723378867,
+   "last_active_at_ms": 1794723340272
+  },
+  {
+   "session_id": "session_palmtree_1794723334715_e0174f1130724b70",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn, label \"oc-fb\", spawn_mode head\u2026",
+   "status": "idle",
+   "transcript_bytes": 17280,
+   "updated_at_ms": 1794723419080,
+   "last_active_at_ms": 1794723334745
+  },
+  {
+   "session_id": "session_panda_1794723141430_5a44abf262026367",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "status": "idle",
+   "transcript_bytes": 1723,
+   "updated_at_ms": 1794723658027,
+   "last_active_at_ms": 1794723141432
+  },
+  {
+   "edit_stats": {
+    "added": 1766,
+    "removed": 174,
+    "approximate": true
+   },
+   "session_id": "session_pawprint_1794731700791_16fb3e4151da74f2",
+   "parent_session_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+   "agent_label": "worker-cards-meta",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking",
+   "title": "Desktop sidebar/composer worker rows currently show \"poodle comp\u2026",
+   "status": "idle",
+   "transcript_bytes": 5810532,
+   "updated_at_ms": 1794738784963,
+   "last_active_at_ms": 1794738691617
+  },
+  {
+   "session_id": "session_puppy_1794682279279_daeecf4c0d708d6e",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/.jcode/scratch/probe",
+   "title": "Reply only AUTO_OK",
+   "status": "idle",
+   "transcript_bytes": 1964,
+   "updated_at_ms": 1794710081284,
+   "last_active_at_ms": 1794682279280
+  },
+  {
+   "session_id": "session_rooster_1794679655222_a02942c6b04c855d",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn, label=\"probe\", prompt=\"Reply D\u2026",
+   "status": "idle",
+   "transcript_bytes": 17533,
+   "updated_at_ms": 1794679674870,
+   "last_active_at_ms": 1794679655225
+  },
+  {
+   "session_id": "session_rose_1794722928691_8478f0227e676ad9",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool (action spawn, no model parameter, label oc-v\u2026",
+   "status": "idle",
+   "transcript_bytes": 41239,
+   "updated_at_ms": 1794723038967,
+   "last_active_at_ms": 1794722928692
+  },
+  {
+   "user_connected": true,
+   "session_id": "session_shark_1794724670890_6b48665715bce735",
+   "swarm_status": "running",
+   "working_dir": "/Users/xenking",
+   "title": "\u044b\u0432\u044b\u0432 /selfdev requires a local Desktop self-development checkout\u2026",
+   "status": "idle",
+   "transcript_bytes": 44616162,
+   "updated_at_ms": 1794738725288,
+   "last_active_at_ms": 1794738691905
+  },
+  {
+   "session_id": "session_skunk_1794679671003_fa5830e6007a9ab7",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool: action=spawn, label=\"probe\", prompt=\"Reply D\u2026",
+   "status": "idle",
+   "transcript_bytes": 18422,
+   "updated_at_ms": 1794679697243,
+   "last_active_at_ms": 1794679671005
+  },
+  {
+   "session_id": "session_stallion_1794723505158_5d75a15cdc821bf8",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/Projects/github.com/xenking/jcode",
+   "title": "Use the swarm tool exactly once: action=spawn, label \"oc-fb2\", s\u2026",
+   "status": "idle",
+   "transcript_bytes": 8250,
+   "updated_at_ms": 1794723540772,
+   "last_active_at_ms": 1794723505162
+  },
+  {
+   "session_id": "session_t-rex_1794682837362_bfdd8b7c72c8f512",
+   "swarm_status": "ready",
+   "working_dir": "/Users/xenking/projects/github.com/xenking/jcode",
+   "title": "Remember this fact throughout our session: the codeword is AMBER\u2026",
+   "status": "idle",
+   "transcript_bytes": 788135,
+   "updated_at_ms": 1794710081307,
+   "last_active_at_ms": 1794682837363
+  },
+  {
+   "edit_stats": {
+    "added": 833,
+    "removed": 0,
+    "approximate": true
+   },
+   "session_id": "session_ant_1794675020922_f6e720f45031cad8",
+   "working_dir": "/Users/xenking/projects/github.com/xenking/jcode",
+   "title": "Add a native interactive `ask` tool to the user's jcode fork (th\u2026",
+   "status": "idle",
+   "transcript_bytes": 622017,
+   "updated_at_ms": 1794679283651,
+   "last_active_at_ms": 1794677422968
+  },
+  {
+   "edit_stats": {
+    "added": 0,
+    "removed": 0,
+    "approximate": true
+   },
+   "session_id": "session_ant_1794733977717_6fea11e24303612a",
+   "working_dir": "/private/tmp/btw2-work",
+   "title": "\u041e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 unix-\u0441\u043e\u043a\u0435\u0442\u0430",
+   "status": "idle",
+   "transcript_bytes": 2186,
+   "updated_at_ms": 1794734339968,
+   "last_active_at_ms": 1794733977741
+  },
+  {
+   "edit_stats": {
+    "added": 1203,
+    "removed": 76,
+    "approximate": true
+   },
+   "session_id": "session_badger_1794720615830_8c546c8d2a5870c4",
+   "working_dir": "/Users/xenking",
+   "title": "Use model claude-opus-5-5. Repo ~/projects/github.com/xenking/jc\u2026",
+   "status": "idle",
+   "transcript_bytes": 5183106,
+   "updated_at_ms": 1794726351612,
+   "last_active_at_ms": 1794720615838
+  },
+  {
+   "edit_stats": {
+    "added": 419,
+    "removed": 3,
+    "approximate": true
+   },
+   "session_id": "session_bat_1794676071760_6671ba971987e4d2",
+   "working_dir": "/Users/xenking/projects/github.com/xenking/jcode-desktop",
+   "title": "Add inline prompt autocompletion (ghost text) to Jcode Desktop's\u2026",
+   "status": "idle",
+   "transcript_bytes": 299143,
+   "updated_at_ms": 1794679284318,
+   "last_active_at_ms": 1794677422983
+  },
+  {
+   "session_id": "session_bat_1794734115040_8718040537bd24d8",
+   "working_dir": "/private/tmp/btw2-work",
+   "title": "In one short sentence, what does a unix socket do?",
+   "status": "idle",
+   "transcript_bytes": 2302,
+   "updated_at_ms": 1794734115040,
+   "last_active_at_ms": 1794734115040
+  },
+  {
+   "edit_stats": {
+    "added": 0,
+    "removed": 0,
+    "approximate": true
+   },
+   "session_id": "session_bat_1794738523430_95e432a2feb8ff94",
+   "working_dir": "/private/tmp/btw2-work",
+   "title": "Ready check",
+   "status": "idle",
+   "transcript_bytes": 1916,
+   "updated_at_ms": 1794738545890,
+   "last_active_at_ms": 1794738523431
+  }
+ ]
+}

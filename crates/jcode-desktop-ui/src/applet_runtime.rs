@@ -806,7 +806,12 @@ else:
                 .unwrap_or_default()
         };
         wait("inbox rows", &|r| doc(r).contains("acme/app#7"));
-        assert!(doc(&runtime).contains("Review requested 1"));
+        // The inbox document is filled in more than one update, so the second
+        // row's text arrives after the first: waiting for it keeps this from
+        // racing a slower machine or a busier parallel test binary.
+        wait("review requested row", &|r| {
+            doc(r).contains("Review requested 1")
+        });
 
         let open = jcode_applet_types::view::Action {
             action: "open".into(),

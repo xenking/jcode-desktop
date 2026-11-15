@@ -2,6 +2,12 @@
 
 Root sessions remain ordinary sidebar entries. Sessions with swarm ownership metadata are rendered inside their root's entry rather than duplicated as top-level history entries. Ordinary transcript forks do not imply swarm ownership.
 
+## Visibility
+
+The sidebar is window-scoped: it lists the sessions this window has open and the sessions another client reports as user-attached. A swarm is not window state. The TUI shows a coordinator's workers inside the coordinator's session, and those workers keep running while nobody has the coordinator open anywhere, so a window-scoped filter on its own hides live work: the coordinator (driven from the TUI, from another window, or headless) disappears and takes every worker under it with it.
+
+A coordinator that owns at least one live worker (running, queued or blocked) is therefore always a row, in the Live section, whichever client drives it and whichever window opened it. Its workers nest under it exactly as they do for an opened coordinator, and a live worker whose coordinator has left the catalog stays visible on its own. A swarm whose workers have all finished is history like any other session: it appears only when this window opened it, a client is attached to it, or the user closed it here.
+
 A coordinator's workers are compact one-line rows nested under it: indentation, a status glyph, the worker's name, its task label and its age. Rows are 18px, 10.5px text and never carry a decorative rail, so a coordinator with four workers stays one scannable block. Clicking a row opens or focuses that worker's conversation; the coordinator's own entry stays where it was.
 
 ## Status glyphs

@@ -91,6 +91,56 @@ pub(super) fn keep_workers_of(sessions: &[SessionInfo], kept: &mut HashSet<Strin
     }
 }
 
+/// Coordinators that own live work, whichever client drives them.
+///
+/// A swarm is not a window: the TUI shows a coordinator's workers inside the
+/// coordinator's session, and the same workers keep running while nobody has
+/// that coordinator open. The window-scoped sidebar filter only keeps sessions
+/// this window opened or some client is attached to, so a coordinator driven
+/// from the TUI, from another window, or headless disappears from Desktop
+/// together with everything it owns. Listing live swarms keeps the two clients
+/// showing the same work.
+///
+/// The outermost coordinator in the catalog wins, so a live grandchild keeps
+/// its whole chain visible. A live worker whose coordinator is no longer in the
+/// catalog stays listed on its own rather than vanishing.
+pub(super) fn live_swarm_roots(sessions: &[SessionInfo]) -> HashSet<String> {
+    let by_id = sessions
+        .iter()
+        .map(|session| (session.session_id.as_str(), session))
+        .collect::<HashMap<_, _>>();
+    let mut roots = HashSet::new();
+    for session in sessions {
+        if !crate::swarm_view::worker_state(session).is_live() {
+            continue;
+        }
+        let Some(parent) = session
+            .parent_session_id
+            .as_deref()
+            .filter(|parent| *parent != session.session_id)
+        else {
+            // A coordinator is listed through its live workers, not its own
+            // record: a swarm whose work finished is history like any other.
+            continue;
+        };
+        if !by_id.contains_key(parent) {
+            roots.insert(session.session_id.clone());
+            continue;
+        }
+        let mut root = parent;
+        let mut seen = HashSet::from([session.session_id.as_str()]);
+        while let Some(next) = by_id
+            .get(root)
+            .and_then(|session| session.parent_session_id.as_deref())
+            .filter(|next| *next != root && seen.insert(*next))
+        {
+            root = next;
+        }
+        roots.insert(root.to_string());
+    }
+    roots
+}
+
 /// Layout identity of a coordinator's nested worker rows.
 pub(super) fn layout_key(workers: &[(usize, crate::swarm_view::Worker)], folded: usize) -> String {
     workers
@@ -582,6 +632,58 @@ mod tests {
         assert_eq!(kept, vec!["lead", "w1", "w2"]);
     }
 
+    /// Live work is not window state: a coordinator is listed because its
+    /// workers are still running, and a finished swarm stays history.
+    #[test]
+    fn live_swarms_are_the_coordinators_that_still_own_work() {
+        let live = |id: &str, parent: Option<&str>| {
+            let mut worker = session(id, parent);
+            worker.swarm_status = Some("running".into());
+            worker
+        };
+        let mut done = session("done-worker", Some("idle-lead"));
+        done.swarm_status = Some("ready".into());
+        let sessions = vec![
+            session("idle-lead", None),
+            done,
+            session("lead", None),
+            // A live grandchild keeps its whole chain, not just its parent.
+            live("child", Some("lead")),
+            live("grandchild", Some("child")),
+            // An orphan worker whose coordinator left the catalog still counts.
+            live("orphan", Some("missing")),
+            // Cycles must not hang or pick a parent.
+            live("cycle-a", Some("cycle-b")),
+            live("cycle-b", Some("cycle-a")),
+            // Blocked is waiting on the swarm, queued is spawned: both live.
+            {
+                let mut blocked = session("blocked", Some("blocked-lead"));
+                blocked.swarm_status = Some("blocked".into());
+                blocked
+            },
+            session("blocked-lead", None),
+        ];
+        let roots = live_swarm_roots(&sessions);
+        assert!(roots.contains("lead"), "{roots:?}");
+        assert!(roots.contains("orphan"), "{roots:?}");
+        assert!(roots.contains("blocked-lead"), "{roots:?}");
+        assert!(!roots.contains("idle-lead"), "a finished swarm is history");
+        assert!(!roots.contains("child"), "the outermost coordinator wins");
+        assert!(!roots.contains("grandchild"));
+    }
+
+    #[test]
+    fn live_swarm_roots_terminate_on_a_cycle() {
+        let mut a = session("a", Some("b"));
+        a.swarm_status = Some("running".into());
+        let mut b = session("b", Some("a"));
+        b.swarm_status = Some("running".into());
+        let roots = live_swarm_roots(&[a, b]);
+        // A parent cycle has no reachable coordinator, so neither member nests;
+        // both are live and both stay listed on their own.
+        assert_eq!(roots, HashSet::from(["a".to_string(), "b".to_string()]));
+    }
+
     #[gpui::test]
     fn sidebar_swarm_metadata_refresh_keeps_showcase_absent_and_rows_compact(
         cx: &mut gpui::TestAppContext,
@@ -912,5 +1014,100 @@ mod tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "session_rose_1_a");
         });
+    }
+
+    const SHARK: &str = "session_shark_1794724670890_6b48665715bce735";
+    const CALF: &str = "session_calf_1794729858023_e3a95f4d78ff82f0";
+    const MICROBE: &str = "session_microbe_1794670947943_2648f3bbec7c7e5e";
+
+    /// The shared daemon's own `/list_sessions` reply, captured read-only with
+    /// `hello` + `list_sessions` over the API socket. One coordinator (`shark`)
+    /// owns headless workers (`calf`, `ant`), another (`microbe`) owns three the
+    /// user sees in the TUI, and the rest is ordinary history.
+    fn live_catalog() -> Vec<SessionInfo> {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/swarm_view_fixtures/live_session_catalog.json");
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        serde_json::from_value(snapshot["sessions"].clone()).unwrap()
+    }
+
+    /// What the sidebar decided for one session: is it a row at all, and which
+    /// workers hang beneath it.
+    fn sidebar_row(w: &Workspace, id: &str) -> Option<(bool, String)> {
+        w.sidebar_session_layout
+            .iter()
+            .find(|row| row.session_id == id)
+            .map(|row| (row.collapsed, row.workers.clone()))
+    }
+
+    /// Workers of a coordinator this window never opened must still nest under
+    /// it: the TUI shows them, so Desktop has to.
+    #[gpui::test]
+    fn live_catalog_keeps_a_coordinator_this_window_did_not_open(cx: &mut gpui::TestAppContext) {
+        let mut catalog = live_catalog();
+        // The user drives this swarm from the TUI, or from another window. No
+        // client is attached here and this window has no panel for it.
+        for session in &mut catalog {
+            session.user_connected = false;
+        }
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            let elsewhere = catalog
+                .iter()
+                .find(|session| session.session_id == MICROBE)
+                .cloned()
+                .unwrap();
+            w.sessions = catalog.clone();
+            w.active = w.open_session(elsewhere, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let shark = workspace
+            .read_with(vcx, |w, _| sidebar_row(w, SHARK))
+            .expect("the live coordinator is a sidebar row");
+        assert!(shark.1.contains("calf"), "calf nests under shark: {shark:?}");
+        assert!(
+            workspace.read_with(vcx, |w, _| sidebar_row(w, CALF)).is_none(),
+            "the worker has no row of its own"
+        );
+        // The row is not just modelled: it is drawn, with its worker beneath.
+        let index = workspace
+            .read_with(vcx, |w, _| {
+                w.sidebar_session_layout
+                    .iter()
+                    .position(|row| row.session_id == SHARK)
+            })
+            .unwrap();
+        assert!(
+            vcx.debug_bounds(sel(format!("sidebar-worker-{index}-0"))).is_some(),
+            "the coordinator's first worker row is on screen"
+        );
+    }
+
+    /// The same catalog with the coordinator attached to this window, which is
+    /// what the user sees when they open `shark` in Desktop.
+    #[gpui::test]
+    fn live_catalog_nests_headless_workers_under_an_open_coordinator(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let catalog = live_catalog();
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            let shark = catalog
+                .iter()
+                .find(|session| session.session_id == SHARK)
+                .cloned()
+                .unwrap();
+            w.sessions = catalog.clone();
+            w.active = w.open_session(shark, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let shark = workspace.read_with(vcx, |w, _| sidebar_row(w, SHARK)).unwrap();
+        assert!(shark.1.contains("calf"), "calf nests under shark: {shark:?}");
+        assert!(shark.1.contains("ant"), "ant nests under shark: {shark:?}");
     }
 }
