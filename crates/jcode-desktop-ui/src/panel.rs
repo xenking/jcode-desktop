@@ -2836,6 +2836,12 @@ impl Panel {
         ) {
             self.transcript_measurements.dirty = true;
         }
+        // Any event from the session proves the stream is back. A reattach
+        // may resume events without a SessionConnected update, so the
+        // `lost: …` banner must not outlive the outage.
+        if self.status.starts_with("lost:") && !matches!(event, ApiEvent::Error { .. }) {
+            self.status = "connected".into();
+        }
         self.response_stats.observe(event, self.provider.as_deref());
         self.observe_activity_state(event);
         if let Some(cue) = self.sound_events.observe(event)

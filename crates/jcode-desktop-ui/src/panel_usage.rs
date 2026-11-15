@@ -142,9 +142,48 @@ fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
     }
 }
 
-fn footer_usage_labels(accounts: &[Account]) -> Vec<String> {
-    let mut labels = Vec::new();
-    for (id, provider) in [("claude", "Claude"), ("openai", "Codex")] {
+/// One compact footer chip per subscription provider: its logo and the
+/// tightest quota window. The tooltip names every window and its reset.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuotaChip {
+    /// Logo id for `accounts::logo`.
+    pub(crate) logo: &'static str,
+    pub(crate) provider: &'static str,
+    /// Highest usage across the reported windows, already clamped.
+    pub(crate) percent: f32,
+    pub(crate) cached: bool,
+    /// `(window, percent, reset)` for every reported window.
+    pub(crate) windows: Vec<(String, f32, Option<String>)>,
+}
+
+impl QuotaChip {
+    pub(crate) fn label(&self) -> String {
+        format!("{:.0}%", self.percent)
+    }
+
+    pub(crate) fn tooltip(&self) -> String {
+        let mut lines = vec![format!(
+            "{} subscription quota{}",
+            self.provider,
+            if self.cached { " (cached)" } else { "" }
+        )];
+        for (window, percent, reset) in &self.windows {
+            let reset = reset
+                .as_deref()
+                .map(|reset| format!(", resets in {reset}"))
+                .unwrap_or_default();
+            lines.push(format!("{window}: {percent:.0}% used{reset}"));
+        }
+        lines.join("\n")
+    }
+}
+
+fn footer_quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
+    let mut chips = Vec::new();
+    for (id, logo, provider) in [
+        ("claude", "claude", "Claude"),
+        ("openai", "openai", "Codex"),
+    ] {
         let Some(account) = accounts
             .iter()
             .find(|account| account.id == id && account.status == "available")
@@ -154,37 +193,44 @@ fn footer_usage_labels(accounts: &[Account]) -> Vec<String> {
         let Some(limits) = account.active_limits() else {
             continue;
         };
-        let stale = account.active_report().is_some_and(|report| {
+        let cached = account.active_report().is_some_and(|report| {
             report
                 .extra_info
                 .iter()
                 .any(|(key, value)| key == "Last updated" && value.contains("cached;"))
         });
-        for limit in limits {
-            let name = limit.name.to_ascii_lowercase();
-            let window = if name.contains("5-hour") {
-                "5h"
-            } else if name == "7-day window" {
-                "7d"
-            } else {
-                continue;
-            };
-            if !limit.usage_percent.is_finite() {
-                continue;
-            }
-            let reset = limit
-                .reset_in
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default();
-            let cached = if stale { " cached" } else { "" };
-            labels.push(format!(
-                "{provider} {window} {:.0}%{reset}{cached}",
-                limit.usage_percent.clamp(0., 100.)
-            ));
-        }
+        let windows: Vec<_> = limits
+            .iter()
+            .filter_map(|limit| {
+                let name = limit.name.to_ascii_lowercase();
+                let window = if name.contains("5-hour") {
+                    "5h window"
+                } else if name == "7-day window" {
+                    "7d window"
+                } else {
+                    return None;
+                };
+                limit.usage_percent.is_finite().then(|| {
+                    (
+                        window.to_owned(),
+                        limit.usage_percent.clamp(0., 100.),
+                        limit.reset_in.clone(),
+                    )
+                })
+            })
+            .collect();
+        let Some(percent) = windows.iter().map(|(_, p, _)| *p).reduce(f32::max) else {
+            continue;
+        };
+        chips.push(QuotaChip {
+            logo,
+            provider,
+            percent,
+            cached,
+            windows,
+        });
     }
-    labels
+    chips
 }
 
 impl Panel {
@@ -192,21 +238,51 @@ impl Panel {
         if crate::harness::remote_host(&self.session_id).is_some() {
             return None;
         }
-        let labels = footer_usage_labels(&cx.try_global::<StatusAccounts>()?.0);
-        if labels.is_empty() {
+        let chips = footer_quota_chips(&cx.try_global::<StatusAccounts>()?.0);
+        if chips.is_empty() {
             return None;
         }
+        let theme = Theme::global();
         Some(
             div()
                 .debug_selector(|| "panel-provider-usage".into())
                 .flex()
-                .flex_shrink_1()
-                .min_w_0()
-                .overflow_hidden()
+                .flex_none()
+                .items_center()
+                .gap_1p5()
                 .whitespace_nowrap()
-                .text_size(px(10.))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(labels.join(" · ")),
+                .text_size(px(10.5))
+                .font_family(theme.FONT_MONO)
+                .children(chips.into_iter().map(|chip| {
+                    let id = format!("panel-quota-{}", chip.logo);
+                    let selector = id.clone();
+                    let tip = chip.tooltip();
+                    let color = if chip.percent >= 70. {
+                        usage_color(chip.percent, &theme)
+                    } else {
+                        theme.TEXT_DIM
+                    };
+                    div()
+                        .id(SharedString::from(id))
+                        .debug_selector(move || selector.clone())
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .h(px(22.))
+                        .px_1()
+                        .text_color(color)
+                        .when(chip.cached, |el| el.opacity(0.6))
+                        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tip.clone())).into())
+                        .children(crate::accounts::logo(chip.logo).map(|bytes| {
+                            gpui::svg()
+                                .data(bytes)
+                                .size(px(11.))
+                                .flex_none()
+                                .text_color(color)
+                        }))
+                        .child(chip.label())
+                })),
         )
     }
 }
@@ -531,24 +607,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn footer_shows_provider_windows_and_reset_without_fabricating_limits() {
+    fn footer_chips_show_tightest_window_and_tooltip_lists_all() {
         let mut accounts = crate::accounts::parse(r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#).unwrap();
-        accounts[0].limits.push(UsageLimit {
-            name: "5-hour window".into(),
-            usage_percent: 37.,
-            reset_in: Some("2h".into()),
-        });
+        accounts[0].limits = vec![
+            UsageLimit {
+                name: "5-hour window".into(),
+                usage_percent: 0.,
+                reset_in: Some("4h".into()),
+            },
+            UsageLimit {
+                name: "7-day window".into(),
+                usage_percent: 28.,
+                reset_in: Some("1d 18h".into()),
+            },
+        ];
         accounts[1].limits.push(UsageLimit {
             name: "7-day window".into(),
-            usage_percent: 94.,
-            reset_in: Some("17h".into()),
+            usage_percent: 99.,
+            reset_in: Some("7h".into()),
         });
+        let chips = footer_quota_chips(&accounts);
+        let labels: Vec<_> = chips.iter().map(|c| (c.logo, c.label())).collect();
         assert_eq!(
-            footer_usage_labels(&accounts),
-            vec!["Claude 5h 37% 2h", "Codex 7d 94% 17h"]
+            labels,
+            vec![("claude", "28%".into()), ("openai", "99%".into())]
         );
-        accounts[0].limits[0].usage_percent = f32::NAN;
-        assert_eq!(footer_usage_labels(&accounts), vec!["Codex 7d 94% 17h"]);
+        assert_eq!(
+            chips[0].tooltip(),
+            "Claude subscription quota\n5h window: 0% used, resets in 4h\n7d window: 28% used, resets in 1d 18h"
+        );
+        // Unreported windows are never fabricated.
+        accounts[1].limits[0].usage_percent = f32::NAN;
+        assert_eq!(footer_quota_chips(&accounts).len(), 1);
     }
 
     #[gpui::test]

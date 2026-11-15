@@ -94,3 +94,29 @@ fn reconnect_history_does_not_replay_previous_answer_over_a_new_turn(
         assert_eq!(panel.items.len(), 2);
     });
 }
+
+#[gpui::test]
+fn stale_lost_status_clears_once_the_stream_resumes(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("lost-then-back", cx);
+        workspace
+    });
+    let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.connection_lost("harness API stream ended", cx);
+        assert!(panel.status_line().starts_with("lost:"));
+        // Any session event after the outage proves the stream is back.
+        panel.apply(
+            &ApiEvent::ConnectionPhase {
+                session_id: panel.session_id.clone(),
+                phase: "connected".into(),
+            },
+            cx,
+        );
+        assert_eq!(panel.status_line(), "Ready", "no stale lost: text");
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("panel-status-badge").is_none());
+}

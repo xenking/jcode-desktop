@@ -224,6 +224,11 @@ pub(super) fn build_rows(
         {
             status = ConnectionStatus::Unverified;
         }
+        // A fresh, successful quota fetch is an authenticated provider call,
+        // so a logged-in subscription with live usage is not "untested".
+        if status == ConnectionStatus::Unverified && account.is_some_and(proven_by_usage) {
+            status = ConnectionStatus::Connected;
+        }
         if status != ConnectionStatus::NotConnected && testing(provider.id) {
             status = ConnectionStatus::Testing;
         }
@@ -292,9 +297,35 @@ pub(super) fn build_rows(
     rows
 }
 
+/// The account's active usage report came back from the provider just now
+/// (not a cached copy, no fetch error) with real quota numbers.
+fn proven_by_usage(account: &Account) -> bool {
+    let Some(report) = account.active_report() else {
+        return false;
+    };
+    let cached = report
+        .extra_info
+        .iter()
+        .any(|(key, value)| key == "Last updated" && value.contains("cached"));
+    !cached
+        && report.usage_error().is_none()
+        && report
+            .limits
+            .iter()
+            .any(|limit| limit.usage_percent.is_finite())
+}
+
+/// Providers offered only once configured. The Jcode subscription is sold
+/// separately, so an unconfigured entry is noise in the Connect list.
+const HIDDEN_UNTIL_CONFIGURED: [&str; 1] = ["jcode"];
+
 pub(super) fn group_rows(rows: Vec<AccountRow>, pool: &AccountPool) -> Groups {
     let (connected, available): (Vec<_>, Vec<_>) =
         rows.into_iter().partition(AccountRow::connected);
+    let available: Vec<_> = available
+        .into_iter()
+        .filter(|row| !HIDDEN_UNTIL_CONFIGURED.contains(&row.provider.id))
+        .collect();
     let keys: Vec<(String, bool)> = connected
         .iter()
         .map(|row| (row.key.clone(), row.default_pooled()))
@@ -606,6 +637,53 @@ fn chip_base(color: gpui::Rgba) -> gpui::Div {
         .text_size(px(11.))
         .text_color(color)
         .whitespace_nowrap()
+}
+
+/// What clicking a row in the composer's provider picker would do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PickerChoice {
+    /// This session already runs on the provider.
+    Current,
+    /// Switches the session to the provider.
+    Switch,
+    /// No model in this session's catalog routes through the provider.
+    Unavailable,
+}
+
+/// Login provider id for the session's serving route.
+pub(super) fn session_provider_id(provider: Option<&str>, auth: Option<&str>) -> Option<String> {
+    let provider = provider?.trim().to_ascii_lowercase();
+    let api_key = auth.is_some_and(|auth| {
+        let auth = auth.to_ascii_lowercase();
+        auth.contains("api") || auth.contains("key")
+    });
+    Some(match (provider.as_str(), api_key) {
+        ("claude" | "anthropic", false) => "claude".into(),
+        ("claude" | "anthropic", true) => "anthropic-api".into(),
+        ("openai" | "chatgpt", false) => "openai".into(),
+        ("openai" | "chatgpt", true) => "openai-api".into(),
+        (other, _) => other.into(),
+    })
+}
+
+impl Panel {
+    fn picker_choice(&self, provider: LoginProvider, cx: &App) -> PickerChoice {
+        if session_provider_id(self.provider.as_deref(), self.auth_method.as_deref()).as_deref()
+            == Some(provider.id)
+        {
+            return PickerChoice::Current;
+        }
+        if self
+            .input
+            .read(cx)
+            .provider_route_spec(provider.id, self.model.as_deref())
+            .is_some()
+        {
+            PickerChoice::Switch
+        } else {
+            PickerChoice::Unavailable
+        }
+    }
 }
 
 impl super::LoginState {
@@ -1064,8 +1142,19 @@ impl Panel {
             );
         }
         let label = row.label.clone();
-        if selecting {
-            element = element.child(chip("Select provider", theme.ACCENT));
+        let pick = selecting.then(|| self.picker_choice(provider, cx));
+        match pick {
+            Some(PickerChoice::Current) => {
+                element = element.child(chip("In use", theme.ACCENT));
+            }
+            Some(PickerChoice::Unavailable) => {
+                element = element.opacity(0.55).cursor_default();
+            }
+            Some(PickerChoice::Switch) | None => {}
+        }
+        if pick.is_some_and(|pick| pick != PickerChoice::Switch) {
+            // Nothing to do: the row is already in use or has no route.
+            return element.into_any_element();
         }
         element = element.on_click(cx.listener(move |this, _, window, cx| {
             if selecting {
@@ -1280,6 +1369,70 @@ mod tests {
             detail: "",
             method,
         }
+    }
+
+    #[test]
+    fn live_quota_proves_auth_and_unconfigured_jcode_is_hidden() {
+        let providers = [
+            provider("claude", LoginMethod::OAuth),
+            provider("openai", LoginMethod::OAuth),
+            provider("jcode", LoginMethod::ApiKey),
+        ];
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"},{"id":"jcode","status":"not_configured"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"Anthropic (Claude) (x***g@example.com)","limits":[{"name":"7-day window","usage_percent":28.0,"reset_in":"1d"}],"extra_info":[],"error":null},
+                {"provider_name":"OpenAI (ChatGPT) (m*@example.com)","limits":[],"extra_info":[],"error":"401 Unauthorized"}
+            ]}"#,
+        );
+        let data = AccountsData {
+            accounts: Some(accounts),
+            ..Default::default()
+        };
+        // Doctor saw saved credentials but no recent probe for either login.
+        let statuses: ConnectionStatuses = [
+            ("claude".to_string(), ConnectionStatus::Unverified),
+            ("openai".to_string(), ConnectionStatus::Unverified),
+        ]
+        .into();
+        let rows = build_rows(&providers, Some(&statuses), false, &|_| false, &data);
+        let status = |id: &str| rows.iter().find(|r| r.provider.id == id).unwrap().status;
+        assert_eq!(status("claude"), ConnectionStatus::Connected);
+        // A failed quota fetch is not proof. It stays untested.
+        assert_eq!(status("openai"), ConnectionStatus::Unverified);
+        let groups = group_rows(rows, &AccountPool::default());
+        assert!(
+            groups
+                .available
+                .iter()
+                .all(|row| row.provider.id != "jcode"),
+            "unconfigured Jcode subscription is not offered"
+        );
+    }
+
+    #[test]
+    fn session_provider_ids_match_login_rows() {
+        assert_eq!(
+            session_provider_id(Some("claude"), Some("oauth")).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            session_provider_id(Some("anthropic"), Some("api key")).as_deref(),
+            Some("anthropic-api")
+        );
+        assert_eq!(
+            session_provider_id(Some("openai"), Some("oauth")).as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            session_provider_id(Some("openai"), Some("api_key")).as_deref(),
+            Some("openai-api")
+        );
+        assert_eq!(session_provider_id(None, Some("oauth")), None);
     }
 
     #[test]

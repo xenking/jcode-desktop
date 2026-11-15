@@ -175,18 +175,22 @@ impl Panel {
                             }))
                     }))
                     .child(
+                        // Icon only: the model pill and quota chips already
+                        // name the route, so the method text lives in the
+                        // tooltip. The pill stays because it switches provider.
                         composer_pill("panel-login")
-                            .flex_shrink(2.)
-                            .min_w(px(48.))
+                            .flex_none()
+                            .px_2()
                             .text_color(theme.TEXT_FAINT)
-                            .child(div().min_w_0().truncate().child(account_label.clone()))
-                            .when_some(limits, |pill, summary| {
-                                pill.tooltip(move |_, cx| {
-                                    let method = account_label.clone();
-                                    let summary = summary.clone();
-                                    cx.new(|_| super::usage::LimitsTooltip { method, summary })
-                                        .into()
-                                })
+                            .child(account_pill_icon(self.provider.as_deref(), theme.TEXT_DIM))
+                            .tooltip(move |_, cx| {
+                                let method = account_label.clone();
+                                match limits.clone() {
+                                    Some(summary) => cx
+                                        .new(|_| super::usage::LimitsTooltip { method, summary })
+                                        .into(),
+                                    None => cx.new(|_| super::usage::MeterTooltip(method)).into(),
+                                }
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_provider_picker(window, cx);
@@ -524,6 +528,43 @@ impl Panel {
         cx.notify();
         previous
     }
+}
+
+/// Logo id for the serving provider, so the method pill can be icon only.
+pub(super) fn account_logo_id(provider: Option<&str>) -> Option<&'static str> {
+    let provider = provider?.trim().to_ascii_lowercase();
+    let id = match provider.as_str() {
+        "claude" | "anthropic" => "claude",
+        "openai" | "chatgpt" | "openai-api" => "openai",
+        other => [
+            "anthropic-api",
+            "jcode",
+            "gemini",
+            "copilot",
+            "openrouter",
+            "cursor",
+            "bedrock",
+            "azure",
+            "xai",
+            "mistral",
+            "deepseek",
+            "groq",
+        ]
+        .into_iter()
+        .find(|id| *id == other)?,
+    };
+    Some(id)
+}
+
+fn account_pill_icon(provider: Option<&str>, color: gpui::Rgba) -> gpui::Svg {
+    let bytes = account_logo_id(provider)
+        .and_then(crate::accounts::logo)
+        .unwrap_or(include_bytes!("../../../assets/icons/account.svg"));
+    gpui::svg()
+        .data(bytes)
+        .size(px(12.))
+        .flex_none()
+        .text_color(color)
 }
 
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
