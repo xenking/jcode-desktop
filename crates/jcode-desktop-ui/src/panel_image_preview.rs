@@ -321,7 +321,11 @@ mod tests {
                 *panel.items = (0..40)
                     .map(|i| Item::User(format!("earlier message {i}")))
                     .collect();
-                panel.items.push(Item::Image(fixture_image()));
+                let mut image = fixture_image();
+                image.source = jcode_sdk::RenderedImageSource::ToolResult {
+                    tool_name: "read".into(),
+                };
+                panel.items.push(Item::Image(image));
                 panel
                     .input
                     .update(cx, |input, cx| input.set_content("draft".into(), cx));
@@ -483,7 +487,11 @@ mod tests {
             .unwrap();
         vcx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                *panel.items = vec![Item::Image(fixture_image())];
+                let mut image = fixture_image();
+                image.source = jcode_sdk::RenderedImageSource::ToolResult {
+                    tool_name: "read".into(),
+                };
+                *panel.items = vec![Item::Image(image)];
                 panel
                     .input
                     .update(cx, |input, cx| input.set_content("draft".into(), cx));

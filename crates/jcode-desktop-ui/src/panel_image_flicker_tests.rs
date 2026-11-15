@@ -81,7 +81,9 @@ async fn encoded_image_asset_and_geometry_survive_streaming_and_history_reconstr
                 media_type: "image/png".into(),
                 data: base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
                 label: Some("Stable image fixture".into()),
-                source: jcode_sdk::RenderedImageSource::UserInput,
+                source: jcode_sdk::RenderedImageSource::ToolResult {
+                    tool_name: "read".into(),
+                },
                 anchor: None,
             };
             let decoded = Rc::new(RefCell::new(None));

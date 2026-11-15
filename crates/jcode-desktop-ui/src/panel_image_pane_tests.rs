@@ -31,6 +31,9 @@ fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTest
 fn fixture(label: &str) -> TranscriptImage {
     let mut image = image_preview::fixture_image();
     image.label = Some(label.into());
+    image.source = jcode_sdk::RenderedImageSource::ToolResult {
+        tool_name: "read".into(),
+    };
     image
 }
 
