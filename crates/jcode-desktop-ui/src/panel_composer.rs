@@ -384,7 +384,7 @@ impl Panel {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .children(self.render_ask_card(cx))
+                            .children(self.render_ask_card(window, cx))
                             .children(self.render_side_question_card(cx))
                             .children(self.render_prompt_queue(cx))
                             .children(self.render_voice_pending())

@@ -63,6 +63,7 @@ impl AskCard {
                         .filter_map(|i| question.options.get(i).map(|o| o.label.clone()))
                         .collect(),
                     other: self.other[q].clone(),
+                    comments: Default::default(),
                 }
             })
             .collect();
@@ -85,7 +86,11 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn render_ask_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_ask_card(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let card = self.ask_card.as_ref()?;
         let theme = Theme::global();
         let mut body = div()
@@ -110,6 +115,16 @@ impl Panel {
                     .text_color(theme.TEXT_DIM)
                     .child("The agent is asking you"),
             );
+        let mut questions = div()
+            .id("ask-scroll")
+            .debug_selector(|| "ask-scroll".into())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .min_w_0()
+            .max_h(px((f32::from(window.viewport_size().height) * 0.4).max(60.)))
+            .overflow_y_scroll()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
         for (q, question) in card.questions.iter().enumerate() {
             let mut block = div().flex().flex_col().gap_1().min_w_0().child(
                 div()
@@ -144,13 +159,7 @@ impl Panel {
                         .child(div().flex_none().child(mark))
                         .child(div().flex_none().child(option.label.clone()))
                         .when_some(option.description.clone(), |el, desc| {
-                            el.child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(theme.TEXT_DIM)
-                                    .child(desc),
-                            )
+                            el.child(div().min_w_0().text_color(theme.TEXT_DIM).child(desc))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(card) = this.ask_card.as_mut() {
@@ -160,7 +169,7 @@ impl Panel {
                         })),
                 );
             }
-            if question.allow_other {
+            {
                 let label = match &card.other[q] {
                     Some(text) => format!("Other: {text}"),
                     None => "Other: type in the composer, then click here".to_string(),
@@ -187,8 +196,9 @@ impl Panel {
                         })),
                 );
             }
-            body = body.child(block);
+            questions = questions.child(block);
         }
+        body = body.child(questions);
         let complete = card.complete();
         Some(
             body.child(
@@ -333,6 +343,14 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(vcx.debug_bounds("ask-card").is_some(), "ask card paints");
+        assert!(
+            vcx.debug_bounds("ask-scroll").is_some(),
+            "questions have their own scroll area"
+        );
+        assert!(
+            vcx.debug_bounds("ask-other-0").is_some(),
+            "free answers are always offered"
+        );
         for selector in ["ask-option-0-0", "ask-option-0-1", "ask-option-0-2"] {
             assert!(vcx.debug_bounds(selector).is_some(), "{selector} paints");
         }
@@ -351,7 +369,10 @@ mod tests {
         let submit = vcx.debug_bounds("ask-submit").unwrap();
         vcx.simulate_click(submit.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("ask-card").is_none(), "card closes after submit");
+        assert!(
+            vcx.debug_bounds("ask-card").is_none(),
+            "card closes after submit"
+        );
         panel.read_with(vcx, |panel, _| assert!(panel.ask_card.is_none()));
     }
 }
