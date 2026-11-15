@@ -30,6 +30,9 @@ pub struct PromptQueue {
     remote_supported: bool,
     #[serde(default)]
     pending_remote: Vec<jcode_sdk::api::QueuedPrompt>,
+    /// Count matching history rows at submission, for lost-ack reconciliation.
+    #[serde(default)]
+    pending_remote_history_counts: std::collections::HashMap<String, usize>,
     #[serde(default)]
     default_after_yield: bool,
 }
@@ -156,9 +159,13 @@ impl Panel {
     ) {
         if self.prompt_queue.remote_supported
             && !self.is_pending_session()
-            && self.activity_active()
             && !self.prompt_queue.waiting_for_connection
         {
+            if !self.activity_active() {
+                self.prompt_queue.paused = false;
+                self.prompt_queue.auto_poke.start(self.items.len());
+            }
+            self.prepare_prompt(&content);
             use std::sync::atomic::{AtomicU64, Ordering};
             static NEXT_ID: AtomicU64 = AtomicU64::new(0);
             let id = format!(
@@ -180,6 +187,14 @@ impl Panel {
                     jcode_sdk::api::QueuedPromptMode::Steer
                 },
             };
+            let history_count = self
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::User(text) if text == &prompt.content))
+                .count();
+            self.prompt_queue
+                .pending_remote_history_counts
+                .insert(prompt.client_id.clone(), history_count);
             self.prompt_queue.pending_remote.push(prompt.clone());
             self.bridge.send(Command::QueuePrompt {
                 session_id: self.session_id.clone(),
@@ -228,15 +243,7 @@ impl Panel {
             content: content.clone(),
             images: images.clone(),
         });
-        if !self.items.iter().any(|item| matches!(item, Item::User(_)))
-            && custom_session_title(&self.session_id, self.title.as_ref()).is_none()
-            && let Some(title) = first_prompt_title(&super::voice::tag::strip(&content).0)
-        {
-            self.title = title.into();
-        }
-        if let Some(layout) = &mut self.startup_layout {
-            layout.committed = true;
-        }
+        self.prepare_prompt(&content);
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
             // take it once the model has seen it.
@@ -260,6 +267,18 @@ impl Panel {
         self.transcript_list.scroll_to_end();
     }
 
+    fn prepare_prompt(&mut self, content: &str) {
+        if !self.items.iter().any(|item| matches!(item, Item::User(_)))
+            && custom_session_title(&self.session_id, self.title.as_ref()).is_none()
+            && let Some(title) = first_prompt_title(&super::voice::tag::strip(content).0)
+        {
+            self.title = title.into();
+        }
+        if let Some(layout) = &mut self.startup_layout {
+            layout.committed = true;
+        }
+    }
+
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         match event {
             ApiEvent::QueuedPrompts { prompts, .. } => {
@@ -267,11 +286,20 @@ impl Panel {
                 self.prompt_queue
                     .pending_remote
                     .retain(|pending| !prompts.iter().any(|p| p.client_id == pending.client_id));
+                self.prompt_queue
+                    .pending_remote_history_counts
+                    .retain(|id, _| {
+                        self.prompt_queue
+                            .pending_remote
+                            .iter()
+                            .any(|prompt| &prompt.client_id == id)
+                    });
                 self.prompt_queue.remote = prompts.clone();
             }
             ApiEvent::SoftInterruptInjected {
                 client_ids,
                 display_role: None,
+                point,
                 ..
             } if !client_ids.is_empty() => {
                 let mut delivered = Vec::new();
@@ -298,7 +326,25 @@ impl Panel {
                     self.flush_streaming();
                 }
                 for prompt in delivered {
-                    self.push_user_prompt(prompt.content, prompt.images);
+                    // A retry after a lost acknowledgement can report a receipt
+                    // already present in history restored before this event.
+                    // The daemon has committed this exact input, so avoid a
+                    // second local echo when the loaded transcript has it.
+                    let previous = self
+                        .prompt_queue
+                        .pending_remote_history_counts
+                        .remove(&prompt.client_id)
+                        .unwrap_or(0);
+                    let current = self
+                        .items
+                        .iter()
+                        .filter(|item| matches!(item, Item::User(text) if text == &prompt.content))
+                        .count();
+                    let already_in_history =
+                        point == "already_delivered" && self.history_loaded && current > previous;
+                    if !already_in_history {
+                        self.push_user_prompt(prompt.content, prompt.images);
+                    }
                 }
             }
             _ => {}
@@ -385,7 +431,11 @@ impl Panel {
             .collect::<Vec<_>>()
             .join("\n\n");
         let images = prompts.into_iter().flat_map(|p| p.images).collect();
-        self.send_composer_prompt(content, images, cx);
+        if self.prompt_queue.remote_supported {
+            self.submit_or_queue(content, images, true, cx);
+        } else {
+            self.send_composer_prompt(content, images, cx);
+        }
         cx.notify();
     }
 

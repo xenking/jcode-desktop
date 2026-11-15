@@ -2597,7 +2597,14 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::QueuePrompt(prompt) => {
-                        if let Err(error) = client.queue_prompt(real_id, prompt) {
+                        recovery.supersede();
+                        if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
+                            send_retry_phase(&updates, &session_id, String::new());
+                        }
+                        let reminder = collection_reminder(&session_id);
+                        if let Err(error) =
+                            client.queue_prompt_with_reminder(real_id, prompt, reminder.as_deref())
+                        {
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
                                 reason: format!("Queued prompt not confirmed: {error}"),
@@ -3418,6 +3425,9 @@ fn recover_async_busy(
 
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
     match event {
+        ApiEvent::SoftInterruptInjected { point, .. } if point == "turn_start" => {
+            *turn_active = true
+        }
         ApiEvent::MessageAccepted { .. }
         | ApiEvent::TextDelta { .. }
         | ApiEvent::ReasoningDelta { .. }

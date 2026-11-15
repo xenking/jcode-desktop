@@ -42,6 +42,9 @@ impl Panel {
                     None
                 }
             }
+            ApiEvent::SoftInterruptInjected { point, .. } if point == "turn_start" => {
+                Some("running")
+            }
             ApiEvent::TextDelta { .. } => Some("streaming"),
             ApiEvent::ReasoningDelta { .. } => Some("thinking"),
             ApiEvent::ToolStart { .. } | ApiEvent::ToolInputDelta { .. } => Some("running_tools"),

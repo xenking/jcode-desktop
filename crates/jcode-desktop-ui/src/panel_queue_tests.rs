@@ -44,6 +44,86 @@ fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContex
     });
 }
 
+#[gpui::test]
+fn send_after_turn_done_still_uses_atomic_daemon_queue(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
+        panel.apply(&event(json!({"ev":"turn_done"})), cx);
+        panel.apply(&event(json!({"ev":"session_status", "status":"idle"})), cx);
+        panel.submit_or_queue("race prompt".into(), vec![], false, cx);
+    });
+    let prompt = match commands.try_recv() {
+        Ok(Command::QueuePrompt { prompt, .. }) => prompt,
+        _ => panic!("expected atomic queue submission"),
+    };
+    assert_eq!(prompt.content, "race prompt");
+    assert_eq!(prompt.mode, jcode_sdk::api::QueuedPromptMode::Steer);
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"race prompt", "point":"turn_start", "client_ids":[prompt.client_id]})), cx);
+        assert!(panel.activity_active(), "queued turn must show as running before model output");
+    });
+}
+
+#[gpui::test]
+fn retry_after_reload_does_not_duplicate_delivered_history(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.items.push(Item::User("already delivered".into()));
+        panel
+            .prompt_queue
+            .pending_remote
+            .push(jcode_sdk::api::QueuedPrompt {
+                client_id: "lost-ack".into(),
+                content: "already delivered".into(),
+                images: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
+            });
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"already delivered", "point":"already_delivered", "client_ids":["lost-ack"]})), cx);
+        assert!(panel.prompt_queue.pending_remote.is_empty());
+        assert_eq!(panel.items.iter().filter(|item| matches!(item, Item::User(text) if text == "already delivered")).count(), 1);
+    });
+}
+
+#[gpui::test]
+fn retry_keeps_a_new_prompt_identical_to_older_history(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.items.push(Item::User("repeat".into()));
+        panel
+            .prompt_queue
+            .pending_remote
+            .push(jcode_sdk::api::QueuedPrompt {
+                client_id: "new-repeat".into(),
+                content: "repeat".into(),
+                images: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
+            });
+        panel
+            .prompt_queue
+            .pending_remote_history_counts
+            .insert("new-repeat".into(), 1);
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"repeat", "point":"already_delivered", "client_ids":["new-repeat"]})), cx);
+        assert_eq!(panel.items.iter().filter(|item| matches!(item, Item::User(text) if text == "repeat")).count(), 2);
+    });
+}
+
 fn event(mut value: serde_json::Value) -> ApiEvent {
     if value.get("session_id").is_none() {
         value["session_id"] = json!("queue-test");
