@@ -319,6 +319,28 @@ fn proven_by_usage(account: &Account) -> bool {
 /// separately, so an unconfigured entry is noise in the Connect list.
 const HIDDEN_UNTIL_CONFIGURED: [&str; 1] = ["jcode"];
 
+/// Rows the composer's provider picker lists: connected credentials only,
+/// narrowed by the search box. Shared by the picker and its tests so "which
+/// providers can I switch to" has one answer.
+pub(super) fn picker_rows(rows: Vec<AccountRow>, query: &str) -> Vec<AccountRow> {
+    let query = query.trim().to_lowercase();
+    rows.into_iter()
+        .filter(AccountRow::connected)
+        .filter(|row| {
+            format!(
+                "{} {} {} {} {}",
+                row.provider.display_name,
+                row.provider.id,
+                row.provider.detail,
+                jcode_desktop_accounts_ui::catalog::method_label(row.provider.method),
+                row.label.as_deref().unwrap_or(""),
+            )
+            .to_lowercase()
+            .contains(&query)
+        })
+        .collect()
+}
+
 pub(super) fn group_rows(rows: Vec<AccountRow>, pool: &AccountPool) -> Groups {
     let (connected, available): (Vec<_>, Vec<_>) =
         rows.into_iter().partition(AccountRow::connected);
@@ -466,6 +488,25 @@ pub(super) fn offline_data() -> AccountsData {
                     extra_info: vec![("Plan".into(), "max".into())],
                 }],
             ),
+            Account {
+                id: "opencode-go".into(),
+                display_name: "OpenCode Go".into(),
+                status: "available".into(),
+                auth_kind: "API key".into(),
+                method: "API key (`OPENCODE_GO_API_KEY`)".into(),
+                limits: Vec::new(),
+                usage_reports: vec![UsageReport {
+                    provider_name: "OpenCode Go (API key)".into(),
+                    account_label: None,
+                    limits: vec![
+                        limit("Rolling window", 38., "2h 56m"),
+                        limit("Weekly window", 15., "15h 48m"),
+                        limit("Monthly window", 7., "29d 21h"),
+                    ],
+                    banked_reset: None,
+                    extra_info: vec![("Key status".into(), "valid".into())],
+                }],
+            },
             Account {
                 id: "openai-api".into(),
                 display_name: "OpenAI API".into(),
@@ -931,7 +972,10 @@ impl Panel {
         // name they overlapped the plan and reset chips on narrow panels.
         if !row.limits.is_empty() {
             let mut meters = div().flex().items_center().gap_4().w_full().pt(px(2.));
-            for limit in row.limits.iter().take(2) {
+            // OpenCode reports three windows (rolling, weekly, monthly); every
+            // reported one stays visible rather than silently dropping the
+            // monthly cap.
+            for limit in row.limits.iter().take(3) {
                 meters = meters.child(limit_meter(limit));
             }
             text = text.child(meters);
@@ -1372,6 +1416,46 @@ mod tests {
             display_name: id,
             detail: "",
             method,
+        }
+    }
+
+    #[test]
+    fn provider_picker_lists_configured_opencode_go_with_its_quota() {
+        let providers = [LoginProvider {
+            id: "opencode-go",
+            display_name: "OpenCode Go",
+            detail: "API key",
+            method: LoginMethod::ApiKey,
+        }];
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available",
+                "method":"API key (`OPENCODE_GO_API_KEY`)","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenCode Go (API key)","limits":[
+                {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"},
+                {"name":"Monthly window","usage_percent":4.0,"reset_in":"30d"}
+            ],"extra_info":[],"error":null}]}"#,
+        );
+        let data = AccountsData {
+            accounts: Some(accounts),
+            ..Default::default()
+        };
+        let rows = build_rows(&providers, None, false, &|_| false, &data);
+        let listed = picker_rows(rows, "");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].connected());
+        assert_eq!(listed[0].provider.id, "opencode-go");
+        assert_eq!(listed[0].limits.len(), 3);
+        assert!(crate::accounts::logo(listed[0].provider.id).is_some());
+        // The search field matches the provider by name, id and method.
+        let providers = [providers[0]];
+        for query in ["opencode", "OPENCODE-GO", "api key"] {
+            let rows = build_rows(&providers, None, false, &|_| false, &data);
+            assert_eq!(picker_rows(rows, query).len(), 1, "query {query}");
         }
     }
 

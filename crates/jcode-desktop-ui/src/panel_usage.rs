@@ -142,92 +142,145 @@ fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
     }
 }
 
-/// One compact footer chip per subscription provider: its logo and the
-/// tightest quota window. The tooltip names every window and its reset.
+/// Footer pill order. Every credential with a reported figure gets one, and a
+/// credential with nothing to report gets none: a bare logo pill would read as
+/// a broken meter.
+const FOOTER_QUOTA_PROVIDERS: [(&str, &str, &str); 5] = [
+    ("claude", "claude", "Claude"),
+    ("openai", "openai", "Codex"),
+    ("opencode-go", "opencode-go", "OpenCode Go"),
+    ("opencode", "opencode", "OpenCode Zen"),
+    ("openrouter", "openrouter", "OpenRouter"),
+];
+
+/// One compact footer chip per credential: its logo and the figure the
+/// provider actually reports. Quota windows give a percentage; a key without a
+/// quota API falls back to its real balance or the spend Jcode recorded.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct QuotaChip {
     /// Logo id for `accounts::logo`.
     pub(crate) logo: &'static str,
     pub(crate) provider: &'static str,
-    /// Highest usage across the reported windows, already clamped.
-    pub(crate) percent: f32,
+    /// `23%` for a quota window, `$12.34` for a balance or spend figure.
+    pub(crate) value: String,
+    /// Tightest reported window, for the colour ramp. `None` on money chips.
+    pub(crate) percent: Option<f32>,
     pub(crate) cached: bool,
-    /// `(window, percent, reset)` for every reported window.
-    pub(crate) windows: Vec<(String, f32, Option<String>)>,
+    /// One hover-card line per reported fact.
+    pub(crate) detail: Vec<String>,
 }
 
 impl QuotaChip {
     pub(crate) fn label(&self) -> String {
-        format!("{:.0}%", self.percent)
+        self.value.clone()
     }
 
     pub(crate) fn tooltip(&self) -> String {
         let mut lines = vec![format!(
-            "{} subscription quota{}",
+            "{} usage{}",
             self.provider,
             if self.cached { " (cached)" } else { "" }
         )];
-        for (window, percent, reset) in &self.windows {
-            let reset = reset
-                .as_deref()
-                .map(|reset| format!(", resets in {reset}"))
-                .unwrap_or_default();
-            lines.push(format!("{window}: {percent:.0}% used{reset}"));
-        }
+        lines.extend(self.detail.iter().cloned());
         lines.join("\n")
     }
 }
 
+/// First dollar amount in a usage line, trimmed to cents.
+fn first_usd(text: &str) -> Option<String> {
+    let start = text.find('$')?;
+    let amount: String = text[start + 1..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let value: f64 = amount.parse().ok()?;
+    Some(format!("${value:.2}"))
+}
+
 fn footer_quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
     let mut chips = Vec::new();
-    for (id, logo, provider) in [
-        ("claude", "claude", "Claude"),
-        ("openai", "openai", "Codex"),
-    ] {
+    for (id, logo, provider) in FOOTER_QUOTA_PROVIDERS {
         let Some(account) = accounts
             .iter()
             .find(|account| account.id == id && account.status == "available")
         else {
             continue;
         };
-        let Some(limits) = account.active_limits() else {
-            continue;
-        };
-        let cached = account.active_report().is_some_and(|report| {
+        let report = account.active_report();
+        let cached = report.is_some_and(|report| {
             report
                 .extra_info
                 .iter()
                 .any(|(key, value)| key == "Last updated" && value.contains("cached;"))
         });
-        let windows: Vec<_> = limits
+        let windows: Vec<(String, f32, Option<String>)> = account
+            .active_limits()
+            .unwrap_or_default()
             .iter()
-            .filter_map(|limit| {
-                let name = limit.name.to_ascii_lowercase();
-                let window = if name.contains("5-hour") {
-                    "5h window"
-                } else if name == "7-day window" {
-                    "7d window"
-                } else {
-                    return None;
-                };
-                limit.usage_percent.is_finite().then(|| {
-                    (
-                        window.to_owned(),
-                        limit.usage_percent.clamp(0., 100.),
-                        limit.reset_in.clone(),
-                    )
-                })
+            .filter(|limit| limit.usage_percent.is_finite())
+            .map(|limit| {
+                (
+                    limit.name.clone(),
+                    limit.usage_percent.clamp(0., 100.),
+                    limit.reset_in.clone(),
+                )
             })
             .collect();
-        let Some(percent) = windows.iter().map(|(_, p, _)| *p).reduce(f32::max) else {
+        if let Some(percent) = windows
+            .iter()
+            .map(|(_, percent, _)| *percent)
+            .reduce(f32::max)
+        {
+            let detail = windows
+                .iter()
+                .map(|(window, percent, reset)| {
+                    let reset = reset
+                        .as_deref()
+                        .map(|reset| format!(", resets in {reset}"))
+                        .unwrap_or_default();
+                    format!("{window}: {percent:.0}% used{reset}")
+                })
+                .collect();
+            chips.push(QuotaChip {
+                logo,
+                provider,
+                value: format!("{percent:.0}%"),
+                percent: Some(percent),
+                cached,
+                detail,
+            });
+            continue;
+        }
+        let info = report
+            .map(|report| report.extra_info.as_slice())
+            .unwrap_or(&[]);
+        let field = |key: &str| {
+            info.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.as_str())
+        };
+        let (value, detail) = if let Some(balance) = field("Balance").and_then(first_usd) {
+            (
+                balance,
+                vec![format!("Balance: {}", field("Balance").unwrap_or(""))],
+            )
+        } else if let Some(spend) = field("Local spend (this machine)").and_then(first_usd) {
+            (
+                spend.clone(),
+                vec![format!("Spend today: {spend} (Jcode's own accounting)")],
+            )
+        } else if let Some(today) = field("Today").and_then(first_usd) {
+            (today.clone(), vec![format!("Spend today: {today}")])
+        } else {
             continue;
         };
         chips.push(QuotaChip {
             logo,
             provider,
-            percent,
+            value,
+            percent: None,
             cached,
-            windows,
+            detail,
         });
     }
     chips
@@ -257,10 +310,9 @@ impl Panel {
                     let id = format!("panel-quota-{}", chip.logo);
                     let selector = id.clone();
                     let tip = chip.tooltip();
-                    let color = if chip.percent >= 70. {
-                        usage_color(chip.percent, theme)
-                    } else {
-                        theme.TEXT_DIM
+                    let color = match chip.percent {
+                        Some(percent) if percent >= 70. => usage_color(percent, theme),
+                        _ => theme.TEXT_DIM,
                     };
                     div()
                         .id(SharedString::from(id))
@@ -583,10 +635,8 @@ impl Panel {
         if self.model.is_none() && self.provider.is_none() {
             return None;
         }
-        // Per-token routes have no quota.
-        if metered_source_key(self.provider.as_deref(), self.auth_method.as_deref()).is_some() {
-            return None;
-        }
+        let metered =
+            metered_source_key(self.provider.as_deref(), self.auth_method.as_deref()).is_some();
         // Local account snapshots cannot describe credentials on a remote host.
         let account = if crate::harness::remote_host(&self.session_id).is_none() {
             cx.try_global::<StatusAccounts>().and_then(|snapshot| {
@@ -600,8 +650,15 @@ impl Panel {
             None
         };
         let limits = account.and_then(Account::active_limits);
+        // An API-key route that reports quota windows (OpenCode Zen / Go)
+        // gives real percentages, so its hover card is not empty just because
+        // the route is also priced per token.
         if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
             return Some(LimitsSummary::Limits(limits.to_vec()));
+        }
+        // Per-token routes without quota have no limits to show.
+        if metered {
+            return None;
         }
         // A subscription login whose quota fetch failed says so rather than
         // silently omitting its meters.
@@ -644,7 +701,7 @@ mod tests {
         );
         assert_eq!(
             chips[0].tooltip(),
-            "Claude subscription quota\n5h window: 0% used, resets in 4h\n7d window: 28% used, resets in 1d 18h"
+            "Claude usage\n5-hour window: 0% used, resets in 4h\n7-day window: 28% used, resets in 1d 18h"
         );
         // Unreported windows are never fabricated.
         accounts[1].limits[0].usage_percent = f32::NAN;
@@ -681,6 +738,87 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
+    }
+
+    #[test]
+    fn footer_chips_show_opencode_go_windows_and_money_when_no_quota() {
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[
+                {"id":"opencode-go","status":"available","auth_kind":"API key"},
+                {"id":"openrouter","status":"available","auth_kind":"API key"},
+                {"id":"deepseek","status":"available","auth_kind":"API key"}
+            ]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenCode Go (API key)","limits":[
+                    {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                    {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"},
+                    {"name":"Monthly window","usage_percent":4.0,"reset_in":"30d"}
+                ],"extra_info":[],"error":null},
+                {"provider_name":"OpenRouter","limits":[],
+                 "extra_info":[["Balance","$12.34 / $20.00"],["Today","$0.42"]],"error":null}
+            ]}"#,
+        );
+        let chips = footer_quota_chips(&accounts);
+        let labels: Vec<(&'static str, String)> =
+            chips.iter().map(|chip| (chip.logo, chip.label())).collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("opencode-go", "23%".to_string()),
+                ("openrouter", "$12.34".to_string())
+            ]
+        );
+        let tooltip = chips[0].tooltip();
+        assert!(
+            tooltip.contains("Rolling window: 23% used, resets in 4h"),
+            "{tooltip}"
+        );
+        assert!(
+            tooltip.contains("Monthly window: 4% used, resets in 30d"),
+            "{tooltip}"
+        );
+        // A provider whose usage was never reported paints no bare logo pill.
+        assert!(chips.iter().all(|chip| chip.logo != "deepseek"));
+    }
+
+    #[gpui::test]
+    fn opencode_go_quota_pill_paints_in_the_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"opencode-go","status":"available","auth_kind":"API key","method":"API key (`OPENCODE_GO_API_KEY`)"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"OpenCode Go (API key)","limits":[
+                    {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                    {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"}
+                ],"extra_info":[],"error":null}]}"#,
+            );
+            cx.set_global(StatusAccounts(accounts));
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("opencode-go-session", cx);
+            workspace.test_panel(0).unwrap().update(cx, |panel, _| {
+                panel.provider = Some("opencode-go".into());
+                panel.auth_method = Some("api key".into());
+                panel.model = Some("kimi-k2.5".into());
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        let pill = vcx
+            .debug_bounds("panel-quota-opencode-go")
+            .expect("OpenCode Go quota pill in the composer footer");
+        assert!(pill.size.width > px(20.) && pill.size.height > px(0.));
+        let context = vcx.debug_bounds("panel-context-meter").unwrap();
+        assert!(context.right() <= pill.left());
     }
 
     #[test]

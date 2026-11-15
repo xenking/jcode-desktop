@@ -539,6 +539,8 @@ pub(super) fn account_logo_id(provider: Option<&str>) -> Option<&'static str> {
             "gemini",
             "copilot",
             "openrouter",
+            "opencode",
+            "opencode-go",
             "cursor",
             "bedrock",
             "azure",

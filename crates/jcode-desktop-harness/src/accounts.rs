@@ -343,6 +343,7 @@ pub fn spawn() -> Feed {
             ("openai", "OpenAI", "available", "OAuth"),
             ("claude", "Claude", "available", "OAuth"),
             ("jcode", "Jcode", "available", "API key"),
+            ("opencode-go", "OpenCode Go", "available", "API key"),
             ("gemini", "Gemini", "not_configured", "OAuth"),
             ("openrouter", "OpenRouter", "not_configured", "API key"),
             ("copilot", "Copilot", "expired", "device code"),
@@ -378,6 +379,30 @@ pub fn spawn() -> Feed {
                         ("Today".into(), "120000 input / 8000 output tokens (90000 cached input), $0.4200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
                         ("Lifetime".into(), "2400000 input / 160000 output tokens (1800000 cached input), $8.4000 known + unknown cost (2 unpriced responses) API-equivalent estimate, not a bill; recorded only; partial token counts; since 2026-09-01 10:00 -07:00".into()),
                     ],
+                }]
+            } else if id == "opencode-go" {
+                vec![UsageReport {
+                    provider_name: "OpenCode Go (API key)".into(),
+                    account_label: None,
+                    limits: vec![
+                        UsageLimit {
+                            name: "Rolling window".into(),
+                            usage_percent: 38.,
+                            reset_in: Some("2h 56m".into()),
+                        },
+                        UsageLimit {
+                            name: "Weekly window".into(),
+                            usage_percent: 15.,
+                            reset_in: Some("15h 48m".into()),
+                        },
+                        UsageLimit {
+                            name: "Monthly window".into(),
+                            usage_percent: 7.,
+                            reset_in: Some("29d 21h".into()),
+                        },
+                    ],
+                    banked_reset: None,
+                    extra_info: vec![("Key status".into(), "valid".into())],
                 }]
             } else {
                 Vec::new()
@@ -620,6 +645,7 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
         "google" => icon!("google"),
         "copilot" => icon!("githubcopilot"),
         "openrouter" => icon!("openrouter"),
+        "opencode" | "opencode-go" => icon!("opencode"),
         "bedrock" => icon!("bedrock"),
         "azure" => icon!("azure"),
         "cursor" => icon!("cursor"),
@@ -665,6 +691,8 @@ pub fn pretty_provider_name(provider: &str) -> String {
         "anthropic" | "claude" => "Anthropic".into(),
         "openai" | "chatgpt" => "OpenAI".into(),
         "openrouter" => "OpenRouter".into(),
+        "opencode" | "opencode-zen" | "zen" => "OpenCode Zen".into(),
+        "opencode-go" | "opencodego" => "OpenCode Go".into(),
         "copilot" | "github copilot" | "github-copilot" => "Copilot".into(),
         "gemini" | "google" | "code-assist" => "Gemini".into(),
         "antigravity" => "Antigravity".into(),
@@ -697,6 +725,38 @@ pub fn lettermark(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_is_a_full_account_with_a_logo_and_quota_windows() {
+        assert!(
+            logo("opencode-go").is_some(),
+            "OpenCode Go has a brand mark"
+        );
+        assert!(logo("opencode").is_some(), "OpenCode Zen shares the mark");
+        let mut accounts = parse(
+            r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available",
+                "method":"API key (`OPENCODE_GO_API_KEY`)","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenCode Go (API key)","limits":[
+                {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"},
+                {"name":"Monthly window","usage_percent":4.0,"reset_in":"30d"}
+            ],"extra_info":[["Key status","valid"]],"error":null}]}"#,
+        );
+        let account = &accounts[0];
+        assert_eq!(account.id, "opencode-go");
+        assert!(account.available());
+        assert_eq!(account.status_label(), "Connected");
+        assert_eq!(account.usage_reports.len(), 1);
+        let limits = account.active_limits().expect("quota windows attach");
+        assert_eq!(limits.len(), 3);
+        assert_eq!(limits[0].name, "Rolling window");
+        assert_eq!(limits[0].usage_percent, 23.0);
+        assert_eq!(limits[0].reset_in.as_deref(), Some("4h"));
+    }
 
     #[test]
     fn recent_accounts_are_bounded_unique_and_stable() {

@@ -72,23 +72,8 @@ impl Panel {
         }
         let theme = Theme::global();
         let state = self.login.as_ref()?;
-        let query = state.search.read(cx).content.to_lowercase();
-        let rows: Vec<_> = state
-            .account_rows(&state.providers)
-            .into_iter()
-            .filter(|row| row.connected())
-            .filter(|row| {
-                format!(
-                    "{} {} {} {}",
-                    row.provider.display_name,
-                    row.provider.id,
-                    row.label.as_deref().unwrap_or(""),
-                    row.email.as_deref().unwrap_or("")
-                )
-                .to_lowercase()
-                .contains(query.trim())
-            })
-            .collect();
+        let query = state.search.read(cx).content.clone();
+        let rows = super::accounts::picker_rows(state.account_rows(&state.providers), &query);
         let visible = Rc::new(Vec::new());
         let remote = self.login_is_remote();
         let mut body = div().flex().flex_col().gap_1();
