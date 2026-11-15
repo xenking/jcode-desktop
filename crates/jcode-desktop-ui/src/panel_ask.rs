@@ -573,13 +573,16 @@ impl Panel {
                                 }),
                         )
                         .child(
-                            div().min_w_0().child(
-                                question_without_header(
-                                    &question.question,
-                                    question.header.as_deref(),
-                                )
-                                .to_string(),
-                            ),
+                            div()
+                                .min_w_0()
+                                .debug_selector(move || format!("ask-question-{q}"))
+                                .child(
+                                    question_without_header(
+                                        &question.question,
+                                        question.header.as_deref(),
+                                    )
+                                    .to_string(),
+                                ),
                         ),
                 );
             for (o, option) in question.options.iter().enumerate() {
@@ -644,7 +647,11 @@ impl Panel {
                                 .flex()
                                 .flex_col()
                                 .min_w_0()
-                                .child(option.label.clone())
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("ask-label-{q}-{o}"))
+                                        .child(option.label.clone()),
+                                )
                                 .when_some(option.description.clone(), |el, desc| {
                                     el.child(
                                         div()
@@ -914,6 +921,9 @@ mod tests {
         }
         let mut value: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
         let mut q = value["questions"][0].clone();
+        q["question"] = serde_json::Value::String("This question must wrap cleanly. ".repeat(12));
+        q["options"][0]["label"] =
+            serde_json::Value::String("This option label must wrap. ".repeat(8));
         q["options"][0]["description"] = serde_json::Value::String(
             "This description must wrap cleanly without truncating. ".repeat(16),
         );
@@ -924,6 +934,16 @@ mod tests {
         let viewport = vcx.debug_bounds("ask-scroll").unwrap();
         let footer = vcx.debug_bounds("ask-submit").unwrap();
         let description = vcx.debug_bounds("ask-description-0-0").unwrap();
+        let question = vcx.debug_bounds("ask-question-0").unwrap();
+        let label = vcx.debug_bounds("ask-label-0-0").unwrap();
+        assert!(
+            question.size.height > px(24.),
+            "long question must wrap: {question:?}"
+        );
+        assert!(
+            label.size.height > px(24.),
+            "long option label must wrap: {label:?}"
+        );
         assert!(
             description.size.height > px(24.),
             "long description must wrap: {description:?}"
