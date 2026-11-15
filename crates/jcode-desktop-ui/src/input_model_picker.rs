@@ -356,7 +356,9 @@ impl PromptInput {
         let stage_row = suggestion.action.is_some() && model.is_none();
         let label = match (model, suggestion.value.strip_prefix("/effort ")) {
             (Some(model), _) => model_menu::pretty_title(model, &self.model_details),
-            (None, Some(effort)) if stage_row => crate::effort::label(effort).to_string(),
+            // Effort rows lead with the ramp glyph and keep the level name:
+            // a picker has no hover to hide it in.
+            (None, Some(effort)) => crate::effort::spoken(effort),
             _ => suggestion.value.clone(),
         };
         div()

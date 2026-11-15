@@ -7,6 +7,7 @@
 //! `[keybindings] effort_increase / effort_decrease`, so one setting drives
 //! both clients.
 
+use crate::theme::Theme;
 use gpui::{App, KeyBinding, Keystroke};
 
 gpui::actions!(effort, [IncreaseEffort, DecreaseEffort]);
@@ -75,6 +76,66 @@ pub(crate) fn label(effort: &str) -> &str {
         "swarm" => "Swarm",
         "swarm-deep" => "Swarm Deep",
         other => other,
+    }
+}
+
+/// The compact glyph for a level: one filling circle per rung, the ladder omp
+/// draws (`○ ◔ ◑ ◒ ◕ ◉`). `None` for swarm modes, which are orchestration
+/// modes rather than reasoning rungs and keep their text label.
+///
+/// This dot is not the decorative status dot the design rules forbid: it *is*
+/// the level, the same way a slider thumb is its value, and the name it
+/// replaces lives in the pill's hover.
+pub(crate) fn glyph(effort: &str) -> Option<&'static str> {
+    jcode_provider_core::reasoning_effort_glyph(effort)
+}
+
+/// What a chrome pill shows: the glyph alone, so the level reads at a glance
+/// and its name lives in the tooltip. Modes and unknown values keep text
+/// because a symbol would invent a rung that does not exist.
+pub(crate) fn compact(effort: &str) -> String {
+    match glyph(effort) {
+        Some(glyph) => glyph.to_string(),
+        None => label(effort).to_string(),
+    }
+}
+
+/// Hover copy for a compact glyph: the level name the dots replaced.
+pub(crate) fn tooltip(effort: &str) -> String {
+    format!("Reasoning effort: {}", spoken(effort))
+}
+
+/// Glyph plus level name, for the places that must stay legible without a
+/// hover: picker rows, transcript notices.
+pub(crate) fn spoken(effort: &str) -> String {
+    match glyph(effort) {
+        Some(glyph) => format!("{glyph} {}", label(effort)),
+        None => label(effort).to_string(),
+    }
+}
+
+/// Ink for a level glyph. Lanes ramp from the quiet chrome tint (`none`) to
+/// the brand accent (`max`), so a stronger level reads as stronger without
+/// spelling it out.
+pub(crate) fn tint(effort: &str, theme: &Theme) -> gpui::Rgba {
+    match jcode_provider_core::reasoning_effort_rank(effort) {
+        Some(rank) => {
+            let top = jcode_provider_core::REASONING_EFFORT_MAX_RANK.max(1) as f32;
+            mix(theme.TEXT_FAINT, theme.ACCENT, rank as f32 / top)
+        }
+        None => theme.TEXT_FAINT,
+    }
+}
+
+/// Linear blend of two inks; `t` is clamped to `0..=1`.
+fn mix(from: gpui::Rgba, to: gpui::Rgba, t: f32) -> gpui::Rgba {
+    let t = t.clamp(0., 1.);
+    let lerp = |a: f32, b: f32| a + (b - a) * t;
+    gpui::Rgba {
+        r: lerp(from.r, to.r),
+        g: lerp(from.g, to.g),
+        b: lerp(from.b, to.b),
+        a: lerp(from.a, to.a),
     }
 }
 
@@ -273,6 +334,52 @@ pub(crate) fn bound_keys_label(cx: &App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pill is the glyph alone: the ladder omp draws, rung by rung, and no
+    /// word that a hover can carry instead.
+    #[test]
+    fn compact_pill_is_a_glyph_per_rung() {
+        assert_eq!(compact("none"), "⦸");
+        assert_eq!(compact("minimal"), "○");
+        assert_eq!(compact("low"), "◔");
+        assert_eq!(compact("medium"), "◑");
+        assert_eq!(compact("high"), "◒");
+        assert_eq!(compact("xhigh"), "◕");
+        assert_eq!(compact("max"), "◉");
+        for level in ["high", "medium", "max"] {
+            assert_ne!(
+                compact(level),
+                label(level),
+                "{level} must not render as text"
+            );
+        }
+    }
+
+    /// Modes are not rungs, so they keep their word rather than borrowing a
+    /// circle that would claim a reasoning level they do not have.
+    #[test]
+    fn compact_pill_keeps_mode_labels() {
+        assert_eq!(compact("swarm"), "Swarm");
+        assert_eq!(compact("swarm-deep"), "Swarm Deep");
+        assert_eq!(compact("future"), "future");
+    }
+
+    #[test]
+    fn tooltip_carries_the_level_name_the_glyph_replaced() {
+        assert_eq!(tooltip("xhigh"), "Reasoning effort: ◕ xHigh");
+        assert_eq!(tooltip("swarm"), "Reasoning effort: Swarm");
+    }
+
+    #[test]
+    fn glyph_tint_ramps_from_chrome_ink_to_accent() {
+        let theme = Theme::global();
+        assert_eq!(tint("none", theme), theme.TEXT_FAINT);
+        assert_eq!(tint("max", theme), theme.ACCENT);
+        assert_eq!(tint("swarm", theme), theme.TEXT_FAINT);
+        let mid = tint("medium", theme);
+        assert_ne!(mid, theme.TEXT_FAINT);
+        assert_ne!(mid, theme.ACCENT);
+    }
 
     #[test]
     fn ladder_follows_the_serving_model() {

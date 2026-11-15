@@ -107,15 +107,15 @@ impl Panel {
         match effort::step(&ladder, self.reasoning_effort.as_deref(), direction) {
             Some(next) => {
                 if self.request_effort(next, cx) {
-                    self.effort_notice(format!("Effort: {}", effort::label(next)), cx);
+                    self.effort_notice(format!("Effort: {}", effort::spoken(next)), cx);
                 }
             }
             None => {
                 let current = self
                     .reasoning_effort
                     .as_deref()
-                    .map(effort::label)
-                    .unwrap_or("default");
+                    .map(effort::spoken)
+                    .unwrap_or_else(|| "default".to_string());
                 let end = if direction > 0 {
                     "strongest"
                 } else {
@@ -276,7 +276,7 @@ mod tests {
                 .read(cx)
                 .transient_notice()
                 .map(str::to_string)),
-            Some("Effort: High".into())
+            Some("Effort: ◒ High".into())
         );
         assert_eq!(
             panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),

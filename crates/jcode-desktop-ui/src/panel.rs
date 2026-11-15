@@ -2346,7 +2346,8 @@ impl Panel {
                         "Reasoning effort is not available for this model.".into()
                     } else {
                         format!(
-                            "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
+                            "Effort: `{}`. Use `/effort <{}>`{keys} to change it.",
+                            crate::effort::spoken(current),
                             ladder.join("|")
                         )
                     }));

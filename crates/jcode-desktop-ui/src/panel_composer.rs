@@ -176,11 +176,19 @@ impl Panel {
                             })),
                     )
                     .children(effort.map(|effort| {
+                        let ink = crate::effort::tint(&effort, theme);
+                        let hover = crate::effort::tooltip(&effort);
                         composer_pill("panel-model-effort")
                             .flex_shrink(3.)
                             .min_w(px(24.))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(div().min_w_0().truncate().child(effort))
+                            .text_color(ink)
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(crate::effort::compact(&effort)),
+                            )
+                            .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_effort_picker(window, cx);
                                 cx.stop_propagation();
@@ -495,6 +503,25 @@ impl Render for LocationTooltip {
     }
 }
 
+/// Hover for the effort pill: the pill shows the dot alone, so the level name
+/// has to live here.
+struct EffortTooltip(String);
+
+impl Render for EffortTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("EffortTooltip");
+        div()
+            .debug_selector(|| "composer-effort-tooltip".into())
+            .max_w(px(300.))
+            .p_2()
+            .rounded_md()
+            .bg(Theme::global().HEADER_BG)
+            .text_size(px(12.))
+            .text_color(Theme::global().TEXT)
+            .child(self.0.clone())
+    }
+}
+
 impl Panel {
     /// Chat panels on this computer can pick another folder from the pill.
     fn offers_directory_switch(&self) -> bool {
@@ -617,16 +644,6 @@ pub(super) fn pretty_model_label(model: Option<&str>) -> String {
     }
 }
 
-/// Model label plus effort, used where a single string is needed.
-#[cfg(test)]
-pub(super) fn model_tab_label(model: Option<&str>, effort: Option<&str>) -> String {
-    let pretty = pretty_model_label(model);
-    match effort.map(str::trim).filter(|effort| !effort.is_empty()) {
-        Some(effort) if model.is_some_and(|m| !m.trim().is_empty()) => format!("{pretty} {effort}"),
-        _ => pretty,
-    }
-}
-
 /// Repo name (the last path component) plus its home-relative parent path.
 /// `/home/me/src/jcode` reads `jcode` then `~/src`. Windows paths split on
 /// either separator, so `C:\Users\me\src\jcode` reads `jcode` then `~\src`.
@@ -680,22 +697,6 @@ pub(super) fn remote_location_label(path: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn model_tab_uses_pretty_names_and_effort() {
-        assert_eq!(model_tab_label(None, Some("high")), "Choose model");
-        assert_eq!(model_tab_label(Some(" "), None), "Choose model");
-        assert_eq!(model_tab_label(Some("claude-opus-4-8"), None), "Opus 4.8");
-        assert_eq!(
-            model_tab_label(Some("gpt-5.5"), Some("high")),
-            "GPT-5.5 high"
-        );
-        assert_eq!(model_tab_label(None, Some("high")), "Choose model");
-        assert_eq!(
-            model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
-            "GPT-5.1 Codex Max"
-        );
-    }
 
     /// A headless worker panel has no runtime identity, so its record's model
     /// and effort fill the footer. Without this the pills read "Choose model"
