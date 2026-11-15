@@ -61,7 +61,7 @@ impl AskDraft {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct AskCard {
     pub request_id: String,
     pub tool_call_id: String,
@@ -76,6 +76,7 @@ pub(crate) struct AskCard {
     pub voice_target: Option<(usize, Option<usize>)>,
     pub submitting: bool,
     pub submit_error: Option<String>,
+    scroll: gpui::ScrollHandle,
 }
 
 impl AskCard {
@@ -98,6 +99,7 @@ impl AskCard {
             voice_target: (n > 0).then_some((0, None)),
             submitting: false,
             submit_error: None,
+            scroll: gpui::ScrollHandle::new(),
         }
     }
 
@@ -493,6 +495,20 @@ impl Panel {
             .id("ask-card")
             .debug_selector(|| "ask-card".into())
             .occlude()
+            .on_scroll_wheel(
+                cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    if let Some(card) = &this.ask_card {
+                        let scroll = &card.scroll;
+                        if !scroll.bounds().contains(&event.position) {
+                            let dy = event.delta.pixel_delta(window.line_height()).y;
+                            let y = (scroll.offset().y + dy).clamp(-scroll.max_offset().y, px(0.));
+                            scroll.set_offset(gpui::point(scroll.offset().x, y));
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }
+                }),
+            )
             .flex_none()
             .flex()
             .flex_col()
@@ -525,7 +541,8 @@ impl Panel {
             .gap_2()
             .min_w_0()
             .max_h(px((f32::from(window.viewport_size().height) * 0.4).max(60.)))
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .track_scroll(&card.scroll);
         for (q, question) in card.questions.iter().enumerate() {
             let mut block = div()
                 .flex()
@@ -912,6 +929,23 @@ mod tests {
             "long description must wrap: {description:?}"
         );
         let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+        let first_before = vcx.debug_bounds("ask-option-0-0").unwrap();
+        vcx.simulate_mouse_move(footer.center(), None, gpui::Modifiers::default());
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: footer.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Started,
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-option-0-0").unwrap().top() < first_before.top(),
+            "wheel over sticky footer must scroll the card"
+        );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
+            transcript_before
+        );
         vcx.simulate_mouse_move(viewport.center(), None, gpui::Modifiers::default());
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: viewport.center(),
