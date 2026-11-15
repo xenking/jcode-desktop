@@ -420,22 +420,26 @@ impl Panel {
         {
             return;
         }
-        // Match the TUI: combine waiting prompts into one follow-up turn, in
-        // order, retaining every attachment. Draining atomically also makes a
-        // TurnDone followed by idle incapable of sending the same queue twice.
         let prompts = std::mem::take(&mut self.prompt_queue.prompts);
         self.prompt_queue.waiting_for_connection = false;
+        if self.prompt_queue.remote_supported {
+            // Preserve independent follow-up turns when the daemon owns the
+            // queue, including prompts typed before the session attached.
+            for prompt in prompts {
+                self.submit_or_queue(prompt.content, prompt.images, true, cx);
+            }
+            cx.notify();
+            return;
+        }
+        // Legacy daemons have only the local queue. Keep their historical
+        // behavior of combining prompts into one follow-up turn.
         let content = prompts
             .iter()
             .map(|p| p.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
         let images = prompts.into_iter().flat_map(|p| p.images).collect();
-        if self.prompt_queue.remote_supported {
-            self.submit_or_queue(content, images, true, cx);
-        } else {
-            self.send_composer_prompt(content, images, cx);
-        }
+        self.send_composer_prompt(content, images, cx);
         cx.notify();
     }
 

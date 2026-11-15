@@ -45,6 +45,56 @@ fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContex
 }
 
 #[gpui::test]
+fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "connected".into();
+        panel.prompt_queue.remote_supported = true;
+        panel.prompt_queue.waiting_for_connection = true;
+        panel.prompt_queue.prompts = vec![
+            QueuedPrompt {
+                content: "one".into(),
+                images: vec![],
+            },
+            QueuedPrompt {
+                content: "two".into(),
+                images: vec![],
+            },
+        ];
+        panel
+    });
+    panel.update(cx, |panel, cx| panel.send_queued_prompts(cx));
+    for expected in ["one", "two"] {
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.content == expected && prompt.mode == jcode_sdk::api::QueuedPromptMode::AfterYield)
+        );
+    }
+}
+
+#[gpui::test]
+fn configurable_default_applies_to_active_turn_and_survives_restore(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.prompt_queue.default_after_yield = true;
+        let saved = serde_json::to_string(&panel.prompt_queue).unwrap();
+        panel.prompt_queue = serde_json::from_str(&saved).unwrap();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
+        panel.submit_or_queue("configured default".into(), vec![], false, cx);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.mode == jcode_sdk::api::QueuedPromptMode::AfterYield)
+    );
+}
+
+#[gpui::test]
 fn send_after_turn_done_still_uses_atomic_daemon_queue(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| {
