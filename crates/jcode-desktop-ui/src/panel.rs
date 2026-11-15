@@ -2792,6 +2792,18 @@ impl Panel {
                         }
                     }
                 }
+                "tool" => {
+                    if let Some(tool) = message.tool.filter(|tool| tool.name == "ask") {
+                        items.push(Item::Tool {
+                            call_id: tool.id,
+                            name: tool.name,
+                            input: tool.input.to_string(),
+                            output: message.content,
+                            done: true,
+                            error: None,
+                        });
+                    }
+                }
                 // A stored compaction divider. Its body already carries the
                 // label and the expandable detail, so it renders identically
                 // before and after a reload.
@@ -4345,6 +4357,53 @@ impl Panel {
                 done,
                 error,
             } => {
+                if name == "ask" && *done {
+                    let text = ask::result_text(input, output, error.as_deref());
+                    let expanded = self.expanded_regions.contains(call_id);
+                    let preview = expandable::collapsed(&text, expandable::Budget::new(500, 4));
+                    let expandable = preview.is_some();
+                    let shown = if expanded {
+                        text
+                    } else {
+                        preview.unwrap_or(text)
+                    };
+                    let key = call_id.clone();
+                    return div()
+                        .id(("ask-result", index))
+                        .debug_selector(|| "ask-result".into())
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_2()
+                        .rounded_md()
+                        .bg(Theme::global().TOOL_BG)
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child("Questions and answers"),
+                        )
+                        .child(div().min_w_0().text_size(px(13.)).child(shown))
+                        .when(expandable, |el| {
+                            el.cursor_pointer()
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(Theme::global().ACCENT)
+                                        .child(if expanded { "Show less" } else { "Show all" }),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.expanded_regions.remove(&key) {
+                                        this.expanded_regions.insert(key.clone());
+                                    }
+                                    this.transcript_measurements.dirty = true;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }))
+                        })
+                        .into_any_element();
+                }
                 if let Some(response) = error
                     .is_none()
                     .then(|| user_response::parse(name, input))

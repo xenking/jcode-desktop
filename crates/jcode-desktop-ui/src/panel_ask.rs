@@ -4,6 +4,48 @@
 use super::*;
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
+/// Completed asks remain readable in the transcript, including after history reload.
+pub(super) fn result_text(input: &str, output: &str, error: Option<&str>) -> String {
+    let result = error
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(output)
+        .trim();
+    if let Some(answers) = result.strip_prefix("User answers:\n") {
+        return answers.to_string();
+    }
+    if result.contains(" -> ") {
+        return result.to_string();
+    }
+    let status = if result.to_lowercase().contains("declin") {
+        "declined"
+    } else if result.to_lowercase().contains("cancel") {
+        "cancelled"
+    } else if result.is_empty() {
+        "no answer"
+    } else {
+        result
+    };
+    let questions = serde_json::from_str::<serde_json::Value>(input).ok();
+    let lines: Vec<String> = questions
+        .as_ref()
+        .and_then(|v| v.get("questions"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, q)| {
+            q.get("question")
+                .and_then(|q| q.as_str())
+                .map(|q| format!("{}. {} -> {}", i + 1, q, status))
+        })
+        .collect();
+    if lines.is_empty() {
+        status.to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AskDraft {
     request_id: String,
@@ -915,6 +957,54 @@ mod tests {
                 "saved draft"
             );
         });
+    }
+
+    #[test]
+    fn completed_ask_result_preserves_answers_and_terminal_status() {
+        let input = r#"{"questions":[{"question":"Which?"}]}"#;
+        assert_eq!(
+            result_text(
+                input,
+                "User answers:\n1. Which? -> B (comment: why); Other: text\n",
+                None
+            ),
+            "1. Which? -> B (comment: why); Other: text"
+        );
+        assert_eq!(
+            result_text(input, "User declined to answer the questions.", None),
+            "1. Which? -> declined"
+        );
+        assert_eq!(
+            result_text(input, "", Some("cancelled by the user")),
+            "1. Which? -> cancelled"
+        );
+        assert_eq!(result_text(input, "", None), "1. Which? -> no answer");
+    }
+
+    #[gpui::test]
+    fn ask_result_is_visible_and_survives_history_reload(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let input = serde_json::json!({"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]});
+        let history: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":"Choose"},
+            {"role":"tool","content":"1. Which? -> B (comment: reason)","tool":{"id":"ask-1","name":"ask","input":input}}
+        ])).unwrap();
+        panel.update(vcx, |panel, cx| panel.load_history(history, vec![], cx));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { name, output, .. } if name == "ask" && output.contains("reason")))));
+        assert!(
+            vcx.debug_bounds("ask-result").is_some(),
+            "reopened history must render ask result"
+        );
     }
 
     #[gpui::test]
