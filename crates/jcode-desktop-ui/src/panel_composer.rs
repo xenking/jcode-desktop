@@ -85,6 +85,10 @@ impl Panel {
         // Build info, usage limits and status share the pill row, so the
         // panel needs no separate footer bar below the composer.
         let status_line = self.status_line();
+        // Worker count (only while workers run) then the activity icon. Both
+        // are leaf views, so their animation never rebuilds the composer.
+        let workers_pill = self.render_swarm_indicator(cx);
+        let activity_icon = self.render_activity_icon(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
             .flex_shrink(4.)
@@ -110,6 +114,8 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
+                    .children(workers_pill)
+                    .child(activity_icon)
                     .children(self.render_voice_status(status_line))
                     .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
@@ -293,7 +299,7 @@ impl Panel {
             .min_w_0()
             .flex()
             .flex_col()
-            .children(self.render_swarm_strip(cx))
+            .children(self.render_swarm_list(cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
             .child(

@@ -856,11 +856,10 @@ pub struct Workspace {
     /// Persisted todo progress (completed, total) per session, refreshed in
     /// the background with the session list. Open panels override it live.
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
-    /// Pending `await_members` waits and recent reports per coordinator,
-    /// read from the daemon's durable await state with the session list.
-    swarm_awaits: HashMap<String, crate::swarm_view::AwaitState>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
+    /// Animated status glyphs of nested workers, one leaf view each.
+    swarm_marks: crate::swarm_glyph::Marks,
     /// Breathing "Checking…" beside the version while an update check runs.
     version_pulse: crate::pulse_text::Tickers,
     sidebar_navigation_scroll: ScrollHandle,
@@ -1179,8 +1178,8 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
-            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
+            swarm_marks: Default::default(),
             version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
@@ -1292,7 +1291,9 @@ impl Workspace {
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture(cx);
             workspace.init_collections_fixture();
-            if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_SWARM").as_deref() == Ok("real") {
+                workspace.load_real_swarm_fixture(cx);
+            } else if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
                     ("Sidebar implementation", "working"),
@@ -1569,8 +1570,8 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
-            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
+            swarm_marks: Default::default(),
             version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
@@ -2238,22 +2239,13 @@ impl Workspace {
                 if !cfg!(test) {
                     let sessions = self.sessions.clone();
                     cx.spawn(async move |this, cx| {
-                        let (prompts, todos, awaits) = cx
+                        let (prompts, todos) = cx
                             .background_executor()
                             .spawn(async move {
                                 let todos = crate::harness::jcode_home()
                                     .map(|home| crate::harness::todo_progress_in(&home, &sessions))
                                     .unwrap_or_default();
-                                let socket =
-                                    std::env::var_os("JCODE_SOCKET").map(std::path::PathBuf::from);
-                                let awaits = crate::swarm_view::load_awaits_from(
-                                    &crate::swarm_view::await_dirs(
-                                        socket.as_deref(),
-                                        &jcode_base::storage::runtime_dir(),
-                                    ),
-                                    swarm_now_ms(),
-                                );
-                                (crate::example_prompts::load(&sessions), todos, awaits)
+                                (crate::example_prompts::load(&sessions), todos)
                             })
                             .await;
                         cx.update(|cx| crate::example_prompts::set(prompts, cx));
@@ -2262,13 +2254,44 @@ impl Workspace {
                                 this.sidebar_todo_progress = todos;
                                 cx.notify();
                             }
-                            if this.swarm_awaits != awaits {
-                                this.swarm_awaits = awaits;
-                                this.sync_swarm_strips(cx);
-                            }
                         });
                     })
                     .detach();
+                    // Swarm cards show each named worker's own model and total
+                    // spend, read from its session files off the UI thread.
+                    let wanted = self
+                        .slots
+                        .iter()
+                        .map(|slot| {
+                            let panel = slot.panel.read(cx);
+                            (slot.panel.clone(), panel.swarm_card_worker_ids())
+                        })
+                        .filter(|(_, ids)| !ids.is_empty())
+                        .collect::<Vec<_>>();
+                    if !wanted.is_empty()
+                        && let Some(home) = crate::harness::jcode_home()
+                    {
+                        let ids = wanted
+                            .iter()
+                            .flat_map(|(_, ids)| ids.clone())
+                            .collect::<Vec<_>>();
+                        cx.spawn(async move |_, cx| {
+                            let usage = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    jcode_desktop_harness::swarm_usage::usage_for(&home, &ids)
+                                })
+                                .await;
+                            for (panel, ids) in wanted {
+                                let own = ids
+                                    .iter()
+                                    .filter_map(|id| Some((id.clone(), usage.get(id)?.clone())))
+                                    .collect();
+                                let _ = panel.update(cx, |panel, cx| panel.set_swarm_usage(own, cx));
+                            }
+                        })
+                        .detach();
+                    }
                 }
                 let mut unfinished = None;
                 for slot in &self.slots {
@@ -2685,20 +2708,16 @@ impl Workspace {
         insert_at
     }
 
-    /// Push each coordinator panel its worker strip from the catalog and the
-    /// daemon's await state. Non-coordinators get none.
+    /// Push each coordinator panel its swarm workers for the composer
+    /// indicator. Non-coordinators get none.
     fn sync_swarm_strips(&mut self, cx: &mut Context<Self>) {
         let now = swarm_now_ms();
         let workers = crate::swarm_view::workers_by_coordinator(&self.sessions, now);
         for slot in &self.slots {
             let id = slot.panel.read(cx).session_id.clone();
-            let strip = crate::swarm_view::strip(
-                workers.get(&id).map(Vec::as_slice).unwrap_or_default(),
-                self.swarm_awaits.get(&id),
-                now,
-            );
+            let list = workers.get(&id).cloned().unwrap_or_default();
             slot.panel
-                .update(cx, |panel, cx| panel.set_swarm_strip(strip, cx));
+                .update(cx, |panel, cx| panel.set_swarm_workers(list, cx));
         }
         cx.notify();
     }
@@ -2718,6 +2737,31 @@ impl Workspace {
         self.overview = false;
         cx.activate(true);
         cx.notify();
+    }
+
+    /// `JCODE_DESKTOP_SCREENSHOT_SWARM=real`: the user's real coordinator and
+    /// its workers, from trimmed copies of their `~/.jcode` files (see
+    /// `jcode-desktop-harness/src/fixtures`), so a screenshot shows real data
+    /// shapes, not invented ones.
+    fn load_real_swarm_fixture(&mut self, cx: &mut Context<Self>) {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let home = fixtures.join("microbe_home");
+        let mut sessions = harness::merge_persisted_sessions(Vec::new(), Some(&home));
+        jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
+        let Some(position) = sessions.iter().position(|s| s.session_id.starts_with("session_microbe_")) else {
+            return;
+        };
+        let coordinator = sessions.remove(position);
+        sessions.insert(0, coordinator.clone());
+        self.sessions = sessions;
+        self.slots.clear();
+        self.active = self.open_session(coordinator, cx);
+        let ids = self.slots[self.active].panel.read(cx).swarm_card_worker_ids();
+        let usage = jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
+        self.slots[self.active]
+            .panel
+            .update(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
+        self.sync_swarm_strips(cx);
     }
 
     /// Focus a worker's panel, opening it if needed (strip / sidebar click).
@@ -5751,11 +5795,19 @@ impl Workspace {
                 ));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if crate::swarm_view::WorkerState::parse(child.session.swarm_status.as_deref())
-                    .is_active()
-                {
+                if crate::swarm_view::worker_state(&child.session).is_active() {
                     entry.1 += 1;
                 }
+            }
+        }
+        // Long-running coordinators own dozens of workers. Show the live ones
+        // and the latest few finished, fold the rest into "+N finished".
+        let mut folded_workers: HashMap<String, usize> = HashMap::new();
+        for (root, workers) in nested_workers.iter_mut() {
+            let (shown, hidden) = sidebar_swarm::visible(workers);
+            *workers = shown;
+            if hidden > 0 {
+                folded_workers.insert(root.clone(), hidden);
             }
         }
         // Fading local panels stay mounted, but must not reappear as history
@@ -6014,7 +6066,7 @@ impl Workspace {
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
-                        .map(|workers| sidebar_swarm::layout_key(workers))
+                        .map(|workers| sidebar_swarm::layout_key(workers, folded_workers.get(&session.session_id).copied().unwrap_or(0)))
                         .unwrap_or_default(),
                 }
             })
@@ -6494,10 +6546,13 @@ impl Workspace {
                                     }),
                             );
                             if let Some(workers) = nested_workers.get(&menu_session) {
+                                let folded = folded_workers.get(&menu_session).copied().unwrap_or(0);
                                 list = list.child(sidebar_swarm::render_workers(
                                     sidebar_index,
                                     workers,
+                                    folded,
                                     under_checkout,
+                                    &mut this.swarm_marks,
                                     cx,
                                 ));
                             }

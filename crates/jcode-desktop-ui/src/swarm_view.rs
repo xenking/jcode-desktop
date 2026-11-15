@@ -1,18 +1,10 @@
-//! Coordinator view of its swarm: worker lifecycle states, pending
-//! `await_members` waits, and recent "worker reported, coordinator woke"
-//! events. Data comes from the daemon's durable state (swarm snapshots, via
-//! `SessionInfo::swarm_status`, and `jcode-await-members/*.json`), never
-//! from guesses based on transcript activity.
+//! Coordinator view of its swarm: worker lifecycle states, the compact
+//! "workers running" indicator and the agent activity icon. Data comes from
+//! the daemon's durable state (swarm snapshots via `SessionInfo::swarm_status`
+//! and session records), never from guesses based on transcript activity.
 
 use jcode_sdk::SessionInfo;
-use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
-
-/// Directory name the daemon uses under its runtime dir for await state.
-pub const AWAIT_MEMBERS_DIR: &str = "jcode-await-members";
-/// How long a resolved await keeps its "reported · woke" line visible.
-pub const REPORT_VISIBLE_MS: u64 = 10 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WorkerState {
@@ -62,6 +54,33 @@ impl WorkerState {
     pub fn is_active(self) -> bool {
         matches!(self, Self::Running | Self::Queued)
     }
+
+    /// Still part of the swarm's live work: running, queued or paused on a
+    /// dependency. These count toward the composer indicator.
+    pub fn is_live(self) -> bool {
+        matches!(self, Self::Running | Self::Queued | Self::Blocked)
+    }
+
+    /// The status mark shown beside a worker. `None` when nothing is known,
+    /// so an unrecorded session never claims to be running or waiting.
+    pub fn glyph(self) -> Option<Glyph> {
+        match self {
+            Self::Running | Self::Queued => Some(Glyph::Spinner),
+            Self::Ready | Self::Stopped => Some(Glyph::Check),
+            Self::Failed => Some(Glyph::Cross),
+            Self::Blocked => Some(Glyph::Pause),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// Status marks: spinner = running, check = done, cross = failed, pause = waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Glyph {
+    Spinner,
+    Check,
+    Cross,
+    Pause,
 }
 
 /// `session_rose_1794717290730_574a...` -> `rose`.
@@ -90,6 +109,20 @@ pub fn format_age(ms: u64) -> String {
     }
 }
 
+/// The swarm snapshot's status wins. Workers the snapshot no longer lists
+/// fall back to their persisted lifecycle: a closed one finished, a crashed
+/// one failed. An open-ended `active` record proves nothing, so it stays unknown.
+pub fn worker_state(session: &SessionInfo) -> WorkerState {
+    match WorkerState::parse(session.swarm_status.as_deref()) {
+        WorkerState::Unknown => match session.status.trim().to_ascii_lowercase().as_str() {
+            "closed" => WorkerState::Ready,
+            "crashed" | "error" => WorkerState::Failed,
+            _ => WorkerState::Unknown,
+        },
+        state => state,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Worker {
     pub session_id: String,
@@ -107,7 +140,7 @@ impl Worker {
             session_id: session.session_id.clone(),
             name: display_name(session),
             label: session.agent_label.clone(),
-            state: WorkerState::parse(session.swarm_status.as_deref()),
+            state: worker_state(session),
             age_ms: last
                 .filter(|ms| *ms > 0)
                 .map(|ms| now_ms.saturating_sub(ms as u64)),
@@ -146,183 +179,119 @@ pub fn workers_by_coordinator(
     map
 }
 
-#[derive(Deserialize)]
-struct AwaitFile {
-    session_id: String,
-    #[serde(default)]
-    requested_ids: Vec<String>,
-    #[serde(default)]
-    created_at_unix_ms: u64,
-    #[serde(default)]
-    deadline_unix_ms: u64,
-    #[serde(default = "yes")]
-    wake: bool,
-    #[serde(default)]
-    final_response: Option<AwaitResult>,
-}
+/// Finished workers kept visible under a coordinator, newest last. A
+/// long-running coordinator has dozens, and the sidebar should show what is
+/// happening, not an archive.
+pub const FINISHED_VISIBLE: usize = 3;
 
-fn yes() -> bool {
-    true
-}
-
-#[derive(Deserialize)]
-struct AwaitResult {
-    #[serde(default)]
-    members: Vec<AwaitMember>,
-    #[serde(default)]
-    resolved_at_unix_ms: u64,
-}
-
-#[derive(Deserialize)]
-struct AwaitMember {
-    session_id: String,
-    #[serde(default)]
-    friendly_name: Option<String>,
-    #[serde(default)]
-    done: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AwaitState {
-    /// Worker ids the coordinator is waiting on right now.
-    pub waiting_on: Vec<String>,
-    /// Recent resolved waits: (worker name, resolved at, woke coordinator).
-    pub reports: Vec<Report>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Report {
-    pub name: String,
-    pub at_ms: u64,
-    pub woke: bool,
-}
-
-/// Await directories to read: beside the daemon socket first, then the
-/// resolved runtime dir. The app can inherit a `TMPDIR` (an agent scratch
-/// dir) that is not where the shared daemon writes `jcode-await-members`, so
-/// `runtime_dir()` alone found only stale waits and the strip never showed.
-pub fn await_dirs(socket: Option<&Path>, runtime: &Path) -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-    for base in socket.and_then(Path::parent).into_iter().chain([runtime]) {
-        let dir = base.join(AWAIT_MEMBERS_DIR);
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    dirs
-}
-
-/// Await state per coordinator from the daemon's durable await files.
-pub fn load_awaits(dir: &Path, now_ms: u64) -> HashMap<String, AwaitState> {
-    load_awaits_from(std::slice::from_ref(&dir.to_path_buf()), now_ms)
-}
-
-/// Like [`load_awaits`], merging several directories.
-pub fn load_awaits_from(dirs: &[std::path::PathBuf], now_ms: u64) -> HashMap<String, AwaitState> {
-    let files = dirs
+/// Rows to show under a coordinator: every live worker, plus the most recent
+/// finished ones, in the original order. Returns how many finished were
+/// folded away.
+pub fn visible_workers<T: Clone>(
+    rows: &[T],
+    state: impl Fn(&T) -> WorkerState,
+) -> (Vec<T>, usize) {
+    let finished = rows
         .iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flat_map(|entries| entries.flatten())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .filter_map(|p| std::fs::read(p).ok())
-        .filter_map(|bytes| serde_json::from_slice::<AwaitFile>(&bytes).ok());
-    collect_awaits(files, now_ms)
+        .enumerate()
+        .filter(|(_, row)| !state(row).is_live())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let hidden = finished.len().saturating_sub(FINISHED_VISIBLE);
+    let folded = &finished[..hidden];
+    let shown = rows
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !folded.contains(index))
+        .map(|(_, row)| row.clone())
+        .collect();
+    (shown, hidden)
 }
 
-fn collect_awaits(
-    files: impl IntoIterator<Item = AwaitFile>,
-    now_ms: u64,
-) -> HashMap<String, AwaitState> {
-    let mut map: HashMap<String, AwaitState> = HashMap::new();
-    let mut files = files.into_iter().collect::<Vec<_>>();
-    files.sort_by_key(|f| f.created_at_unix_ms);
-    for file in files {
-        match file.final_response {
-            None if file.deadline_unix_ms == 0 || file.deadline_unix_ms > now_ms => {
-                let state = map.entry(file.session_id).or_default();
-                for id in file.requested_ids {
-                    if !state.waiting_on.contains(&id) {
-                        state.waiting_on.push(id);
-                    }
-                }
-            }
-            None => {}
-            Some(result) => {
-                if now_ms.saturating_sub(result.resolved_at_unix_ms) > REPORT_VISIBLE_MS {
-                    continue;
-                }
-                let state = map.entry(file.session_id).or_default();
-                for member in result.members.into_iter().filter(|m| m.done) {
-                    let name = member
-                        .friendly_name
-                        .or_else(|| friendly_name(&member.session_id).map(str::to_owned))
-                        .unwrap_or(member.session_id);
-                    state.reports.push(Report {
-                        name,
-                        at_ms: result.resolved_at_unix_ms,
-                        woke: file.wake,
-                    });
-                }
-            }
+/// The composer's compact worker indicator: nothing unless some worker is
+/// still live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Indicator {
+    /// Live workers, running first.
+    pub workers: Vec<Worker>,
+}
+
+impl Indicator {
+    pub fn from_workers(workers: &[Worker]) -> Option<Self> {
+        let mut live = workers
+            .iter()
+            .filter(|w| w.state.is_live())
+            .cloned()
+            .collect::<Vec<_>>();
+        if live.is_empty() {
+            return None;
+        }
+        // Stable: catalog order is kept inside each group.
+        live.sort_by_key(|w| !w.state.is_active());
+        Some(Self { workers: live })
+    }
+
+    pub fn count(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// Spinning while anything is actually running, paused when every live
+    /// worker waits on a dependency.
+    pub fn glyph(&self) -> Glyph {
+        if self.workers.iter().any(|w| w.state.is_active()) {
+            Glyph::Spinner
+        } else {
+            Glyph::Pause
         }
     }
-    for state in map.values_mut() {
-        state.reports.sort_by_key(|r| std::cmp::Reverse(r.at_ms));
-        state.reports.dedup_by(|a, b| a.name == b.name);
+
+    pub fn tooltip(&self) -> String {
+        self.workers
+            .iter()
+            .map(|w| format!("{} · {}", w.name, w.status_text()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
-    map
 }
 
-/// What the coordinator's composer strip shows.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Strip {
-    pub workers: Vec<Worker>,
-    /// `Waiting for 2 workers: tulip (running 4m), rose (ready) · wakes when they report`
-    pub waiting: Option<String>,
-    /// `rose reported 2m ago · coordinator woke`
-    pub report: Option<String>,
+/// What the agent is doing, in one word for the composer's activity icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    Idle,
+    Thinking,
+    RunningTool,
+    WaitingOnWorkers,
 }
 
-pub fn strip(workers: &[Worker], awaits: Option<&AwaitState>, now_ms: u64) -> Option<Strip> {
-    if workers.is_empty() && awaits.is_none_or(|a| a.waiting_on.is_empty()) {
-        return None;
+/// The agent's own turn, as far as the icon cares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turn {
+    Idle,
+    /// Reasoning, streaming text, or waiting for the model.
+    Thinking,
+    Tools,
+}
+
+impl Activity {
+    /// A running turn wins. An idle coordinator with live workers is
+    /// waiting on them, not hung.
+    pub fn resolve(turn: Turn, live_workers: usize) -> Self {
+        match (turn, live_workers) {
+            (Turn::Tools, _) => Self::RunningTool,
+            (Turn::Thinking, _) => Self::Thinking,
+            (Turn::Idle, 0) => Self::Idle,
+            (Turn::Idle, _) => Self::WaitingOnWorkers,
+        }
     }
-    // Members whose live swarm status is terminal already reported. The
-    // await file still lists them until every requested member is done.
-    let parts = awaits
-        .map(|a| {
-            a.waiting_on
-                .iter()
-                .filter_map(|id| match workers.iter().find(|w| &w.session_id == id) {
-                    Some(w) if w.state.is_finished() => None,
-                    Some(w) => Some(format!("{} ({})", w.name, w.status_text())),
-                    None => Some(friendly_name(id).unwrap_or(id).to_owned()),
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let waiting = (!parts.is_empty()).then(|| {
-        let n = parts.len();
-        format!(
-            "Waiting for {n} worker{}: {} · wakes when they report",
-            if n == 1 { "" } else { "s" },
-            parts.join(", ")
-        )
-    });
-    let report = awaits.and_then(|a| a.reports.first()).map(|r| {
-        format!(
-            "{} reported {} ago{}",
-            r.name,
-            format_age(now_ms.saturating_sub(r.at_ms)),
-            if r.woke { " · coordinator woke" } else { "" }
-        )
-    });
-    Some(Strip {
-        workers: workers.to_vec(),
-        waiting,
-        report,
-    })
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Thinking => "Thinking",
+            Self::RunningTool => "Running tool",
+            Self::WaitingOnWorkers => "Waiting on workers",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -335,6 +304,11 @@ mod tests {
             "swarm_status": status, "last_active_at_ms": 1_000_000,
         }))
         .unwrap()
+    }
+
+    fn worker(name: &str, status: Option<&str>) -> Worker {
+        let id = format!("session_{name}_1_a");
+        Worker::from_session(&session(&id, Some("lead"), status), 1_000_000)
     }
 
     #[test]
@@ -369,21 +343,9 @@ mod tests {
     fn workers_group_under_coordinator_with_status_and_age() {
         let sessions = vec![
             session("session_microbe_1_a", None, Some("running")),
-            session(
-                "session_rose_2_b",
-                Some("session_microbe_1_a"),
-                Some("running"),
-            ),
-            session(
-                "session_tulip_3_c",
-                Some("session_microbe_1_a"),
-                Some("failed"),
-            ),
-            session(
-                "session_tulip_3_c",
-                Some("session_microbe_1_a"),
-                Some("failed"),
-            ),
+            session("session_rose_2_b", Some("session_microbe_1_a"), Some("running")),
+            session("session_tulip_3_c", Some("session_microbe_1_a"), Some("failed")),
+            session("session_tulip_3_c", Some("session_microbe_1_a"), Some("failed")),
             session("loop", Some("loop"), None),
         ];
         let map = workers_by_coordinator(&sessions, 1_240_000);
@@ -395,146 +357,91 @@ mod tests {
         assert_eq!(w[1].state, WorkerState::Failed);
     }
 
-    fn file(json: serde_json::Value) -> AwaitFile {
-        serde_json::from_value(json).unwrap()
+    /// User spec: spinner = running, check = done, x = failed, pause = waiting.
+    #[test]
+    fn each_state_has_the_status_glyph_the_user_asked_for() {
+        assert_eq!(worker("a", Some("running")).state.glyph(), Some(Glyph::Spinner));
+        assert_eq!(worker("a", Some("spawned")).state.glyph(), Some(Glyph::Spinner));
+        assert_eq!(worker("a", Some("ready")).state.glyph(), Some(Glyph::Check));
+        assert_eq!(worker("a", Some("completed")).state.glyph(), Some(Glyph::Check));
+        assert_eq!(worker("a", Some("stopped")).state.glyph(), Some(Glyph::Check));
+        assert_eq!(worker("a", Some("failed")).state.glyph(), Some(Glyph::Cross));
+        assert_eq!(worker("a", Some("crashed")).state.glyph(), Some(Glyph::Cross));
+        assert_eq!(worker("a", Some("blocked")).state.glyph(), Some(Glyph::Pause));
+        assert_eq!(worker("a", None).state.glyph(), None);
     }
 
+    /// A worker missing from the swarm snapshot still shows how it ended,
+    /// but an `active` record alone never claims it is running.
     #[test]
-    fn pending_awaits_and_recent_reports() {
-        let now = 10_000_000;
-        let awaits = collect_awaits(
-            [
-                file(
-                    serde_json::json!({"session_id":"c","requested_ids":["session_rose_2_b","session_tulip_3_c"],"created_at_unix_ms":1,"deadline_unix_ms":now+1}),
-                ),
-                // Expired pending wait is not a wait.
-                file(
-                    serde_json::json!({"session_id":"c","requested_ids":["old"],"created_at_unix_ms":0,"deadline_unix_ms":now-1}),
-                ),
-                file(
-                    serde_json::json!({"session_id":"c","requested_ids":["x"],"created_at_unix_ms":2,"deadline_unix_ms":now+1,
-                    "final_response":{"members":[{"session_id":"session_otter_9_z","friendly_name":"otter","done":true}],"resolved_at_unix_ms":now-120_000}}),
-                ),
-                // Stale report is hidden.
-                file(
-                    serde_json::json!({"session_id":"c","requested_ids":["y"],"created_at_unix_ms":3,"deadline_unix_ms":0,
-                    "final_response":{"members":[{"session_id":"s","friendly_name":"old","done":true}],"resolved_at_unix_ms":1}}),
-                ),
-            ],
-            now,
-        );
-        let c = &awaits["c"];
-        assert_eq!(c.waiting_on, vec!["session_rose_2_b", "session_tulip_3_c"]);
-        assert_eq!(c.reports.len(), 1);
-
-        let sessions = vec![session("session_rose_2_b", Some("c"), Some("running"))];
-        let workers = workers_by_coordinator(&sessions, 1_240_000)
-            .remove("c")
-            .unwrap();
-        let s = strip(&workers, Some(c), now).unwrap();
-        assert_eq!(
-            s.waiting.as_deref(),
-            Some("Waiting for 2 workers: rose (running 4m), tulip · wakes when they report")
-        );
-        assert_eq!(
-            s.report.as_deref(),
-            Some("otter reported 2m ago · coordinator woke")
-        );
-    }
-
-    /// User report: strip listed fish, fox, hamster, pig, rooster although
-    /// most had already finished. Only members still running count.
-    #[test]
-    fn waiting_strip_omits_finished_members() {
-        let state = AwaitState {
-            waiting_on: ["fish", "fox", "hamster", "pig", "rooster"]
-                .iter()
-                .map(|n| format!("session_{n}_1_a"))
-                .collect(),
-            ..Default::default()
+    fn unlisted_workers_fall_back_to_their_persisted_lifecycle() {
+        let with_status = |status: &str| {
+            let mut s = session("session_x_1_a", Some("lead"), None);
+            s.status = status.into();
+            worker_state(&s)
         };
-        let sessions = vec![
-            session("session_fish_1_a", Some("c"), Some("ready")),
-            session("session_fox_1_a", Some("c"), Some("completed")),
-            session("session_hamster_1_a", Some("c"), Some("stopped")),
-            session("session_pig_1_a", Some("c"), Some("failed")),
-            session("session_rooster_1_a", Some("c"), Some("running")),
+        assert_eq!(with_status("closed"), WorkerState::Ready);
+        assert_eq!(with_status("crashed"), WorkerState::Failed);
+        assert_eq!(with_status("active"), WorkerState::Unknown);
+        let mut listed = session("session_x_1_a", Some("lead"), Some("running"));
+        listed.status = "closed".into();
+        assert_eq!(worker_state(&listed), WorkerState::Running);
+    }
+
+    #[test]
+    fn indicator_counts_live_workers_and_hides_when_none() {
+        assert!(Indicator::from_workers(&[]).is_none());
+        let done = [worker("a", Some("ready")), worker("b", Some("failed")), worker("c", None)];
+        assert!(Indicator::from_workers(&done).is_none());
+
+        let mixed = [
+            worker("a", Some("ready")),
+            worker("b", Some("blocked")),
+            worker("c", Some("running")),
+            worker("d", Some("spawned")),
         ];
-        let workers = workers_by_coordinator(&sessions, 1_000_000)
-            .remove("c")
-            .unwrap();
-        let s = strip(&workers, Some(&state), 1_000_000).unwrap();
-        assert_eq!(
-            s.waiting.as_deref(),
-            Some("Waiting for 1 worker: rooster (running 0s) · wakes when they report")
-        );
-        let mut done = workers.clone();
-        done.iter_mut().for_each(|w| w.state = WorkerState::Stopped);
-        assert!(strip(&done, Some(&state), 0).unwrap().waiting.is_none());
+        let indicator = Indicator::from_workers(&mixed).unwrap();
+        assert_eq!(indicator.count(), 3);
+        assert_eq!(indicator.glyph(), Glyph::Spinner);
+        // Running first, then the paused one.
+        let names = indicator.workers.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["c", "d", "b"]);
+        assert_eq!(indicator.tooltip().lines().count(), 3);
+        assert!(indicator.tooltip().starts_with("c · running"));
+
+        let waiting = Indicator::from_workers(&[worker("a", Some("blocked"))]).unwrap();
+        assert_eq!(waiting.glyph(), Glyph::Pause);
     }
 
     #[test]
-    fn no_strip_without_workers_or_waits() {
-        assert!(strip(&[], None, 0).is_none());
-        assert!(strip(&[], Some(&AwaitState::default()), 0).is_none());
+    fn activity_covers_idle_thinking_tool_and_waiting_on_workers() {
+        use Activity::*;
+        assert_eq!(Activity::resolve(Turn::Idle, 0), Idle);
+        assert_eq!(Activity::resolve(Turn::Thinking, 0), Thinking);
+        assert_eq!(Activity::resolve(Turn::Tools, 0), RunningTool);
+        // Idle with workers still running is waiting, not hung.
+        assert_eq!(Activity::resolve(Turn::Idle, 3), WaitingOnWorkers);
+        // The agent's own turn wins over its workers.
+        assert_eq!(Activity::resolve(Turn::Thinking, 3), Thinking);
+        assert_eq!(Activity::resolve(Turn::Tools, 3), RunningTool);
+        assert_eq!(WaitingOnWorkers.label(), "Waiting on workers");
     }
 
     #[test]
-    fn load_awaits_reads_directory_and_skips_garbage() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("a.json"),
-            r#"{"session_id":"c","requested_ids":["w"],"deadline_unix_ms":0}"#,
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("b.json"), "nope").unwrap();
-        std::fs::write(dir.path().join("a.bak"), r#"{"session_id":"z"}"#).unwrap();
-        let map = load_awaits(dir.path(), 5);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map["c"].waiting_on, vec!["w"]);
-    }
-
-    /// Live acceptance regression: the coordinator's real pending await
-    /// (copied from the daemon's `jcode-await-members`) lives beside the
-    /// daemon socket, while the app's `TMPDIR` scratch dir holds only an old,
-    /// resolved one. Reading `runtime_dir()` alone showed no strip.
-    #[test]
-    fn live_pending_await_beside_daemon_socket_shows_waiting_strip() {
-        let daemon = tempfile::tempdir().unwrap();
-        let scratch = tempfile::tempdir().unwrap();
-        for (base, name, body) in [
-            (
-                daemon.path(),
-                "pending.json",
-                include_str!("swarm_view_fixtures/live_pending_await.json"),
-            ),
-            (
-                scratch.path(),
-                "old.json",
-                include_str!("swarm_view_fixtures/live_resolved_await.json"),
-            ),
-        ] {
-            let dir = base.join(AWAIT_MEMBERS_DIR);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(name), body).unwrap();
-        }
-        let coordinator = "session_microbe_1794670947943_2648f3bbec7c7e5e";
-        let now = 1_794_718_800_000;
-        let before = load_awaits(&scratch.path().join(AWAIT_MEMBERS_DIR), now);
-        assert!(
-            before
-                .get(coordinator)
-                .is_none_or(|a| a.waiting_on.is_empty())
-        );
-
-        let dirs = await_dirs(Some(&daemon.path().join("jcode.sock")), scratch.path());
-        let awaits = load_awaits_from(&dirs, now);
-        let state = &awaits[coordinator];
-        assert_eq!(state.waiting_on.len(), 3);
-        let s = strip(&[], Some(state), now).unwrap();
-        assert_eq!(
-            s.waiting.as_deref(),
-            Some("Waiting for 3 workers: fish, fox, hamster · wakes when they report")
-        );
+    fn sidebar_keeps_live_workers_and_only_the_latest_finished() {
+        let rows = ["a", "b", "c", "d", "e", "f"]
+            .into_iter()
+            .zip([
+                "ready", "running", "ready", "failed", "ready", "blocked",
+            ])
+            .map(|(name, status)| worker(name, Some(status)))
+            .collect::<Vec<_>>();
+        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
+        // a (oldest finished) folds away. Live b and f stay.
+        assert_eq!(names, ["b", "c", "d", "e", "f"]);
+        assert_eq!(hidden, 1);
+        let (all, none) = visible_workers(&rows[1..], |w| w.state);
+        assert_eq!((all.len(), none), (5, 0));
     }
 }

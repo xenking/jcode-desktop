@@ -86,10 +86,11 @@ mod ask;
 mod cache_miss;
 #[path = "panel_composer.rs"]
 mod composer;
-#[path = "panel_swarm_strip.rs"]
-mod swarm_strip;
-pub(crate) use swarm_strip::OpenSwarmWorker;
-pub(crate) use swarm_strip::state_color as swarm_state_color;
+#[path = "panel_swarm_card.rs"]
+mod swarm_card;
+#[path = "panel_swarm_indicator.rs"]
+mod swarm_indicator;
+pub(crate) use swarm_indicator::OpenSwarmWorker;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_effort.rs"]
@@ -530,8 +531,17 @@ pub struct Panel {
     surface_focused: bool,
     pub input: Entity<PromptInput>,
     pub(super) show_build_footer: bool,
-    /// Coordinator-only: workers, pending await and last report.
-    swarm_strip: Option<crate::swarm_view::Strip>,
+    /// Coordinator-only: its swarm workers, for the composer indicator.
+    swarm_workers: Vec<crate::swarm_view::Worker>,
+    /// The worker list opened from the composer's count is showing.
+    swarm_list_open: bool,
+    /// Animated status marks (activity icon, worker spinner and rows).
+    swarm_marks: crate::swarm_glyph::Marks,
+    /// Worker spend (model, provider, total tokens) for inline swarm cards.
+    swarm_usage: HashMap<String, jcode_desktop_harness::swarm_usage::WorkerUsage>,
+    /// Status glyphs inside swarm cards. Transcript rows render through
+    /// `&self`, hence the cell.
+    swarm_card_marks: std::cell::RefCell<crate::swarm_glyph::Marks>,
     voice: voice::VoiceState,
     image_pane_open: bool,
     image_pane_selected: Option<usize>,
@@ -1012,7 +1022,11 @@ impl Panel {
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             show_build_footer: true,
-            swarm_strip: None,
+            swarm_workers: Vec::new(),
+            swarm_list_open: false,
+            swarm_marks: Default::default(),
+            swarm_usage: Default::default(),
+            swarm_card_marks: Default::default(),
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
@@ -4004,7 +4018,7 @@ impl Panel {
                         cx,
                     );
                 }
-                if display.screenshot_mode {
+                if display.screenshot_mode && swarm_card::parse(name, input, output).is_none() {
                     return div()
                         .px_1()
                         .text_size(px(12.))
@@ -4029,6 +4043,18 @@ impl Panel {
                     .unwrap_or((0.0, 1.0, false));
                 if animating {
                     window.request_animation_frame();
+                }
+                if let Some(call) = swarm_card::parse(name, input, output) {
+                    return self.render_swarm_card(
+                        index,
+                        call_id,
+                        &call,
+                        *done,
+                        error.is_some(),
+                        offset,
+                        opacity,
+                        cx,
+                    );
                 }
                 let tool_card = crate::applet_runtime::get(cx)
                     .host
@@ -10110,6 +10136,30 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 percent: None,
                 done: true,
             },
+        ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("swarm") {
+        // The user's real workers (see workspace `load_real_swarm_fixture`).
+        let call = |id: &str, action: &str, intent: &str| Item::Tool {
+            call_id: format!("swarm-{id}"),
+            name: "swarm".into(),
+            input: format!(r#"{{"action":"{action}","intent":"{intent}","session_ids":["{id}"]}}"#),
+            output: String::new(),
+            done: true,
+            error: None,
+        };
+        return vec![
+            Item::User("Wait for the footer and swarm workers".into()),
+            call(
+                "session_rose_1794717290730_574aea8d9f6adcc3",
+                "await_members",
+                "Wait desktop-footer",
+            ),
+            call(
+                "session_badger_1794720615830_8c546c8d2a5870c4",
+                "status",
+                "Check swarm-ui-compact",
+            ),
         ];
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("orb-todos") {

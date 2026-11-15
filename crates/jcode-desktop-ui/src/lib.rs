@@ -37,6 +37,7 @@ mod restart_spawn;
 mod resume_content_search;
 mod sound_events;
 mod sounds;
+mod swarm_glyph;
 mod swarm_view;
 mod terminal;
 #[cfg(test)]
