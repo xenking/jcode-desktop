@@ -284,4 +284,74 @@ mod tests {
         assert!(card.chosen[0].is_empty());
         assert!(card.complete());
     }
+
+    /// The wire frame the Desktop harness emits for the real `ask` call a model
+    /// made in an isolated jcode session (question text and options verbatim
+    /// from the session journal). Proves the card paints and answers end to end.
+    const REAL_ASK_REQUEST: &str = r#"{
+        "ev": "ask_request", "session_id": "session-a",
+        "request_id": "ask-toolu_01J29QR2NCg12HueHJkMWtZU",
+        "tool_call_id": "toolu_01J29QR2NCg12HueHJkMWtZU",
+        "questions": [{"header": "Database", "question": "Which database should the new web service use?",
+            "options": [
+                {"description": "Relational, scalable, rich features", "label": "Postgres"},
+                {"description": "Embedded, zero-ops, single node", "label": "SQLite"},
+                {"description": "Managed NoSQL on AWS", "label": "DynamoDB"}]}]
+    }"#;
+
+    #[gpui::test]
+    fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        // The composer (and the ask card above it) docks over a real transcript.
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(40, cx));
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            if vcx.debug_bounds("composer-dock").is_some() {
+                break;
+            }
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        assert!(vcx.debug_bounds("composer-dock").is_some());
+        assert!(vcx.debug_bounds("ask-card").is_none());
+
+        let event: jcode_sdk::ApiEvent =
+            serde_json::from_str(REAL_ASK_REQUEST).expect("real ask_request frame parses");
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+
+        assert!(vcx.debug_bounds("ask-card").is_some(), "ask card paints");
+        for selector in ["ask-option-0-0", "ask-option-0-1", "ask-option-0-2"] {
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector} paints");
+        }
+        assert!(vcx.debug_bounds("ask-decline").is_some());
+
+        let sqlite = vcx.debug_bounds("ask-option-0-1").unwrap();
+        vcx.simulate_click(sqlite.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            let card = panel.ask_card.as_ref().expect("card still open");
+            assert_eq!(card.chosen[0], vec![1]);
+            let answers = card.response().answers.unwrap();
+            assert_eq!(answers[0].selected, vec!["SQLite"]);
+        });
+
+        let submit = vcx.debug_bounds("ask-submit").unwrap();
+        vcx.simulate_click(submit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-card").is_none(), "card closes after submit");
+        panel.read_with(vcx, |panel, _| assert!(panel.ask_card.is_none()));
+    }
 }
