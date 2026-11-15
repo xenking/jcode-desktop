@@ -1261,6 +1261,52 @@ mod tests {
     }
 
     #[gpui::test]
+    fn decline_sends_empty_response_and_renders_question_status(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            if vcx.debug_bounds("ask-decline").is_some() {
+                break;
+            }
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        let decline = vcx.debug_bounds("ask-decline").unwrap();
+        vcx.simulate_click(decline.center(), gpui::Modifiers::default());
+        assert!(
+            commands.try_iter().any(|command| matches!(command,
+                crate::harness::Command::AskResponse { response, .. } if response.answers.is_none()
+            )),
+            "decline must send an empty response"
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&jcode_sdk::ApiEvent::ToolDone {
+                session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(),
+                name: "ask".into(), output: "User declined to answer the questions.".into(), error: None,
+            }, cx);
+            assert!(panel.ask_card.is_none());
+            let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
+            let text = result_text(input, output, error.as_deref());
+            assert!(text.contains("Which database") && text.contains("declined"), "{text}");
+        });
+    }
+
+    #[gpui::test]
     fn cancelled_ask_closes_and_renders_questions_and_status(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
