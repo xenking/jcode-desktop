@@ -574,3 +574,123 @@ fn send_now_arrow_sends_one_queued_prompt_immediately(cx: &mut gpui::TestAppCont
         assert_eq!(p.prompt_queue.prompts[0].content, "first queued");
     });
 }
+
+fn steered_panel<'a>(
+    cx: &'a mut gpui::TestAppContext,
+    id: &str,
+) -> (
+    gpui::Entity<Panel>,
+    &'a mut gpui::VisualTestContext,
+    std::sync::mpsc::Receiver<Command>,
+) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let id = id.to_string();
+    let (panel, vcx) = cx.add_window_view(move |_, cx| {
+        let mut p = Panel::new(id, None, None, bridge, cx);
+        p.history_loaded = true;
+        p.status = "running".into();
+        p.items.push(Item::User("First request".into()));
+        p.pending_users.push_back(0);
+        p.apply(&event(json!({"ev":"message_accepted"})), cx);
+        p.apply(&event(json!({"ev":"text_delta", "text":"Working on it"})), cx);
+        p
+    });
+    (panel, vcx, commands)
+}
+
+#[gpui::test]
+fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx, commands) = steered_panel(cx, "steer-row");
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("please look at this now".into(), vec![], false, cx)
+    });
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::Send { .. })));
+
+    // Real pending-interrupt state: sent to the runtime, not yet delivered.
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 1);
+        assert_eq!(
+            p.items
+                .iter()
+                .filter(|item| matches!(item, Item::User(_)))
+                .count(),
+            1,
+            "an undelivered message is not a transcript message yet"
+        );
+    });
+    let row = vcx
+        .debug_bounds("steered-prompt-0")
+        .expect("queued row must render immediately");
+    let input = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(row.bottom() <= input.top(), "row sits above the composer");
+    assert!(vcx.debug_bounds("steered-count").is_none(), "one message needs no count");
+
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("and this too".into(), vec![], false, cx)
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-count").is_some(), "count marker with two");
+
+    // Delivered: both become one transcript pass, after the streamed text.
+    panel.update(vcx, |p, cx| {
+        p.apply(
+            &event(json!({"ev":"soft_interrupt_injected", "client_ids":[], "point":"D"})),
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-prompt-0").is_none());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 0);
+        let texts: Vec<&str> = p
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::User(text) => Some(text.as_str()),
+                Item::Assistant(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "First request",
+                "Working on it",
+                "please look at this now",
+                "and this too"
+            ]
+        );
+    });
+}
+
+#[gpui::test]
+fn steered_row_does_not_appear_when_idle_and_survives_no_turn_end(cx: &mut gpui::TestAppContext) {
+    let (bridge, _commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(move |_, cx| {
+        let mut p = Panel::new("steer-idle".into(), None, None, bridge, cx);
+        p.history_loaded = true;
+        p.status = "idle".into();
+        p
+    });
+    panel.update(vcx, |p, cx| p.submit_or_queue("hello".into(), vec![], false, cx));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-prompt-0").is_none());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 0);
+        assert!(p.items.iter().any(|item| matches!(item, Item::User(t) if t == "hello")));
+    });
+}
+
+#[gpui::test]
+fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx, _commands) = steered_panel(cx, "steer-end");
+    panel.update(vcx, |p, cx| p.submit_or_queue("late note".into(), vec![], false, cx));
+    panel.update(vcx, |p, cx| {
+        p.apply(&event(json!({"ev":"turn_done"})), cx);
+    });
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 0);
+        assert!(p.items.iter().any(|item| matches!(item, Item::User(t) if t == "late note")));
+    });
+}

@@ -18,6 +18,11 @@ pub struct PromptQueue {
     resume_after_retry: bool,
     #[serde(default)]
     pub(super) waiting_for_connection: bool,
+    /// Prompts sent mid-turn as steering. The runtime holds them until the
+    /// model can see them, so they show above the composer, not in the
+    /// transcript, until `soft_interrupt_injected` says they were delivered.
+    #[serde(skip)]
+    steered: Vec<QueuedPrompt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,6 +34,67 @@ struct QueuedPrompt {
 impl Panel {
     pub(super) fn has_queued_prompts(&self) -> bool {
         !self.prompt_queue.prompts.is_empty()
+    }
+
+    /// Prompts handed to the runtime as steering and not yet delivered.
+    pub(super) fn steered_prompt_count(&self) -> usize {
+        self.prompt_queue.steered.len()
+    }
+
+    /// True when a send goes to a turn that is already running, so the model
+    /// only sees it at its next safe point. Before a turn is acknowledged the
+    /// prompt still echoes at once, as it always did.
+    fn send_is_steering(&self) -> bool {
+        self.activity_active()
+    }
+
+    /// Delivered: the steered prompts become ordinary user messages.
+    fn deliver_steered_prompts(&mut self) {
+        for prompt in std::mem::take(&mut self.prompt_queue.steered) {
+            self.push_user_prompt(prompt.content, prompt.images);
+        }
+    }
+
+    fn push_user_prompt(&mut self, content: String, images: Vec<(String, String)>) {
+        let index = self.items.len();
+        self.items.push(Item::User(content));
+        self.stamp_user(index);
+        self.items.extend(
+            images.into_iter().map(|(media_type, data)| {
+                Item::Image(TranscriptImage::new(media_type, data, None))
+            }),
+        );
+        self.stick_to_bottom = true;
+        self.transcript_list.scroll_to_end();
+    }
+
+    fn observe_steered_prompts(&mut self, event: &ApiEvent) {
+        if self.prompt_queue.steered.is_empty() {
+            return;
+        }
+        match event {
+            // The runtime took it as a new turn after all: nothing to wait for.
+            ApiEvent::MessageAccepted { .. } => self.deliver_steered_prompts(),
+            // The runtime drains its whole queue when it injects, and user
+            // messages carry no display role.
+            ApiEvent::SoftInterruptInjected {
+                display_role: None, ..
+            } => {
+                // Output before the injection belongs above the prompt.
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.deliver_steered_prompts();
+            }
+            // Nothing is left that could still deliver them: the turn ended
+            // with no interrupt waiting, or stopped. Keep the text, in order.
+            ApiEvent::TurnDone {
+                pending_soft_interrupts: None | Some(0),
+                ..
+            }
+            | ApiEvent::TurnStopped { .. }
+            | ApiEvent::Error { .. } => self.deliver_steered_prompts(),
+            _ => {}
+        }
     }
 
     pub(super) fn pause_queue_for_stop(&mut self) {
@@ -78,6 +144,7 @@ impl Panel {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
+        let steering = self.send_is_steering();
         self.bridge.send(Command::Send {
             session_id: self.session_id.clone(),
             content: content.clone(),
@@ -91,6 +158,13 @@ impl Panel {
         }
         if let Some(layout) = &mut self.startup_layout {
             layout.committed = true;
+        }
+        if steering {
+            // Not delivered yet: show it as queued, and let the transcript
+            // take it once the model has seen it.
+            self.prompt_queue.steered.push(QueuedPrompt { content, images });
+            crate::sounds::play(crate::sounds::Cue::Sent, cx);
+            return;
         }
         let index = self.items.len();
         self.items.push(Item::User(content));
@@ -107,6 +181,7 @@ impl Panel {
     }
 
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        self.observe_steered_prompts(event);
         self.prompt_queue.auto_poke.observe(event);
         match event {
             ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => {
@@ -222,7 +297,77 @@ impl Panel {
         cx.notify();
     }
 
+    /// Everything waiting above the composer: prompts already handed to the
+    /// runtime as steering, then prompts held back until the turn ends.
     pub(super) fn render_prompt_queue(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let steered = self.render_steered_prompts();
+        let waiting = self.render_waiting_prompts(cx);
+        if steered.is_none() && waiting.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .min_w_0()
+                .children(steered)
+                .children(waiting)
+                .into_any_element(),
+        )
+    }
+
+    /// Dim `queued ⏎ <text>` rows for prompts the runtime has not delivered.
+    fn render_steered_prompts(&self) -> Option<gpui::AnyElement> {
+        let steered = &self.prompt_queue.steered;
+        if steered.is_empty() {
+            return None;
+        }
+        const SHOWN: usize = 3;
+        let theme = Theme::global();
+        let count = steered.len();
+        Some(
+            div()
+                .id("steered-prompts")
+                .debug_selector(|| "steered-prompts".into())
+                .flex_none()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .mx_2()
+                .px_2()
+                .gap_1()
+                .text_size(px(12.))
+                .text_color(theme.TEXT_DIM)
+                .children(steered.iter().take(SHOWN).enumerate().map(|(index, prompt)| {
+                    let preview = steered_preview(&prompt.content, prompt.images.len());
+                    div()
+                        .debug_selector(move || format!("steered-prompt-{index}").into())
+                        .flex()
+                        .flex_none()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_none().child("queued ⏎"))
+                        .child(div().flex_1().min_w_0().truncate().child(preview))
+                        .when(index == 0 && count > 1, |row| {
+                            row.child(
+                                div()
+                                    .debug_selector(|| "steered-count".into())
+                                    .flex_none()
+                                    .child(format!("⏎ {count}")),
+                            )
+                        })
+                }))
+                .when(count > SHOWN, |el| {
+                    el.child(div().child(format!("+{} more queued", count - SHOWN)))
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn render_waiting_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.prompt_queue.prompts.is_empty() {
             return None;
         }
@@ -324,6 +469,20 @@ impl Panel {
                 .into_any_element(),
         )
     }
+}
+
+/// First characters of a steered prompt, on one line.
+fn steered_preview(content: &str, images: usize) -> String {
+    const CHARS: usize = 100;
+    let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview: String = flat.chars().take(CHARS).collect();
+    if flat.chars().count() > CHARS {
+        preview.push('…');
+    }
+    if images > 0 {
+        preview.push_str(&format!(" · {images} image(s)"));
+    }
+    preview
 }
 
 fn queue_action(
