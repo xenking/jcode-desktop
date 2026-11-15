@@ -560,7 +560,7 @@ fn main() {
     }
     configure_system_allocator();
     // SAFETY: no other thread exists yet.
-    unsafe { jcode_desktop_harness::platform::normalize_runtime_dir() };
+    unsafe { jcode_desktop_ui::normalize_runtime_dir() };
     jcode_desktop_ui::memory::disable_transparent_huge_pages();
     // A system package cannot update itself. Once an update adopted a newer
     // per-user copy, launching the system copy runs that one instead, for

@@ -399,3 +399,13 @@ pub fn plugin_api() -> PluginApi {
 pub unsafe extern "C-unwind" fn jcode_desktop_ui_plugin() -> PluginApi {
     plugin_api()
 }
+
+/// Point the runtime dir at the live shared daemon when the inherited
+/// `TMPDIR` holds only a stale socket.
+///
+/// # Safety
+/// Mutates the process environment, so call before other threads exist.
+pub unsafe fn normalize_runtime_dir() {
+    // SAFETY: forwarded caller contract.
+    unsafe { platform::normalize_runtime_dir() }
+}
