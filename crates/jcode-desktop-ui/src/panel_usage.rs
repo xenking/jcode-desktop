@@ -132,7 +132,7 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
         .into_any_element()
 }
 
-fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
+pub(crate) fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
     if used >= 90. {
         theme.ERROR
     } else if used >= 70. {
@@ -197,7 +197,7 @@ fn first_usd(text: &str) -> Option<String> {
     Some(format!("${value:.2}"))
 }
 
-fn footer_quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
+pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
     let mut chips = Vec::new();
     for (id, logo, provider) in FOOTER_QUOTA_PROVIDERS {
         let Some(account) = accounts
@@ -287,11 +287,12 @@ fn footer_quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
 }
 
 impl Panel {
+    #[allow(dead_code)] // moved to the sidebar's quota row; kept as the bar's fallback renderer
     pub(super) fn render_provider_usage_footer(&self, cx: &App) -> Option<gpui::Div> {
         if crate::harness::remote_host(&self.session_id).is_some() {
             return None;
         }
-        let chips = footer_quota_chips(&cx.try_global::<StatusAccounts>()?.0);
+        let chips = quota_chips(&cx.try_global::<StatusAccounts>()?.0);
         if chips.is_empty() {
             return None;
         }
@@ -588,6 +589,7 @@ impl Panel {
         )
     }
 
+    #[allow(dead_code)] // session spend no longer sits in the bar
     pub(super) fn render_usage_meters(&self) -> Option<gpui::Div> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
@@ -693,7 +695,7 @@ mod tests {
             usage_percent: 99.,
             reset_in: Some("7h".into()),
         });
-        let chips = footer_quota_chips(&accounts);
+        let chips = quota_chips(&accounts);
         let labels: Vec<_> = chips.iter().map(|c| (c.logo, c.label())).collect();
         assert_eq!(
             labels,
@@ -705,7 +707,7 @@ mod tests {
         );
         // Unreported windows are never fabricated.
         accounts[1].limits[0].usage_percent = f32::NAN;
-        assert_eq!(footer_quota_chips(&accounts).len(), 1);
+        assert_eq!(quota_chips(&accounts).len(), 1);
     }
 
     #[gpui::test]
@@ -762,7 +764,7 @@ mod tests {
                  "extra_info":[["Balance","$12.34 / $20.00"],["Today","$0.42"]],"error":null}
             ]}"#,
         );
-        let chips = footer_quota_chips(&accounts);
+        let chips = quota_chips(&accounts);
         let labels: Vec<(&'static str, String)> =
             chips.iter().map(|chip| (chip.logo, chip.label())).collect();
         assert_eq!(
@@ -813,12 +815,16 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        let pill = vcx
-            .debug_bounds("panel-quota-opencode-go")
-            .expect("OpenCode Go quota pill in the composer footer");
-        assert!(pill.size.width > px(20.) && pill.size.height > px(0.));
-        let context = vcx.debug_bounds("panel-context-meter").unwrap();
-        assert!(context.right() <= pill.left());
+        // Quota moved to the sidebar's bottom block; the composer bar paints
+        // no provider figure at all now.
+        assert!(vcx.debug_bounds("panel-quota-opencode-go").is_none());
+        let chips = vcx
+            .update(|_, cx| quota_chips(&cx.try_global::<StatusAccounts>().expect("accounts").0));
+        let chip = chips
+            .iter()
+            .find(|chip| chip.logo == "opencode-go")
+            .expect("OpenCode Go reports a quota window");
+        assert_eq!(chip.value, "23%");
     }
 
     #[test]
@@ -934,16 +940,12 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
         let context = vcx.debug_bounds("panel-context-meter").unwrap();
-        let usage = vcx
-            .debug_bounds("panel-provider-usage")
-            .expect("inline quota footer");
-        assert!(context.right() <= usage.left());
-        assert!(usage.size.width > px(0.));
-        let login = vcx.debug_bounds("panel-login").unwrap();
+        // Quota moved to the sidebar's bottom block; the bar keeps the ring
+        // and no provider figure.
+        assert!(vcx.debug_bounds("panel-provider-usage").is_none());
+        assert!(vcx.debug_bounds("panel-login").is_none());
         assert!(vcx.debug_bounds("panel-model").unwrap().size.width > px(20.));
-        // The context ring rides in the composer's pill row, after the method.
-        assert!(login.right() <= context.left());
-        assert!((f32::from(context.center().y - login.center().y)).abs() < 1.);
+        assert!(context.size.width > px(0.));
         workspace.update(vcx, |workspace, cx| {
             workspace.test_panel(0).unwrap().update(cx, |panel, cx| {
                 panel.auth_method = Some("api key".into());
@@ -977,7 +979,9 @@ mod tests {
             });
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-api-cost").is_some());
+        // Session spend reads in the accounts page; the bar keeps identity and
+        // session state only.
+        assert!(vcx.debug_bounds("panel-api-cost").is_none());
         assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
         assert!(vcx.debug_bounds("panel-context-ring").is_some());
     }

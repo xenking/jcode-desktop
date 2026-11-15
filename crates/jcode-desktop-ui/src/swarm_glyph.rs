@@ -192,7 +192,12 @@ impl Render for MarkView {
 
 /// One leaf view per key, created on first use.
 #[derive(Default)]
-pub(crate) struct Marks(HashMap<String, Entity<MarkView>>);
+pub(crate) struct Marks {
+    marks: HashMap<String, Entity<MarkView>>,
+    /// The composer's cache countdown. A leaf view for the same reason: its
+    /// own tick repaints the label, never the panel around it.
+    cache: Option<Entity<crate::panel::cache_timer::CachePill>>,
+}
 
 impl Marks {
     /// The mark for `key`. Still marks are plain icons. Animated ones are
@@ -210,7 +215,7 @@ impl Marks {
                 .child(mark.render(None))
                 .into_any_element();
         }
-        if let Some(view) = self.0.get(key) {
+        if let Some(view) = self.marks.get(key) {
             if view.read(cx).mark != mark {
                 view.update(cx, |view, cx| {
                     view.mark = mark;
@@ -223,13 +228,33 @@ impl Marks {
             mark,
             tick_pending: Rc::default(),
         });
-        self.0.insert(key.to_owned(), view.clone());
+        self.marks.insert(key.to_owned(), view.clone());
         view.into_any_element()
+    }
+
+    /// The `cache 47m` pill, updated in place when a newer turn refreshes the
+    /// window so its countdown anchor moves with the facts.
+    pub(crate) fn cache_pill<T: 'static>(
+        &mut self,
+        facts: crate::panel::cache_timer::CacheFacts,
+        cx: &mut Context<T>,
+    ) -> AnyElement {
+        match self.cache.clone() {
+            Some(view) => {
+                view.update(cx, |view, cx| view.set(facts, cx));
+                view.into_any_element()
+            }
+            None => {
+                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(facts));
+                self.cache = Some(view.clone());
+                view.into_any_element()
+            }
+        }
     }
 
     #[allow(dead_code)]
     pub(crate) fn retain(&mut self, mut live: impl FnMut(&str) -> bool) {
-        self.0.retain(|key, _| live(key));
+        self.marks.retain(|key, _| live(key));
     }
 }
 

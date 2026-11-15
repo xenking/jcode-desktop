@@ -114,28 +114,35 @@ pub(crate) fn spoken(effort: &str) -> String {
     }
 }
 
-/// Ink for a level glyph. Lanes ramp from the quiet chrome tint (`none`) to
-/// the brand accent (`max`), so a stronger level reads as stronger without
-/// spelling it out.
+/// Ink for a level glyph.
+///
+/// The ladder is a heat scale, not a fade to the brand accent: the quiet rungs
+/// stay cool and dim, medium is the chrome's neutral ink, high warms to amber,
+/// and the top rungs are hot. A glance then says how hard the model is priced
+/// to think without reading the glyph's name. The TUI's status line uses the
+/// same scale (`jcode_tui_style::effort_ramp`).
+///
+/// The warm end is fixed rather than theme-keyed: every palette needs the same
+/// warm/hot signal, and a monochrome palette would otherwise erase the top.
 pub(crate) fn tint(effort: &str, theme: &Theme) -> gpui::Rgba {
-    match jcode_provider_core::reasoning_effort_rank(effort) {
-        Some(rank) => {
-            let top = jcode_provider_core::REASONING_EFFORT_MAX_RANK.max(1) as f32;
-            mix(theme.TEXT_FAINT, theme.ACCENT, rank as f32 / top)
-        }
-        None => theme.TEXT_FAINT,
-    }
-}
-
-/// Linear blend of two inks; `t` is clamped to `0..=1`.
-fn mix(from: gpui::Rgba, to: gpui::Rgba, t: f32) -> gpui::Rgba {
-    let t = t.clamp(0., 1.);
-    let lerp = |a: f32, b: f32| a + (b - a) * t;
-    gpui::Rgba {
-        r: lerp(from.r, to.r),
-        g: lerp(from.g, to.g),
-        b: lerp(from.b, to.b),
-        a: lerp(from.a, to.a),
+    use gpui::Rgba;
+    let rgb = |hex: u32| Rgba {
+        r: ((hex >> 16) & 0xff) as f32 / 255.,
+        g: ((hex >> 8) & 0xff) as f32 / 255.,
+        b: (hex & 0xff) as f32 / 255.,
+        a: 1.,
+    };
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "minimal" => theme.TEXT_FAINT,
+        // Cool: paid the least thinking, reads as the quiet end of the scale.
+        "low" => rgb(0x6f9ed6),
+        "medium" => theme.TEXT_DIM,
+        // Warm, then hot.
+        "high" => rgb(0xe0a458),
+        "xhigh" => rgb(0xe8734a),
+        "max" => rgb(0xe0453f),
+        // Swarm modes are orchestration sentinels, not rungs.
+        _ => theme.TEXT_FAINT,
     }
 }
 
@@ -370,15 +377,42 @@ mod tests {
         assert_eq!(tooltip("swarm"), "Reasoning effort: Swarm");
     }
 
+    /// The ladder is a heat scale: cool low rungs, a neutral middle, warm high
+    /// rungs and a hot top. Neighbouring levels never share an ink, so the
+    /// glyph's color alone tells low from high.
     #[test]
-    fn glyph_tint_ramps_from_chrome_ink_to_accent() {
+    fn glyph_tint_is_a_heat_scale() {
         let theme = Theme::global();
-        assert_eq!(tint("none", theme), theme.TEXT_FAINT);
-        assert_eq!(tint("max", theme), theme.ACCENT);
-        assert_eq!(tint("swarm", theme), theme.TEXT_FAINT);
-        let mid = tint("medium", theme);
-        assert_ne!(mid, theme.TEXT_FAINT);
-        assert_ne!(mid, theme.ACCENT);
+        let levels = ["none", "low", "medium", "high", "xhigh", "max"];
+        let inks = levels.map(|level| tint(level, theme));
+        for (index, pair) in inks.windows(2).enumerate() {
+            assert_ne!(
+                pair[0],
+                pair[1],
+                "{} and {} share an ink",
+                levels[index],
+                levels[index + 1]
+            );
+        }
+        assert_eq!(
+            tint("none", theme),
+            theme.TEXT_FAINT,
+            "the weakest rung is chrome ink"
+        );
+        let low = inks[1];
+        let high = inks[3];
+        assert!(low.b > low.r, "low is cool (more blue than red): {low:?}");
+        assert!(
+            high.r > high.b,
+            "high is warm (more red than blue): {high:?}"
+        );
+        let max = inks[5];
+        assert!(max.r > max.g && max.r > max.b, "max is hot: {max:?}");
+        assert_eq!(
+            tint("swarm", theme),
+            theme.TEXT_FAINT,
+            "modes are not rungs"
+        );
     }
 
     #[test]

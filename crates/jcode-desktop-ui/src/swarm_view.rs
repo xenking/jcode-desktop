@@ -150,10 +150,7 @@ pub fn resolve_worker_state(
     };
     // Only an actively producing phase contradicts a finished word. A final
     // assistant message reads as `thinking`, so recency gates it.
-    let producing = matches!(
-        meta.phase,
-        Some(WorkerPhase::Tool | WorkerPhase::Thinking)
-    );
+    let producing = matches!(meta.phase, Some(WorkerPhase::Tool | WorkerPhase::Thinking));
     let recent = meta.last_activity_ms.is_some_and(|last| {
         let last = u64::try_from(last).unwrap_or(0);
         now_ms.saturating_sub(last) <= STALE_TERMINAL_GRACE_MS
@@ -184,10 +181,10 @@ impl Worker {
         let meta = meta.cloned().unwrap_or_default();
         // A worker's own newest message is fresher than the daemon's
         // last-active stamp, which only moves when a process starts.
-        let last = meta
-            .last_activity_ms
-            .map(|ms| ms as u64)
-            .or(session.last_active_at_ms.or(session.updated_at_ms).map(|ms| ms as u64));
+        let last = meta.last_activity_ms.map(|ms| ms as u64).or(session
+            .last_active_at_ms
+            .or(session.updated_at_ms)
+            .map(|ms| ms as u64));
         let name = display_name(session);
         Self {
             icon: friendly_name(&session.session_id)
@@ -277,15 +274,22 @@ impl Worker {
     /// Everything the row had to leave out, for the hover tooltip.
     pub fn tooltip(&self) -> String {
         let mut parts = vec![self.name.clone()];
-        if let Some(label) = self.label.as_deref().filter(|label| !label.trim().is_empty()) {
+        if let Some(label) = self
+            .label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+        {
             parts.push(label.to_owned());
         }
         parts.push(self.status_text());
-        let route = [self.meta.provider.as_deref().map(provider_label), self.meta.model.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("/");
+        let route = [
+            self.meta.provider.as_deref().map(provider_label),
+            self.meta.model.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("/");
         if !route.is_empty() {
             parts.push(route);
         }
@@ -330,18 +334,30 @@ fn short_tokens(count: u64) -> String {
 /// (subscription seats) or the model is not in any pricing catalog.
 fn metered_cost(meta: &WorkerMeta) -> Option<f64> {
     let provider = meta.provider.as_deref()?.trim().to_ascii_lowercase();
-    let model = meta.model.as_deref().filter(|model| !model.trim().is_empty())?;
+    let model = meta
+        .model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())?;
     // A seat bills a flat subscription: any number here would be invented.
     if provider.contains("oauth")
-        || ["copilot", "cursor", "jcode", "subscription", "claude-max", "chatgpt"]
-            .iter()
-            .any(|seat| provider.contains(seat))
+        || [
+            "copilot",
+            "cursor",
+            "jcode",
+            "subscription",
+            "claude-max",
+            "chatgpt",
+        ]
+        .iter()
+        .any(|seat| provider.contains(seat))
     {
         return None;
     }
     let cost = jcode_base::model_pricing::lookup(&provider, model)?;
     let price = |per_mtok: f64| per_mtok / 1_000_000.0;
-    let read = cost.cache_read_usd_per_mtok.unwrap_or(cost.input_usd_per_mtok);
+    let read = cost
+        .cache_read_usd_per_mtok
+        .unwrap_or(cost.input_usd_per_mtok);
     let write = cost
         .cache_write_usd_per_mtok
         .unwrap_or(cost.input_usd_per_mtok);
@@ -496,10 +512,7 @@ pub const FINISHED_VISIBLE: usize = 3;
 /// newest first and `sidebar_swarm::groups` keeps that order, so the first
 /// finished row is the newest. The fold therefore drops the tail, never the
 /// head, or the workers that just finished are the first to disappear.
-pub fn visible_workers<T: Clone>(
-    rows: &[T],
-    state: impl Fn(&T) -> WorkerState,
-) -> (Vec<T>, usize) {
+pub fn visible_workers<T: Clone>(rows: &[T], state: impl Fn(&T) -> WorkerState) -> (Vec<T>, usize) {
     let finished = rows
         .iter()
         .enumerate()
@@ -523,6 +536,54 @@ pub fn visible_workers<T: Clone>(
 pub struct Indicator {
     /// Live workers, running first.
     pub workers: Vec<Worker>,
+}
+
+/// Where the swarm's work stands, the three segments the composer pill draws:
+/// running now, parked on a dependency, already reported. A finished worker
+/// stays in the list until the workspace refreshes, so the done segment shows
+/// what the turn produced before the pill disappears.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SwarmTally {
+    pub running: usize,
+    pub waiting: usize,
+    pub done: usize,
+}
+
+impl SwarmTally {
+    pub fn of(workers: &[Worker]) -> Self {
+        let mut tally = Self::default();
+        for worker in workers {
+            match worker.state {
+                WorkerState::Running => tally.running += 1,
+                // Queued behind a dependency and blocked on one read the same
+                // in the bar: neither is making progress yet.
+                WorkerState::Queued | WorkerState::Blocked => tally.waiting += 1,
+                WorkerState::Ready | WorkerState::Failed | WorkerState::Stopped => tally.done += 1,
+                WorkerState::Unknown => {}
+            }
+        }
+        tally
+    }
+
+    pub fn total(&self) -> usize {
+        self.running + self.waiting + self.done
+    }
+
+    /// `1 running · 2 waiting · 3 done`, with empty parts dropped so a uniform
+    /// swarm reads as one phrase.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for (count, word) in [
+            (self.running, "running"),
+            (self.waiting, "waiting"),
+            (self.done, "done"),
+        ] {
+            if count > 0 {
+                parts.push(format!("{count} {word}"));
+            }
+        }
+        parts.join(" · ")
+    }
 }
 
 impl Indicator {
@@ -661,9 +722,21 @@ mod tests {
     fn workers_group_under_coordinator_with_status_and_age() {
         let sessions = vec![
             session("session_microbe_1_a", None, Some("running")),
-            session("session_rose_2_b", Some("session_microbe_1_a"), Some("running")),
-            session("session_tulip_3_c", Some("session_microbe_1_a"), Some("failed")),
-            session("session_tulip_3_c", Some("session_microbe_1_a"), Some("failed")),
+            session(
+                "session_rose_2_b",
+                Some("session_microbe_1_a"),
+                Some("running"),
+            ),
+            session(
+                "session_tulip_3_c",
+                Some("session_microbe_1_a"),
+                Some("failed"),
+            ),
+            session(
+                "session_tulip_3_c",
+                Some("session_microbe_1_a"),
+                Some("failed"),
+            ),
             session("loop", Some("loop"), None),
         ];
         let map = workers_by_coordinator(&sessions, &HashMap::new(), 1_240_000);
@@ -678,14 +751,35 @@ mod tests {
     /// User spec: spinner = running, check = done, x = failed, pause = waiting.
     #[test]
     fn each_state_has_the_status_glyph_the_user_asked_for() {
-        assert_eq!(worker("a", Some("running")).state.glyph(), Some(Glyph::Spinner));
-        assert_eq!(worker("a", Some("spawned")).state.glyph(), Some(Glyph::Spinner));
+        assert_eq!(
+            worker("a", Some("running")).state.glyph(),
+            Some(Glyph::Spinner)
+        );
+        assert_eq!(
+            worker("a", Some("spawned")).state.glyph(),
+            Some(Glyph::Spinner)
+        );
         assert_eq!(worker("a", Some("ready")).state.glyph(), Some(Glyph::Check));
-        assert_eq!(worker("a", Some("completed")).state.glyph(), Some(Glyph::Check));
-        assert_eq!(worker("a", Some("stopped")).state.glyph(), Some(Glyph::Check));
-        assert_eq!(worker("a", Some("failed")).state.glyph(), Some(Glyph::Cross));
-        assert_eq!(worker("a", Some("crashed")).state.glyph(), Some(Glyph::Cross));
-        assert_eq!(worker("a", Some("blocked")).state.glyph(), Some(Glyph::Pause));
+        assert_eq!(
+            worker("a", Some("completed")).state.glyph(),
+            Some(Glyph::Check)
+        );
+        assert_eq!(
+            worker("a", Some("stopped")).state.glyph(),
+            Some(Glyph::Check)
+        );
+        assert_eq!(
+            worker("a", Some("failed")).state.glyph(),
+            Some(Glyph::Cross)
+        );
+        assert_eq!(
+            worker("a", Some("crashed")).state.glyph(),
+            Some(Glyph::Cross)
+        );
+        assert_eq!(
+            worker("a", Some("blocked")).state.glyph(),
+            Some(Glyph::Pause)
+        );
         assert_eq!(worker("a", None).state.glyph(), None);
     }
 
@@ -728,7 +822,10 @@ mod tests {
         // The same stale word is honest again once the worker has been quiet:
         // a finished worker's final message must not read as running forever.
         meta.last_activity_ms = Some((now - STALE_TERMINAL_GRACE_MS - 1) as i64);
-        assert_eq!(resolve_worker_state(&s, Some(&meta), now), WorkerState::Ready);
+        assert_eq!(
+            resolve_worker_state(&s, Some(&meta), now),
+            WorkerState::Ready
+        );
 
         // A stopped worker stays stopped even with recent text: its record is
         // closed, so the phase is idle.
@@ -755,14 +852,21 @@ mod tests {
             last_activity_ms: Some((now - 2_000) as i64),
             ..WorkerMeta::default()
         };
-        assert_eq!(resolve_worker_state(&s, Some(&meta), now), WorkerState::Running);
+        assert_eq!(
+            resolve_worker_state(&s, Some(&meta), now),
+            WorkerState::Running
+        );
         assert_eq!(worker_state(&s), WorkerState::Unknown);
     }
 
     #[test]
     fn indicator_counts_live_workers_and_hides_when_none() {
         assert!(Indicator::from_workers(&[]).is_none());
-        let done = [worker("a", Some("ready")), worker("b", Some("failed")), worker("c", None)];
+        let done = [
+            worker("a", Some("ready")),
+            worker("b", Some("failed")),
+            worker("c", None),
+        ];
         assert!(Indicator::from_workers(&done).is_none());
 
         let mixed = [
@@ -775,7 +879,11 @@ mod tests {
         assert_eq!(indicator.count(), 3);
         assert_eq!(indicator.glyph(), Glyph::Spinner);
         // Running first, then the paused one.
-        let names = indicator.workers.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
+        let names = indicator
+            .workers
+            .iter()
+            .map(|w| w.name.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(names, ["c", "d", "b"]);
         assert_eq!(indicator.tooltip().lines().count(), 3);
         assert!(indicator.tooltip().starts_with("c · running"));
@@ -804,9 +912,7 @@ mod tests {
         // descending recency: index 0 is the newest worker.
         let rows = ["fresh", "second", "third", "fourth", "oldest", "live"]
             .into_iter()
-            .zip([
-                "ready", "ready", "failed", "ready", "ready", "running",
-            ])
+            .zip(["ready", "ready", "failed", "ready", "ready", "running"])
             .map(|(name, status)| worker(name, Some(status)))
             .collect::<Vec<_>>();
         let (shown, hidden) = visible_workers(&rows, |w| w.state);
@@ -830,7 +936,11 @@ mod tests {
         // Newest first, the order the sidebar actually supplies.
         let (shown, hidden) = visible_workers(&rows, |w| w.state);
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
-        assert_eq!(names, ["w0", "w1", "w2"], "the newest finished workers stay");
+        assert_eq!(
+            names,
+            ["w0", "w1", "w2"],
+            "the newest finished workers stay"
+        );
         assert_eq!(hidden, 7);
         // One running worker at the tail never displaces the newest finished.
         rows[9] = worker("live", Some("running"));
@@ -871,7 +981,10 @@ mod tests {
         assert_eq!(worker.status_text(), "bash 26m");
         let tooltip = worker.tooltip();
         assert!(tooltip.starts_with("poodle · "), "{tooltip}");
-        assert!(tooltip.contains("opencode-go/deepseek-v4.1-flash"), "{tooltip}");
+        assert!(
+            tooltip.contains("opencode-go/deepseek-v4.1-flash"),
+            "{tooltip}"
+        );
         assert!(tooltip.contains("high effort"), "{tooltip}");
         assert!(tooltip.contains("↑12k ↓3.1k"), "{tooltip}");
     }
@@ -888,20 +1001,36 @@ mod tests {
         );
         assert_eq!(high.effort_label().as_deref(), Some("◒"));
 
-        let max = with_meta("rose", Some("running"), record("gpt-5.6", "openai", Some("max")));
+        let max = with_meta(
+            "rose",
+            Some("running"),
+            record("gpt-5.6", "openai", Some("max")),
+        );
         assert_eq!(max.effort_label().as_deref(), Some("◉"));
 
         // Provider echoes carry stray case and whitespace.
-        let echoed = with_meta("ant", Some("running"), record("gpt-5.6", "openai", Some(" Low ")));
+        let echoed = with_meta(
+            "ant",
+            Some("running"),
+            record("gpt-5.6", "openai", Some(" Low ")),
+        );
         assert_eq!(echoed.effort_label().as_deref(), Some("◔"));
 
         // A mode is orchestration, not a rung: it keeps its word.
-        let swarm = with_meta("bee", Some("running"), record("gpt-5.6", "openai", Some("swarm")));
+        let swarm = with_meta(
+            "bee",
+            Some("running"),
+            record("gpt-5.6", "openai", Some("swarm")),
+        );
         assert_eq!(swarm.effort_label().as_deref(), Some("Swarm"));
 
         // No record, or an empty one, shows no circle at all.
         assert_eq!(worker("rose", Some("running")).effort_label(), None);
-        let blank = with_meta("rose", Some("running"), record("gpt-5.6", "openai", Some(" ")));
+        let blank = with_meta(
+            "rose",
+            Some("running"),
+            record("gpt-5.6", "openai", Some(" ")),
+        );
         assert_eq!(blank.effort_label(), None);
     }
 
@@ -916,8 +1045,16 @@ mod tests {
         assert_eq!(thinking.model_label().as_deref(), Some("opus 5.5"));
         assert_eq!(thinking.status_text(), "thinking 26m");
 
-        let ready = with_meta("rose", Some("ready"), record("claude-opus-5-5", "claude-oauth", None));
-        assert_eq!(ready.status_text(), "ready", "a finished worker has no clock");
+        let ready = with_meta(
+            "rose",
+            Some("ready"),
+            record("claude-opus-5-5", "claude-oauth", None),
+        );
+        assert_eq!(
+            ready.status_text(),
+            "ready",
+            "a finished worker has no clock"
+        );
 
         let blocked = with_meta("rose", Some("blocked"), WorkerMeta::default());
         assert_eq!(blocked.status_text(), "waiting 26m");
@@ -934,7 +1071,11 @@ mod tests {
     /// would claim the work was free.
     #[test]
     fn cost_is_shown_only_where_tokens_have_a_price() {
-        let oauth = with_meta("rose", Some("running"), record("claude-opus-5-5", "claude-oauth", None));
+        let oauth = with_meta(
+            "rose",
+            Some("running"),
+            record("claude-opus-5-5", "claude-oauth", None),
+        );
         assert_eq!(oauth.cost_text(), None);
         let copilot = with_meta("rose", Some("running"), record("gpt-5.6", "copilot", None));
         assert_eq!(copilot.cost_text(), None);
@@ -990,5 +1131,36 @@ mod tests {
             Indicator::from_workers(&workers).unwrap().glyph(),
             Glyph::Spinner
         );
+    }
+
+    /// The composer pill's three segments: what runs now, what is parked, and
+    /// what has reported. A finished worker still counts, so the bar can show
+    /// the turn's result before it disappears.
+    #[test]
+    fn tally_splits_running_waiting_and_done() {
+        let workers = vec![
+            worker("rose", Some("running")),
+            worker("fox", Some("blocked")),
+            worker("otter", Some("queued")),
+            worker("poodle", Some("ready")),
+            worker("kangaroo", Some("failed")),
+        ];
+        let tally = SwarmTally::of(&workers);
+        assert_eq!(
+            tally,
+            SwarmTally {
+                running: 1,
+                waiting: 2,
+                done: 2
+            }
+        );
+        assert_eq!(tally.total(), 5);
+        assert_eq!(tally.summary(), "1 running · 2 waiting · 2 done");
+        assert_eq!(
+            SwarmTally::of(&[worker("rose", Some("running"))]).summary(),
+            "1 running",
+            "a uniform swarm reads as one phrase"
+        );
+        assert_eq!(SwarmTally::default().summary(), "");
     }
 }

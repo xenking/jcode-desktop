@@ -5,8 +5,8 @@
 //! with their status, and each row opens that worker's chat.
 
 use super::*;
-use crate::swarm_glyph::Mark;
-use crate::swarm_view::{Activity, Indicator, Turn, Worker};
+use crate::swarm_glyph::{Icon, Mark, Motion};
+use crate::swarm_view::{Activity, Glyph, Indicator, Turn, Worker};
 
 /// A worker row (composer list, sidebar, or transcript card) was clicked.
 pub(crate) struct OpenSwarmWorker(pub String);
@@ -86,9 +86,7 @@ impl Panel {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        Some(format!(
-            "Waiting for {names} · wakes when they report"
-        ))
+        Some(format!("Waiting for {names} · wakes when they report"))
     }
 
     #[cfg(test)]
@@ -124,14 +122,17 @@ impl Panel {
         let theme = Theme::global();
         let activity = self.agent_activity();
         let label = activity.label();
-        let icon = self.swarm_marks.element(
-            "activity",
-            Mark::activity(activity, 13.0),
-            cx,
-        );
+        let icon = self
+            .swarm_marks
+            .element("activity", Mark::activity(activity, 13.0), cx);
         div()
             .id("composer-activity")
-            .debug_selector(move || format!("composer-activity-{}", label.to_ascii_lowercase().replace(' ', "-")))
+            .debug_selector(move || {
+                format!(
+                    "composer-activity-{}",
+                    label.to_ascii_lowercase().replace(' ', "-")
+                )
+            })
             .flex_none()
             .h(px(super::composer::TAB_HEIGHT))
             .w(px(18.0))
@@ -144,38 +145,112 @@ impl Panel {
             .into_any_element()
     }
 
-    /// Spinner plus the live worker count. Nothing when no worker is live.
+    /// Worker count plus a three-segment bar: one segment per swarm state
+    /// (running, waiting, done), so the bar says where the work stands without
+    /// a word. A coordinator parked on an await adds a pause mark and names
+    /// who it is waiting for in the hover.
+    ///
+    /// The old indicator was a lone partial circle, which read as decoration
+    /// and hid everything except the count.
     pub(super) fn render_swarm_indicator(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let indicator = self.swarm_indicator()?;
+        let tally = crate::swarm_view::SwarmTally::of(&self.swarm_workers);
+        let awaiting = self.awaiting_ids();
+        if tally.total() == 0 && awaiting.is_empty() {
+            return None;
+        }
         let theme = Theme::global();
-        let tooltip = indicator.tooltip();
-        let count = indicator.count();
+        let mut tooltip = Vec::new();
+        if let Some(line) = self.await_line() {
+            tooltip.push(line);
+        }
+        let summary = tally.summary();
+        if !summary.is_empty() {
+            tooltip.push(summary);
+        }
+        if let Some(indicator) = self.swarm_indicator() {
+            tooltip.push(indicator.tooltip());
+        }
+        let tooltip = tooltip.join("\n");
         let open = self.swarm_list_open;
-        let icon = self.swarm_marks.element(
-            "workers",
-            Mark::glyph(indicator.glyph(), 12.0),
-            cx,
-        );
+        // The running segment breathes so a live swarm is visible without the
+        // eye landing on a spinning glyph first.
+        let running = (tally.running > 0).then(|| {
+            self.swarm_marks.element(
+                "workers-running-segment",
+                Mark {
+                    icon: Icon::Idle,
+                    color: theme.ACCENT,
+                    size: 9.0,
+                    motion: Motion::Pulse(Duration::from_millis(1600)),
+                },
+                cx,
+            )
+        });
+        let waiting_segment = (tally.waiting > 0).then(|| {
+            let color = theme.WARN;
+            div()
+                .debug_selector(|| "composer-workers-waiting".into())
+                .flex_none()
+                .w(px(3.5))
+                .h(px(9.0))
+                .rounded(px(1.5))
+                .bg(color)
+        });
+        let done_segment = (tally.done > 0).then(|| {
+            let color = theme.OK;
+            div()
+                .debug_selector(|| "composer-workers-done".into())
+                .flex_none()
+                .w(px(3.5))
+                .h(px(9.0))
+                .rounded(px(1.5))
+                .bg(color)
+        });
+        // Parked on an await: a pause mark, the same glyph the worker rows use
+        // for a blocked worker.
+        let paused = (!awaiting.is_empty()).then(|| {
+            div()
+                .debug_selector(|| "composer-workers-awaiting".into())
+                .flex_none()
+                .child(self.swarm_marks.element(
+                    "workers-awaiting",
+                    Mark::glyph(Glyph::Pause, 10.0),
+                    cx,
+                ))
+        });
         Some(
             super::composer::composer_pill("composer-workers")
                 .flex_none()
                 .px_2()
-                .gap_1()
+                .gap_1p5()
                 .when(open, |el| el.bg(theme.USER_BG).text_color(theme.TEXT))
-                .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(tooltip.clone())).into())
+                .tooltip(move |_, cx| {
+                    cx.new(|_| super::usage::MeterTooltip(tooltip.clone()))
+                        .into()
+                })
                 .on_click(cx.listener(|this, _, _, cx| {
                     cx.stop_propagation();
                     this.swarm_list_open = !this.swarm_list_open;
                     cx.notify();
                 }))
-                .child(icon)
+                .children(paused)
                 .child(
                     div()
                         .debug_selector(|| "composer-workers-count".into())
-                        .child(count.to_string()),
+                        .child(tally.total().to_string()),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "composer-workers-bar".into())
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .children(running)
+                        .children(waiting_segment)
+                        .children(done_segment),
                 )
                 .into_any_element(),
         )
@@ -201,9 +276,10 @@ impl Panel {
                 let expand_key = expandable::key::worker(&worker.session_id);
                 let expanded = self.expanded_regions.contains(&expand_key);
                 let toggle_key = expand_key.clone();
-                let label_truncated = worker.label.as_deref().is_some_and(|label| {
-                    expandable::preview(label, expandable::LABEL).is_some()
-                });
+                let label_truncated = worker
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| expandable::preview(label, expandable::LABEL).is_some());
                 let mark = worker.state.glyph().map(|glyph| {
                     self.swarm_marks.element(
                         &format!("worker:{}", worker.session_id),
@@ -246,7 +322,8 @@ impl Panel {
                     .text_size(px(11.0))
                     .text_color(theme.TEXT_DIM)
                     .tooltip(move |_, cx| {
-                        cx.new(|_| super::usage::MeterTooltip(tooltip.clone())).into()
+                        cx.new(|_| super::usage::MeterTooltip(tooltip.clone()))
+                            .into()
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -299,6 +376,9 @@ impl Panel {
                                 div()
                                     .debug_selector(move || format!("swarm-list-effort-{index}"))
                                     .flex_none()
+                                    // A rung, drawn at row text height and in
+                                    // its own heat tint, not a faint speck.
+                                    .text_size(px(13.0))
                                     .text_color(effort_ink)
                                     .child(effort)
                             }))
@@ -352,37 +432,6 @@ impl Panel {
                 .into_any_element(),
         )
     }
-
-    /// `Waiting for kangaroo · wakes when they report`, above the composer.
-    /// This is the line that tells the user a quiet coordinator is parked on
-    /// workers, not finished: it survives a daemon reload because it reads the
-    /// persisted await, not the transcript.
-    pub(super) fn render_await_line(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let line = self.await_line()?;
-        let theme = Theme::global();
-        let pause = self.swarm_marks.element(
-            "awaiting",
-            Mark::glyph(crate::swarm_view::Glyph::Pause, 11.0),
-            cx,
-        );
-        Some(
-            div()
-                .debug_selector(|| "composer-await-line".into())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_1()
-                .px_1()
-                .pb(px(2.0))
-                .text_size(px(11.0))
-                .font_family(theme.FONT_MONO)
-                .text_color(theme.TEXT_FAINT)
-                .child(div().flex_none().size(px(11.0)).child(pause))
-                .child(div().min_w_0().truncate().child(line))
-                .into_any_element(),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -425,7 +474,10 @@ mod tests {
         assert!(vcx.debug_bounds(selector("idle")).is_some(), "idle at rest");
 
         panel.update(vcx, |panel, cx| {
-            panel.apply(&event(serde_json::json!({"ev":"reasoning_delta","text":"hm"})), cx)
+            panel.apply(
+                &event(serde_json::json!({"ev":"reasoning_delta","text":"hm"})),
+                cx,
+            )
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(selector("thinking")).is_some());
@@ -457,10 +509,14 @@ mod tests {
         );
         assert!(vcx.debug_bounds("composer-workers").is_some());
 
-        panel.update(vcx, |panel, cx| panel.set_swarm_workers(vec![worker("rose", "ready")], cx));
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "ready")], cx)
+        });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(selector("idle")).is_some());
-        assert!(vcx.debug_bounds("composer-workers").is_none(), "nothing when none run");
+        // The worker reported, so the bar no longer claims anything runs; the
+        // pill stays only long enough to show the finished segment.
+        assert!(vcx.debug_bounds("composer-workers-done").is_some());
     }
 
     #[gpui::test]
@@ -472,7 +528,9 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list").is_some());
-        panel.update(vcx, |panel, cx| panel.set_swarm_workers(vec![worker("rose", "ready")], cx));
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "ready")], cx)
+        });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list").is_none());
     }
@@ -485,7 +543,10 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (panel, vcx) = setup(cx);
-        assert!(vcx.debug_bounds("composer-await-line").is_none(), "no await, no line");
+        assert!(
+            vcx.debug_bounds("composer-workers-awaiting").is_none(),
+            "no await, no wait mark"
+        );
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(
                 vec![worker("kangaroo", "ready"), worker("fox", "ready")],
@@ -501,19 +562,31 @@ mod tests {
         });
         vcx.run_until_parked();
         assert_eq!(
-            panel.read_with(vcx, |panel, _| panel.await_line()).as_deref(),
+            panel
+                .read_with(vcx, |panel, _| panel.await_line())
+                .as_deref(),
             Some("Waiting for kangaroo · wakes when they report")
         );
-        assert!(vcx.debug_bounds("composer-await-line").is_some());
+        // The information the removed text line carried now lives in the
+        // pill: a pause mark in the bar and the names in the hover.
         assert!(
-            vcx.debug_bounds("composer-activity-waiting-on-workers").is_some(),
+            vcx.debug_bounds("composer-workers-awaiting").is_some(),
+            "the pill says the coordinator is waiting"
+        );
+        assert!(
+            vcx.debug_bounds("composer-workers").is_some(),
+            "no live worker, but the await still earns a pill"
+        );
+        assert!(
+            vcx.debug_bounds("composer-activity-waiting-on-workers")
+                .is_some(),
             "a parked coordinator is waiting, not idle"
         );
 
-        // The wake delivered: the line goes away with the registration.
+        // The wake delivered: the mark goes away with the registration.
         panel.update(vcx, |panel, cx| panel.set_pending_awaits(Vec::new(), cx));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("composer-await-line").is_none());
+        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
         assert!(vcx.debug_bounds("composer-activity-idle").is_some());
     }
 

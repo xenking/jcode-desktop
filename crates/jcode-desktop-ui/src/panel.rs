@@ -93,6 +93,8 @@ use scroll_motion::WheelGlide;
 mod ask;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
+#[path = "panel_cache_timer.rs"]
+pub(crate) mod cache_timer;
 #[path = "panel_composer.rs"]
 mod composer;
 #[path = "panel_fork_prompt.rs"]
@@ -1003,13 +1005,12 @@ impl Panel {
         // `JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in the
         // fixture, so the capture shows the expanded text rather than only the
         // collapsed rows.
-        let expanded_regions = if crate::harness::screenshot_mode()
-            && expandable::screenshot_expanded()
-        {
-            expandable::all_regions(&items)
-        } else {
-            HashSet::new()
-        };
+        let expanded_regions =
+            if crate::harness::screenshot_mode() && expandable::screenshot_expanded() {
+                expandable::all_regions(&items)
+            } else {
+                HashSet::new()
+            };
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
             && matches!(
@@ -3425,9 +3426,10 @@ impl Panel {
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
         if let Some(selected) = &mut self.image_pane_selected
-            && *selected >= insertion {
-                *selected += 1;
-            }
+            && *selected >= insertion
+        {
+            *selected += 1;
+        }
         self.items.insert(
             insertion,
             Item::Image(TranscriptImage::from_rendered(image)),
@@ -4636,11 +4638,7 @@ impl Panel {
                                                 this.toggle_region(&key, cx);
                                             }),
                                         ))
-                                        .child(recovery::copy_pill(
-                                            "tool-error-copy",
-                                            index,
-                                            full,
-                                        )),
+                                        .child(recovery::copy_pill("tool-error-copy", index, full)),
                                 )
                             })
                     }))
@@ -4657,8 +4655,7 @@ impl Panel {
         if !self.expanded_regions.remove(key) {
             self.expanded_regions.insert(key.to_owned());
         }
-        let duration =
-            crate::transition::policy(crate::transition::Transition::Overlay).duration;
+        let duration = crate::transition::policy(crate::transition::Transition::Overlay).duration;
         if cx.reduce_motion() || duration.is_zero() {
             self.tool_detail_motion.remove(key);
         } else {
@@ -5202,10 +5199,12 @@ impl Render for Panel {
                 .startup_layout
                 .as_ref()
                 .is_some_and(|layout| layout.committed);
-        if !fresh_session && !self.items.is_empty()
-            && let Some(layout) = &mut self.startup_layout {
-                layout.committed = true;
-            }
+        if !fresh_session
+            && !self.items.is_empty()
+            && let Some(layout) = &mut self.startup_layout
+        {
+            layout.committed = true;
+        }
         // The ordinary composer floats over the bottom of the transcript, so
         // earlier history scrolls beneath its translucent veil instead of
         // being cut off at a hard edge. The list pads its end by the dock.
@@ -5277,17 +5276,18 @@ impl Render for Panel {
             }
         }
         if row_count > 0
-            && let Some((_, y)) = self.pending_history_scroll.take() {
-                // Restore relative to the first row, not the scrollbar's
-                // partially measured total. The virtual list measures and
-                // clamps this logical position while laying out the history.
-                self.transcript_list.scroll_to(gpui::ListOffset {
-                    item_ix: 0,
-                    offset_in_item: px((-y).max(0.0)),
-                });
-                // Scrollbar geometry is available after this layout pass.
-                window.request_animation_frame();
-            }
+            && let Some((_, y)) = self.pending_history_scroll.take()
+        {
+            // Restore relative to the first row, not the scrollbar's
+            // partially measured total. The virtual list measures and
+            // clamps this logical position while laying out the history.
+            self.transcript_list.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px((-y).max(0.0)),
+            });
+            // Scrollbar geometry is available after this layout pass.
+            window.request_animation_frame();
+        }
         let startup_preview = self.startup_prompt_preview();
         // While the welcome viewport still grows with its content, following
         // the tail would scroll a line up for one frame and then snap back
@@ -5436,9 +5436,7 @@ impl Render for Panel {
                                     cx,
                                 );
                                 div()
-                                    .debug_selector(move || {
-                                        format!("transcript-row-{row_index}")
-                                    })
+                                    .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
                                     .px_3()
                                     .pt(px(top_padding))
@@ -7000,11 +6998,7 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
         .unwrap_or_else(|| arguments.to_string());
-    let mut parts = vec![format!(
-        "Tool call\n{}\n{}",
-        name.trim(),
-        pretty.trim_end()
-    )];
+    let mut parts = vec![format!("Tool call\n{}\n{}", name.trim(), pretty.trim_end())];
     if !output.trim().is_empty() {
         parts.push(format!("Output\n{}", strip_ansi(output).trim_end()));
     }
@@ -7023,11 +7017,11 @@ fn acknowledge_next(
 }
 
 #[cfg(test)]
-#[path = "panel_fresh_session_tests.rs"]
-mod fresh_session_tests;
-#[cfg(test)]
 #[path = "panel_expandable_tests.rs"]
 mod expandable_tests;
+#[cfg(test)]
+#[path = "panel_fresh_session_tests.rs"]
+mod fresh_session_tests;
 #[cfg(test)]
 #[path = "panel_image_flicker_tests.rs"]
 mod image_flicker_tests;
@@ -9987,7 +9981,10 @@ mod tests {
         }
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SessionOperation { operation: SessionOperation::SetEffort(_), .. })
+            Ok(Command::SessionOperation {
+                operation: SessionOperation::SetEffort(_),
+                ..
+            })
         ));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
@@ -10393,8 +10390,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         // an output long past the old 40-line clip.
         return vec![
             Item::User(
-                "Run the release checks, then tell me why the cleanup command was refused."
-                    .into(),
+                "Run the release checks, then tell me why the cleanup command was refused.".into(),
             ),
             Item::Tool {
                 call_id: "expandable-title".into(),

@@ -115,12 +115,8 @@ pub(super) fn live_swarm_roots(
         .collect::<HashMap<_, _>>();
     let mut roots = HashSet::new();
     for session in sessions {
-        if !crate::swarm_view::resolve_worker_state(
-            session,
-            metas.get(&session.session_id),
-            now_ms,
-        )
-        .is_live()
+        if !crate::swarm_view::resolve_worker_state(session, metas.get(&session.session_id), now_ms)
+            .is_live()
         {
             continue;
         }
@@ -247,7 +243,8 @@ pub(super) fn render_workers(
                 .text_size(px(10.5))
                 .text_color(theme.TEXT_DIM)
                 .tooltip(move |_, cx| {
-                    cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone())).into()
+                    cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone()))
+                        .into()
                 })
                 .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
@@ -369,8 +366,8 @@ mod tests {
     /// model and spend, which is exactly what the screenshot is meant to show.
     #[test]
     fn screenshot_fixture_workers_resolve_their_records() {
-        let fixtures =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../jcode-desktop-harness/src/fixtures");
         let identity = "session_ant_1794675020922_f6e720f45031cad8".to_string();
         let meta = jcode_sdk::worker_meta_for(&fixtures.join("microbe_home"), &[identity.clone()]);
         assert_eq!(
@@ -888,7 +885,8 @@ mod tests {
         workspace.update(vcx, |w, cx| {
             let mut worker = session("rose", Some("lead"));
             worker.swarm_status = Some("running".into());
-            w.sidebar_closed_sessions.extend(["lead".into(), "rose".into()]);
+            w.sidebar_closed_sessions
+                .extend(["lead".into(), "rose".into()]);
             w.sessions = vec![session("lead", None), worker];
             w.worker_meta.insert(
                 "rose".into(),
@@ -925,7 +923,8 @@ mod tests {
         workspace.update(vcx, |w, cx| {
             let mut worker = session("rose", Some("lead"));
             worker.swarm_status = Some("running".into());
-            w.sidebar_closed_sessions.extend(["lead".into(), "rose".into()]);
+            w.sidebar_closed_sessions
+                .extend(["lead".into(), "rose".into()]);
             w.sessions = vec![session("lead", None), worker];
             w.worker_meta.insert(
                 "rose".into(),
@@ -942,11 +941,7 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-worker-effort-0-0").is_none());
     }
 
-    fn lead_with_workers(
-        w: &mut Workspace,
-        cx: &mut Context<Workspace>,
-        workers: &[(&str, &str)],
-    ) {
+    fn lead_with_workers(w: &mut Workspace, cx: &mut Context<Workspace>, workers: &[(&str, &str)]) {
         let lead = session("lead", None);
         let mut sessions = vec![lead.clone()];
         for (id, status) in workers {
@@ -1006,11 +1001,19 @@ mod tests {
             lead_with_workers(
                 w,
                 cx,
-                &[("session_rose_1_a", "ready"), ("session_tulip_2_b", "failed")],
+                &[
+                    ("session_rose_1_a", "ready"),
+                    ("session_tulip_2_b", "failed"),
+                ],
             );
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("composer-workers").is_none());
+        // Nothing runs now, so the pill claims no running segment; the two
+        // finished workers still read as the done segment until the workspace
+        // refreshes the swarm list.
+        assert!(vcx.debug_bounds("composer-workers").is_some());
+        assert!(vcx.debug_bounds("composer-workers-done").is_some());
+        assert!(vcx.debug_bounds("composer-workers-waiting").is_none());
         assert!(vcx.debug_bounds("swarm-list").is_none());
         // Worker rows stay in the sidebar, with their final glyphs.
         assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
@@ -1037,14 +1040,29 @@ mod tests {
         });
         vcx.run_until_parked();
         let lead = vcx.debug_bounds("sidebar-session-0").unwrap();
-        for (index, glyph) in ["spinner", "check", "cross", "pause"].into_iter().enumerate() {
-            let row = vcx.debug_bounds(sel(format!("sidebar-worker-0-{index}"))).unwrap();
-            assert!(vcx.debug_bounds(sel(format!("sidebar-worker-glyph-0-{index}-{glyph}"))).is_some(), "{glyph}");
-            assert!(row.origin.y >= lead.origin.y + lead.size.height, "below coordinator");
+        for (index, glyph) in ["spinner", "check", "cross", "pause"]
+            .into_iter()
+            .enumerate()
+        {
+            let row = vcx
+                .debug_bounds(sel(format!("sidebar-worker-0-{index}")))
+                .unwrap();
+            assert!(
+                vcx.debug_bounds(sel(format!("sidebar-worker-glyph-0-{index}-{glyph}")))
+                    .is_some(),
+                "{glyph}"
+            );
+            assert!(
+                row.origin.y >= lead.origin.y + lead.size.height,
+                "below coordinator"
+            );
         }
         let title = vcx.debug_bounds("sidebar-session-title-0").unwrap();
         let row = vcx.debug_bounds("sidebar-worker-0-0").unwrap();
-        assert!(row.origin.x > title.origin.x - gpui::px(24.0), "nested, not flush left");
+        assert!(
+            row.origin.x > title.origin.x - gpui::px(24.0),
+            "nested, not flush left"
+        );
         assert!(vcx.debug_bounds("sidebar-worker-0-4").is_none());
     }
 
@@ -1057,7 +1075,10 @@ mod tests {
                 .map(|i| (format!("session_w{i}_{i}_a"), "ready"))
                 .collect::<Vec<_>>();
             workers.insert(1, ("session_live_9_z".into(), "running"));
-            let refs = workers.iter().map(|(id, s)| (id.as_str(), *s)).collect::<Vec<_>>();
+            let refs = workers
+                .iter()
+                .map(|(id, s)| (id.as_str(), *s))
+                .collect::<Vec<_>>();
             lead_with_workers(w, cx, &refs);
         });
         vcx.run_until_parked();
@@ -1065,8 +1086,13 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-worker-0-3").is_some());
         assert!(vcx.debug_bounds("sidebar-worker-0-4").is_none());
         assert!(vcx.debug_bounds("sidebar-workers-folded-0").is_some());
-        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner").is_some()
-            || vcx.debug_bounds("sidebar-worker-glyph-0-1-spinner").is_some());
+        assert!(
+            vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
+                .is_some()
+                || vcx
+                    .debug_bounds("sidebar-worker-glyph-0-1-spinner")
+                    .is_some()
+        );
     }
 
     /// All three entry points open the worker: sidebar row, composer count
@@ -1079,7 +1105,10 @@ mod tests {
             lead_with_workers(
                 w,
                 cx,
-                &[("session_rose_1_a", "running"), ("session_tulip_2_b", "running")],
+                &[
+                    ("session_rose_1_a", "running"),
+                    ("session_tulip_2_b", "running"),
+                ],
             );
         });
         vcx.run_until_parked();
@@ -1087,12 +1116,18 @@ mod tests {
         let pill = vcx.debug_bounds("composer-workers").unwrap().center();
         vcx.simulate_click(pill, gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("swarm-list").is_some(), "count opens the list");
+        assert!(
+            vcx.debug_bounds("swarm-list").is_some(),
+            "count opens the list"
+        );
         let row = vcx.debug_bounds("swarm-list-worker-1").unwrap().center();
         vcx.simulate_click(row, gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "session_tulip_2_b");
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                "session_tulip_2_b"
+            );
         });
         assert!(
             vcx.debug_bounds("swarm-list").is_none(),
@@ -1103,7 +1138,10 @@ mod tests {
         vcx.simulate_click(center, gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "session_rose_1_a");
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                "session_rose_1_a"
+            );
         });
     }
 
@@ -1116,8 +1154,8 @@ mod tests {
     /// owns headless workers (`calf`, `ant`), another (`microbe`) owns three the
     /// user sees in the TUI, and the rest is ordinary history.
     fn live_catalog() -> Vec<SessionInfo> {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/swarm_view_fixtures/live_session_catalog.json");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/swarm_view_fixtures/live_session_catalog.json");
         let snapshot: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         serde_json::from_value(snapshot["sessions"].clone()).unwrap()
@@ -1158,9 +1196,14 @@ mod tests {
         let shark = workspace
             .read_with(vcx, |w, _| sidebar_row(w, SHARK))
             .expect("the live coordinator is a sidebar row");
-        assert!(shark.1.contains("calf"), "calf nests under shark: {shark:?}");
         assert!(
-            workspace.read_with(vcx, |w, _| sidebar_row(w, CALF)).is_none(),
+            shark.1.contains("calf"),
+            "calf nests under shark: {shark:?}"
+        );
+        assert!(
+            workspace
+                .read_with(vcx, |w, _| sidebar_row(w, CALF))
+                .is_none(),
             "the worker has no row of its own"
         );
         // The row is not just modelled: it is drawn, with its worker beneath.
@@ -1172,7 +1215,8 @@ mod tests {
             })
             .unwrap();
         assert!(
-            vcx.debug_bounds(sel(format!("sidebar-worker-{index}-0"))).is_some(),
+            vcx.debug_bounds(sel(format!("sidebar-worker-{index}-0")))
+                .is_some(),
             "the coordinator's first worker row is on screen"
         );
     }
@@ -1197,8 +1241,13 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let shark = workspace.read_with(vcx, |w, _| sidebar_row(w, SHARK)).unwrap();
-        assert!(shark.1.contains("calf"), "calf nests under shark: {shark:?}");
+        let shark = workspace
+            .read_with(vcx, |w, _| sidebar_row(w, SHARK))
+            .unwrap();
+        assert!(
+            shark.1.contains("calf"),
+            "calf nests under shark: {shark:?}"
+        );
         assert!(shark.1.contains("ant"), "ant nests under shark: {shark:?}");
     }
 }

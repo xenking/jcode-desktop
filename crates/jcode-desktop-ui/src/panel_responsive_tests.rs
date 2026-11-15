@@ -22,10 +22,10 @@ fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui:
     });
     vcx.run_until_parked();
     let model = vcx.debug_bounds("panel-model").unwrap();
-    let account = vcx.debug_bounds("panel-login").unwrap();
+    let context = vcx.debug_bounds("panel-context-meter").unwrap();
     assert!(
-        model.right() <= account.left(),
-        "account method follows model"
+        model.right() <= context.left(),
+        "the context ring follows model"
     );
     vcx.simulate_click(model.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
@@ -102,7 +102,9 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
-            for selector in ["panel-model", "panel-login"] {
+            // A fresh panel has no effort yet, so the model pill is the one
+            // identity control every width must keep.
+            for selector in ["panel-model"] {
                 let bounds = vcx.debug_bounds(selector).unwrap();
                 assert!(
                     bounds.left() >= footer.left() && bounds.right() <= footer.right(),
@@ -112,15 +114,16 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             }
             let identity = vcx.debug_bounds("panel-identity").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
-            let login = vcx.debug_bounds("panel-login").unwrap();
             assert!(
-                model.left() >= identity.left() && login.right() <= identity.right(),
-                "{width}x{height} fresh={fresh}: {model:?} {login:?} {identity:?}"
+                model.left() >= identity.left() && model.right() <= identity.right(),
+                "{width}x{height} fresh={fresh}: {model:?} {identity:?}"
             );
-            assert!(
-                model.right() <= login.left(),
-                "identity controls must not overlap"
-            );
+            if let Some(effort) = vcx.debug_bounds("panel-model-effort") {
+                assert!(
+                    model.right() <= effort.left(),
+                    "{width}x{height} fresh={fresh}: {model:?} {effort:?}"
+                );
+            }
             let location = vcx
                 .debug_bounds("composer-location")
                 .expect("the directory label stays in the footer");

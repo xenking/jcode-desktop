@@ -38,8 +38,11 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
         );
     });
     vcx.run_until_parked();
-    let pill = vcx.debug_bounds("panel-login").unwrap();
-    vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+    // The provider picker opens from the sidebar's quota row now; the bar no
+    // longer carries a method pill, so the test calls the same entry point.
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| panel.toggle_provider_picker(window, cx));
+    });
     vcx.run_until_parked();
     let picker = vcx
         .debug_bounds("composer-provider-picker")
@@ -87,8 +90,11 @@ fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppC
         cx.notify();
     });
     vcx.run_until_parked();
-    let pill = vcx.debug_bounds("panel-login").unwrap();
-    vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+    // The provider picker opens from the sidebar's quota row now; the bar no
+    // longer carries a method pill, so the test calls the same entry point.
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| panel.toggle_provider_picker(window, cx));
+    });
     vcx.run_until_parked();
     let picker = vcx
         .debug_bounds("composer-provider-picker")

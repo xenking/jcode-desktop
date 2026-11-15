@@ -131,6 +131,7 @@ impl Workspace {
                 el.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_account_menu(cx)))
                     .child(self.render_account_menu(cx))
             })
+            .children(self.render_sidebar_quota(cx))
             .child(
                 div()
                     .id("sidebar-account")
@@ -273,6 +274,92 @@ impl Workspace {
                     ),
             )
             .into_any_element()
+    }
+
+    /// Provider quota row for the sidebar's bottom block: one icon plus figure
+    /// per configured credential, red at exhaustion, each with the same hover
+    /// card it had in the composer bar. The bar itself now carries only
+    /// identity and session state (model, effort, context, cache, swarm).
+    fn render_sidebar_quota(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let accounts = cx.try_global::<crate::panel::usage::StatusAccounts>()?;
+        let chips = crate::panel::usage::quota_chips(&accounts.0);
+        if chips.is_empty() {
+            return None;
+        }
+        let theme = Theme::global();
+        let source = self
+            .slots
+            .get(self.active)
+            .filter(|slot| !slot.closing)
+            .map(|slot| slot.panel.entity_id());
+        Some(
+            div()
+                .id("sidebar-quota")
+                .debug_selector(|| "sidebar-quota".into())
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(2.0))
+                .px(px(4.0))
+                .children(chips.into_iter().map(|chip| {
+                    let id = format!("sidebar-quota-{}", chip.logo);
+                    let selector = id.clone();
+                    let tooltip = chip.tooltip();
+                    let color = match chip.percent {
+                        Some(percent) if percent >= 70. => {
+                            crate::panel::usage::usage_color(percent, theme)
+                        }
+                        _ => theme.TEXT_DIM,
+                    };
+                    let logo = crate::accounts::logo(chip.logo).map(|bytes| {
+                        gpui::svg()
+                            .data(bytes)
+                            .size(px(12.))
+                            .flex_none()
+                            .text_color(color)
+                    });
+                    div()
+                        .id(gpui::SharedString::from(id))
+                        .debug_selector(move || selector.clone())
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .h(px(22.))
+                        .px(px(5.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.HEADER_BG))
+                        .text_size(px(10.5))
+                        .font_family(theme.FONT_MONO)
+                        .text_color(color)
+                        .when(chip.cached, |el| el.opacity(0.6))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone()))
+                                .into()
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            match source {
+                                Some(source) => this.open_accounts(
+                                    &OpenAccounts {
+                                        source,
+                                        login_command: None,
+                                    },
+                                    window,
+                                    cx,
+                                ),
+                                None => {
+                                    this.status = "Open a session to switch provider".into();
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                        .children(logo)
+                        .child(chip.label())
+                }))
+                .into_any_element(),
+        )
     }
 
     /// Settings row: reveal the account email in the sidebar. Off by default.

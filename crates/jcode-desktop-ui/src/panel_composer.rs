@@ -64,19 +64,7 @@ impl Panel {
         let _ = window;
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode;
-        let account_label = if screenshot_mode {
-            "Account hidden".to_string()
-        } else {
-            serving_account_label(
-                self.provider.as_deref(),
-                self.auth_method.as_deref(),
-                self.account_label.as_deref(),
-            )
-        };
         let (model_label, effort) = self.composer_identity();
-        let limits = (!screenshot_mode)
-            .then(|| self.limits_summary(cx))
-            .flatten();
         let remote_machine = (!screenshot_mode)
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
@@ -104,9 +92,11 @@ impl Panel {
         // the footer entirely: the version lives in Settings → About and the
         // account popup.
         let status_line = self.status_line();
-        // Worker count (only while workers run) then the activity icon. Both
-        // are leaf views, so their animation never rebuilds the composer.
+        // Worker count (only while workers run), the prompt-cache countdown,
+        // then the activity icon. All three are leaf views, so their animation
+        // and ticks never rebuild the composer.
         let workers_pill = self.render_swarm_indicator(cx);
+        let cache_pill = self.render_cache_pill(cx);
         let activity_icon = self.render_activity_icon(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
@@ -134,9 +124,9 @@ impl Panel {
                     .gap_2()
                     .overflow_hidden()
                     .children(workers_pill)
+                    .children(cache_pill)
                     .child(activity_icon)
                     .children(self.render_voice_status(status_line))
-                    .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
             );
         let pills = div()
@@ -180,7 +170,10 @@ impl Panel {
                         let hover = crate::effort::tooltip(&effort);
                         composer_pill("panel-model-effort")
                             .flex_shrink(3.)
-                            .min_w(px(24.))
+                            .min_w(px(30.))
+                            // The glyph is the level, so it is drawn at text
+                            // height rather than as small as the pill's label.
+                            .text_size(px(15.))
                             .text_color(ink)
                             .child(
                                 div()
@@ -194,35 +187,7 @@ impl Panel {
                                 cx.stop_propagation();
                             }))
                     }))
-                    .child(
-                        // Icon only: the model pill and quota chips already
-                        // name the route, so the method text lives in the
-                        // tooltip. The pill stays because it switches provider.
-                        composer_pill("panel-login")
-                            .flex_none()
-                            .px_2()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(account_pill_icon(self.provider.as_deref(), theme.TEXT_DIM))
-                            .tooltip(move |_, cx| {
-                                let method = account_label.clone();
-                                match limits.clone() {
-                                    Some(summary) => cx
-                                        .new(|_| super::usage::LimitsTooltip { method, summary })
-                                        .into(),
-                                    None => cx.new(|_| super::usage::MeterTooltip(method)).into(),
-                                }
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_provider_picker(window, cx);
-                                cx.stop_propagation();
-                            })),
-                    )
-                    .children(self.render_context_meter())
-                    .children(
-                        (!screenshot_mode)
-                            .then(|| self.render_provider_usage_footer(cx))
-                            .flatten(),
-                    ),
+                    .children(self.render_context_meter()),
             )
             .child(
                 div()
@@ -314,7 +279,6 @@ impl Panel {
             .flex()
             .flex_col()
             .children(self.render_swarm_list(cx))
-            .children(self.render_await_line(cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
             .child(
@@ -703,9 +667,7 @@ mod tests {
     /// and effort fill the footer. Without this the pills read "Choose model"
     /// and no effort at all, which is what "unset" looked like.
     #[gpui::test]
-    fn a_worker_panel_takes_its_model_and_effort_from_its_record(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn a_worker_panel_takes_its_model_and_effort_from_its_record(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -813,10 +775,9 @@ mod tests {
             let model = vcx.debug_bounds("panel-model").unwrap();
             let name = vcx.debug_bounds("panel-model-name").unwrap();
             let effort = vcx.debug_bounds("panel-model-effort").unwrap();
-            let login = vcx.debug_bounds("panel-login").unwrap();
             let context = vcx.debug_bounds("panel-context-meter").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            for (tab_name, tab) in [("model", model), ("login", login), ("context", context)] {
+            for (tab_name, tab) in [("model", model), ("context", context)] {
                 assert!(
                     tab.top() > input.bottom(),
                     "{tab_name} pill sits below the input at {width}: {tab:?} {input:?}"
@@ -825,10 +786,11 @@ mod tests {
             }
             assert!(name.right() <= model.right());
             assert!(model.right() <= effort.left(), "effort follows the model");
-            assert!(effort.right() <= login.left(), "method follows effort");
+            // Usage left the bar: the context ring now follows the effort
+            // glyph directly, and the cache countdown lives in the status row.
             assert!(
-                login.right() <= context.left(),
-                "context ring follows method"
+                effort.right() <= context.left(),
+                "context ring follows effort"
             );
             // The voice button lives inside the input box, on its right, and
             // the editor never runs underneath it.

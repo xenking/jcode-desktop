@@ -1151,7 +1151,9 @@ mod tests {
                 input.set_content("keep my draft".into(), cx)
             });
         });
-        assert!(vcx.debug_bounds("panel-login").is_some());
+        // The bar carries no method pill: provider switching lives in the
+        // sidebar's quota row and the Accounts page.
+        assert!(vcx.debug_bounds("panel-login").is_none());
         // Workspace tests exercise the footer opening a separate adjacent panel.
         panel.update(vcx, |panel, cx| panel.open_login_picker(cx));
         vcx.run_until_parked();
