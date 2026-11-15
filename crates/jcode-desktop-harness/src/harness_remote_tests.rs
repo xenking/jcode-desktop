@@ -295,10 +295,10 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     });
     wait_update(
         &updates,
-        |u| matches!(u, Update::SessionForked { session } if session.session_id == remote::namespace("user@desktop", "fork-id")),
+        |u| matches!(u, Update::SessionForked { session, .. } if session.session_id == remote::namespace("user@desktop", "fork-id")),
     );
     wait_update(&updates, |u| {
-        matches!(u, Update::SessionForked { session }
+        matches!(u, Update::SessionForked { session, .. }
         if session.session_id == remote::namespace("user@desktop", "transfer-id"))
     });
     // A different remote session must not leak into this panel, even for images.

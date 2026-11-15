@@ -81,6 +81,12 @@ pub fn remote_host(session_id: &str) -> Option<String> {
 
 const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 
+/// A `/btw` fork inherits the whole agent prompt, tools included. Steer it to
+/// answer from the conversation instead of starting work of its own, the way a
+/// side question reads. Sent as a hidden system reminder, never as transcript
+/// text.
+const SIDE_QUESTION_REMINDER: &str = "This turn is a side question about the conversation above. Answer briefly and directly from that context. Do not call tools, do not edit files, and do not start a task.";
+
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
 pub enum Update {
@@ -105,9 +111,20 @@ pub enum Update {
         /// Correlates the startup draft without consuming another creation.
         request_id: Option<String>,
     },
-    /// A session was forked from an existing panel.
+    /// A session was forked from an existing panel. `prompt` is the question
+    /// the fork was opened with: the harness has already delivered it to the
+    /// child, so the panel echoes it instead of the runtime replaying it.
     SessionForked {
         session: SessionInfo,
+        prompt: Option<String>,
+    },
+    /// A `/btw` side question started in a hidden fork of `parent_session_id`.
+    /// The answer streams as ordinary events for the child session; it must
+    /// never open a tab of its own.
+    SideQuestionStarted {
+        parent_session_id: String,
+        session: SessionInfo,
+        question: String,
     },
     /// History fetched for a session after attach.
     History {
@@ -246,6 +263,21 @@ pub enum Command {
         session_id: String,
         prompt: String,
     },
+    /// `/btw`: answer `question` in a hidden fork so the source session's
+    /// transcript and prompt cache stay untouched.
+    SideQuestion {
+        session_id: String,
+        question: String,
+    },
+    /// Drop the connection to a dismissed side-question fork. The archived
+    /// session stays on disk.
+    DismissSideQuestion {
+        session_id: String,
+    },
+    /// Bring a promoted side-question fork back into the session list.
+    RestoreSideQuestion {
+        session_id: String,
+    },
     Transfer {
         session_id: String,
     },
@@ -285,6 +317,13 @@ pub enum Command {
         client: JcodeClient,
         prompt: String,
     },
+    /// Retain a side-question child connection and queue its question.
+    SideQuestionInternal {
+        parent_session_id: String,
+        session: SessionInfo,
+        client: JcodeClient,
+        question: String,
+    },
     /// Internal handoff from the asynchronous creator back to the bridge loop.
     CreatedInternal {
         session: SessionInfo,
@@ -323,6 +362,10 @@ enum SessionCommand {
         content: String,
         images: Vec<(String, String)>,
     },
+    /// Send a side question with its steering hidden from the transcript.
+    SendSideQuestion {
+        question: String,
+    },
     Cancel,
     BackgroundTool,
     AskResponse {
@@ -334,6 +377,11 @@ enum SessionCommand {
         prompt: String,
         internal: Sender<Command>,
     },
+    SideQuestion {
+        question: String,
+        internal: Sender<Command>,
+    },
+    RestoreSession,
     Transfer,
     SetModel(String),
     RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>),
@@ -927,7 +975,10 @@ fn run_with_transports(
                 prompt,
             } => {
                 let session_id = session.session_id.clone();
-                let _ = updates.send(Update::SessionForked { session });
+                let _ = updates.send(Update::SessionForked {
+                    session,
+                    prompt: Some(prompt.clone()),
+                });
                 let worker = spawn_attached_session_worker(
                     session_id.clone(),
                     client,
@@ -939,6 +990,25 @@ fn run_with_transports(
                     images: vec![],
                 });
                 if let Some(old) = workers.insert(session_id, worker) {
+                    let _ = old.send(SessionCommand::Stop);
+                }
+            }
+            Command::SideQuestionInternal {
+                parent_session_id,
+                session,
+                client,
+                question,
+            } => {
+                let child_id = session.session_id.clone();
+                let _ = updates.send(Update::SideQuestionStarted {
+                    parent_session_id,
+                    session,
+                    question: question.clone(),
+                });
+                let worker =
+                    spawn_attached_session_worker(child_id.clone(), client, &updates, &transports);
+                let _ = worker.send(SessionCommand::SendSideQuestion { question });
+                if let Some(old) = workers.insert(child_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
                 }
             }
@@ -1095,6 +1165,33 @@ fn run_with_transports(
                         prompt,
                         internal: internal.clone(),
                     },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SideQuestion {
+                session_id,
+                question,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SideQuestion {
+                        question,
+                        internal: internal.clone(),
+                    },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::DismissSideQuestion { session_id } => {
+                if let Some(worker) = workers.remove(&session_id) {
+                    let _ = worker.send(SessionCommand::Stop);
+                }
+            }
+            Command::RestoreSideQuestion { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RestoreSession,
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2296,6 +2393,36 @@ fn session_worker_with_connector(
                             _detach.set_processing(true);
                         }
                     }
+                    SessionCommand::SendSideQuestion { question } => {
+                        recovery.supersede();
+                        // A side question is not a conversation of its own yet:
+                        // keep the fork out of the session list until the user
+                        // promotes it. `real_id` is the id this connection uses.
+                        let _ = client.archive_session(real_id);
+                        // The child fork inherits the full agent prompt, tools
+                        // included. Steer it to answer from the conversation
+                        // without starting work, and keep that steer hidden so
+                        // the promoted transcript reads as the question alone.
+                        let result = client.send_message_with_reminder(
+                            real_id,
+                            &question,
+                            Vec::new(),
+                            Some(SIDE_QUESTION_REMINDER),
+                            None,
+                        );
+                        match result {
+                            Ok(()) => {
+                                turn_active = true;
+                                _detach.set_processing(true);
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Could not ask the side question: {error}"),
+                                });
+                            }
+                        }
+                    }
                     SessionCommand::Cancel => {
                         recovery.supersede();
                         if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
@@ -2356,10 +2483,47 @@ fn session_worker_with_connector(
                             }
                         }
                     }
+                    SessionCommand::SideQuestion { question, internal } => {
+                        let fork = (|| -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {
+                            let session = client.fork_session(real_id)?;
+                            let child_address = remote::SessionAddress {
+                                host: address.host.clone(),
+                                session_id: session.session_id.clone(),
+                            };
+                            let child = connector(&child_address)?;
+                            child.attach_session(&session.session_id)?;
+                            Ok((address.session_info(session), child))
+                        })();
+                        match fork {
+                            Ok((session, child)) => {
+                                let _ = internal.send(Command::SideQuestionInternal {
+                                    parent_session_id: session_id.clone(),
+                                    session,
+                                    client: child,
+                                    question,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Failed to ask a side question: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::RestoreSession => {
+                        if let Err(error) = client.restore_session(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Could not restore the session: {error}"),
+                            });
+                        }
+                    }
                     SessionCommand::Transfer => match client.transfer_session(real_id) {
                         Ok(session) => {
                             let _ = updates.send(Update::SessionForked {
                                 session: address.session_info(session),
+                                prompt: None,
                             });
                         }
                         Err(error) => {
@@ -2372,7 +2536,10 @@ fn session_worker_with_connector(
                     SessionCommand::Fork => match client.fork_session(real_id) {
                         Ok(session) => {
                             let session = address.session_info(session);
-                            let _ = updates.send(Update::SessionForked { session });
+                            let _ = updates.send(Update::SessionForked {
+                                session,
+                                prompt: None,
+                            });
                         }
                         Err(error) => {
                             let _ = updates.send(Update::CommandFailed {

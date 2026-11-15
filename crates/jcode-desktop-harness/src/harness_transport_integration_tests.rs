@@ -244,9 +244,13 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
     assert_ne!(parent_index, child_index);
     let child_native = format!("fork-{parent_index}");
     let child_id = remote::namespace("fork-host", &child_native);
-    until(
+    let forked = until(
         &updates,
-        |update| matches!(update, Update::SessionForked { session } if session.session_id == child_id),
+        |update| matches!(update, Update::SessionForked { session, .. } if session.session_id == child_id),
+    );
+    assert!(
+        matches!(&forked, Update::SessionForked { prompt: Some(prompt), .. } if prompt == "child-only question"),
+        "the fork update carries the prompt the panel must echo"
     );
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
@@ -293,6 +297,123 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
     assert!(
         fixture.connections.try_recv().is_err(),
         "UI Watch must reuse adopted child"
+    );
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
+    drop((parent_socket, child_socket));
+}
+
+#[test]
+fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
+    let fixture = Fixture::new();
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    let parent_id = remote::namespace("btw-host", "parent");
+    commands
+        .send(Command::Watch {
+            session_id: parent_id.clone(),
+        })
+        .unwrap();
+    let (host, parent_index, parent_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(host, "btw-host");
+    until(
+        &updates,
+        |update| matches!(update, Update::SessionConnected { session_id } if session_id == &parent_id),
+    );
+    commands
+        .send(Command::SideQuestion {
+            session_id: parent_id.clone(),
+            question: "why is the retry gone?".into(),
+        })
+        .unwrap();
+    let (child_host, child_index, child_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(child_host, "btw-host");
+    assert_ne!(parent_index, child_index);
+    // The daemon names the fork after the connection that asked for it.
+    let child_native = format!("fork-{parent_index}");
+    let child_id = remote::namespace("btw-host", &child_native);
+    until(&updates, |update| {
+        matches!(
+            update,
+            Update::SideQuestionStarted { parent_session_id, session, question }
+                if parent_session_id == &parent_id
+                    && session.session_id == child_id
+                    && question == "why is the retry gone?"
+        )
+    });
+    // The child is archived so an unpromoted side question stays out of the
+    // session list, and the question carries its steering as a hidden reminder.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut archived = false;
+    let mut submitted = false;
+    while !(archived && submitted) {
+        assert!(
+            Instant::now() < deadline,
+            "side question was not archived and submitted"
+        );
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        match request {
+            ApiRequest::ArchiveSession { session_id } => {
+                assert_eq!(index, child_index);
+                assert_eq!(session_id, child_native);
+                archived = true;
+            }
+            ApiRequest::SendMessage {
+                session_id,
+                content,
+                system_reminder,
+                ..
+            } => {
+                assert_eq!(index, child_index);
+                assert_eq!(session_id, child_native);
+                assert_eq!(content, "why is the retry gone?");
+                assert_eq!(system_reminder.as_deref(), Some(SIDE_QUESTION_REMINDER));
+                submitted = true;
+            }
+            _ => continue,
+        }
+    }
+    // The source conversation never receives the side question.
+    commands
+        .send(Command::SetModel {
+            session_id: parent_id,
+            model: "parent-still-attached".into(),
+        })
+        .unwrap();
+    loop {
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        if let ApiRequest::SendMessage { content, .. } = &request {
+            assert_ne!(
+                content, "why is the retry gone?",
+                "the parent stays untouched"
+            );
+        }
+        if let ApiRequest::SetModel { session_id, model } = request {
+            assert_eq!(index, parent_index);
+            assert_eq!(session_id, "parent");
+            assert_eq!(model, "parent-still-attached");
+            break;
+        }
+    }
+    // Dismissing drops the child connection without deleting the archived fork.
+    commands.send(Command::DismissSideQuestion { session_id: child_id }).unwrap();
+    assert_eq!(
+        fixture
+            .closed
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap(),
+        child_index
     );
     commands.send(Command::Shutdown).unwrap();
     bridge.join().unwrap();

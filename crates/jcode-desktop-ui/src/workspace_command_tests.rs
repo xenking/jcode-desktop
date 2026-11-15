@@ -15,8 +15,7 @@ fn workspace_commands_route_fork_and_transfer_without_replacing_source(
     while commands.try_recv().is_ok() {}
     for (content, expected_prompt) in [
         ("/fork", None),
-        ("/btw side question", Some("side question")),
-        ("/transfer", None),
+        ("/fork side question", Some("side question")),
     ] {
         vcx.update(|window, cx| {
             workspace.update(cx, |workspace, cx| {
@@ -39,12 +38,51 @@ fn workspace_commands_route_fork_and_transfer_without_replacing_source(
                 assert_eq!(session_id, "source");
                 assert_eq!(Some(prompt.as_str()), expected_prompt);
             }
-            Command::Transfer { session_id } if content == "/transfer" => {
-                assert_eq!(session_id, "source")
-            }
             _ => panic!("slash command must not become a generic model prompt"),
         }
     }
+    // `/btw` asks in a side card: it must never open a chat of its own.
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            let source = workspace.slots[0].panel.entity_id();
+            workspace.workspace_slash_command(
+                &WorkspaceSlashCommand {
+                    source,
+                    content: "/btw side question".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(workspace.slots.len(), 1);
+        })
+    });
+    match commands.try_recv().expect("side question command") {
+        Command::SideQuestion {
+            session_id,
+            question,
+        } => {
+            assert_eq!(session_id, "source");
+            assert_eq!(question, "side question");
+        }
+        _ => panic!("/btw must ask a side question, not fork a chat"),
+    }
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            let source = workspace.slots[0].panel.entity_id();
+            workspace.workspace_slash_command(
+                &WorkspaceSlashCommand {
+                    source,
+                    content: "/transfer".into(),
+                },
+                window,
+                cx,
+            );
+        })
+    });
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::Transfer { session_id }) if session_id == "source"
+    ));
 }
 
 #[gpui::test]

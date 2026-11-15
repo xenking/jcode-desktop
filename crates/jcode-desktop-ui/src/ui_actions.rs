@@ -42,6 +42,14 @@ pub(crate) struct PublishDesktop {
     pub source: gpui::EntityId,
 }
 
+/// Open a `/btw` answer as its own chat instead of the side card.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct PromoteSideQuestion {
+    pub source: gpui::EntityId,
+    pub session: jcode_sdk::SessionInfo,
+}
+
 /// Pick another folder for the source panel, from its location pill.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

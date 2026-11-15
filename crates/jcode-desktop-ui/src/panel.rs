@@ -89,6 +89,10 @@ mod ask;
 mod cache_miss;
 #[path = "panel_composer.rs"]
 mod composer;
+#[path = "panel_fork_prompt.rs"]
+mod fork_prompt;
+#[path = "panel_side_question.rs"]
+mod side_question;
 #[path = "panel_swarm_card.rs"]
 mod swarm_card;
 #[path = "panel_swarm_indicator.rs"]
@@ -662,6 +666,8 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    /// `/btw` answer streaming from a hidden fork of this conversation.
+    side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
@@ -1117,6 +1123,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            side_question: None,
             model_picker_open: false,
             focus_pending: false,
             transcript_only: false,

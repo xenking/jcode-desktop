@@ -1,11 +1,19 @@
 //! Desktop workspace slash actions. No command is sent as a model prompt.
 use super::*;
 use crate::panel::workspace_commands::parse::{WorkspaceCommand, parse};
-use crate::ui_actions::WorkspaceSlashCommand;
+use crate::ui_actions::{PromoteSideQuestion, WorkspaceSlashCommand};
 
 #[cfg(test)]
 #[path = "workspace_command_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "workspace_fork_prompt_tests.rs"]
+mod fork_prompt_tests;
+
+#[cfg(test)]
+#[path = "workspace_side_question_tests.rs"]
+mod side_question_tests;
 
 impl Workspace {
     pub(crate) fn workspace_slash_command(
@@ -180,6 +188,16 @@ impl Workspace {
                         prompt,
                     });
                 } else {
+                    source.update(cx, |panel, cx| panel.workspace_command_notice("A fork with a prompt requires a connected conversation with history. The original session is unchanged.", cx));
+                }
+            }
+            WorkspaceCommand::SideQuestion(question) => {
+                if source.read(cx).can_fork() {
+                    self.bridge.send(Command::SideQuestion {
+                        session_id: source.read(cx).session_id.clone(),
+                        question,
+                    });
+                } else {
                     source.update(cx, |panel, cx| panel.workspace_command_notice("A side question requires a connected conversation with history. The original session is unchanged.", cx));
                 }
             }
@@ -235,6 +253,80 @@ impl Workspace {
                 source.update(cx, |panel, cx| panel.workspace_command_notice(message, cx))
             }
         }
+    }
+
+    /// Feed events for a `/btw` child into the card that owns it, never into a
+    /// chat tab. Returns true when the event belonged to a side question.
+    pub(crate) fn route_side_question_event(
+        &mut self,
+        session_id: &str,
+        event: &jcode_sdk::ApiEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        for slot in &self.slots {
+            if slot.closing {
+                continue;
+            }
+            let panel = slot.panel.clone();
+            if panel.read(cx).side_question_child() != Some(session_id) {
+                continue;
+            }
+            panel.update(cx, |panel, cx| {
+                panel.apply_side_question_event(event, cx);
+            });
+            return true;
+        }
+        false
+    }
+
+    /// Promote a `/btw` answer into a real chat. The hidden fork keeps its
+    /// transcript, so the promoted chat can be continued like any other.
+    pub(crate) fn promote_side_question(
+        &mut self,
+        action: &PromoteSideQuestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source_index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.entity_id() == action.source)
+        else {
+            return;
+        };
+        let source = self.slots[source_index].panel.clone();
+        // The panel owns the card; promoting hands it over and clears it.
+        source.update(cx, |panel, cx| {
+            let _ = panel.take_side_question(cx);
+        });
+        let session = action.session.clone();
+        let session_id = session.session_id.clone();
+        if !self
+            .sessions
+            .iter()
+            .any(|known| known.session_id == session_id)
+        {
+            self.sessions.push(session.clone());
+        }
+        // A side question is archived so it stays out of the session list; a
+        // promoted one is a conversation the user asked to keep.
+        self.bridge.send(Command::RestoreSideQuestion {
+            session_id: session_id.clone(),
+        });
+        self.bridge.send(Command::RefreshSessions);
+        if self.single_panel {
+            self.open_fork_window(&session_id);
+            return;
+        }
+        let inserted = self.open_session(session, cx);
+        self.set_active(inserted, cx);
+        self.focus_active(window, cx);
+        source.update(cx, |panel, cx| {
+            panel.workspace_command_notice(
+                "Opened the side question as a chat. The original conversation is unchanged.",
+                cx,
+            )
+        });
     }
 
     /// Call once after snapshot slots have been restored. Observers belong to the

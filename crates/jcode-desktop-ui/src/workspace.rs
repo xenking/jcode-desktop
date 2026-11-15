@@ -2412,7 +2412,7 @@ impl Workspace {
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
             }
-            Update::SessionForked { session } => {
+            Update::SessionForked { session, prompt } => {
                 let session_id = session.session_id.clone();
                 if !self
                     .sessions
@@ -2428,6 +2428,29 @@ impl Workspace {
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
+                // The harness already delivered the prompt over the child's
+                // connection. Paint it here so the fork never opens looking
+                // empty while the answer streams in.
+                if let Some(prompt) = prompt {
+                    let panel = self.slots[inserted].panel.clone();
+                    panel.update(cx, |panel, cx| panel.echo_external_prompt(prompt, cx));
+                }
+            }
+            Update::SideQuestionStarted {
+                parent_session_id,
+                session,
+                question,
+            } => {
+                // A side question answers inside the source chat's card. It is
+                // never a tab of its own and never touches the source session.
+                if let Some(index) = self.slots.iter().position(|slot| {
+                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
+                }) {
+                    let panel = self.slots[index].panel.clone();
+                    panel.update(cx, |panel, cx| {
+                        panel.start_side_question(session, question, cx)
+                    });
+                }
             }
             Update::History {
                 session_id,
@@ -2444,6 +2467,9 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if self.route_side_question_event(&session_id, &event, cx) {
+                    return true;
+                }
                 if let jcode_sdk::ApiEvent::FocusRequested { .. } = &event {
                     // Another session (an agent) asked the user to look at this
                     // one: select its tab and bring the app forward.
@@ -9012,6 +9038,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::workspace_slash_command))
+            .on_action(cx.listener(Self::promote_side_question))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
             .on_action(cx.listener(Self::move_panel_up))

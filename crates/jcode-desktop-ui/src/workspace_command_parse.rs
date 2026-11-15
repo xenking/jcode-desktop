@@ -4,6 +4,8 @@ pub(crate) enum WorkspaceCommand {
     Observe(String),
     Mirror(String),
     Fork(Option<String>),
+    /// `/btw <question>`: answer in a side card, never in a new tab.
+    SideQuestion(String),
     Machines(Option<String>),
     Remote(String),
     ServerReload,
@@ -30,7 +32,8 @@ pub(crate) fn parse(content: &str) -> Option<WorkspaceCommand> {
         "/observe" => Observe(tail.into()),
         "/splitview" | "/split-view" => Mirror(tail.into()),
         "/btw" if tail.is_empty() => Invalid("Usage: /btw <side question>"),
-        "/btw" | "/fork" | "/split" => Fork((!tail.is_empty()).then(|| tail.into())),
+        "/btw" => SideQuestion(tail.into()),
+        "/fork" | "/split" => Fork((!tail.is_empty()).then(|| tail.into())),
         "/ssh" => Machines((!tail.is_empty()).then(|| tail.into())),
         "/resume" | "/active" => Resume {
             active: name == "/active",

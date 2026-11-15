@@ -141,6 +141,7 @@ impl Workspace {
             // actions. The host still handles Ctrl+R, and the panel owns chat,
             // model, login, clipboard, image and transcript shortcuts.
             .on_action(cx.listener(Self::workspace_slash_command))
+            .on_action(cx.listener(Self::promote_side_question))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::cycle_theme))
@@ -538,6 +539,7 @@ mod tests {
             w.apply(
                 Update::SessionForked {
                     session: super::super::tests::session_info("fork-1", Some("Fork")),
+                    prompt: None,
                 },
                 cx,
             );
