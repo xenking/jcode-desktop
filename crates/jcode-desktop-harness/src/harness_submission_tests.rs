@@ -121,6 +121,10 @@ mod socket_tests {
                             }
                             continue;
                         }
+                        ApiRequest::AskResponse { .. } => {
+                            request_tx.send(frame.request.clone()).unwrap();
+                            ApiEvent::Ok
+                        }
                         ApiRequest::SoftInterrupt { .. } => {
                             request_tx.send(frame.request.clone()).unwrap();
                             ApiEvent::Ok
@@ -247,6 +251,30 @@ mod socket_tests {
             matches!(request, ApiRequest::SoftInterrupt { session_id, content, images, urgent, .. }
             if session_id == "s1" && content == expected && images == expected_images && urgent)
         );
+    }
+
+    #[test]
+    fn ask_response_reaches_socket_with_all_fields_and_waits_for_ack() {
+        let worker = Worker::new(|_| vec![]);
+        let response = jcode_sdk::AskResponse {
+            answers: Some(vec![jcode_sdk::AskAnswer {
+                selected: vec!["B".into()],
+                other: Some("own answer".into()),
+                comments: [("B".into(), "why".into())].into_iter().collect(),
+            }]),
+        };
+        worker
+            .commands
+            .send(SessionCommand::AskResponse {
+                request_id: "ask-1".into(),
+                response,
+            })
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::AskResponse { session_id, request_id, response }
+            if session_id == "s1" && request_id == "ask-1" && response.answers.as_ref().is_some_and(|answers| answers[0].comments.get("B").map(String::as_str) == Some("why") && answers[0].other.as_deref() == Some("own answer")))
+        );
+        worker.wait_for(|update| matches!(update, Update::AskResponseSettled { request_id, error: None, .. } if request_id == "ask-1"));
     }
 
     #[test]

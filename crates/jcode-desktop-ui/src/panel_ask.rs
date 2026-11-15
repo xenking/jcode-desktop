@@ -1123,9 +1123,11 @@ mod tests {
     #[gpui::test]
     fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
             workspace.push_test_panel("session-a", cx);
             workspace
         });
@@ -1227,6 +1229,10 @@ mod tests {
         let request_id = panel.read_with(vcx, |panel, _| {
             panel.ask_card.as_ref().unwrap().request_id.clone()
         });
+        assert!(commands.try_iter().any(|command| matches!(command,
+            crate::harness::Command::AskResponse { session_id, request_id: id, response }
+            if session_id == "session-a" && id == request_id && response.answers.as_ref().is_some_and(|answers| answers[0].other.as_deref() == Some("my own answer"))
+        )), "Submit must send the typed answer through the bridge");
         workspace.update(vcx, |workspace, cx| {
             workspace.apply(
                 crate::harness::Update::AskResponseSettled {
