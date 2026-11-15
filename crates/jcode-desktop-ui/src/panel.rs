@@ -744,7 +744,7 @@ pub struct Panel {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PickerKind {
+pub(super) enum PickerKind {
     Model,
     Effort,
 }
@@ -2534,7 +2534,7 @@ impl Panel {
         });
     }
 
-    fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
+    pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
         let submit = cx.weak_entity();

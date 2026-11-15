@@ -210,8 +210,7 @@ impl Panel {
         // `JCODE_DESKTOP_SCREENSHOT_EFFORT_MENU=1` also opens the `/effort`
         // picker so its drawn rows can be reviewed offline.
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_EFFORT_MENU").as_deref() == Ok("1") {
-            let input = self.input.clone();
-            cx.defer(move |cx| input.update(cx, |input, cx| input.open_effort_menu(cx)));
+            self.open_picker_search(PickerKind::Effort, cx);
         }
         cx.notify();
     }
