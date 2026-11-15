@@ -50,7 +50,14 @@ impl Server {
         Self::with_history_failures(0)
     }
 
-    fn with_history_failures(mut history_failures: usize) -> (JcodeClient, Self) {
+    fn with_history_failures(history_failures: usize) -> (JcodeClient, Self) {
+        Self::with_failures(history_failures, 0)
+    }
+
+    fn with_failures(
+        mut history_failures: usize,
+        mut attach_failures: usize,
+    ) -> (JcodeClient, Self) {
         let (socket, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         let writer = Arc::new(Mutex::new(server));
@@ -65,6 +72,13 @@ impl Server {
                         capabilities: vec!["runtime_commands".into()],
                     },
                     ApiRequest::Ping => ApiEvent::Pong,
+                    ApiRequest::AttachSession { .. } if attach_failures > 0 => {
+                        attach_failures -= 1;
+                        ApiEvent::Error {
+                            code: jcode_sdk::api::ErrorCode::Internal,
+                            message: "Failed to restore session: Session same-id still has a runtime owner".into(),
+                        }
+                    }
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
                         ApiEvent::Attached {
                             session: info("same-id"),
@@ -192,6 +206,57 @@ fn wait_update(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) ->
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+#[test]
+fn live_runtime_owner_is_attaching_not_lost() {
+    let (commands, rx) = channel();
+    let (tx, updates) = update_channel();
+    let mut attempts = 0;
+    let worker = std::thread::spawn(move || {
+        session_worker_with_connector("same-id".into(), rx, tx, None, move |_| {
+            attempts += 1;
+            let (client, _server) = Server::with_failures(0, usize::from(attempts == 1));
+            Ok(client)
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut lost = false;
+    let mut connected = false;
+    while Instant::now() < deadline && !connected {
+        if let Ok(update) = updates.try_recv() {
+            lost |= matches!(update, Update::SessionLost { .. });
+            connected |= matches!(update, Update::SessionConnected { .. });
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    commands.send(SessionCommand::Stop).unwrap();
+    worker.join().unwrap();
+    assert!(connected, "the worker should reconnect");
+    assert!(!lost, "a live runtime owner is not a lost session");
+}
+
+#[test]
+fn restoring_session_reads_last_model_and_effort_before_attach() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join("sessions")).unwrap();
+    std::fs::write(
+        home.path().join("sessions/same-id.json"),
+        r#"{"model":"old-model","reasoning_effort":"low","messages":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("sessions/same-id.journal.jsonl"),
+        "{\"meta\":{\"model\":\"gpt-5.6\",\"reasoning_effort\":\"high\"}}\n",
+    )
+    .unwrap();
+    let update = saved_session_identity(home.path(), "same-id", "same-id").unwrap();
+    assert!(
+        matches!(update, Update::Event { session_id, event: ApiEvent::ModelInfo { model: Some(model), reasoning_effort: Some(effort), .. } }
+        if session_id == "same-id" && model == "gpt-5.6" && effort == "high")
+    );
+    assert!(saved_session_identity(home.path(), "../escape", "ignored").is_none());
 }
 
 #[test]

@@ -3211,9 +3211,11 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                // Identity events always carry the current effort, and `None`
-                // means the provider has none, so a stale label never lingers.
-                self.identity_effort(reasoning_effort.clone());
+                // A known model makes an absent effort authoritative. A wholly
+                // empty identity does not erase the persisted fallback.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -3249,7 +3251,11 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                self.identity_effort(reasoning_effort.clone());
+                // An empty runtime snapshot carries no identity yet. Keep the
+                // persisted effort until the runtime actually reports a model.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 if model.is_some() {
                     self.model = model.clone();
                 }
@@ -4066,6 +4072,10 @@ impl Panel {
                 div()
                     .id(("background-task-toggle", index))
                     .debug_selector(|| "background-task-expand".into())
+                    .flex()
+                    .when(expanded, |el| el.items_start())
+                    .when(!expanded, |el| el.items_center())
+                    .gap_1()
                     .flex_none()
                     .min_w_0()
                     .cursor_pointer()
@@ -4073,18 +4083,6 @@ impl Panel {
                         cx.stop_propagation();
                         this.toggle_line(&toggle_key, cx);
                     }))
-                    .child(background_task::render(
-                        index,
-                        task_id,
-                        label,
-                        summary,
-                        *percent,
-                        *done,
-                        expanded,
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    ))
                     // The label is selectable text, so the row also carries an
                     // explicit chevron: a click on the text still toggles, and
                     // so does a click on the control.
@@ -4099,6 +4097,18 @@ impl Panel {
                             }),
                         )
                     })
+                    .child(div().flex_1().min_w_0().child(background_task::render(
+                        index,
+                        task_id,
+                        label,
+                        summary,
+                        *percent,
+                        *done,
+                        expanded,
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    )))
                     .into_any_element()
             }
             Item::Tool {

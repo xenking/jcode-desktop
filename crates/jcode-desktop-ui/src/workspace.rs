@@ -2741,6 +2741,17 @@ impl Workspace {
                     }
                 }
             }
+            Update::SessionAttaching { session_id } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.status = "attaching…".into();
+                            cx.notify();
+                        });
+                        break;
+                    }
+                }
+            }
             Update::SessionConnected { session_id } => {
                 self.set_cloud_transport_connected(&session_id, true);
                 for slot in &self.slots {
@@ -10056,6 +10067,66 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn restoring_live_session_keeps_identity_while_attaching(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("same-id", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::ModelInfo {
+                        session_id: "same-id".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6".into()),
+                        reasoning_effort: Some("high".into()),
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+            workspace.apply(
+                Update::SessionAttaching {
+                    session_id: "same-id".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(panel.status, "attaching…");
+        });
+        assert!(vcx.debug_bounds("panel-model-effort").is_some());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::RuntimeInfo {
+                        session_id: "same-id".into(),
+                        provider: None,
+                        model: None,
+                        routes: vec![],
+                        reasoning_effort: None,
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+        });
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+        });
+    }
 
     thread_local! {
         pub(super) static SIDEBAR_TITLE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
