@@ -4211,6 +4211,9 @@ impl Panel {
             }
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
+                if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                    return self.render_user_image_chip(index, image, cx);
+                }
                 if self.image_pane_open && !display.screenshot_mode {
                     return self.render_image_pane_link(index, image, cx);
                 }
@@ -6040,16 +6043,28 @@ impl Render for Panel {
                                         {
                                             return;
                                         }
-                                        // Fresh/startup editors live inside this body. Let
-                                        // their own scroll containers receive wheel events.
+                                        let delta = event.delta.pixel_delta(window.line_height());
+                                        // Give the editor first refusal while it can scroll. At
+                                        // its edge, route the wheel to the transcript. Other
+                                        // composer controls keep their own wheel handling.
+                                        let mut editor_fallback = false;
                                         if input_bounds.get().is_some_and(
                                             |bounds: gpui::Bounds<gpui::Pixels>| {
                                                 bounds.contains(&event.position)
                                             },
                                         ) {
-                                            return;
+                                            let panel = wheel_panel.read(cx);
+                                            let input = panel.input.read(cx);
+                                            if !input.editor_contains_position(event.position)
+                                                || input.editor_can_scroll_wheel(
+                                                    event.position,
+                                                    delta.y,
+                                                )
+                                            {
+                                                return;
+                                            }
+                                            editor_fallback = true;
                                         }
-                                        let delta = event.delta.pixel_delta(window.line_height());
                                         let y = f32::from(delta.y);
                                         if y == 0.0 {
                                             return;
@@ -6111,6 +6126,7 @@ impl Render for Panel {
                                             return;
                                         }
                                         if panel.startup_layout.is_some()
+                                            && !editor_fallback
                                             && !panel
                                                 .transcript_list
                                                 .viewport_bounds()
