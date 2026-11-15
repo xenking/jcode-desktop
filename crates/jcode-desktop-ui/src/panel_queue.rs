@@ -37,7 +37,7 @@ impl Panel {
     }
 
     /// Prompts handed to the runtime as steering and not yet delivered.
-    pub(super) fn steered_prompt_count(&self) -> usize {
+    pub(crate) fn steered_prompt_count(&self) -> usize {
         self.prompt_queue.steered.len()
     }
 
@@ -73,10 +73,11 @@ impl Panel {
             return;
         }
         match event {
-            // The runtime took it as a new turn after all: nothing to wait for.
-            ApiEvent::MessageAccepted { .. } => self.deliver_steered_prompts(),
-            // The runtime drains its whole queue when it injects, and user
-            // messages carry no display role.
+            // An acceptance ack only proves the daemon took some `message`
+            // command. Our text left as a steering interrupt, so the ack says
+            // nothing about it: it stays queued until an injection reports it.
+            // The runtime drains its whole interrupt queue when it injects, and
+            // user messages carry no display role.
             ApiEvent::SoftInterruptInjected {
                 display_role: None, ..
             } => {
@@ -94,6 +95,23 @@ impl Panel {
             | ApiEvent::TurnStopped { .. }
             | ApiEvent::Error { .. } => self.deliver_steered_prompts(),
             _ => {}
+        }
+    }
+
+    /// Screenshot fixture: `JCODE_DESKTOP_SCREENSHOT_QUEUED=N` seeds N messages
+    /// the runtime has not delivered yet, so the queued rows can be looked at
+    /// offline in the real app.
+    pub(crate) fn seed_screenshot_queued(&mut self, count: usize) {
+        const SAMPLES: [&str; 3] = [
+            "also update the changelog before you finish",
+            "and re-run the desktop tests after that",
+            "ping me when the build is green",
+        ];
+        for index in 0..count {
+            self.prompt_queue.steered.push(QueuedPrompt {
+                content: SAMPLES[index % SAMPLES.len()].to_string(),
+                images: Vec::new(),
+            });
         }
     }
 
@@ -336,7 +354,11 @@ impl Panel {
                 .flex_col()
                 .min_w_0()
                 .mx_2()
-                .px_2()
+                .p_2()
+                .rounded_md()
+                // The composer sits on a see-through veil, so unbacked text
+                // would read against transcript rows streaming underneath.
+                .bg(theme.TOOL_BG)
                 .gap_1()
                 .text_size(px(12.))
                 .text_color(theme.TEXT_DIM)

@@ -912,6 +912,8 @@ pub struct Workspace {
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _stream_fixture: Option<gpui::Task<()>>,
+    /// Offline screenshot fixture: keeps undelivered queued rows on screen.
+    queued_fixture: Option<gpui::Task<()>>,
     _performance_task: gpui::Task<()>,
     _live_profile_task: gpui::Task<()>,
 }
@@ -1219,6 +1221,7 @@ impl Workspace {
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _stream_fixture: None,
+            queued_fixture: None,
             _performance_task: performance_task,
             _live_profile_task: crate::live_profile::spawn(window, cx),
         };
@@ -1380,6 +1383,32 @@ impl Workspace {
                     "screenshot-fixture".into(),
                     cx,
                 ));
+            }
+            if let Some(count) = std::env::var("JCODE_DESKTOP_SCREENSHOT_QUEUED")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|count| *count > 0)
+            {
+                // Re-seed on a timer: the offline demo turn ends, and its
+                // turn_done drains the queue, so a one-shot seed would show the
+                // rows for a frame and then hand them to the transcript.
+                workspace.queued_fixture = Some(cx.spawn(async move |this, cx| {
+                    let executor = cx.background_executor().clone();
+                    loop {
+                        this.update(cx, |workspace, cx| {
+                            if let Some(slot) = workspace.slots.first() {
+                                slot.panel.update(cx, |panel, cx| {
+                                    if panel.steered_prompt_count() == 0 {
+                                        panel.seed_screenshot_queued(count);
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                        .ok();
+                        executor.timer(Duration::from_millis(1500)).await;
+                    }
+                }));
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()
@@ -1612,6 +1641,7 @@ impl Workspace {
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _stream_fixture: None,
+            queued_fixture: None,
             _performance_task: cx.spawn(async move |_, _| {}),
             _live_profile_task: cx.spawn(async move |_, _| {}),
         }

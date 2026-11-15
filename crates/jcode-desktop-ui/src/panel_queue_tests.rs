@@ -665,6 +665,24 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
 }
 
 #[gpui::test]
+fn acceptance_ack_does_not_drop_a_steered_row(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx, _commands) = steered_panel(cx, "steer-ack");
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("look at the logs".into(), vec![], false, cx)
+    });
+    vcx.run_until_parked();
+    // The ack proves the daemon took a `message` command. This text left as a
+    // steering interrupt, so the ack says nothing about it: dropping the row
+    // here would show the message as delivered before the model saw it.
+    panel.update(vcx, |p, cx| {
+        p.apply(&event(json!({"ev":"message_accepted"})), cx)
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |p, _| assert_eq!(p.steered_prompt_count(), 1));
+    assert!(vcx.debug_bounds("steered-prompt-0").is_some());
+}
+
+#[gpui::test]
 fn steered_row_does_not_appear_when_idle_and_survives_no_turn_end(cx: &mut gpui::TestAppContext) {
     let (bridge, _commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(move |_, cx| {
