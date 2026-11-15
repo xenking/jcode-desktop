@@ -8,8 +8,13 @@ pub mod command_workflows;
 pub mod diff;
 pub mod diff_model;
 pub mod friendly_error;
+pub mod global_search;
 pub mod learning;
 pub mod pdf_render;
 pub mod platform_dirs;
 pub mod prompt_completion;
 pub mod todoist;
+
+#[cfg(test)]
+#[path = "global_search_tests.rs"]
+mod global_search_tests;

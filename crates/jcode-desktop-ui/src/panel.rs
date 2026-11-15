@@ -59,6 +59,9 @@ mod file_drop_tests;
 #[path = "panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
 
+#[path = "panel_reveal.rs"]
+mod reveal;
+
 #[path = "panel_text_document.rs"]
 mod text_document;
 

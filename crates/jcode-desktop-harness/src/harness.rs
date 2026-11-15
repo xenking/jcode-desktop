@@ -71,6 +71,8 @@ mod disconnect;
 mod history;
 #[path = "harness_recovery.rs"]
 mod recovery;
+#[path = "harness_search.rs"]
+mod search;
 
 /// Decode the host carried by a persisted remote panel ID.
 pub fn remote_host(session_id: &str) -> Option<String> {
@@ -169,6 +171,14 @@ pub enum Update {
     Disconnected {
         reason: String,
     },
+    /// Reply to `Command::SearchSessions`. `generation` identifies the query so
+    /// the UI can ignore answers it has already typed past.
+    SessionSearch {
+        query: String,
+        generation: u64,
+        result: Result<jcode_sdk::SessionSearchResults, String>,
+        elapsed_ms: f64,
+    },
 }
 
 /// Commands flowing from the UI into the bridge.
@@ -176,6 +186,12 @@ pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
     RefreshSessions,
+    /// Search every stored session's titles and transcripts. Answers with
+    /// `Update::SessionSearch` carrying the same `generation`.
+    SearchSessions {
+        query: String,
+        generation: u64,
+    },
     RefreshRuntime {
         session_id: String,
     },
@@ -817,6 +833,9 @@ fn run_with_transports(
             Command::Shutdown => break,
             Command::RefreshSessions => {
                 refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
+            }
+            Command::SearchSessions { query, generation } => {
+                search::spawn_search(updates.clone(), query, generation)
             }
             Command::CreateSession {
                 working_dir,

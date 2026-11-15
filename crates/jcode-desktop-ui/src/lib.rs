@@ -58,7 +58,8 @@ pub(crate) use jcode_desktop_harness::{
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;
 pub(crate) use jcode_desktop_model::{
-    diff, diff_model, friendly_error, learning, pdf_render, platform_dirs, prompt_completion,
+    diff, diff_model, friendly_error, global_search, learning, pdf_render, platform_dirs,
+    prompt_completion,
 };
 // The shared UI foundation every view uses, in its own crate so feature view
 // crates can depend on it without the whole UI.
@@ -103,8 +104,8 @@ pub fn build_version() -> String {
 
 use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
-    FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
-    MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
+    FocusRight, FocusUp, ForkPanel, GlobalSearch, MaximizeWidth, MovePanelDown, MovePanelLeft,
+    MovePanelRight, MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
     NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOpenrig, OpenOrchestration,
     OpenTodoist, Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1,
     WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
@@ -155,6 +156,11 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-d", OpenTodoist, None),
         KeyBinding::new("super-shift-r", OpenOpenrig, None),
         KeyBinding::new("super-shift-a", OpenOrchestration, None),
+        // Global search: Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere. Both are
+        // bound unconditionally so a Linux build matches the platform habit
+        // without a second keymap.
+        KeyBinding::new("super-shift-f", GlobalSearch, None),
+        KeyBinding::new("ctrl-shift-f", GlobalSearch, None),
         // Enter and ; use the configured fixed favorite. ' explicitly uses
         // home. Super+T remains the terminal shortcut.
         #[cfg(not(target_os = "macos"))]

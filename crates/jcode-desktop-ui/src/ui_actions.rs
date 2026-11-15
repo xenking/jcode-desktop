@@ -86,6 +86,9 @@ gpui::actions!(
         ToggleOnboardingSimulator,
         OpenChangelog,
         OpenResume,
+        /// Full-height search across every stored session's titles and
+        /// messages. Also bound to the sidebar's magnifier button.
+        GlobalSearch,
     ]
 );
 

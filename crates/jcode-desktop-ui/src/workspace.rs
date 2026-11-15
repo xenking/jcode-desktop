@@ -21,6 +21,9 @@ mod side_panel;
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
 
+#[path = "workspace_search.rs"]
+mod search_screen;
+
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
@@ -158,11 +161,15 @@ mod default_directory;
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 
+#[cfg(test)]
+#[path = "workspace_search_tests.rs"]
+mod search_screen_tests;
+
 // Actions that panels dispatch to the workspace live in a leaf module so the
 // panel layer does not depend on this one.
 pub(crate) use crate::ui_actions::{
-    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume, PublishDesktop,
-    SwitchDirectory, ToggleOnboardingSimulator,
+    ClosePanel, GlobalSearch, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume,
+    PublishDesktop, SwitchDirectory, ToggleOnboardingSimulator,
 };
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -253,6 +260,8 @@ mod version;
 
 #[path = "sidebar_roller.rs"]
 mod sidebar_roller;
+#[path = "sidebar_search_button.rs"]
+mod sidebar_search_button;
 
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
@@ -757,6 +766,9 @@ pub struct Workspace {
     /// window. A shared single-panel host has one per window.
     launch: jcode_desktop_api::WindowLaunch,
     resume: Option<resume::State>,
+    /// Full-height global search over every stored session. Transient by
+    /// design: relaunching the app lands on the workspace, not on a query.
+    search_screen: Option<search_screen::State>,
     show_sidebar: bool,
     sidebar_custom_width: f32,
     sidebar_resizing: bool,
@@ -1104,6 +1116,7 @@ impl Workspace {
             single_panel,
             launch: launch.clone(),
             resume: None,
+            search_screen: None,
             show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             account_menu: account_menu::State::startup(),
@@ -1496,6 +1509,7 @@ impl Workspace {
             single_panel: false,
             launch: Default::default(),
             resume: None,
+            search_screen: None,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             account_menu: account_menu::State::default(),
@@ -2010,6 +2024,10 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = &self.search_screen {
+            window.focus(&state.input.focus_handle(cx), cx);
+            return;
+        }
         if let Some(state) = &self.resume {
             window.focus(&state.search.focus_handle(cx), cx);
             return;
@@ -2179,6 +2197,12 @@ impl Workspace {
                 self.remotes.failed = failed;
                 self.remotes.status = Some(format!("{host}: {message}"));
             }
+            Update::SessionSearch {
+                query,
+                generation,
+                result,
+                elapsed_ms,
+            } => self.apply_session_search(query, generation, result, elapsed_ms, cx),
             Update::Connected => {
                 self.connected = true;
                 self.status = "connected".into();
@@ -6802,6 +6826,7 @@ impl Workspace {
                                             "settings",
                                             cx,
                                         ))
+                                        .child(self.render_sidebar_search_button(cx))
                                         .child(
                                             div()
                                                 .id("sidebar-openrig")
@@ -8643,6 +8668,11 @@ impl Render for Workspace {
             let root = self.voice_modal_root(content, cx);
             return crate::window_caption::wrap(root, window, true);
         }
+        if self.search_screen.is_some() {
+            self.dump_state(window, cx);
+            let root = self.render_search_screen(cx);
+            return crate::window_caption::wrap(root, window, true);
+        }
         if self.resume.is_some() {
             self.dump_state(window, cx);
             let root = self.render_resume(cx);
@@ -8987,6 +9017,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::open_changelog))
             .on_action(cx.listener(Self::open_resume))
+            .on_action(cx.listener(Self::open_search_screen))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))

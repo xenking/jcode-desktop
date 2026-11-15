@@ -247,7 +247,10 @@ impl Workspace {
                             .debug_selector(move || id.into())
                             .child("⋯"),
                     ),
-            );
+            )
+            // Global search lives beside the hamburger at compact widths: the
+            // wide sidebar's pill row does not exist here.
+            .child(self.render_sidebar_search_icon(cx));
         div()
             .relative()
             .h(px(TITLEBAR_HEIGHT))
