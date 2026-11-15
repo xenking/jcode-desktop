@@ -221,13 +221,17 @@ impl Writer {
         Ok(true)
     }
 
-    fn clean_quit(&self) -> anyhow::Result<()> {
+    fn clean_quit(&self, snapshot: Option<WorkspaceSnapshot>) -> anyhow::Result<()> {
         let _lock = lock(&self.path)?;
         if read_owner(&self.path).is_some_and(|record| record.owner == self.owner)
             && let Some(mut record) = read(&self.path)
         {
-            // Keep the last checkpoint and mark it final. Retiring the owner
-            // also stops any in-flight background save from overwriting it.
+            // Retire the owner atomically with the last snapshot so an in-flight
+            // background save cannot overwrite the final selections or draft.
+            if let Some(snapshot) = snapshot {
+                record.snapshot = snapshot;
+                record.updated_at_ms = now_ms();
+            }
             record.clean = true;
             record.owner = format!("{}-quit", self.owner);
             write(&self.path, &record)?;
@@ -240,6 +244,10 @@ impl Writer {
 /// The loop retains only a weak workspace, never an old generation's panels.
 pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut App) {
     let Some(path) = path() else { return };
+    install_at_path(workspace, window, app, path);
+}
+
+fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App, path: PathBuf) {
     let writer = workspace
         .read(app)
         .snapshot(window, app)
@@ -252,9 +260,19 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut 
         }
     };
     let quit_writer = writer.clone();
-    app.on_app_quit(move |_| {
-        // Synchronous disarm also excludes any in-flight background save.
-        if let Err(error) = quit_writer.clean_quit() {
+    let quit_workspace = workspace.downgrade();
+    let quit_window = window.window_handle();
+    app.on_app_quit(move |app| {
+        let snapshot = quit_window
+            .update(app, |_, window, app| {
+                quit_workspace
+                    .upgrade()
+                    .map(|workspace| workspace.read(app).snapshot(window, app))
+            })
+            .ok()
+            .flatten()
+            .and_then(Result::ok);
+        if let Err(error) = quit_writer.clean_quit(snapshot) {
             eprintln!("failed to disarm desktop crash recovery: {error:#}");
         }
         std::future::ready(())
@@ -295,6 +313,53 @@ mod tests {
 
     fn snapshot() -> WorkspaceSnapshot {
         WorkspaceSnapshot::decode(br#"{"format_version":1,"slots":[],"active":0,"active_row":0,"row_focus":[null,null,null,null],"previous":null,"camera_x":[0,0,0,0],"camera_target":[0,0,0,0],"overview":false,"hints_overlay":false,"folder_picker_dir":null,"folder_picker_error":null,"folder_search":null,"focus":"Workspace"}"#).unwrap()
+    }
+
+    #[gpui::test]
+    fn clean_shutdown_captures_ask_selection_after_last_checkpoint(cx: &mut gpui::TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.update(|window, app| install_at_path(&workspace, window, app, path.clone()));
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(
+            r#"{
+            "ev":"ask_request", "session_id":"session-a", "request_id":"ask-1",
+            "tool_call_id":"tool-1", "questions":[{"header":"Database",
+            "question":"Which database?", "options":[{"label":"Postgres"},{"label":"SQLite"}]}]
+        }"#,
+        )
+        .unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            if vcx.debug_bounds("ask-option-0-1").is_some() {
+                break;
+            }
+            vcx.executor().advance_clock(Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        let option = vcx.debug_bounds("ask-option-0-1").unwrap();
+        vcx.simulate_click(option.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let current = panel.read_with(vcx, |panel, cx| {
+            serde_json::to_value(panel.snapshot(cx)).unwrap()
+        });
+        assert_eq!(current["ask_draft"]["chosen"][0], serde_json::json!([1]));
+        cx.quit();
+        let record = read(&path).expect("clean shutdown leaves a checkpoint");
+        assert!(record.clean);
+        let restored = restore(&record, now_ms(), false).unwrap();
+        let saved = serde_json::to_value(&restored.slots[0].panel).unwrap();
+        assert_eq!(saved["ask_draft"]["chosen"][0], serde_json::json!([1]));
     }
 
     #[test]
@@ -407,7 +472,7 @@ mod tests {
         let writer = Writer::begin(path.clone(), snapshot()).unwrap();
         assert!(writer.save(snapshot(), 123).unwrap());
         assert_eq!(read(&path).unwrap().updated_at_ms, 123);
-        writer.clean_quit().unwrap();
+        writer.clean_quit(None).unwrap();
         assert!(!writer.save(snapshot(), 456).unwrap());
         let record = read(&path).expect("a clean quit keeps the open panels");
         assert!(record.clean);
@@ -420,7 +485,7 @@ mod tests {
         let path = root.path().join("recovery.json");
         let writer = Writer::begin(path.clone(), snapshot()).unwrap();
         assert!(writer.save(snapshot(), 100_000).unwrap());
-        writer.clean_quit().unwrap();
+        writer.clean_quit(None).unwrap();
         let record = read(&path).unwrap();
         // Hours later, owner gone: relaunch must reopen the workspace.
         assert!(restore(&record, 100_000 + 6 * 3_600_000, false).is_some());
@@ -436,7 +501,7 @@ mod tests {
         let new = Writer::begin(path.clone(), snapshot()).unwrap();
         assert_ne!(old.owner, new.owner);
         assert!(!old.save(snapshot(), 123).unwrap());
-        old.clean_quit().unwrap();
+        old.clean_quit(None).unwrap();
         assert_eq!(read(&path).unwrap().owner, new.owner);
         assert!(new.save(snapshot(), 456).unwrap());
     }
