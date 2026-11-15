@@ -60,6 +60,7 @@ impl PromptInput {
                     .child(
                         div()
                             .id("paste-image-preview-remove")
+                            .debug_selector(|| "paste-image-preview-remove".into())
                             .px_3()
                             .py_1()
                             .cursor_pointer()

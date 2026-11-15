@@ -3394,6 +3394,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn image_preview_remove_is_undoable(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let remove = vcx
+            .debug_bounds("paste-image-preview-remove")
+            .unwrap()
+            .center();
+        vcx.simulate_click(remove, Default::default());
+        input.read_with(vcx, |input, _| {
+            assert!(input.content.is_empty());
+            assert!(input.attachments.is_empty());
+        });
+        vcx.simulate_keystrokes("cmd-z");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "[#image 1]");
+            assert_eq!(input.attachments.len(), 1);
+        });
+    }
+
+    #[gpui::test]
     fn image_history_never_replays_a_chip_without_its_image(cx: &mut TestAppContext) {
         cx.update(bind_keys);
         let (input, vcx) = cx.add_window_view(|window, cx| {
