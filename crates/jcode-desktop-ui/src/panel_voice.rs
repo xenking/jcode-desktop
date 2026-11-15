@@ -2132,7 +2132,7 @@ mod tests {
     /// loses the draft for good.
     #[gpui::test]
     fn voice_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel
@@ -2165,7 +2165,7 @@ mod tests {
     /// `/dictate` from a command uses the same replacement rule.
     #[gpui::test]
     fn command_transcript_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel
