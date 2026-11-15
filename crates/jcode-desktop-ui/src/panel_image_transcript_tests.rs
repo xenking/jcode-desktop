@@ -1,7 +1,106 @@
 use super::*;
 
 #[gpui::test]
-fn user_image_is_compact_and_opens_full_preview(cx: &mut gpui::TestAppContext) {
+fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("inline-image-marker".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![
+            Item::User("[#image 1]".into()),
+            Item::Image(image_preview::fixture_image()),
+        ];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-user-image-chip").is_none());
+    let marker = vcx.debug_bounds("prompt-content-0").expect("inline marker");
+    vcx.simulate_click(marker.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
+fn user_image_markers_follow_submission_order_and_turn_boundaries(cx: &mut gpui::TestAppContext) {
+    let panel = cx.new(|cx| Panel::new("image-order".into(), None, None, crate::harness::spawn_inert(), cx));
+    panel.update(cx, |panel, _| {
+        *panel.items = vec![
+            Item::User("[#image 2] then [#image 1]".into()),
+            Item::Image(image_preview::fixture_image()),
+            Item::Image(image_preview::fixture_image()),
+            Item::User("[#image 1]".into()),
+            Item::Image(image_preview::fixture_image()),
+        ];
+        assert_eq!(panel.user_image_markers(0), vec![(1, "[#image 2]".into()), (2, "[#image 1]".into())]);
+        assert_eq!(panel.user_image_markers(3), vec![(4, "[#image 1]".into())]);
+        let rows = panel.transcript_render_rows();
+        assert_eq!(rows.iter().map(|row| row.index).collect::<Vec<_>>(), vec![0, 3]);
+        assert_eq!(panel.session_image_indices(), vec![1, 2, 4]);
+    });
+}
+
+#[gpui::test]
+fn each_inline_marker_opens_its_own_image(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("image-click-order".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        let mut first = image_preview::fixture_image();
+        first.label = Some("first".into());
+        let mut second = image_preview::fixture_image();
+        second.label = Some("second".into());
+        *panel.items = vec![Item::User("[#image 2]\n\n[#image 1]".into()), Item::Image(first), Item::Image(second)];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let bounds = vcx.debug_bounds("prompt-content-0").unwrap();
+    for (y, expected) in [(bounds.top() + px(8.), "first"), (bounds.bottom() - px(8.), "second")] {
+        vcx.simulate_click(gpui::point(bounds.center().x, y), Default::default());
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.image_preview.as_ref().and_then(|image| image.label.as_deref()), Some(expected));
+        });
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.close_image_preview(window, cx)));
+        vcx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn image_marker_before_markdown_link_opens_image_not_url(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("image-and-link".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User("[#image 1] and [docs](https://example.com)".into()), Item::Image(image_preview::fixture_image())];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let bounds = vcx.debug_bounds("prompt-content-0").unwrap();
+    vcx.simulate_click(gpui::point(bounds.left() + px(15.), bounds.top() + px(8.)), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+    assert_eq!(vcx.opened_url(), None);
+}
+
+#[gpui::test]
+fn image_marker_in_code_block_opens_image(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("image-in-code".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User("```\n[#image 1]\n```".into()), Item::Image(image_preview::fixture_image())];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let code = vcx.debug_bounds("prompt-image-code").expect("code text");
+    assert!(vcx.debug_bounds("transcript-user-image-chip").is_none());
+    vcx.simulate_click(gpui::point(code.left() + px(20.), code.top() + px(8.)), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
+fn user_image_without_marker_has_compact_fallback_preview(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new(
             "user-image-chip".into(),
@@ -13,7 +112,7 @@ fn user_image_is_compact_and_opens_full_preview(cx: &mut gpui::TestAppContext) {
     });
     panel.update(vcx, |panel, cx| {
         *panel.items = vec![
-            Item::User("Inspect [#image 1]".into()),
+            Item::User("Inspect attachment".into()),
             Item::Image(image_preview::fixture_image()),
         ];
         cx.notify();

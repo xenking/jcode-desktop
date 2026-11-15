@@ -222,6 +222,22 @@ impl Panel {
         // Reserve room inside the cap for the disclosure header and card padding.
         let body_height = (f32::from(viewport_height) * 0.6 - if transcribed { 56. } else { 32. })
             .clamp(1., super::expandable::MAX_HEIGHT);
+        let image_markers = self.user_image_markers(index);
+        let labels = image_markers.iter().map(|(_, label)| label.clone()).collect();
+        let indices: Vec<_> = image_markers.into_iter().map(|(index, _)| index).collect();
+        let panel = cx.entity().downgrade();
+        let prompt_images = markdown::PromptImages {
+            labels,
+            on_click: std::rc::Rc::new(move |index, window, cx| {
+                if let Some(index) = indices.get(index) {
+                    let _ = panel.update(cx, |panel, cx| {
+                        if let Some(Item::Image(image)) = panel.items.get(*index) {
+                            panel.open_image_preview(image.clone(), window, cx);
+                        }
+                    });
+                }
+            }),
+        };
         let card = div()
             .relative()
             .debug_selector(move || format!("user-prompt-{index}"))
@@ -290,20 +306,22 @@ impl Panel {
                                     .overflow_y_scroll()
                                     .track_scroll(&scroll)
                             })
-                            .child(markdown::render_prompt_with_prefix(
-                                if collapsed { preview.unwrap() } else { text },
-                                index,
-                                &if pinned {
-                                    format!("pinned-{index}")
-                                } else {
-                                    index.to_string()
-                                },
-                                &self.transcript_selection,
-                                window,
-                                cx,
-                                self.media_preview_handler(cx),
-                                background,
-                            )),
+                            .child(markdown::with_prompt_images(prompt_images, || {
+                                markdown::render_prompt_with_prefix(
+                                    if collapsed { preview.unwrap() } else { text },
+                                    index,
+                                    &if pinned {
+                                        format!("pinned-{index}")
+                                    } else {
+                                        index.to_string()
+                                    },
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                    self.media_preview_handler(cx),
+                                    background,
+                                )
+                            })),
                     )
                     .when(expanded, |wrapper| {
                         let hitbox = region.hitbox.clone();

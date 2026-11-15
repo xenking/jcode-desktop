@@ -3,6 +3,32 @@
 use super::*;
 
 impl Panel {
+    /// Match the submitted markers and user images in their original order.
+    /// Images with no marker retain the fallback chip for older histories.
+    pub(super) fn user_image_markers(&self, user_index: usize) -> Vec<(usize, String)> {
+        let Some(Item::User(text)) = self.items.get(user_index) else {
+            return Vec::new();
+        };
+        let labels = text.match_indices("[#image ").filter_map(|(at, _)| {
+            let tail = &text[at..];
+            let end = tail.find(']')?;
+            let digits = &tail[8..end];
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| tail[..=end].to_string())
+        });
+        let images = self.items.iter().enumerate().skip(user_index + 1)
+            .take_while(|(_, item)| !matches!(item, Item::User(_)))
+            .filter_map(|(index, item)| match item {
+                Item::Image(image)
+                    if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            });
+        labels.zip(images).map(|(label, index)| (index, label)).collect()
+    }
+
     pub(super) fn render_user_image_chip(
         &self,
         index: usize,

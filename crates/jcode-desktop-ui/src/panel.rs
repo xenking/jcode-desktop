@@ -4017,6 +4017,7 @@ impl Panel {
     ) -> Vec<TranscriptRenderRow> {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
+        let mut inline_images = HashSet::new();
         let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
@@ -4034,6 +4035,13 @@ impl Panel {
                 rows.push(applet_row(ordinal, instance));
             }
             // Filter presentation only, never persisted items.
+            if matches!(item, Item::User(_)) {
+                inline_images = self.user_image_markers(index)
+                    .into_iter().map(|(index, _)| index).collect();
+            }
+            if inline_images.contains(&index) {
+                continue;
+            }
             if matches!(item, Item::Reasoning(_))
                 && display.thinking_display != crate::config::ThinkingDisplay::Full
             {

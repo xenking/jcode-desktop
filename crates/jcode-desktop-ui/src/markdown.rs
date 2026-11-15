@@ -419,6 +419,18 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 2;
                 continue;
             }
+        // An attachment marker is literal text, not the beginning of a
+        // later markdown link in the same paragraph.
+        if source[i..].starts_with("[#image ")
+            && let Some(end) = source[i..].find(']')
+            && source[i + 8..i + end].bytes().all(|b| b.is_ascii_digit())
+            && end > 8
+            && !source[i + end + 1..].starts_with('(')
+        {
+            plain.push_str(&source[i..=i + end]);
+            i += end + 1;
+            continue;
+        }
         // Links: [label](url) and bare <url>.
         if bytes[i] == b'['
             && let Some(close) = source[i..].find("](") {
@@ -993,6 +1005,30 @@ thread_local! {
     /// The fade handed to the next inline text leaf.
     static LEAF_FADE: std::cell::Cell<StreamFade> =
         const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
+    static PROMPT_IMAGES: std::cell::RefCell<Option<PromptImages>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Clone)]
+pub(crate) struct PromptImages {
+    pub labels: Vec<String>,
+    pub on_click: std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>,
+}
+
+/// Scope marker callbacks to this synchronous document render, restoring even
+/// when rendering panics or nests another prompt.
+pub(crate) fn with_prompt_images<R>(images: PromptImages, render: impl FnOnce() -> R) -> R {
+    struct Restore(Option<PromptImages>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROMPT_IMAGES.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = PROMPT_IMAGES.with(|slot| slot.replace(Some(images)));
+    let _restore = Restore(previous);
+    render()
 }
 
 /// Render `f` with the trailing block of its markdown fading in.
@@ -1072,6 +1108,27 @@ fn styled_line_layout(
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
     let mut inline = inline_spans(source);
+    enum Target {
+        Url(String),
+        Image(usize),
+    }
+    let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+    let mut targets: Vec<_> = inline.links.drain(..)
+        .map(|(range, url)| (range, Target::Url(url)))
+        .collect();
+    if let Some(images) = &images {
+        for (index, label) in images.labels.iter().enumerate() {
+            for (start, _) in inline.plain.match_indices(label) {
+                let range = start..start + label.len();
+                if targets.iter().any(|(link, _)| link.start < range.end && range.start < link.end)
+                {
+                    continue;
+                }
+                inline.highlights.push((range.clone(), link_style()));
+                targets.push((range, Target::Image(index)));
+            }
+        }
+    }
     let mut highlights = std::mem::take(&mut inline.highlights);
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
@@ -1106,19 +1163,24 @@ fn styled_line_layout(
             ),
         );
     let layout = text.layout().clone();
-    let child = if inline.links.is_empty() {
+    let child = if targets.is_empty() {
         text.into_any_element()
     } else {
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
-        let (ranges, urls): (Vec<_>, Vec<_>) = inline
-            .links
+        let (ranges, targets): (Vec<_>, Vec<_>) = targets
             .into_iter()
-            .map(|(range, url)| (shift(range), url))
+            .map(|(range, target)| (shift(range), target))
             .unzip();
         InteractiveText::new(id, text)
-            .on_click(ranges, move |index, _window, cx| {
-                if let Some(url) = urls.get(index) {
-                    cx.open_url(url);
+            .on_click(ranges, move |index, window, cx| {
+                match targets.get(index) {
+                    Some(Target::Url(url)) => cx.open_url(url),
+                    Some(Target::Image(image)) => {
+                        if let Some(images) = &images {
+                            (images.on_click)(*image, window, cx);
+                        }
+                    }
+                    None => {}
                 }
             })
             .into_any_element()
@@ -1297,17 +1359,40 @@ fn code_block_with_selection(
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::global().CODE_TEXT);
     let mut highlights = highlights;
+    let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+    let markers: Vec<_> = images.as_ref().into_iter().flat_map(|images| {
+        images.labels.iter().enumerate().flat_map(|(index, label)| {
+            plain.match_indices(label)
+                .map(move |(start, _)| (start..start + label.len(), index))
+        })
+    }).collect();
+    for (range, _) in &markers {
+        highlights.push((range.clone(), link_style()));
+    }
     if let Some((model, key, cx)) = &selection
         && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
             highlights.push(highlight);
         }
     let styled = StyledText::new(plain.clone())
         .with_default_highlights(&style, flatten_highlights(&highlights));
-    let code = if let Some((model, key, cx)) = selection {
-        let layout = styled.layout().clone();
-        text_selection::selectable(model.clone(), key, plain, layout, styled, cx)
+    let layout = styled.layout().clone();
+    let has_markers = !markers.is_empty();
+    let child = if let Some(images) = images.filter(|_| has_markers) {
+        let (ranges, indices): (Vec<_>, Vec<_>) = markers.into_iter().unzip();
+        InteractiveText::new(format!("code-image-{:x}", hash(&plain)), styled)
+            .on_click(ranges, move |index, window, cx| {
+                if let Some(index) = indices.get(index) {
+                    (images.on_click)(*index, window, cx);
+                }
+            })
+            .into_any_element()
     } else {
         styled.into_any_element()
+    };
+    let code = if let Some((model, key, cx)) = selection {
+        text_selection::selectable(model.clone(), key, plain, layout, child, cx)
+    } else {
+        child
     };
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.
@@ -1398,6 +1483,7 @@ fn code_block_with_selection(
                     div()
                         .flex_1()
                         .min_w_0()
+                        .when(has_markers, |el| el.debug_selector(|| "prompt-image-code".into()))
                         .line_height(relative(1.5))
                         .child(code),
                 ),
