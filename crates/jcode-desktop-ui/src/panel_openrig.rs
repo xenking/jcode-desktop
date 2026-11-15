@@ -210,17 +210,21 @@ impl Panel {
             let lifetime = std::sync::Arc::downgrade(&state.event_lifetime);
             std::thread::spawn(move || {
                 let mut delay = 1;
-                loop {
-                    let result =
-                        subscribe_events(&default_base_url(), |event| tx.send(event).is_ok());
-                    if result.is_ok() {
+                // Reads time out every 15 s, so a closed pane ends this thread promptly.
+                while lifetime.upgrade().is_some() {
+                    let mut received = false;
+                    let result = subscribe_events(&default_base_url(), |event| {
+                        received = true;
+                        lifetime.upgrade().is_some() && tx.send(event).is_ok()
+                    });
+                    if result.is_ok() || lifetime.upgrade().is_none() {
                         break;
+                    }
+                    if received {
+                        delay = 1;
                     }
                     std::thread::sleep(Duration::from_secs(delay));
                     delay = (delay * 2).min(30);
-                    if lifetime.upgrade().is_none() {
-                        break;
-                    }
                 }
             });
             state._events = Some(cx.spawn(async move |this, cx| {

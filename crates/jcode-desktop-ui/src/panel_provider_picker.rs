@@ -140,12 +140,15 @@ impl Panel {
                         .items_center()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(state.search.clone()))
-                        .child(login_button("provider-picker-close", "Close").px_2().py_0p5().on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.close_login_picker(cx);
-                                this.focus_input(window, cx);
-                            }),
-                        )),
+                        .child(
+                            login_button("provider-picker-close", "Close")
+                                .px_2()
+                                .py_0p5()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_login_picker(cx);
+                                    this.focus_input(window, cx);
+                                })),
+                        ),
                 )
                 .child(
                     div()

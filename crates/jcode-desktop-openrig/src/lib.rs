@@ -31,6 +31,8 @@ pub fn subscribe_events(
 ) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
+        // Bounds each idle read so a caller can notice cancellation between keepalives.
+        .timeout_read(Duration::from_secs(15))
         .build();
     let mut req = agent
         .get(&format!(
