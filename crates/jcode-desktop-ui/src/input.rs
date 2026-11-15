@@ -76,6 +76,7 @@ actions!(
         HistoryPrev,
         HistoryNext,
         Clear,
+        Stash,
         Submit,
         Queue,
         InsertNewline,
@@ -149,6 +150,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
+        KeyBinding::new("ctrl-s", Stash, Some("PromptInput")),
         // Falls through (propagates) unless ghost text is showing.
         KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
         KeyBinding::new("home", Home, Some("PromptInput")),
@@ -195,6 +197,7 @@ pub struct PromptInput {
     history_index: Option<usize>,
     live_draft: String,
     attachments: Vec<Attachment>,
+    stashed_prompt: Option<(String, Range<usize>, Vec<Attachment>)>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
     /// Short-lived feedback such as `Effort: High`, cleared by a timer.
@@ -589,6 +592,7 @@ impl PromptInput {
             history_index: None,
             live_draft: String::new(),
             attachments: Vec::new(),
+            stashed_prompt: None,
             model_menu_draft: None,
             attachment_notice: None,
             transient_notice: None,
@@ -993,15 +997,15 @@ impl PromptInput {
                 .command_suggestions()
                 .iter()
                 .any(|row| row.value == format!("/model {model}"))
-                && self
-                    .command_models
-                    .iter()
-                    .any(|candidate| candidate == model)
-            {
-                self.expanded_model_groups
-                    .insert(model_menu::group_key(model, &self.model_details));
-                self.suggestions_revision += 1;
-            }
+            && self
+                .command_models
+                .iter()
+                .any(|candidate| candidate == model)
+        {
+            self.expanded_model_groups
+                .insert(model_menu::group_key(model, &self.model_details));
+            self.suggestions_revision += 1;
+        }
         // A background usage update must not move Enter onto a different model.
         if let Some(index) = selected.and_then(|selected| {
             self.command_suggestions().iter().position(|row| {
@@ -1127,6 +1131,26 @@ impl PromptInput {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         self.submit_prompt(false, window, cx);
+    }
+
+    fn stash(&mut self, _: &Stash, _: &mut Window, cx: &mut Context<Self>) {
+        let current = (!self.content.is_empty() || !self.attachments.is_empty()).then(|| {
+            (
+                self.content.to_string(),
+                self.selected_range.clone(),
+                std::mem::take(&mut self.attachments),
+            )
+        });
+        let previous = std::mem::replace(&mut self.stashed_prompt, current);
+        let (text, selection, attachments) = previous.unwrap_or_default();
+        self.set_content(text, cx);
+        self.selected_range = selection;
+        self.attachments = attachments;
+        self.marked_range = None;
+        self.attachment_notice = None;
+        self.attachment_preview = None;
+        self.undo.clear();
+        self.redo.clear();
     }
 
     fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
@@ -1258,6 +1282,11 @@ impl PromptInput {
         self.live_draft.clear();
         self.command_selection = 0;
         (self.on_submit)(content, images, queued, window, cx);
+        if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
+            self.set_content(text, cx);
+            self.selected_range = selection;
+            self.attachments = attachments;
+        }
         cx.notify();
     }
 
@@ -1492,15 +1521,16 @@ impl PromptInput {
             return;
         }
         // Inside the picker, Esc steps back before it closes.
-        let in_model_menu = self.content.trim() == "/model"
-            || self.content.trim_start().starts_with("/model ");
+        let in_model_menu =
+            self.content.trim() == "/model" || self.content.trim_start().starts_with("/model ");
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
         if let Some(cancel) = &self.on_overlay_cancel
-            && cancel(cx) {
-                return;
-            }
+            && cancel(cx)
+        {
+            return;
+        }
         if !self.content.is_empty() {
             self.set_content(String::new(), cx);
         }
@@ -1545,11 +1575,7 @@ impl PromptInput {
     }
 
     /// One dim line above the partials saying where the words will land.
-    pub(crate) fn set_voice_preview_hint(
-        &mut self,
-        hint: Option<&str>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_voice_preview_hint(&mut self, hint: Option<&str>, cx: &mut Context<Self>) {
         let hint = hint.filter(|hint| !hint.is_empty()).map(SharedString::from);
         if self.voice_preview_hint != hint {
             self.voice_preview_hint = hint;
@@ -2315,10 +2341,12 @@ impl Element for TextElement {
             // Only an active window animates. Background windows show the
             // whole example rather than freezing mid-word.
             placeholder_live = live && window.is_window_active();
-            if live && !placeholder_live
-                && let Some(full) = &full {
-                    text = full.clone();
-                }
+            if live
+                && !placeholder_live
+                && let Some(full) = &full
+            {
+                text = full.clone();
+            }
             (text, to_hsla(Theme::global().TEXT_DIM))
         } else {
             (content, style.color)
@@ -2861,6 +2889,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::queue))
@@ -2912,6 +2941,17 @@ impl Render for PromptInput {
                             .child(notice)
                     }),
             )
+            .when(self.stashed_prompt.is_some(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "prompt-stashed".into())
+                        .px_3()
+                        .pt_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_FAINT)
+                        .child("Prompt stashed · Ctrl+S to restore"),
+                )
+            })
             .child(
                 div()
                     .w_full()
@@ -3719,12 +3759,7 @@ mod tests {
         window
             .update(cx, |input, _, cx| {
                 // The current route is pinned first, then newest releases.
-                input.set_model_routes(
-                    Vec::new(),
-                    &routes("atlas-1"),
-                    Some("atlas-1".into()),
-                    cx,
-                );
+                input.set_model_routes(Vec::new(), &routes("atlas-1"), Some("atlas-1".into()), cx);
                 input.set_content("/model".into(), cx);
                 assert_eq!(
                     input.command_suggestions()[0].value,
@@ -3732,12 +3767,7 @@ mod tests {
                 );
                 // The catalog changes and atlas-1 is no longer current, so it
                 // drops out of the top three. The highlight must follow it.
-                input.set_model_routes(
-                    Vec::new(),
-                    &routes("atlas-5"),
-                    Some("atlas-5".into()),
-                    cx,
-                );
+                input.set_model_routes(Vec::new(), &routes("atlas-5"), Some("atlas-5".into()), cx);
                 assert_eq!(
                     input.command_suggestions()[input.command_selection].value,
                     "/model openai-oauth:atlas-1"
@@ -4175,6 +4205,40 @@ mod tests {
                 "editor must not reserve extra left padding for a prompt marker"
             );
         }
+    }
+
+    #[gpui::test]
+    fn prompt_stash_returns_after_send(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "saved draft");
+        cx.simulate_keystrokes(*window, "ctrl-s");
+        window
+            .update(cx, |input, _, _| assert!(input.content.is_empty()))
+            .unwrap();
+        cx.simulate_input(*window, "send this");
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "saved draft")
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn prompt_stash_swaps_and_keeps_indicator(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| input.update(cx, |input, cx| window.focus(&input.focus_handle, cx)));
+        vcx.simulate_keystrokes("a ctrl-s");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-stashed").is_some());
+        vcx.simulate_keystrokes("b ctrl-s");
+        input.update(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "a");
+            assert_eq!(input.stashed_prompt.as_ref().unwrap().0, "b");
+        });
+        vcx.simulate_keystrokes("ctrl-s");
+        input.update(vcx, |input, _| assert_eq!(input.content.as_ref(), "b"));
     }
 
     #[gpui::test]
