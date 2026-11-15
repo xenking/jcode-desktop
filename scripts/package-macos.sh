@@ -117,11 +117,10 @@ ditto "$SPARKLE_ROOT/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framew
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 for bin in "${BINS[@]}"; do
-  if [[ "$bin" == jcode-desktop ]]; then base="$ROOT/target"; else base="$JCODE_REPO/target"; fi
-  lipo -create \
-    "$base/aarch64-apple-darwin/release/$bin" \
-    "$base/x86_64-apple-darwin/release/$bin" \
-    -output "$APP/Contents/MacOS/$bin"
+  if [[ "$bin" == jcode-desktop ]]; then base="${CARGO_TARGET_DIR:-$ROOT/target}"; else base="${CARGO_TARGET_DIR:-$JCODE_REPO/target}"; fi
+  inputs=()
+  for target in "${TARGETS[@]}"; do inputs+=("$base/$target/release/$bin"); done
+  lipo -create "${inputs[@]}" -output "$APP/Contents/MacOS/$bin"
   chmod 755 "$APP/Contents/MacOS/$bin"
 done
 
