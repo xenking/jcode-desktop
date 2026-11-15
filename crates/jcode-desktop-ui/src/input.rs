@@ -272,6 +272,10 @@ struct GhostState {
     task: Option<gpui::Task<()>>,
     /// The backend refused (unsupported or signed out). Stop asking.
     disabled: bool,
+    /// Key includes draft, conversation and project, so results cannot leak across contexts.
+    cache: std::collections::VecDeque<(String, String)>,
+    #[cfg(test)]
+    request_counter: Option<std::rc::Rc<std::cell::Cell<usize>>>,
 }
 
 /// Example prompts chosen for one seed, project and personalized catalog.
@@ -717,6 +721,9 @@ impl PromptInput {
                 context: Box::new(context),
                 task: None,
                 disabled: false,
+                cache: Default::default(),
+                #[cfg(test)]
+                request_counter: None,
             });
         }
         self
@@ -775,10 +782,36 @@ impl PromptInput {
         }
         let context = (ghost.context)(cx);
         let settings = &crate::config::get().completions;
-        let debounce = Duration::from_millis(settings.debounce_ms);
+        let debounce = Duration::from_millis(settings.debounce_ms.max(400));
         let model = settings.model.clone();
+        #[cfg(test)]
+        let request_counter = ghost.request_counter.clone();
+        let project = working_dir.as_deref().and_then(|dir| {
+            std::path::Path::new(dir)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let request = crate::prompt_completion::Request {
+            draft,
+            context,
+            cwd: working_dir,
+            project,
+            model,
+        };
+        let cache_key = serde_json::to_string(&request).unwrap_or_default();
+        if let Some((_, completion)) = ghost.cache.iter().find(|(key, _)| key == &cache_key) {
+            if ghost.machine.on_response(generation, completion) {
+                cx.notify();
+            }
+            return;
+        }
         ghost.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(debounce).await;
+            #[cfg(test)]
+            if let Some(counter) = request_counter {
+                counter.set(counter.get() + 1);
+                return;
+            }
             let Some(key) = jcode_base::subscription_catalog::configured_api_key()
                 .map(|key| key.trim().to_owned())
                 .filter(|key| !key.is_empty())
@@ -786,28 +819,29 @@ impl PromptInput {
                 return;
             };
             let base = jcode_base::subscription_api::configured_api_base();
-            let project = working_dir.as_deref().and_then(|dir| {
-                std::path::Path::new(dir)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            });
-            let request = crate::prompt_completion::Request {
-                draft,
-                context,
-                cwd: working_dir,
-                project,
-                model,
-            };
-            let result = cx
+            let reserved = cx
                 .background_executor()
-                .spawn(async move { crate::prompt_completion::fetch(&base, &key, &request) })
+                .spawn(async { crate::prompt_completion::reserve_daily_request() })
                 .await;
+            if !reserved {
+                return;
+            }
+            let result = match crate::prompt_completion::fetch(base, key, request) {
+                Ok(mut task) => task.result().await,
+                Err(error) => Err(error),
+            };
             let _ = this.update(cx, |input, cx| {
                 let Some(ghost) = input.ghost.as_mut() else {
                     return;
                 };
                 match result {
                     Ok(completion) => {
+                        if ghost.machine.is_current(generation) {
+                            if ghost.cache.len() >= 32 {
+                                ghost.cache.pop_front();
+                            }
+                            ghost.cache.push_back((cache_key, completion.clone()));
+                        }
                         if ghost.machine.on_response(generation, &completion) {
                             cx.notify();
                         }
@@ -835,7 +869,10 @@ impl PromptInput {
             .as_mut()
             .and_then(|ghost| ghost.machine.accept(&self.content, at_end));
         match accepted {
-            Some(suffix) => self.replace_text_in_range(None, &suffix, window, cx),
+            Some(suffix) => {
+                self.replace_text_in_range(None, &suffix, window, cx);
+                self.dismiss_ghost();
+            }
             None if self.complete_slash_command(cx) => {}
             None => cx.propagate(),
         }
@@ -1474,8 +1511,13 @@ impl PromptInput {
             }
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            self.insert_pasted_text(&text, window, cx);
         }
+    }
+
+    fn insert_pasted_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+        self.dismiss_ghost();
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -3484,6 +3526,80 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn ghost_burst_sends_once_and_programmatic_edits_send_nothing(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let counter = std::rc::Rc::new(std::cell::Cell::new(0));
+        let test_counter = counter.clone();
+        window
+            .update(cx, |input, _, _| {
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: Default::default(),
+                    request_counter: Some(test_counter),
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "abcd");
+        for _ in 0..5 {
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.simulate_input(*window, "e");
+        }
+        assert_eq!(counter.get(), 0);
+        cx.executor().advance_clock(Duration::from_millis(401));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 1);
+
+        window
+            .update(cx, |input, window, cx| {
+                input.set_content("restored draft".into(), cx);
+                input.insert_dictation("dictated words", cx);
+                input.insert_pasted_text(" pasted contents", window, cx);
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 1);
+    }
+
+    #[gpui::test]
+    fn ghost_identical_request_uses_cache_without_network(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let counter = std::rc::Rc::new(std::cell::Cell::new(0));
+        let test_counter = counter.clone();
+        window
+            .update(cx, |input, _, _| {
+                let request = crate::prompt_completion::Request {
+                    draft: "abcd".into(),
+                    context: vec![],
+                    cwd: None,
+                    project: None,
+                    model: crate::config::get().completions.model.clone(),
+                };
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: [(serde_json::to_string(&request).unwrap(), " cached".into())].into(),
+                    request_counter: Some(test_counter),
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "abcd");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.ghost_text(), Some(" cached"))
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 0);
+    }
+
     /// Simulate a completion arriving for the current draft, bypassing network.
     fn show_ghost(input: &mut PromptInput, suffix: &str) {
         let draft = input.content.to_string();
@@ -3492,6 +3608,8 @@ mod tests {
             context: Box::new(|_| Vec::new()),
             task: None,
             disabled: true,
+            cache: Default::default(),
+            request_counter: None,
         });
         let generation = ghost.machine.on_edit(&draft, true).unwrap();
         assert!(ghost.machine.on_response(generation, suffix));

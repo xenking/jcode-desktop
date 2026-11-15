@@ -6,12 +6,57 @@
 //! [`fetch`] calls the backend's `POST /v1/completions/prompt`.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{
+    io::{Read, Seek, SeekFrom, Write},
+    time::Duration,
+};
+
+/// Across Desktop processes and restarts, count requests per UTC day.
+pub const DAILY_LIMIT: u32 = 200;
+
+pub fn reserve_daily_request() -> bool {
+    let Some(dir) = crate::platform_dirs::state_dir() else {
+        return false;
+    };
+    reserve_in(
+        &dir,
+        chrono::Utc::now().format("%Y-%m-%d").to_string().as_str(),
+        DAILY_LIMIT,
+    )
+    .unwrap_or(false)
+}
+
+fn reserve_in(dir: &std::path::Path, day: &str, limit: u32) -> std::io::Result<bool> {
+    std::fs::create_dir_all(dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("prompt-completion-budget"))?;
+    file.lock()?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let (saved_day, count) = contents.trim().split_once(' ').unwrap_or(("", "0"));
+    let count = if saved_day == day {
+        count.parse::<u32>().unwrap_or(limit)
+    } else {
+        0
+    };
+    if count >= limit {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    writeln!(file, "{day} {}", count + 1)?;
+    file.flush()?;
+    Ok(true)
+}
 
 /// Whether `draft` may be sent for completion at all.
 pub fn should_request(draft: &str) -> bool {
     let trimmed = draft.trim_start();
-    !draft.trim().is_empty() && !trimmed.starts_with('/') && !draft.ends_with('\n')
+    draft.trim().chars().count() >= 4 && !trimmed.starts_with('/') && !draft.ends_with('\n')
 }
 
 #[derive(Debug, Default)]
@@ -32,12 +77,14 @@ impl GhostCompletion {
         self.pending = None;
         if let Some((base, suffix)) = self.shown.take()
             && cursor_at_end
-                && let Some(typed) = draft.strip_prefix(base.as_str())
-                    && !typed.is_empty() && suffix.len() > typed.len()
-                        && let Some(rest) = suffix.strip_prefix(typed) {
-                            self.shown = Some((draft.to_owned(), rest.to_owned()));
-                            return None;
-                        }
+            && let Some(typed) = draft.strip_prefix(base.as_str())
+            && !typed.is_empty()
+            && suffix.len() > typed.len()
+            && let Some(rest) = suffix.strip_prefix(typed)
+        {
+            self.shown = Some((draft.to_owned(), rest.to_owned()));
+            return None;
+        }
         if !cursor_at_end || !should_request(draft) {
             return None;
         }
@@ -123,9 +170,47 @@ pub enum FetchError {
     Other(String),
 }
 
-/// Blocking: run on a background thread.
-pub fn fetch(api_base: &str, api_key: &str, request: &Request) -> Result<String, FetchError> {
-    let client = reqwest::blocking::Client::builder()
+/// An HTTP request that aborts even after it has started when dropped.
+pub struct FetchTask(tokio::task::JoinHandle<Result<String, FetchError>>);
+
+impl FetchTask {
+    pub async fn result(&mut self) -> Result<String, FetchError> {
+        (&mut self.0)
+            .await
+            .map_err(|e| FetchError::Other(e.to_string()))?
+    }
+}
+
+impl Drop for FetchTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+pub fn fetch(api_base: String, api_key: String, request: Request) -> Result<FetchTask, FetchError> {
+    static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
+        std::sync::OnceLock::new();
+    let runtime = RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| FetchError::Other(e.clone()))?;
+    Ok(FetchTask(runtime.spawn(async move {
+        fetch_inner(&api_base, &api_key, &request).await
+    })))
+}
+
+async fn fetch_inner(
+    api_base: &str,
+    api_key: &str,
+    request: &Request,
+) -> Result<String, FetchError> {
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .build()
         .map_err(|e| FetchError::Other(e.to_string()))?;
@@ -135,10 +220,12 @@ pub fn fetch(api_base: &str, api_key: &str, request: &Request) -> Result<String,
         .bearer_auth(api_key)
         .json(request)
         .send()
+        .await
         .map_err(|e| FetchError::Other(e.to_string()))?;
     match response.status().as_u16() {
         200 => response
             .json::<Response>()
+            .await
             .map(|r| r.completion)
             .map_err(|e| FetchError::Other(e.to_string())),
         401 | 403 | 404 | 501 => Err(FetchError::Unsupported),
@@ -151,8 +238,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn budget_is_atomic_persistent_and_resets_daily() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_owned();
+        let handles: Vec<_> = (0..30)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || reserve_in(&path, "2026-11-15", 10).unwrap())
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|v| *v)
+                .count(),
+            10
+        );
+        assert!(!reserve_in(&path, "2026-11-15", 10).unwrap());
+        assert!(reserve_in(&path, "2026-11-16", 10).unwrap());
+    }
+
+    #[test]
+    fn dropping_fetch_cancels_active_http_connection() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buffer = [0; 8192];
+            assert!(stream.read(&mut buffer).unwrap() > 0);
+            tx.send(()).unwrap();
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(_) => continue,
+                    Err(e) => panic!("connection was not cancelled: {e}"),
+                }
+            }
+        });
+        let task = fetch(
+            format!("http://{address}"),
+            "test".into(),
+            Request {
+                draft: "hello".into(),
+                context: vec![],
+                cwd: None,
+                project: None,
+                model: None,
+            },
+        )
+        .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        drop(task);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn skips_empty_slash_and_newline_drafts() {
         assert!(!should_request(""));
+        assert!(!should_request("abc"));
+        assert!(should_request("abcd"));
         assert!(!should_request("   "));
         assert!(!should_request("/model"));
         assert!(!should_request("  /help"));
@@ -180,7 +330,7 @@ mod tests {
     #[test]
     fn stale_responses_are_dropped() {
         let mut g = GhostCompletion::default();
-        let first = g.on_edit("fix", true).unwrap();
+        let first = g.on_edit("fixx", true).unwrap();
         let second = g.on_edit("fix t", true).unwrap();
         assert!(!g.is_current(first));
         assert!(!g.on_response(first, "ed"));
@@ -215,11 +365,11 @@ mod tests {
     #[test]
     fn empty_or_multiline_completions() {
         let mut g = GhostCompletion::default();
-        let generation = g.on_edit("x", true).unwrap();
+        let generation = g.on_edit("xxxx", true).unwrap();
         assert!(!g.on_response(generation, "  "));
-        let generation = g.on_edit("x", true).unwrap();
+        let generation = g.on_edit("xxxx", true).unwrap();
         assert!(g.on_response(generation, "yz\nmore"));
-        assert_eq!(g.visible("x", true), Some("yz"));
+        assert_eq!(g.visible("xxxx", true), Some("yz"));
     }
 
     #[test]

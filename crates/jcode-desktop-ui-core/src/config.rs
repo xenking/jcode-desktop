@@ -37,11 +37,19 @@ pub struct CompletionsConfig {
     pub model: Option<String>,
 }
 
+#[cfg(test)]
+mod completion_rate_tests {
+    #[test]
+    fn default_debounce_is_at_least_400ms() {
+        assert!(super::CompletionsConfig::default().debounce_ms >= 400);
+    }
+}
+
 impl Default for CompletionsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            debounce_ms: 250,
+            debounce_ms: 400,
             model: None,
         }
     }
