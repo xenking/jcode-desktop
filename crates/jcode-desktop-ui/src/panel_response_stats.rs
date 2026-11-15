@@ -47,6 +47,7 @@ pub(super) struct Tracker {
     active: bool,
     stats: ResponseStats,
     tools: HashSet<String>,
+    cache_touch: Option<(i64, Option<u64>)>,
 }
 
 impl Tracker {
@@ -82,6 +83,11 @@ impl Tracker {
                 ..
             } => {
                 self.active = true;
+                if let Some(tokens) = cache_read_input.or(*cache_creation_input)
+                    && let Some(at) = now_ms()
+                {
+                    self.cache_touch = Some((at, Some(tokens)));
+                }
                 add(&mut self.stats.input_tokens, *input);
                 add(&mut self.stats.output_tokens, *output);
                 if let Some(read) = cache_read_input {
@@ -93,6 +99,10 @@ impl Tracker {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn cache_touch(&self) -> Option<(i64, Option<u64>)> {
+        self.cache_touch
     }
 
     pub(super) fn finish(&mut self) -> Option<ResponseStats> {

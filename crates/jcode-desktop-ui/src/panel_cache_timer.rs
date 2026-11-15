@@ -135,15 +135,18 @@ impl Panel {
     /// The newest response that reported cache tokens, with the moment it
     /// settled. That request is what refreshed the provider's window.
     fn last_cache_touch(&self) -> Option<(i64, Option<u64>)> {
-        self.items.iter().rev().find_map(|item| match item {
-            Item::ResponseStats(stats)
-                if stats.cache_read_tokens.is_some() || stats.cache_creation_tokens.is_some() =>
-            {
-                stats
-                    .at_ms
-                    .map(|at| (at, stats.cache_read_tokens.or(stats.cache_creation_tokens)))
-            }
-            _ => None,
+        self.response_stats.cache_touch().or_else(|| {
+            self.items.iter().rev().find_map(|item| match item {
+                Item::ResponseStats(stats)
+                    if stats.cache_read_tokens.is_some()
+                        || stats.cache_creation_tokens.is_some() =>
+                {
+                    stats
+                        .at_ms
+                        .map(|at| (at, stats.cache_read_tokens.or(stats.cache_creation_tokens)))
+                }
+                _ => None,
+            })
         })
     }
 
@@ -323,6 +326,45 @@ impl Render for CachePill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn live_model_requests_refresh_cache_before_the_turn_finishes(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "cache-live".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.provider = Some("anthropic".into());
+            panel.items.push(Item::ResponseStats(
+                super::super::response_stats::ResponseStats {
+                    at_ms: Some(now_ms() - 37 * 60_000),
+                    cache_read_tokens: Some(1000),
+                    ..Default::default()
+                },
+            ));
+            panel.apply(
+                &ApiEvent::TokenUsage {
+                    session_id: "cache-live".into(),
+                    input: 100,
+                    output: 10,
+                    cache_read_input: Some(1000),
+                    cache_creation_input: None,
+                    effective_budget: None,
+                },
+                cx,
+            );
+            let facts = panel.cache_facts().expect("cache facts");
+            assert!(
+                facts.written_ago_secs < 5,
+                "live usage must refresh timer: {facts:?}"
+            );
+        });
+    }
 
     #[test]
     fn countdown_reads_in_minutes_and_says_when_it_is_cold() {
