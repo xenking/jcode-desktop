@@ -89,7 +89,11 @@ PY
     [[ -x "$executable" ]] || fail "missing executable companion: $bin"
     local executable_archs
     executable_archs="$(lipo -archs "$executable")"
-    [[ " $executable_archs " == *" arm64 "* && " $executable_archs " == *" x86_64 "* ]] || fail "$bin is not universal"
+    if [[ "${PACKAGE_TARGETS:-aarch64-apple-darwin}" == *x86_64* ]]; then
+      [[ " $executable_archs " == *" arm64 "* && " $executable_archs " == *" x86_64 "* ]] || fail "$bin is not universal"
+    else
+      [[ " $executable_archs " == *" arm64 "* ]] || fail "$bin is not arm64"
+    fi
     codesign --verify --strict --verbose=2 "$executable"
 
     local actual_entitlements
