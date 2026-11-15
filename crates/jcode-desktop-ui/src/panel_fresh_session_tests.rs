@@ -16,6 +16,7 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
     let panel = workspace
         .read_with(vcx, |workspace, _| workspace.test_panel(0))
         .unwrap();
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
         let focus = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&focus, cx);

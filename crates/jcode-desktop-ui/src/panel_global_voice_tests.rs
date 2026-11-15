@@ -6,6 +6,7 @@ fn global_voice_sends_transcript_and_pill_says_so(cx: &mut gpui::TestAppContext)
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("global-voice".into(), None, None, bridge, cx));
     panel.update(cx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
         panel.input.update(cx, |input, cx| {
             input.set_content("keep my draft".into(), cx)
         });

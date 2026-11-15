@@ -291,6 +291,7 @@ fn startup_resize_and_repeated_notifications_preserve_settled_geometry(
 #[gpui::test]
 fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     for index in 0..20 {
         let text = format!(
             "Growth message {index:02}. {}",

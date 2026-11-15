@@ -217,6 +217,7 @@ mod tests {
                 )
             });
             panel.update(cx, |panel, cx| {
+                panel.load_history(vec![], vec![], cx);
                 panel.submit_or_queue("Keep my prompt".into(), vec![], false, cx);
                 assert_eq!(panel.pending_users.len(), 1);
                 panel.apply(&event(terminal), cx);
@@ -240,6 +241,7 @@ mod tests {
             )
         });
         panel.update(cx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
             panel.submit_or_queue("Possibly delivered".into(), vec![], false, cx);
             panel.connection_lost("connection reset", cx);
             assert_eq!(panel.pending_users.len(), 1);

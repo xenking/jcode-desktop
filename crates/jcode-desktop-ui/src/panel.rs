@@ -10051,6 +10051,7 @@ mod tests {
         let mut panel = None;
         workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
         let panel = panel.expect("test panel exists");
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
         vcx.update(|window, cx| {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);

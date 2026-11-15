@@ -149,6 +149,7 @@ fn actual_prompt_submit_sounds_sent_and_escape_cancels_silently(cx: &mut gpui::T
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("sound-test".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
         panel

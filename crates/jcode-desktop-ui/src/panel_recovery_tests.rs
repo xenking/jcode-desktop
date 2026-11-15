@@ -82,6 +82,7 @@ fn recovery_resume_click_sends_one_fresh_continuation_and_preserves_draft(
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new("resume-test".into(), None, None, bridge, cx));
         panel.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
             panel
                 .items
                 .push(Item::User("Original request must not be replayed".into()));

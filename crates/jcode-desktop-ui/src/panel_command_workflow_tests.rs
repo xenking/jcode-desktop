@@ -51,6 +51,7 @@ fn unknown_commands_stay_local_and_do_not_start_model_work(cx: &mut gpui::TestAp
 fn workflows_dispatch_expanded_prompts_and_preserve_arguments(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("workflow-session".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
     for name in [
         "/plan",
         "/test",

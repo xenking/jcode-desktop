@@ -2096,6 +2096,7 @@ mod tests {
             )
         });
         panel.update(cx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
             panel.input.update(cx, |input, cx| {
                 input.set_content("Typed while transcribing".into(), cx)
             });
