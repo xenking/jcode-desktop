@@ -6933,6 +6933,9 @@ impl Workspace {
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
+            .when(version::footer_visible(), |el| {
+                el.child(self.render_version_footer(cx))
+            })
             .child(self.render_sidebar_account(cx))
             .into_any_element()
     }
@@ -8950,9 +8953,6 @@ impl Render for Workspace {
                     root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
                 },
             )
-            .when(version::footer_visible(), |root| {
-                root.child(self.render_version_footer(version::pill_width(), cx))
-            })
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))

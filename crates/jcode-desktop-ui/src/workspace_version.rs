@@ -59,9 +59,7 @@ fn visible_feedback() -> Option<(String, Tone)> {
         .flatten()
 }
 
-const CHAR_WIDTH: f32 = 5.4;
-
-/// The bottom strip only appears while it offers something to do: Update,
+/// The sidebar update item only appears while it offers something to do: Update,
 /// Restart, or Retry. Otherwise the version lives in Settings → About and the
 /// strip's height goes back to the sessions.
 pub(super) fn footer_visible() -> bool {
@@ -75,37 +73,30 @@ pub(super) fn footer_visible() -> bool {
 }
 
 /// Height the footer reserves below the session canvas.
+/// The strip now lives at the bottom of the sidebar, so the session canvas
+/// never reserves height for it.
 pub(super) fn footer_height() -> f32 {
-    if footer_visible() { FOOTER_HEIGHT } else { 0.0 }
-}
-
-const FOOTER_HEIGHT: f32 = 24.0;
-
-/// Size the pill to its short version string, with room for an optional action
-/// and the result of a check the user asked for.
-pub(super) fn pill_width() -> f32 {
-    let (_, action) = status_label(
-        &updates::release_status(),
-        &updates::current(),
-        updates::is_source_build(),
-    );
-    let version =
-        ((crate::build_info::VERSION.len() + 1) as f32 * CHAR_WIDTH + 16.0).clamp(64.0, 132.0);
-    let feedback = visible_feedback().map_or(0.0, |(text, _)| {
-        text.chars().count() as f32 * CHAR_WIDTH + 8.0
-    });
-    (version + feedback + action.map_or(0.0, |label| label.len() as f32 * CHAR_WIDTH + 12.0)).ceil()
+    0.0
 }
 
 impl Workspace {
     /// Clicking the version pill: check for a newer release right away and
     /// ask the platform updater to check, download, or install whatever is
     /// next. The pill shows the check and its result.
-    fn check_and_apply_update() {
+    fn check_and_apply_update(cx: &mut gpui::App) {
         updates::note_user_check();
+        // A newer release this build cannot install itself (ad-hoc package
+        // without Sparkle keys): open the fork's release page instead of
+        // reporting a failed install.
+        if let ReleaseStatus::Newer { version } = updates::release_status()
+            && !updates::installer_available()
+        {
+            cx.open_url(&updates::release_page(&version));
+            return;
+        }
         updates::check_release_now();
         // A source checkout only reports releases. Ctrl+R or /update rebuild it.
-        if updates::is_source_build() {
+        if updates::is_source_build() || !updates::installer_available() {
             return;
         }
         if updates::request_now() == updates::UpdateRequest::Unavailable {
@@ -172,7 +163,7 @@ impl Workspace {
                             .child(action.unwrap_or("Check"))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 cx.stop_propagation();
-                                Self::check_and_apply_update();
+                                Self::check_and_apply_update(cx);
                                 cx.notify();
                             })),
                     ),
@@ -180,11 +171,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn render_version_footer(
-        &mut self,
-        width: f32,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    /// The update item at the bottom of the sidebar, above the account.
+    pub(super) fn render_version_footer(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         updates::ensure_release_check();
         let release = updates::release_status();
         let update = updates::current();
@@ -237,12 +225,11 @@ impl Workspace {
         div()
             .id("workspace-version")
             .debug_selector(|| "workspace-version".into())
-            .absolute()
-            .right(px(8.0))
-            .bottom(px(3.0))
-            .w(px(width - 4.0))
-            .h(px(18.0))
-            .rounded_full()
+            .flex_none()
+            .mx_2()
+            .mt_1()
+            .h(px(22.0))
+            .rounded_md()
             .bg(Theme::global().PANEL_BG)
             .px(px(6.0))
             .flex()
@@ -257,7 +244,7 @@ impl Workspace {
             })
             .on_click(cx.listener(|_, _, _, cx| {
                 cx.stop_propagation();
-                Self::check_and_apply_update();
+                Self::check_and_apply_update(cx);
                 cx.notify();
             }))
             .tooltip(move |_, cx| {
@@ -472,12 +459,14 @@ mod tests {
             updates::jcode_update_register_actions(check, check);
         }
         draw(vcx);
-        assert_eq!(footer_height(), FOOTER_HEIGHT);
+        assert_eq!(footer_height(), 0.0, "the canvas never reserves the strip");
         let header = vcx.debug_bounds("workspace-version").unwrap();
         let button = vcx
             .debug_bounds("workspace-update-button")
             .expect("new release offers Update");
-        assert!(header.origin.y > px(700.));
+        let account = vcx.debug_bounds("sidebar-account").expect("sidebar shown");
+        assert!(header.right() <= account.right() + px(8.), "lives in the sidebar");
+        assert!(header.bottom() <= account.origin.y, "sits above the account");
         assert!(button.right() <= header.right());
         let before = REQUESTS.load(Ordering::SeqCst);
         vcx.simulate_click(button.center(), gpui::Modifiers::default());

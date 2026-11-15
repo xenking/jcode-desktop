@@ -514,6 +514,18 @@ pub fn request_now() -> UpdateRequest {
     UpdateRequest::Unavailable
 }
 
+/// Whether this build can install an update itself (Sparkle registered on
+/// macOS, or the packaged self-updater elsewhere). Without one, a newer
+/// release is offered as a download link instead of a failing install.
+pub fn installer_available() -> bool {
+    !CHECK_NOW.load(Ordering::Acquire).is_null() || (!cfg!(test) && packaged::supported())
+}
+
+/// The fork's release page for a published desktop version.
+pub fn release_page(version: &str) -> String {
+    format!("https://github.com/xenking/jcode-desktop/releases/tag/desktop-v{version}")
+}
+
 /// Ask the platform updater to install the staged build and relaunch.
 /// Returns whether an installer was actually available to call.
 pub fn install_now() -> bool {
