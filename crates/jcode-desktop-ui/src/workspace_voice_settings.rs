@@ -35,6 +35,39 @@ pub(super) fn backend_slug(backend: DictationBackend) -> &'static str {
         .map_or("auto", |(_, slug, _)| slug)
 }
 
+/// `[dictation] mode` choices, in the order the Settings row shows them. The
+/// default comes first: voice is an input method, so the words land in the
+/// composer for editing unless the user asks for an immediate send.
+pub(super) const MODES: [(jcode_base::protocol::TranscriptMode, &str, &str); 4] = [
+    (
+        jcode_base::protocol::TranscriptMode::Insert,
+        "insert",
+        "Insert at cursor",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Append,
+        "append",
+        "Append to draft",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Replace,
+        "replace",
+        "Replace draft",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Send,
+        "send",
+        "Send immediately",
+    ),
+];
+
+pub(super) fn mode_slug(mode: jcode_base::protocol::TranscriptMode) -> &'static str {
+    MODES
+        .iter()
+        .find(|(m, ..)| *m == mode)
+        .map_or("insert", |(_, slug, _)| slug)
+}
+
 fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
     match backend {
         DictationBackend::Nari => Some(StreamingBackend::Nari),
@@ -105,6 +138,17 @@ impl Workspace {
         if self.save_dictation("backend", backend_slug(backend), cx) {
             self.voice_settings = VoiceSettings::default();
             self.status = format!("Voice backend: {}", backend_slug(backend));
+        }
+        cx.notify();
+    }
+
+    fn select_voice_mode(
+        &mut self,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.save_dictation("mode", mode_slug(mode), cx) {
+            self.status = format!("Voice mode: {}", mode_slug(mode));
         }
         cx.notify();
     }
@@ -231,6 +275,23 @@ impl Workspace {
             }
         };
         let mut actions = div().flex().flex_wrap().gap_1();
+        let mut modes = div().flex().flex_wrap().gap_1();
+        for (mode, slug, label) in MODES {
+            let id: &'static str = match slug {
+                "insert" => "settings-voice-mode-insert",
+                "append" => "settings-voice-mode-append",
+                "replace" => "settings-voice-mode-replace",
+                _ => "settings-voice-mode-send",
+            };
+            modes = modes.child(
+                pill(id, mode == dictation.mode)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.select_voice_mode(mode, cx)),
+                    )
+                    .child(label),
+            );
+        }
         if let Some(b) = streaming(selected) {
             actions = actions
                 .child(
@@ -326,6 +387,17 @@ impl Workspace {
             .child(actions)
             .children(key_editor)
             .children(text_editor)
+            .child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child("After speaking · where the words go"),
+            )
+            .child(modes)
+            .child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child("Insert at cursor leaves the words in the composer for you to edit; only Send immediately submits them."),
+            )
             .into_any_element()
     }
 }
@@ -342,6 +414,18 @@ mod tests {
             assert_eq!(parsed.dictation.backend, backend);
             assert_eq!(backend_slug(backend), slug);
         }
+    }
+
+    #[test]
+    fn mode_slugs_match_the_shared_config_names() {
+        for (mode, slug, _) in MODES {
+            let parsed: jcode_base::config::Config =
+                toml::from_str(&format!("[dictation]\nmode = \"{slug}\"\n")).unwrap();
+            assert_eq!(parsed.dictation.mode, mode);
+            assert_eq!(mode_slug(mode), slug);
+        }
+        // The row leads with the mode a fresh install uses.
+        assert_eq!(MODES[0].0, jcode_base::config::Config::default().dictation.mode);
     }
 
     #[test]

@@ -13,7 +13,14 @@ fn global_voice_sends_transcript_and_pill_says_so(cx: &mut gpui::TestAppContext)
         panel.voice.global_capture = true;
         panel.voice.phase = Phase::Transcribing;
         let attempt = panel.voice.canceled.clone();
-        panel.finish_global_voice_text(&attempt, "note this down".into(), None, true, cx);
+        panel.finish_global_voice_text(
+            &attempt,
+            "note this down".into(),
+            None,
+            true,
+            jcode_base::protocol::TranscriptMode::Send,
+            cx,
+        );
         assert!(panel.voice.phase == Phase::Idle);
         assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft");
         assert!(
@@ -160,17 +167,45 @@ fn global_voice_final_delivery_requires_fresh_permission_and_is_exactly_once(
         panel.voice.global_capture = true;
         panel.voice.phase = Phase::Transcribing;
         let denied = panel.voice.canceled.clone();
-        panel.finish_global_voice_text(&denied, "hidden speech".into(), None, false, cx);
+        panel.finish_global_voice_text(
+            &denied,
+            "hidden speech".into(),
+            None,
+            false,
+            jcode_base::protocol::TranscriptMode::Send,
+            cx,
+        );
         assert!(denied.load(Ordering::SeqCst));
         assert_eq!(panel.input.read(cx).content.as_ref(), "original");
         panel.prepare_voice_attempt(true);
         panel.voice.global_capture = true;
         panel.voice.phase = Phase::Transcribing;
         let current = panel.voice.canceled.clone();
-        panel.finish_global_voice_text(&denied, "old speech".into(), None, true, cx);
-        panel.finish_global_voice_text(&current, "new speech".into(), None, true, cx);
+        panel.finish_global_voice_text(
+            &denied,
+            "old speech".into(),
+            None,
+            true,
+            jcode_base::protocol::TranscriptMode::Send,
+            cx,
+        );
+        panel.finish_global_voice_text(
+            &current,
+            "new speech".into(),
+            None,
+            true,
+            jcode_base::protocol::TranscriptMode::Send,
+            cx,
+        );
         let after = panel.items.len();
-        panel.finish_global_voice_text(&current, "new speech".into(), None, true, cx);
+        panel.finish_global_voice_text(
+            &current,
+            "new speech".into(),
+            None,
+            true,
+            jcode_base::protocol::TranscriptMode::Send,
+            cx,
+        );
         assert_eq!(panel.items.len(), after, "sent exactly once");
         assert_eq!(panel.input.read(cx).content.as_ref(), "original");
         let sent: Vec<_> = panel

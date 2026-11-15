@@ -605,7 +605,7 @@ fn persist_dictation_value_at(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    if !matches!(key, "backend" | "base_url" | "command") {
+    if !matches!(key, "backend" | "base_url" | "command" | "mode") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unsupported dictation key {key}"),

@@ -194,14 +194,12 @@ impl Panel {
                         .build()?
                         .block_on(jcode_voice::dictation::run_configured())
                 });
-                self.items.push(Item::Assistant("Running the configured local dictation command. The transcript will be inserted into this composer's draft for review, not submitted automatically.".into()));
+                self.items.push(Item::Assistant("Running the configured local dictation command. The transcript is applied per `[dictation] mode`: the default `insert` puts it at the cursor for review, and only `send` submits it automatically.".into()));
                 cx.spawn(async move |this, cx| {
                     let result: anyhow::Result<jcode_voice::dictation::DictationRun> = task.await;
                     let _ = this.update(cx, |panel, cx| {
                         match result {
-                            Ok(run) => panel
-                                .input
-                                .update(cx, |input, cx| input.append_dictation(&run.text, cx)),
+                            Ok(run) => panel.apply_command_transcript(&run, cx),
                             Err(error) => panel
                                 .items
                                 .push(Item::Error(format!("Dictation failed: {error:#}"))),

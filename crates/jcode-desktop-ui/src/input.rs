@@ -178,6 +178,10 @@ pub struct PromptInput {
     /// outside the element's text style, where `Window::line_height` differs.
     last_line_height: Option<Pixels>,
     voice_preview: Option<String>,
+    /// Says what stopping the recording will do to the draft. Comes from
+    /// `[dictation] mode`, so the dim preview never promises a send the mode
+    /// will not perform.
+    voice_preview_hint: Option<SharedString>,
     voice_preview_scroll: gpui::ScrollHandle,
     composer_bounds: paste_preview::MeasuredBounds,
     visual_line_count: usize,
@@ -562,6 +566,7 @@ impl PromptInput {
             last_bounds: None,
             last_line_height: None,
             voice_preview: None,
+            voice_preview_hint: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
             composer_bounds: Default::default(),
             visual_line_count: 1,
@@ -629,6 +634,19 @@ impl PromptInput {
 
     fn cursor_at_end(&self) -> bool {
         self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
+    }
+
+    /// Test hook: put the caret at `offset` so dictation insertion can be
+    /// asserted from a caret in the middle of a draft.
+    #[cfg(test)]
+    pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset, cx);
+    }
+
+    /// Test hook: current caret byte offset.
+    #[cfg(test)]
+    pub(crate) fn caret_offset(&self) -> usize {
+        self.cursor_offset()
     }
 
     /// Suggested remainder to paint after the caret.
@@ -855,10 +873,6 @@ impl PromptInput {
     /// change anything. Checked before updating while a frame is drawn.
     pub(crate) fn needs_layout_update(&self, spacious: bool, trailing_inset: f32) -> bool {
         self.spacious != spacious || self.trailing_inset != trailing_inset
-    }
-
-    pub(crate) fn has_voice_preview(&self) -> bool {
-        self.voice_preview.is_some()
     }
 
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
@@ -1476,6 +1490,72 @@ impl PromptInput {
             self.voice_preview = preview;
             cx.notify();
         }
+    }
+
+    /// One dim line above the partials saying where the words will land.
+    pub(crate) fn set_voice_preview_hint(
+        &mut self,
+        hint: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = hint.filter(|hint| !hint.is_empty()).map(SharedString::from);
+        if self.voice_preview_hint != hint {
+            self.voice_preview_hint = hint;
+            cx.notify();
+        }
+    }
+
+    /// Insert dictated text at the caret as one undoable edit. This is what
+    /// `[dictation] mode = "insert"` means: the words arrive where the user was
+    /// typing (replacing a selection, like typing over it), the caret lands
+    /// after them, and nothing is submitted. Words are separated from adjacent
+    /// text so two dictated phrases do not fuse into one token.
+    pub(crate) fn insert_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let range = self.clamp_byte_range(self.selected_range.clone());
+        let mut insert = String::with_capacity(text.len() + 2);
+        if self.content[..range.start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            insert.push(' ');
+        }
+        insert.push_str(text);
+        if self.content[range.end..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            insert.push(' ');
+        }
+        let caret = range.start + insert.len();
+        let edited = self.content[..range.start].to_owned() + &insert + &self.content[range.end..];
+        self.undo.push(self.content.to_string());
+        self.redo.clear();
+        self.content = edited.into();
+        self.marked_range = None;
+        self.history_index = None;
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.reset_model_groups_after_exit();
+        self.command_selection = 0;
+        self.reveal_command(0);
+        self.dismiss_ghost();
+        // Dictation completes inside a parent Panel update. Run its callback
+        // after that lease ends, just as a later native edit would.
+        let input = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = input.update(cx, |input, cx| {
+                if let Some(on_change) = &input.on_change {
+                    on_change(&input.content, cx);
+                }
+            });
+        });
+        cx.notify();
     }
 
     /// Append asynchronous dictation on a new line as one undoable edit,
@@ -2797,8 +2877,8 @@ impl Render for PromptInput {
                     .pb_2()
                     .text_size(px(14.0))
                     .text_color(Theme::global().TEXT_DIM)
-                    .when(!self.content.is_empty(), |el| {
-                        el.child(div().text_size(px(10.0)).child("Appending on a new line"))
+                    .when_some(self.voice_preview_hint.clone(), |el, hint| {
+                        el.child(div().text_size(px(10.0)).child(hint))
                     })
                     .child(div().flex_none().child(if preview.trim().is_empty() {
                         "Listening…".to_owned()
@@ -3061,6 +3141,48 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
+    }
+
+    /// `[dictation] mode = "insert"`: the words arrive at the caret, not after
+    /// a newline, and one undo removes the whole insertion.
+    #[gpui::test]
+    fn dictation_inserts_at_the_caret_as_one_undo_step(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        for (draft, caret, spoken, expected, caret_after) in [
+            ("", 0, "run the suite", "run the suite", 13),
+            ("fix the test", 4, "flaky ", "fix flaky the test", 10),
+            ("fix the test", 12, "now", "fix the test now", 16),
+            ("keep", 0, "please ", "please keep", 7),
+            ("один два", 9, "три", "один три два", 16),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_content(draft.into(), cx);
+                input.selected_range = caret..caret;
+                input.undo.clear();
+                input.redo = vec!["old redo".into()];
+                input.insert_dictation(spoken, cx);
+                assert_eq!(input.content.as_ref(), expected);
+                assert_eq!(input.selected_range, caret_after..caret_after);
+                assert_eq!(input.undo, vec![draft.to_owned()], "one undo step");
+                assert!(input.redo.is_empty());
+                assert!(input.marked_range.is_none());
+                assert!(input.history_index.is_none());
+            });
+        }
+    }
+
+    /// A selection is replaced the way typing over it would, so dictation into
+    /// a highlighted word does not duplicate it.
+    #[gpui::test]
+    fn dictation_insert_replaces_the_selection(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("keep drop tail".into(), cx);
+            input.selected_range = 5..9;
+            input.insert_dictation("spare", cx);
+            assert_eq!(input.content.as_ref(), "keep spare tail");
+            assert_eq!(input.selected_range, 10..10);
+        });
     }
 
     #[gpui::test]

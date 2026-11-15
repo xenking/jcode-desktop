@@ -31,7 +31,25 @@ use jcode_desktop_voice::chrome::*;
 #[path = "panel_global_voice_tests.rs"]
 mod global_tests;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+/// `[dictation] mode` for a finished utterance. Read per utterance so a
+/// Settings change applies to the next one without restarting Desktop.
+pub(crate) fn dictation_mode() -> jcode_base::protocol::TranscriptMode {
+    jcode_base::config::config().dictation.mode
+}
+
+/// What stopping the recording will do, shown above the dim partials. The
+/// preview must not promise a send the mode will not perform.
+fn dictation_hint(mode: jcode_base::protocol::TranscriptMode) -> &'static str {
+    use jcode_base::protocol::TranscriptMode;
+    match mode {
+        TranscriptMode::Insert => "Inserts at the cursor for editing · Enter sends",
+        TranscriptMode::Append => "Appends to the draft for editing · Enter sends",
+        TranscriptMode::Replace => "Replaces the draft for editing · Enter sends",
+        TranscriptMode::Send => "Sends when you stop",
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
     Idle,
@@ -358,6 +376,7 @@ impl Panel {
                 .log_end(normal, &format!("canceled: {reason}"), None);
         }
         self.reset_voice_attempt();
+        self.clear_voice_preview(cx);
         cx.notify();
     }
 
@@ -506,6 +525,13 @@ impl Panel {
                 self.voice.phase = Phase::Recording;
                 self.voice.recording = Some(recording);
                 self.voice.started = Some(Instant::now());
+                // Show the composer preview at once: "Listening…" with the hint
+                // for what stopping will do, before the first partial arrives.
+                let hint = dictation_hint(dictation_mode());
+                self.input.update(cx, |input, cx| {
+                    input.set_voice_preview_hint(Some(hint), cx);
+                    input.set_voice_preview(Some(String::new()), cx);
+                });
                 self.tick_voice(cx);
             }
             Err(error) => {
@@ -616,13 +642,123 @@ impl Panel {
         match event {
             NariEvent::Started => {}
             NariEvent::Transcript(text) => {
-                // This separate preview can be revised without replacing anything the
-                // user types. Only Finished inserts one undoable edit into the draft.
+                // The live revision shows in the composer as dim text and is
+                // never inserted: only `Finished` edits the draft, once.
                 self.voice.live_transcript = text;
+                let live = self.voice.live_transcript.clone();
+                let hint = dictation_hint(dictation_mode());
+                self.input.update(cx, |input, cx| {
+                    input.set_voice_preview_hint(Some(hint), cx);
+                    input.set_voice_preview(Some(live), cx);
+                });
                 cx.notify();
             }
             NariEvent::Finished(result) => self.finish_voice(result, cx),
         }
+    }
+
+    /// Drop the dim recognition preview. The final words replace it, either in
+    /// the draft or in the chat.
+    fn clear_voice_preview(&mut self, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_voice_preview(None, cx);
+            input.set_voice_preview_hint(None, cx);
+        });
+    }
+
+    /// `/dictate` with `backend = "command"` or an external command: the same
+    /// `[dictation] mode` rules as the built-in microphone.
+    pub(crate) fn apply_command_transcript(
+        &mut self,
+        run: &jcode_voice::dictation::DictationRun,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_base::protocol::TranscriptMode;
+        let text = run.text.trim();
+        if text.is_empty() {
+            self.items
+                .push(Item::Error("Dictation command returned no words.".into()));
+            return;
+        }
+        match run.mode {
+            TranscriptMode::Insert => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+            TranscriptMode::Append => self.input.update(cx, |input, cx| {
+                input.append_dictation(&tag::wrap(text), cx)
+            }),
+            TranscriptMode::Replace => self.input.update(cx, |input, cx| {
+                input.set_content(tag::wrap(text), cx)
+            }),
+            TranscriptMode::Send => {
+                self.submit_or_queue(tag::wrap(text), Vec::new(), false, cx);
+                return;
+            }
+        }
+        self.focus_composer_after_voice(cx);
+        cx.notify();
+    }
+
+    /// Put finished words in the draft for editing, per `[dictation] mode`.
+    /// Nothing is submitted and the composer keeps keyboard focus.
+    fn keep_voice_in_draft(&mut self, text: &str, cx: &mut Context<Self>) {
+        let mode = dictation_mode();
+        self.keep_voice_in_draft_with(text, mode, cx);
+    }
+
+    fn keep_voice_in_draft_with(
+        &mut self,
+        text: &str,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_base::protocol::TranscriptMode;
+        self.voice.phase = Phase::Idle;
+        self.voice.error = None;
+        self.voice.trace = None;
+        self.voice.live_transcript.clear();
+        // A focused hold shows the draft itself. Only the unfocused OS pill
+        // needs a confirmation label.
+        self.voice.decision = self
+            .voice
+            .global_capture
+            .then(|| "Inserted into the composer".into());
+        match mode {
+            TranscriptMode::Insert => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+            TranscriptMode::Append => self.input.update(cx, |input, cx| {
+                input.append_dictation(&tag::wrap(text), cx)
+            }),
+            TranscriptMode::Replace => self.input.update(cx, |input, cx| {
+                input.set_content(tag::wrap(text), cx)
+            }),
+            // `send` is handled before this point; never silently send here.
+            TranscriptMode::Send => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+        }
+        self.focus_composer_after_voice(cx);
+        jcode_voice::timing::mark("ui kept transcript in draft");
+        cx.notify();
+    }
+
+    /// Hand typing back to the composer after dictation, so the user edits the
+    /// words without reaching for the mouse. Deferred: dictation finishes
+    /// inside an entity update, where no window is borrowed.
+    fn focus_composer_after_voice(&self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        cx.defer(move |app| {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            let Some(window) = app.active_window() else {
+                return;
+            };
+            let _ = window.update(app, |_, window, app| {
+                panel.update(app, |panel, cx| panel.focus_input(window, cx));
+            });
+        });
     }
 
     fn stop_voice(&mut self, reason: &'static str, cx: &mut Context<Self>) {
@@ -642,6 +778,17 @@ impl Panel {
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
+        // `[dictation] mode` is read once per utterance so a Settings change
+        // applies to the next recording, never mid-delivery.
+        self.finish_voice_with_mode(result, dictation_mode(), cx);
+    }
+
+    fn finish_voice_with_mode(
+        &mut self,
+        result: Result<String, VoiceError>,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
         jcode_voice::timing::mark("ui received final transcript");
         match &result {
             Ok(text) if text.trim().is_empty() => self.voice.log_end(
@@ -672,6 +819,7 @@ impl Panel {
         self.voice.started = None;
         self.voice.recording = None;
         self.voice.live_transcript.clear();
+        self.clear_voice_preview(cx);
         match result {
             Ok(text) if !text.trim().is_empty() => {
                 if self.voice.global_capture {
@@ -683,10 +831,19 @@ impl Panel {
                     self.voice.task = Some(cx.spawn(async move |this, cx| {
                         let allowed = check.await;
                         let _ = this.update(cx, |panel, cx| {
-                            panel.finish_global_voice_text(&attempt, text, audio, allowed, cx);
+                            panel.finish_global_voice_text(
+                                &attempt, text, audio, allowed, mode, cx,
+                            );
                         });
                     }));
                     cx.notify();
+                    return;
+                }
+                // `[dictation] mode` decides. Only an explicit `send` submits:
+                // voice is an input method, so the default leaves the words in
+                // the composer at the caret for the user to edit and send.
+                if mode != jcode_base::protocol::TranscriptMode::Send {
+                    self.keep_voice_in_draft_with(&text, mode, cx);
                     return;
                 }
                 if self.voice.sessions.is_some() || !JEV_ROUTING {
@@ -697,6 +854,7 @@ impl Panel {
                     input.append_dictation(&tag::wrap(&text), cx);
                 });
                 self.voice.error = None;
+                self.focus_composer_after_voice(cx);
             }
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
@@ -715,6 +873,7 @@ impl Panel {
         text: String,
         audio: Option<Duration>,
         allowed: bool,
+        mode: jcode_base::protocol::TranscriptMode,
         cx: &mut Context<Self>,
     ) {
         if !Arc::ptr_eq(attempt, &self.voice.canceled)
@@ -724,7 +883,15 @@ impl Panel {
         {
             return;
         }
-        if allowed && (self.voice.sessions.is_some() || !JEV_ROUTING) {
+        if allowed && mode != jcode_base::protocol::TranscriptMode::Send {
+            // Unfocused hold into the draft: the words appear in the composer
+            // the user comes back to, and the OS pill says so.
+            eprintln!(
+                "global voice: kept {} transcript chars in the draft",
+                text.chars().count()
+            );
+            self.keep_voice_in_draft_with(&text, mode, cx);
+        } else if allowed && (self.voice.sessions.is_some() || !JEV_ROUTING) {
             // Length only. Never log transcript content.
             eprintln!(
                 "global voice: sending {} transcript chars",
@@ -741,6 +908,7 @@ impl Panel {
             });
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
+            self.focus_composer_after_voice(cx);
             cx.notify();
         } else {
             self.cancel_global_voice(attempt, "session check denied the transcript", cx);
@@ -1752,7 +1920,11 @@ mod tests {
             panel
                 .input
                 .update(cx, |input, cx| input.set_content("original".into(), cx));
-            panel.finish_voice(Ok("dictated".into()), cx);
+            panel.finish_voice_with_mode(
+                Ok("dictated".into()),
+                jcode_base::protocol::TranscriptMode::Insert,
+                cx,
+            );
         });
         vcx.update(|window, cx| {
             let focus = panel.read(cx).input.read(cx).focus_handle.clone();
@@ -1761,6 +1933,79 @@ mod tests {
         vcx.simulate_keystrokes("ctrl-z");
         panel.read_with(vcx, |panel, cx| {
             assert_eq!(panel.input.read(cx).content.as_ref(), "original")
+        });
+    }
+
+    /// `[dictation] mode = "insert"` (the default): the words land at the
+    /// caret and nothing is sent, so the user edits and sends them.
+    #[gpui::test]
+    fn voice_insert_mode_lands_at_the_caret_and_never_sends(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            Panel::new(
+                "voice-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("fix the test".into(), cx);
+                input.set_caret("fix ".len(), cx);
+            });
+            let items = panel.items.len();
+            panel.finish_voice_with_mode(
+                Ok("flaky ".into()),
+                jcode_base::protocol::TranscriptMode::Insert,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert_eq!(input.content.as_ref(), "fix flaky the test");
+                assert_eq!(input.caret_offset(), "fix flaky ".len());
+            });
+            assert_eq!(panel.items.len(), items, "insert mode must not send");
+            assert!(panel.voice.error.is_none());
+            assert_eq!(panel.voice.phase, Phase::Idle);
+            assert!(panel.voice.live_transcript.is_empty());
+        });
+    }
+
+    /// `append` and `replace` also stay in the draft: they never submit.
+    #[gpui::test]
+    fn voice_append_and_replace_modes_stay_in_the_draft(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            Panel::new(
+                "voice-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("draft".into(), cx));
+            let items = panel.items.len();
+            panel.finish_voice_with_mode(
+                Ok("appended".into()),
+                jcode_base::protocol::TranscriptMode::Append,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(input.content.contains("appended"), "{}", input.content)
+            });
+            panel.finish_voice_with_mode(
+                Ok("replaced".into()),
+                jcode_base::protocol::TranscriptMode::Replace,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(input.content.contains("replaced"), "{}", input.content);
+                assert!(!input.content.contains("draft"), "{}", input.content);
+            });
+            assert_eq!(panel.items.len(), items, "draft modes must not send");
         });
     }
 
@@ -1780,7 +2025,11 @@ mod tests {
                 input.set_content("Typed while transcribing".into(), cx)
             });
             let items = panel.items.len();
-            panel.finish_voice(Ok("  dictated words  ".into()), cx);
+            panel.finish_voice_with_mode(
+                Ok("  dictated words  ".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
                 "Typed while transcribing"
@@ -1792,7 +2041,11 @@ mod tests {
                 "voice sends only the trimmed utterance"
             );
             let items = panel.items.len();
-            panel.finish_voice(Err(VoiceError::Network), cx);
+            panel.finish_voice_with_mode(
+                Err(VoiceError::Network),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
                 "Typed while transcribing"
