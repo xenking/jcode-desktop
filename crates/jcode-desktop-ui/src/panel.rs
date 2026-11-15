@@ -3157,6 +3157,7 @@ impl Panel {
         match event {
             ApiEvent::AskRequest {
                 request_id,
+                tool_call_id,
                 questions,
                 ..
             } => {
@@ -3165,7 +3166,9 @@ impl Panel {
                 }) {
                     return;
                 }
-                self.ask_card = Some(ask::AskCard::new(request_id.clone(), questions.clone()));
+                let mut card = ask::AskCard::new(request_id.clone(), questions.clone());
+                card.tool_call_id = tool_call_id.clone();
+                self.ask_card = Some(card);
                 self.prepare_ask_inputs(cx);
                 if let (Some(draft), Some(card)) =
                     (self.pending_ask_draft.take(), self.ask_card.as_mut())
@@ -3237,7 +3240,25 @@ impl Panel {
                 error,
                 ..
             } => {
+                let completed_ask = self
+                    .ask_card
+                    .as_ref()
+                    .is_some_and(|card| name == "ask" && card.tool_call_id == *call_id);
+                let ask_input = if completed_ask {
+                    self.cancel_ask_voice(cx);
+                    let card = self.ask_card.take().expect("checked above");
+                    let was_reload = output.contains("reload")
+                        || error
+                            .as_deref()
+                            .is_some_and(|error| error.contains("reload"));
+                    self.pending_ask_draft = was_reload.then(|| card.draft());
+                    let input = serde_json::json!({"questions": card.questions}).to_string();
+                    Some(input)
+                } else {
+                    None
+                };
                 if let Some(Item::Tool {
+                    input,
                     done,
                     error: slot,
                     output: output_slot,
@@ -3247,6 +3268,11 @@ impl Panel {
                     *done = true;
                     *slot = error.clone();
                     *output_slot = output.clone();
+                    if input.is_empty()
+                        && let Some(ask_input) = &ask_input
+                    {
+                        *input = ask_input.clone();
+                    }
                     if let Some(started) = self.tool_started.remove(call_id) {
                         self.tool_durations
                             .insert(call_id.clone(), started.elapsed());
@@ -3261,7 +3287,7 @@ impl Panel {
                     self.items.push(Item::Tool {
                         call_id: call_id.clone(),
                         name: name.clone(),
-                        input: String::new(),
+                        input: ask_input.unwrap_or_default(),
                         output: output.clone(),
                         done: true,
                         error: error.clone(),

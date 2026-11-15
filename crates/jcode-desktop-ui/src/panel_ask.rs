@@ -58,6 +58,7 @@ pub struct AskDraft {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AskCard {
     pub request_id: String,
+    pub tool_call_id: String,
     pub questions: Vec<AskQuestion>,
     pub chosen: Vec<Vec<usize>>,
     pub other: Vec<Option<String>>,
@@ -76,6 +77,7 @@ impl AskCard {
         let n = questions.len();
         Self {
             request_id,
+            tool_call_id: String::new(),
             comments: questions
                 .iter()
                 .map(|q| vec![String::new(); q.options.len()])
@@ -1117,6 +1119,29 @@ mod tests {
             let card = panel.ask_card.as_ref().unwrap();
             assert_eq!(card.chosen[0], vec![1]);
             assert_eq!(card.comments[0][1], "important note");
+        });
+    }
+
+    #[gpui::test]
+    fn cancelled_ask_closes_and_renders_questions_and_status(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&event, cx);
+            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "unrelated".into(), name: "ask".into(), output: "cancelled".into(), error: Some("cancelled".into()) }, cx);
+            assert!(panel.ask_card.is_some());
+            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(), name: "ask".into(), output: "cancelled by the user".into(), error: Some("cancelled by the user".into()) }, cx);
+            assert!(panel.ask_card.is_none(), "completed tool must close its card");
+            let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
+            assert!(result_text(input, output, error.as_deref()).contains("Which database"));
         });
     }
 
