@@ -147,9 +147,10 @@ pub(super) fn render_version_block(
 
 impl Workspace {
     /// The one place a user-requested update runs: the sidebar badge, the
-    /// account popup button and Settings → About all call it. Ask the platform
-    /// updater to check, download, or install whatever is next.
-    pub(super) fn check_and_apply_update(cx: &mut gpui::App) {
+    /// account popup button, Settings → About and the native app menu all
+    /// call it. Ask the platform updater to check, download, or install
+    /// whatever is next.
+    pub(crate) fn check_and_apply_update(cx: &mut gpui::App) {
         updates::note_user_check();
         // A newer release this build cannot install itself (ad-hoc package
         // without Sparkle keys): open the fork's release page instead of

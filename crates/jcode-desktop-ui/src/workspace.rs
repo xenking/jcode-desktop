@@ -24,6 +24,8 @@ pub(crate) mod resume;
 #[path = "workspace_search.rs"]
 mod search_screen;
 
+#[path = "workspace_menu.rs"]
+mod menu;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
@@ -74,6 +76,9 @@ mod sidebar_swarm;
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
+#[path = "workspace_sidebar_metadata.rs"]
+mod sidebar_metadata;
+use sidebar_metadata::SidebarPanelMetadata;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -117,6 +122,9 @@ mod hidden_animation_tests;
 mod map_gesture;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
+#[cfg(test)]
+#[path = "workspace_nav_profile_tests.rs"]
+mod nav_profile_tests;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
@@ -758,6 +766,8 @@ pub struct Workspace {
     applet_text_selection: Option<Entity<crate::text_selection::TextSelection>>,
     /// Sidebar applet section, rendered with window access before the sidebar.
     sidebar_applets: Option<gpui::AnyElement>,
+    sidebar_chrome: Option<Entity<SidebarChrome>>,
+    sidebar_panel_metadata: Option<Entity<HashMap<gpui::EntityId, SidebarPanelMetadata>>>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -1124,6 +1134,8 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge,
             host,
             single_panel,
@@ -1583,6 +1595,8 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -3550,6 +3564,10 @@ impl Workspace {
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel {
+            self.open_new_session_window(cx);
+            return;
+        }
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_new_session(cx);
@@ -4918,38 +4936,37 @@ impl Workspace {
         }
 
         let panel_h = (viewport_h - STRIP_PADDING_TOP - STRIP_PADDING_Y).max(1.0);
-        let indices = self.row_indices(row).collect::<Vec<_>>();
-        let mut animated_widths = Vec::with_capacity(indices.len());
-        let mut order_offsets = Vec::with_capacity(indices.len());
-        let mut close_progresses = Vec::with_capacity(indices.len());
-        for &index in &indices {
-            let fraction = self.slots[index].animated_width.sample(now);
-            if self.slots[index].animated_width.is_animating() {
+        let mut panels = Vec::with_capacity(self.row_indices(row).count());
+        let mut strip_width = 0.0;
+        // Sample each slot once and keep its geometry together. Four parallel
+        // heap buffers used to be allocated and zipped on every pan frame.
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.row != row {
+                continue;
+            }
+            let fraction = slot.animated_width.sample(now);
+            if slot.animated_width.is_animating() {
                 window.request_animation_frame();
             }
-            let close_progress = self.slots[index].close_progress.sample(now);
-            if self.slots[index].close_progress.is_animating() {
+            let close_progress = slot.close_progress.sample(now);
+            if slot.close_progress.is_animating() {
                 window.request_animation_frame();
             }
-            close_progresses.push(close_progress);
-            animated_widths.push(Self::width_for_fraction(fraction, viewport_w) * close_progress);
-            let progress = self.slots[index].order_offset.sample(now);
-            if self.slots[index].order_offset.is_animating() {
+            let width = Self::width_for_fraction(fraction, viewport_w) * close_progress;
+            strip_width += width;
+            let progress = slot.order_offset.sample(now);
+            if slot.order_offset.is_animating() {
                 window.request_animation_frame();
             }
-            let distance =
-                Self::width_for_fraction(self.slots[index].order_distance_fraction, viewport_w)
-                    + GAP;
-            order_offsets.push(progress * distance);
+            let distance = Self::width_for_fraction(slot.order_distance_fraction, viewport_w) + GAP;
+            panels.push((index, width, progress * distance, close_progress));
         }
         let camera_x = self.camera_x[row];
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
             .left(px(-camera_x))
-            .w(px(
-                animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
-            ))
+            .w(px(strip_width + GAP * panels.len().saturating_sub(1) as f32))
             .h(px(panel_h));
 
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
@@ -4958,12 +4975,7 @@ impl Workspace {
         // Capture actual painted bounds, including camera/width/order animation
         // and clipping. Keyboard focus is not a wheel hit-test target.
         let panel_hitboxes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        for (((index, width), order_offset), close_progress) in indices
-            .into_iter()
-            .zip(animated_widths)
-            .zip(order_offsets)
-            .zip(close_progresses)
-        {
+        for (index, width, order_offset, close_progress) in panels {
             let slot = &self.slots[index];
             let focused = index == self.active;
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
@@ -5848,16 +5860,21 @@ impl Workspace {
         // for the badge to show until this runs. Idempotent, so every later
         // render is free.
         updates::ensure_release_check();
+        let sidebar_panels = self
+            .sidebar_panel_metadata
+            .as_ref()
+            .expect("sidebar metadata prepared before render")
+            .read(cx);
         let active_id = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.read(cx).session_id.clone());
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone());
         let open_marks = self
             .slots
             .iter()
             .filter(|slot| !slot.closing)
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
@@ -5865,7 +5882,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.latest_todo_progress())
             })
             .collect::<HashMap<_, _>>();
@@ -5885,7 +5902,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.title.to_string())
             })
             .collect::<HashMap<_, _>>();
@@ -5901,8 +5918,10 @@ impl Workspace {
             .iter()
             .map(|session| session.session_id.clone())
             .collect::<HashSet<_>>();
+        // Keep legacy first-record lookup semantics even for duplicate catalog ids.
+        let duplicate_catalog_ids = known.len() != catalog.len();
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
-            let panel = slot.panel.read(cx);
+            let panel = &sidebar_panels[&slot.panel.entity_id()];
             if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
                 && known.insert(panel.session_id.clone())
             {
@@ -5949,7 +5968,10 @@ impl Workspace {
         // but they belong under a coordinator that is listed here.
         sidebar_swarm::keep_workers_of(&catalog, &mut kept);
         catalog.retain(|session| kept.contains(&session.session_id));
-        let ordered_sessions = sidebar_session_order(&catalog);
+        let original_catalog = duplicate_catalog_ids.then(|| catalog.clone());
+        // Sort the owned render catalog in place, avoiding a second session clone.
+        sort_sidebar_sessions(&mut catalog);
+        let ordered_sessions = catalog;
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
         // nests under its coordinator while it shares that checkout, and
@@ -5960,7 +5982,9 @@ impl Workspace {
         let swarm_now = swarm_now_ms();
         let mut nested = HashSet::new();
         for (root, children) in &swarm.children {
-            let root_checkout = catalog
+            let root_checkout = original_catalog
+                .as_ref()
+                .unwrap_or(&ordered_sessions)
                 .iter()
                 .find(|session| &session.session_id == root)
                 .and_then(|session| self.sidebar_projects.checkout(session))
@@ -6005,7 +6029,7 @@ impl Workspace {
             .slots
             .iter()
             .filter(|slot| slot.closing)
-            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone())
             .collect::<HashSet<_>>();
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
@@ -6026,7 +6050,9 @@ impl Workspace {
         let panel_positions = panel_positions
             .into_iter()
             .enumerate()
-            .map(|(position, (_, slot))| (slot.panel.read(cx).session_id.clone(), position))
+            .map(|(position, (_, slot))| {
+                (sidebar_panels[&slot.panel.entity_id()].session_id.clone(), position)
+            })
             .collect::<HashMap<_, _>>();
         open_sessions.sort_by_key(|session| {
             panel_positions
@@ -6045,6 +6071,7 @@ impl Workspace {
         // User-created collections come first, in their own order, and take
         // their sessions out of the directory groups below.
         let mut groups: Vec<(sidebar_projects::Project, usize, usize)> = Vec::new();
+        let mut group_indices: HashMap<String, usize> = HashMap::new();
         let mut members: Vec<Vec<SidebarRow>> = Vec::new();
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         let collection_order = self
@@ -6068,10 +6095,8 @@ impl Workspace {
         // Stable: open-before-history and recency survive inside each group.
         grouped.sort_by_key(|(_, session)| rank_collection(session));
         for (live, session) in grouped {
-            let open = self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
+            // open_marks contains exactly the non-closing local panel ids.
+            let open = open_marks.contains_key(&session.session_id);
             let collection = self
                 .collections
                 .collection_of(&session.session_id)
@@ -6094,9 +6119,10 @@ impl Workspace {
             } else {
                 self.sidebar_projects.checkout(&session)
             };
-            let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
+            let index = match group_indices.get(&project.key).copied() {
                 Some(index) => index,
                 None => {
+                    group_indices.insert(project.key.clone(), groups.len());
                     groups.push((project, 0, 0));
                     members.push(Vec::new());
                     project_checkouts.push(Vec::new());
@@ -7206,7 +7232,8 @@ impl Workspace {
                     .items_center()
                     .child(div().flex_1().min_w_0().child(navigation))
             })
-            .child(self.render_machine_switcher(cx))
+            // Folder mode's header already is the destination row.
+            .children((!folders).then(|| self.render_machine_switcher(None, cx)))
             .child(
                 div()
                     .flex_1()
@@ -7858,11 +7885,13 @@ impl Workspace {
             .gap_2()
             .text_size(px(11.0))
             .child(div().text_size(px(14.0)).child("Settings"))
-            .child(
-                div()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Current window"),
-            );
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Current window"),
+                )
+            });
         for (id, label, enabled) in [
             ("settings-minimap", "Workspace minimap", self.show_minimap),
             (
@@ -7870,7 +7899,10 @@ impl Workspace {
                 "Show pressed shortcuts",
                 self.showcase_mode,
             ),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| !self.single_panel)
+        {
             settings = settings.child(
                 div()
                     .id(id)
@@ -7908,48 +7940,51 @@ impl Workspace {
                     ),
             );
         }
-        let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        settings = settings.child(
-            div()
-                .id("settings-folder-tabs")
-                .debug_selector(|| "settings-folder-tabs".into())
-                .flex_none()
-                .px_2()
-                .py_2()
-                .rounded_sm()
-                .flex()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(Theme::global().PANEL_BG)
-                .hover(|el| el.bg(Theme::global().TOOL_BG))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.layout_mode =
-                            if this.layout_mode == crate::config::LayoutMode::FolderTabs {
-                                crate::config::LayoutMode::Normal
+        if !self.single_panel {
+            let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+            settings = settings.child(
+                div()
+                    .id("settings-folder-tabs")
+                    .debug_selector(|| "settings-folder-tabs".into())
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.layout_mode =
+                                if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                                    crate::config::LayoutMode::Normal
+                                } else {
+                                    crate::config::LayoutMode::FolderTabs
+                                };
+                            this.camera_dirty.fill(true);
+                            if let Err(error) = crate::config::persist_layout_mode(this.layout_mode)
+                            {
+                                eprintln!("failed to persist workspace layout mode: {error}");
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child("Workspace layout")
+                    .child(
+                        div()
+                            .text_color(if folder_tabs {
+                                Theme::global().ACCENT
                             } else {
-                                crate::config::LayoutMode::FolderTabs
-                            };
-                        this.camera_dirty.fill(true);
-                        if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
-                            eprintln!("failed to persist workspace layout mode: {error}");
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child("Workspace layout")
-                .child(
-                    div()
-                        .text_color(if folder_tabs {
-                            Theme::global().ACCENT
-                        } else {
-                            Theme::global().TEXT_DIM
-                        })
-                        .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
-                ),
-        );
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
+                    ),
+            );
+        }
         let applet_settings = self.render_applet_settings(cx);
         let about = self.render_about_settings(cx);
         settings
@@ -7958,30 +7993,34 @@ impl Workspace {
             .child(self.render_sound_settings(cx))
             .child(self.render_voice_settings(cx))
             .children(applet_settings)
-            .child(
-                div()
-                    .id("settings-machines")
-                    .debug_selector(|| "settings-machines".into())
-                    .px_2()
-                    .py_2()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .bg(Theme::global().PANEL_BG)
-                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.open_machines(window, cx);
-                        }),
-                    )
-                    .child("Machines and default new-panel location →"),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Color palettes are in the Theme tab."),
-            )
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .id("settings-machines")
+                        .debug_selector(|| "settings-machines".into())
+                        .px_2()
+                        .py_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(Theme::global().PANEL_BG)
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.open_machines(window, cx);
+                            }),
+                        )
+                        .child("Machines and default new-panel location →"),
+                )
+            })
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .mt_2()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Color palettes are in the Theme tab."),
+                )
+            })
             .child(about)
             .into_any_element()
     }
@@ -8811,10 +8850,31 @@ impl Workspace {
     }
 }
 
+/// A stable retained boundary for the sidebar. Camera ticks notify Workspace
+/// without changing its model, so the sidebar can replay its last frame while
+/// the canvas moves. Real workspace, panel, global and hover changes remain
+/// dependencies of this view and rebuild it normally.
+struct SidebarChrome {
+    workspace: gpui::WeakEntity<Workspace>,
+}
+
+impl Render for SidebarChrome {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("SidebarChrome");
+        let fullscreen = window.is_fullscreen();
+        self.workspace
+            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
+        if self.show_sidebar {
+            self.refresh_sidebar_panel_metadata(cx);
+        }
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing
             && slot.panel.read(cx).supports_voice()
@@ -8888,6 +8948,13 @@ impl Render for Workspace {
         if self.compact_sidebar_motion.is_animating() {
             window.request_animation_frame();
         }
+        let sidebar_chrome = self
+            .sidebar_chrome
+            .get_or_insert_with(|| {
+                let workspace = cx.entity().downgrade();
+                cx.new(|_| SidebarChrome { workspace })
+            })
+            .clone();
         let sidebar_width = if self.show_sidebar && !compact {
             self.sidebar_custom_width
         } else {
@@ -9147,6 +9214,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_first))
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
+            .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::promote_side_question))
             .on_action(cx.listener(Self::move_panel_left))
@@ -9201,7 +9269,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
-                        root.child(self.render_sidebar(fullscreen, cx))
+                        root.child(sidebar_chrome)
                             .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
@@ -9673,14 +9741,19 @@ fn sidebar_session_title_with_open_title(
     )
 }
 
+#[cfg(test)]
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
     let mut ordered = sessions.to_vec();
+    sort_sidebar_sessions(&mut ordered);
+    ordered
+}
+
+fn sort_sidebar_sessions(ordered: &mut [jcode_sdk::SessionInfo]) {
     ordered.sort_by(|a, b| {
         b.saved
             .cmp(&a.saved)
             .then_with(|| sidebar_session_recency_ms(b).cmp(&sidebar_session_recency_ms(a)))
     });
-    ordered
 }
 
 fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i64 {
@@ -10462,6 +10535,31 @@ mod tests {
             swarm_status: None,
             edit_stats: None,
         }
+    }
+
+    #[test]
+    fn sidebar_in_place_sort_keeps_equal_recency_catalog_order() {
+        let mut sessions = vec![
+            session_info("first", Some("first")),
+            session_info("second", Some("second")),
+            session_info("saved-first", None),
+            session_info("saved-second", None),
+        ];
+        for session in &mut sessions {
+            session.updated_at_ms = Some(42);
+            session.saved = session.session_id.starts_with("saved");
+        }
+        let allocation = sessions.as_ptr();
+        sort_sidebar_sessions(&mut sessions);
+        assert_eq!(sessions.as_ptr(), allocation, "reuse the owned catalog");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["saved-first", "saved-second", "first", "second"],
+        );
+        assert_eq!(sessions[2].title.as_deref(), Some("first"));
     }
 
     #[test]
@@ -12116,12 +12214,14 @@ mod tests {
             let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
             let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
             let destinations = vcx.debug_bounds("machine-destination-switcher").unwrap();
+            let sidebar = vcx.debug_bounds("sidebar").unwrap();
             assert_eq!(
-                header.bottom(),
                 destinations.top(),
-                "header must touch the combined destination and directory row"
+                sidebar.top(),
+                "the destination and directory row is the only header line"
             );
-            assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
+            assert!(header.top() >= destinations.top());
+            assert!(header.bottom() <= destinations.bottom());
             assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
             assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
         }
