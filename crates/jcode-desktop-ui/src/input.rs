@@ -1742,6 +1742,12 @@ impl PromptInput {
         if self.history.is_empty() {
             return;
         }
+        // History stores text only. Switching while attachments are present
+        // would hide the chips while keeping their payload in the next send.
+        if !self.attachments.is_empty() {
+            self.set_transient_notice("Remove or send images before browsing history".into(), cx);
+            return;
+        }
         let index = match self.history_index {
             Some(index) => index.saturating_sub(1),
             None => {
@@ -1764,6 +1770,10 @@ impl PromptInput {
         let Some(index) = self.history_index else {
             return;
         };
+        if !self.attachments.is_empty() {
+            self.set_transient_notice("Remove or send images before browsing history".into(), cx);
+            return;
+        }
         if index + 1 < self.history.len() {
             self.history_index = Some(index + 1);
             self.set_content(self.history[index + 1].clone(), cx);
@@ -3366,6 +3376,31 @@ mod tests {
         input.read_with(vcx, |input, _| {
             assert_eq!(input.content.as_ref(), "before after");
             assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn image_draft_is_not_hidden_by_history_navigation(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.history.push("old prompt".into());
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.simulate_keystrokes("up");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "[#image 1]");
+            assert_eq!(input.attachments.len(), 1);
         });
     }
 

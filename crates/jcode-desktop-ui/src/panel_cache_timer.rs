@@ -7,11 +7,10 @@
 //! away for a coffee and paying to re-warm a long prompt is visible before it
 //! happens rather than after.
 //!
-//! The facts come from the transcript: the newest settled response carries the
-//! provider-reported cache tokens and the moment the turn finished, which is
-//! the last cache touch. The retention window and its estimate flag come from
-//! `jcode-base`, the same table the TUI reads, so both clients count down the
-//! same number.
+//! The facts come from reported cache reads/writes. During a live turn we use
+//! the latest usage event. For restored turns we use the stored timestamp.
+//! Neither timestamp is the request start, so this countdown is an estimate.
+//! Retention comes from the local `jcode-base` provider table.
 use super::*;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -104,7 +103,7 @@ pub(super) fn tooltip(facts: &CacheFacts) -> String {
         )
     };
     format!(
-        "Prompt cache: {retention} · {state}{}",
+        "Prompt cache: {retention} · {state}{} · timing estimated from reported usage; actual expiry may be earlier",
         tokens_text(facts.cached_tokens)
     )
 }
@@ -135,19 +134,20 @@ pub(super) fn now_ms() -> i64 {
 }
 
 impl Panel {
-    /// The newest response that reported cache tokens, with the moment it
-    /// settled. That request is what refreshed the provider's window.
+    /// The newest usage event reporting a positive cache read or write. Its
+    /// timestamp estimates when the request refreshed the provider's window.
     fn last_cache_touch(&self) -> Option<(i64, Option<u64>)> {
         self.response_stats.cache_touch().or_else(|| {
             self.items.iter().rev().find_map(|item| match item {
-                Item::ResponseStats(stats)
-                    if stats.cache_read_tokens.is_some()
-                        || stats.cache_creation_tokens.is_some() =>
-                {
+                Item::ResponseStats(stats) => {
+                    let tokens = stats
+                        .cache_read_tokens
+                        .filter(|tokens| *tokens > 0)
+                        .or(stats.cache_creation_tokens.filter(|tokens| *tokens > 0))?;
                     stats
                         .cache_at_ms
                         .or(stats.at_ms)
-                        .map(|at| (at, stats.cache_read_tokens.or(stats.cache_creation_tokens)))
+                        .map(|at| (at, Some(tokens)))
                 }
                 _ => None,
             })
