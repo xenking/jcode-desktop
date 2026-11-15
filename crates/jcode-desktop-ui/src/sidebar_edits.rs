@@ -25,6 +25,7 @@ impl Render for EditTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("EditTooltip");
         div()
+            .debug_selector(|| "sidebar-edits-tooltip".into())
             .px_3()
             .py_2()
             .max_w(px(340.))
@@ -38,6 +39,17 @@ impl Render for EditTooltip {
     }
 }
 
+fn tooltip_text(added: u64, removed: u64, approximate: bool) -> String {
+    format!(
+        "{added} lines added, {removed} lines removed by this session's recorded file edits. Cumulative edits, not the repository's uncommitted diff. Shell commands and external edits are not included.{}",
+        if approximate {
+            " Some historical edits are incomplete, so these counts are approximate."
+        } else {
+            ""
+        }
+    )
+}
+
 pub(super) fn render(
     session_id: &str,
     added: u64,
@@ -45,14 +57,7 @@ pub(super) fn render(
     approximate: bool,
 ) -> gpui::AnyElement {
     let selector = format!("sidebar-edits-{session_id}");
-    let detail = format!(
-        "{added} lines added, {removed} lines removed by this session's recorded file edits. Cumulative edits, not the repository's uncommitted diff. Shell commands and external edits are not included.{}",
-        if approximate {
-            " Some historical edits are incomplete, so these counts are approximate."
-        } else {
-            ""
-        }
-    );
+    let detail = tooltip_text(added, removed, approximate);
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
@@ -172,6 +177,17 @@ mod tests {
         let first_badge = vcx.debug_bounds("sidebar-edits-first").unwrap();
         let second_badge = vcx.debug_bounds("sidebar-edits-second").unwrap();
         assert_ne!(first_badge.origin.y, second_badge.origin.y);
+        vcx.update(|window, cx| window.simulate_mouse_move(first_badge.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-edits-tooltip").is_some());
+        let explanation = super::tooltip_text(128, 37, true);
+        assert!(explanation.contains("this session's recorded file edits"));
+        assert!(explanation.contains("not the repository's uncommitted diff"));
+        assert!(explanation.contains("Shell commands and external edits are not included"));
+        assert!(explanation.contains("approximate"));
         assert!(vcx.debug_bounds("sidebar-edits-unknown").is_none());
         let first_row = vcx.debug_bounds("sidebar-session-0").unwrap();
         assert!(first_badge.right() <= first_row.right());

@@ -174,6 +174,47 @@ fn tool_title_expands_from_one_line_to_the_whole_intent(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
+fn background_task_disclosure_stays_in_header_at_narrow_and_wide_widths(
+    cx: &mut gpui::TestAppContext,
+) {
+    for done in [false, true] {
+        let items = vec![Item::BackgroundTask {
+            task_id: "task-1".into(),
+            label: "Rollout outcome + snail push".into(),
+            summary: "completed · 0.6s · exit 0".into(),
+            percent: None,
+            done,
+        }];
+        let (_, vcx) = panel_with(cx, items);
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [400., 1200.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.)));
+            vcx.run_until_parked();
+            let header = vcx
+                .debug_bounds(if done {
+                    "background-task-completed"
+                } else {
+                    "background-task-card"
+                })
+                .expect("header");
+            let chevron = vcx
+                .debug_bounds("background-task-chevron-0")
+                .expect("chevron");
+            assert!(
+                chevron.top() >= header.top() && chevron.bottom() <= header.bottom(),
+                "width {width}: {header:?} {chevron:?}"
+            );
+            assert!(
+                chevron.right() <= header.left(),
+                "chevron must precede the header: {header:?} {chevron:?}"
+            );
+        }
+        click(vcx, "background-task-chevron-0");
+        assert!(vcx.debug_bounds("background-task-card").is_some());
+    }
+}
+
+#[gpui::test]
 fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContext) {
     let summary = format!("completed · 12s · {}", "indexed files ".repeat(20));
     let items = vec![Item::BackgroundTask {

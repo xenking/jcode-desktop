@@ -165,11 +165,16 @@ pub(super) fn visible(
     crate::swarm_view::visible_workers(workers, |(_, worker)| worker.state)
 }
 
+pub(super) fn finished_key(session_id: &str) -> String {
+    format!("sidebar-finished:{session_id}")
+}
+
 /// Compact rows nested under a coordinator: status glyph, the worker's animal
 /// (its name is in the tooltip), task, model, spend and live state. Each row
 /// opens the worker's chat.
 pub(super) fn render_workers(
     sidebar_index: usize,
+    session_id: &str,
     workers: &[(usize, crate::swarm_view::Worker)],
     folded: usize,
     under_checkout: bool,
@@ -179,6 +184,8 @@ pub(super) fn render_workers(
 ) -> gpui::AnyElement {
     let theme = Theme::global();
     let base = if under_checkout { 34.0 } else { 26.0 };
+    let key = finished_key(session_id);
+    let expanded = expanded_lines.contains(&key);
     div()
         .debug_selector(move || format!("sidebar-workers-{sidebar_index}"))
         .flex()
@@ -344,6 +351,9 @@ pub(super) fn render_workers(
         .when(folded > 0, |el| {
             el.child(
                 div()
+                    .id(gpui::SharedString::from(format!(
+                        "sidebar-workers-folded-{sidebar_index}"
+                    )))
                     .debug_selector(move || format!("sidebar-workers-folded-{sidebar_index}"))
                     .ml(px(base + 5.0))
                     .h(px(16.0))
@@ -351,7 +361,22 @@ pub(super) fn render_workers(
                     .items_center()
                     .text_size(px(10.0))
                     .text_color(theme.TEXT_FAINT)
-                    .child(format!("+{folded} finished")),
+                    .cursor_pointer()
+                    .hover(|el| el.text_color(theme.TEXT))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        expandable::flip(&mut this.expanded_lines, &key);
+                        cx.notify();
+                    }))
+                    .child(if expanded {
+                        "Hide finished".to_owned()
+                    } else {
+                        format!("+{folded} finished")
+                    }),
             )
         })
         .into_any_element()
@@ -1086,6 +1111,33 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-worker-0-3").is_some());
         assert!(vcx.debug_bounds("sidebar-worker-0-4").is_none());
         assert!(vcx.debug_bounds("sidebar-workers-folded-0").is_some());
+        let toggle = vcx
+            .debug_bounds("sidebar-workers-folded-0")
+            .unwrap()
+            .center();
+        vcx.simulate_click(toggle, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-worker-0-8").is_some(),
+            "all finished workers expand"
+        );
+        workspace.read_with(vcx, |w, _| {
+            assert!(w.expanded_lines.contains(&finished_key("lead")));
+            assert!(!w.expanded_lines.contains(&finished_key("other")));
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-0-8").is_some());
+        let toggle = vcx
+            .debug_bounds("sidebar-workers-folded-0")
+            .unwrap()
+            .center();
+        vcx.simulate_click(toggle, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-worker-0-4").is_none(),
+            "second click collapses"
+        );
         assert!(
             vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
                 .is_some()
@@ -1093,6 +1145,48 @@ mod tests {
                     .debug_bounds("sidebar-worker-glyph-0-1-spinner")
                     .is_some()
         );
+    }
+
+    #[gpui::test]
+    fn todo_pill_activates_its_session(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            lead_with_workers(w, cx, &[]);
+            w.slots[w.active].panel.update(cx, |panel, cx| panel.test_set_todos(r#"[{"content":"Ship","status":"in_progress","stage":2,"group":"desktop","assigned_to":"@self"}]"#, cx));
+            let other = session("other", None);
+            w.sessions.push(other.clone());
+            w.active = w.open_session(other, cx);
+            w.sidebar_todo_progress.insert("lead".into(), (1, 2));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let row = workspace.read_with(vcx, |w, _| {
+            w.sidebar_session_layout
+                .iter()
+                .position(|row| row.session_id == "lead")
+                .unwrap()
+        });
+        let pill = vcx
+            .debug_bounds(format!("sidebar-todos-{row}").leak())
+            .unwrap()
+            .center();
+        vcx.simulate_click(pill, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "lead")
+        });
+        assert!(vcx.debug_bounds("pinned-todo-card").is_some());
+        let pill = vcx
+            .debug_bounds(format!("sidebar-todos-{row}").leak())
+            .unwrap()
+            .center();
+        vcx.simulate_click(pill, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-card").is_none());
+        vcx.simulate_click(pill, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-card").is_some());
     }
 
     /// All three entry points open the worker: sidebar row, composer count

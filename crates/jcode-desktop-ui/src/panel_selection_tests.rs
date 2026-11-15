@@ -211,6 +211,8 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
                 blocked_by: vec![],
                 confidence: None,
                 completion_confidence: None,
+                stage: None,
+                assigned_to: None,
             }],
             plan: TodoCardPlan {
                 user_intention: Some("Copy task text".into()),
@@ -234,6 +236,24 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
         drag_copy(vcx, "selectable-text-pinned-todo-intention"),
         "Copy task text"
     );
+}
+
+#[gpui::test]
+fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("todo-owner".into(), None, None, crate::harness::spawn_inert(), cx);
+        let payload = parse_todo_tool_output(r#"[{"content":"Ship","status":"in_progress","group":"desktop","stage":2,"assigned_to":"session_fox_123_a"}]"#).unwrap();
+        assert_eq!(payload.todos[0].stage, Some(2));
+        assert_eq!(payload.todos[0].assigned_to.as_deref(), Some("session_fox_123_a"));
+        let legacy = parse_todo_tool_output(r#"[{"content":"Legacy","status":"pending","lane":"desktop","phase":"Phase 2"}]"#).unwrap();
+        assert_eq!(legacy.todos[0].stage, Some(2));
+        assert_eq!(legacy.todos[0].group.as_deref(), Some("desktop"));
+        *panel.items = vec![Item::Todos(payload)];
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pinned-todo-phase-2").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-assignee-0-0").is_some());
 }
 
 #[gpui::test]

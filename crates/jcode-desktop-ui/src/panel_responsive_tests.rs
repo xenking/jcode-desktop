@@ -2,6 +2,93 @@ use super::*;
 use gpui::EntityInputHandler;
 
 #[gpui::test]
+fn model_search_never_replaces_the_composer_draft(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("draft-search".into(), None, None, bridge, cx));
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| {
+            p.available_models = vec!["openai:test".into(), "anthropic:test".into()];
+            p.input.update(cx, |input, cx| {
+                input.set_command_models(p.available_models.clone(), cx)
+            });
+            p.focus_input(window, cx);
+        });
+    });
+    vcx.simulate_input("a valuable draft");
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    vcx.simulate_input("anthropic");
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p
+            .picker_search
+            .as_ref()
+            .unwrap()
+            .1
+            .read(cx)
+            .content
+            .to_string()),
+        "anthropic"
+    );
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    vcx.simulate_input("anthropic");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+}
+
+#[gpui::test]
+fn model_button_preserves_a_partially_typed_model_command(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("draft-command".into(), None, None, bridge, cx));
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| {
+            p.available_models = vec!["openai:test".into()];
+            p.input.update(cx, |input, cx| {
+                input.set_command_models(p.available_models.clone(), cx)
+            });
+            p.focus_input(window, cx);
+        });
+    });
+    vcx.simulate_input("/model unfinished");
+    vcx.run_until_parked();
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "/model unfinished"
+    );
+}
+
+#[gpui::test]
 fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();

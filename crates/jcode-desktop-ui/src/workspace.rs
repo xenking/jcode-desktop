@@ -2755,6 +2755,17 @@ impl Workspace {
                     }
                 }
             }
+            Update::SessionAttaching { session_id } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.status = "attaching…".into();
+                            cx.notify();
+                        });
+                        break;
+                    }
+                }
+            }
             Update::SessionConnected { session_id } => {
                 self.set_cloud_transport_connected(&session_id, true);
                 for slot in &self.slots {
@@ -2917,7 +2928,8 @@ impl Workspace {
     /// `jcode-desktop-harness/src/fixtures`), so a screenshot shows real data
     /// shapes, not invented ones.
     fn load_real_swarm_fixture(&mut self, cx: &mut Context<Self>) {
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
         let home = fixtures.join("microbe_home");
         let mut sessions = harness::merge_persisted_sessions(Vec::new(), Some(&home));
         jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
@@ -2931,7 +2943,10 @@ impl Workspace {
             &ids,
         ));
         self.worker_meta = meta;
-        let Some(position) = sessions.iter().position(|s| s.session_id.starts_with("session_microbe_")) else {
+        let Some(position) = sessions
+            .iter()
+            .position(|s| s.session_id.starts_with("session_microbe_"))
+        else {
             return;
         };
         let coordinator = sessions.remove(position);
@@ -2939,8 +2954,12 @@ impl Workspace {
         self.sessions = sessions;
         self.slots.clear();
         self.active = self.open_session(coordinator, cx);
-        let ids = self.slots[self.active].panel.read(cx).swarm_card_worker_ids();
-        let usage = jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
+        let ids = self.slots[self.active]
+            .panel
+            .read(cx)
+            .swarm_card_worker_ids();
+        let usage =
+            jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
         self.slots[self.active]
             .panel
             .update(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
@@ -3238,9 +3257,10 @@ impl Workspace {
             self.coach_expiry_task = None;
         }
         if self.coach.take_dirty()
-            && let Some(persistence) = &self.learning_persistence {
-                persistence.save(&self.coach);
-            }
+            && let Some(persistence) = &self.learning_persistence
+        {
+            persistence.save(&self.coach);
+        }
         cx.notify();
     }
 
@@ -3548,7 +3568,8 @@ impl Workspace {
         }
         if self
             .slots
-            .get(self.active).is_none_or(|slot| slot.row != self.active_row)
+            .get(self.active)
+            .is_none_or(|slot| slot.row != self.active_row)
         {
             return;
         }
@@ -3719,6 +3740,16 @@ impl Workspace {
             return;
         };
         let source = self.slots[source_index].panel.clone();
+        if source.read(cx).is_accounts_panel() {
+            if let Some(command) = &request.login_command {
+                source.update(cx, |panel, cx| panel.login_command(command, cx));
+            }
+            self.set_active(source_index, cx);
+            self.retarget_camera();
+            self.focus_active(window, cx);
+            cx.notify();
+            return;
+        }
         let source_session = source.read(cx).session_id.clone();
         if self.single_panel {
             let preview = source.read(cx).preview_state;
@@ -6018,7 +6049,12 @@ impl Workspace {
         let mut folded_workers: HashMap<String, usize> = HashMap::new();
         for (root, workers) in nested_workers.iter_mut() {
             let (shown, hidden) = sidebar_swarm::visible(workers);
-            *workers = shown;
+            if !self
+                .expanded_lines
+                .contains(&sidebar_swarm::finished_key(root))
+            {
+                *workers = shown;
+            }
             if hidden > 0 {
                 folded_workers.insert(root.clone(), hidden);
             }
@@ -6286,7 +6322,15 @@ impl Workspace {
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
-                        .map(|workers| sidebar_swarm::layout_key(workers, folded_workers.get(&session.session_id).copied().unwrap_or(0)))
+                        .map(|workers| {
+                            sidebar_swarm::layout_key(
+                                workers,
+                                folded_workers
+                                    .get(&session.session_id)
+                                    .copied()
+                                    .unwrap_or(0),
+                            )
+                        })
                         .unwrap_or_default(),
                 }
             })
@@ -6456,6 +6500,7 @@ impl Workspace {
                                 .copied()
                                 .flatten()
                                 .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
+                            let todo_session = session.clone();
                             let meta = sidebar_session_meta(session);
                             let edits = session.edit_stats.as_ref().filter(|stats| sidebar_edits::has_changes(stats)).map(|stats| {
                                 sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
@@ -6750,11 +6795,22 @@ impl Workspace {
                                                         .whitespace_nowrap()
                                                         .when_some(todo_progress, |line, (done, total)| line.child(
                                                             div()
+                                                                .id(("sidebar-todos", sidebar_index))
                                                                 .flex_none()
                                                                 .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
                                                                 .when(details.is_some(), |el| el.mr_1())
                                                                 .when(done == total, |el| el.text_color(Theme::global().OK))
-                                                                .child(format!("{done}/{total}")),
+                                                                .rounded_md().px_1().cursor_pointer()
+                                                                .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                                .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
+                                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                                    window.prevent_default();
+                                                                    cx.stop_propagation();
+                                                                    this.sidebar_gesture = None;
+                                                                    this.activate_session(todo_session.clone(), window, cx);
+                                                                    this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
+                                                                }))
+                                                                .child(format!("☑ {done}/{total}")),
                                                         ))
                                                         .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
                                                             line.child(div().min_w_0().truncate().child(details))
@@ -6769,6 +6825,7 @@ impl Workspace {
                                 let expanded_lines = this.expanded_lines.clone();
                                 list = list.child(sidebar_swarm::render_workers(
                                     sidebar_index,
+                                    &menu_session,
                                     workers,
                                     folded,
                                     under_checkout,
@@ -8662,9 +8719,10 @@ impl Workspace {
                     window.prevent_default();
                     cx.stop_propagation();
                     if this.folder_picker_sets_default
-                        && let Some(index) = this.default_directory_panel_index(cx) {
-                            this.set_active(index, cx);
-                        }
+                        && let Some(index) = this.default_directory_panel_index(cx)
+                    {
+                        this.set_active(index, cx);
+                    }
                     if let Some(search) = &this.folder_search {
                         this.focus_pending = false;
                         window.focus(&search.read(cx).focus_handle.clone(), cx);
@@ -10129,6 +10187,66 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn restoring_live_session_keeps_identity_while_attaching(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("same-id", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::ModelInfo {
+                        session_id: "same-id".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6".into()),
+                        reasoning_effort: Some("high".into()),
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+            workspace.apply(
+                Update::SessionAttaching {
+                    session_id: "same-id".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(panel.status, "attaching…");
+        });
+        assert!(vcx.debug_bounds("panel-model-effort").is_some());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::RuntimeInfo {
+                        session_id: "same-id".into(),
+                        provider: None,
+                        model: None,
+                        routes: vec![],
+                        reasoning_effort: None,
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+        });
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+        });
+    }
 
     thread_local! {
         pub(super) static SIDEBAR_TITLE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -16156,6 +16274,41 @@ mod login_tests;
 #[cfg(test)]
 mod accounts_panel_tests {
     use super::*;
+
+    #[gpui::test]
+    fn opening_accounts_from_the_active_accounts_panel_reuses_it(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("source", cx);
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.entity_id());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source,
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source: accounts.entity_id(),
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.iter().filter(|s| !s.closing).count(), 2);
+            assert_eq!(w.slots[w.active].panel, accounts);
+        });
+    }
 
     #[gpui::test]
     fn accounts_panel_preview_and_pending_sources_never_contact_runtime(

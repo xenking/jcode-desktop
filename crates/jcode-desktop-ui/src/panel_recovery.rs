@@ -195,7 +195,7 @@ impl Panel {
     pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recovery_picker_open {
             self.recovery_picker_open = false;
-        } else if self.model_picker_open {
+        } else if self.model_picker_open && self.picker_search.is_some() {
             self.close_model_picker(cx);
         } else {
             self.open_recovery_models(cx);

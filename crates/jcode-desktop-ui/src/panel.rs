@@ -425,14 +425,45 @@ struct TodoCardPlan {
 struct TodoCardItem {
     content: String,
     status: String,
-    #[serde(default)]
+    #[serde(default, alias = "lane")]
     group: Option<String>,
+    #[serde(
+        default,
+        alias = "phase",
+        alias = "wave",
+        deserialize_with = "deserialize_todo_stage"
+    )]
+    stage: Option<u32>,
+    #[serde(default)]
+    assigned_to: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
     #[serde(default)]
     confidence: Option<jcode_base::todo::ConfidenceState>,
     #[serde(default)]
     completion_confidence: Option<jcode_base::todo::ConfidenceState>,
+}
+
+fn deserialize_todo_stage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| match value {
+            serde_json::Value::Number(number) => {
+                number.as_u64().and_then(|n| u32::try_from(n).ok())
+            }
+            serde_json::Value::String(text) => text
+                .trim()
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .ok(),
+            _ => None,
+        })
+        .filter(|stage| *stage > 0))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -606,6 +637,8 @@ pub struct Panel {
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
     publish_armed_at: Option<Instant>,
+    /// Whether the session's pinned todo card is hidden by its sidebar button.
+    todo_card_hidden: bool,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -701,12 +734,19 @@ pub struct Panel {
     /// `/btw` answer streaming from a hidden fork of this conversation.
     side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
+    picker_search: Option<(PickerKind, Entity<PromptInput>)>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
     pub(crate) transcript_only: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerKind {
+    Model,
+    Effort,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1111,6 +1151,7 @@ impl Panel {
             expanded_prompts: HashSet::new(),
             publish_tracker: false,
             publish_armed_at: None,
+            todo_card_hidden: false,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -1168,6 +1209,7 @@ impl Panel {
             ask_card: None,
             side_question: None,
             model_picker_open: false,
+            picker_search: None,
             focus_pending: false,
             transcript_only: false,
             login: None,
@@ -2234,8 +2276,17 @@ impl Panel {
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             let effort = effort.to_ascii_lowercase();
             if self.request_effort(&effort, cx) {
-                let input = self.input.clone();
-                cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
+                if self
+                    .picker_search
+                    .as_ref()
+                    .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+                {
+                    self.picker_search = None;
+                    self.focus_pending = true;
+                } else {
+                    let input = self.input.clone();
+                    cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
+                }
                 self.items.push(Item::Assistant(format!(
                     "Reasoning effort set to `{effort}`."
                 )));
@@ -2308,7 +2359,7 @@ impl Panel {
                         self.items.push(Item::Todos(TodoCardPayload::default()));
                     }
                 }
-                "/model" | "/models" => self.open_model_picker(cx),
+                "/model" | "/models" => self.open_model_picker_deferred(cx),
                 "/update" => {
                     let request = crate::updates::request_now();
                     let message = match request {
@@ -2473,13 +2524,66 @@ impl Panel {
         }
         self.recovery_picker_open = false;
         self.model_picker_open = true;
-        let models = self.available_models.clone();
-        let input = self.input.clone();
+        self.open_picker_search(PickerKind::Model, cx);
+    }
+
+    fn open_model_picker_deferred(&mut self, cx: &mut Context<Self>) {
+        let panel = cx.weak_entity();
         cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                input.open_model_menu(models, cx);
-            });
+            let _ = panel.update(cx, |panel, cx| panel.open_model_picker(cx));
         });
+    }
+
+    fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
+        let settings = self.input.read(cx).picker_settings();
+        let models = self.available_models.clone();
+        let submit = cx.weak_entity();
+        let cancel = cx.weak_entity();
+        let search = cx.new(|cx| {
+            let placeholder = match kind {
+                PickerKind::Model => "Search models…",
+                PickerKind::Effort => "Search effort…",
+            };
+            let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
+                if let Some(panel) = submit.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        if content.starts_with("/model ") || content.starts_with("/effort ") {
+                            panel.handle_slash_command(&content, cx);
+                        }
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                }
+            })
+            .with_on_overlay_cancel(move |app| {
+                if let Some(panel) = cancel.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                    true
+                } else {
+                    false
+                }
+            });
+            input.apply_picker_settings(settings, cx);
+            input.start_picker_search(
+                match kind {
+                    PickerKind::Model => "/model",
+                    PickerKind::Effort => "/effort",
+                },
+                models,
+                cx,
+            );
+            input
+        });
+        self.picker_search = Some((kind, search));
+        self.focus_pending = true;
+        cx.notify();
     }
 
     /// Toggle the `/effort` suggestion menu from the effort pill.
@@ -2487,27 +2591,42 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
-        if self.model_picker_open {
-            self.close_model_picker(cx);
-        }
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                if input.effort_menu_open() {
-                    input.close_effort_menu(cx);
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+        {
+            self.picker_search = None;
+        } else {
+            if self.model_picker_open {
+                if self.picker_search.is_some() {
+                    self.close_model_picker(cx);
                 } else {
-                    input.open_effort_menu(cx);
+                    // A typed /model is still a draft, not a transient menu.
+                    self.model_picker_open = false;
                 }
-            });
-        });
+            }
+            self.login = None;
+            self.recovery_picker_open = false;
+            self.open_picker_search(PickerKind::Effort, cx);
+        }
         self.focus_input(window, cx);
         cx.notify();
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
         self.model_picker_open = false;
-        let input = self.input.clone();
-        cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Model)
+        {
+            self.picker_search = None;
+            self.focus_pending = true;
+        } else {
+            let input = self.input.clone();
+            cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        }
         cx.notify();
     }
 
@@ -3225,9 +3344,11 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                // Identity events always carry the current effort, and `None`
-                // means the provider has none, so a stale label never lingers.
-                self.identity_effort(reasoning_effort.clone());
+                // A known model makes an absent effort authoritative. A wholly
+                // empty identity does not erase the persisted fallback.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -3263,7 +3384,11 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                self.identity_effort(reasoning_effort.clone());
+                // An empty runtime snapshot carries no identity yet. Keep the
+                // persisted effort until the runtime actually reports a model.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 if model.is_some() {
                     self.model = model.clone();
                 }
@@ -3490,20 +3615,40 @@ impl Panel {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_set_todos(&mut self, json: &str, cx: &mut Context<Self>) {
+        self.items
+            .push(Item::Todos(parse_todo_tool_output(json).unwrap()));
+        cx.notify();
+    }
+
+    pub(crate) fn show_or_toggle_todos(&mut self, toggle: bool, cx: &mut Context<Self>) {
+        self.todo_card_hidden = toggle && !self.todo_card_hidden;
+        cx.notify();
+    }
+
     pub(crate) fn latest_todo_progress(&self) -> Option<(usize, usize)> {
-        self.items.iter().rev().find_map(|item| {
-            let Item::Todos(payload) = item else {
-                return None;
-            };
-            Some((
-                payload
-                    .todos
-                    .iter()
-                    .filter(|todo| todo.status == "completed")
-                    .count(),
-                payload.todos.len(),
-            ))
-        })
+        self.items
+            .iter()
+            .rev()
+            .find_map(|item| {
+                let Item::Todos(payload) = item else {
+                    return None;
+                };
+                Some((
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status == "completed")
+                        .count(),
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status != "cancelled")
+                        .count(),
+                ))
+            })
+            .filter(|(_, total)| *total > 0)
     }
 
     pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
@@ -4118,6 +4263,10 @@ impl Panel {
                 div()
                     .id(("background-task-toggle", index))
                     .debug_selector(|| "background-task-expand".into())
+                    .flex()
+                    .when(expanded, |el| el.items_start())
+                    .when(!expanded, |el| el.items_center())
+                    .gap_1()
                     .flex_none()
                     .min_w_0()
                     .cursor_pointer()
@@ -4125,18 +4274,6 @@ impl Panel {
                         cx.stop_propagation();
                         this.toggle_line(&toggle_key, cx);
                     }))
-                    .child(background_task::render(
-                        index,
-                        task_id,
-                        label,
-                        summary,
-                        *percent,
-                        *done,
-                        expanded,
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    ))
                     // The label is selectable text, so the row also carries an
                     // explicit chevron: a click on the text still toggles, and
                     // so does a click on the control.
@@ -4151,6 +4288,18 @@ impl Panel {
                             }),
                         )
                     })
+                    .child(div().flex_1().min_w_0().child(background_task::render(
+                        index,
+                        task_id,
+                        label,
+                        summary,
+                        *percent,
+                        *done,
+                        expanded,
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    )))
                     .into_any_element()
             }
             Item::Tool {
@@ -4800,6 +4949,9 @@ impl Panel {
         if let Some(handle) = self.login_input_focus_handle(cx) {
             return handle;
         }
+        if let Some((_, search)) = &self.picker_search {
+            return search.read(cx).focus_handle.clone();
+        }
         if let Some(handle) = self.document_focus_handle(cx) {
             return handle;
         }
@@ -5225,8 +5377,9 @@ impl Render for Panel {
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
-        let pinned_todo =
-            latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
+        let pinned_todo = latest_todo.filter(|payload| {
+            !payload.todos.is_empty() && publish_tracker.is_none() && !self.todo_card_hidden
+        });
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
         let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
@@ -6738,20 +6891,23 @@ fn render_todo_card_with_style(
         completed as f32 / total as f32
     };
 
-    let mut groups: Vec<(Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
+    let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
     for todo in &payload.todos {
         let group = todo
             .group
             .as_deref()
             .map(str::trim)
             .filter(|g| !g.is_empty());
-        if let Some((_, items)) = groups.iter_mut().find(|(known, _)| *known == group) {
+        if let Some((_, _, items)) = groups
+            .iter_mut()
+            .find(|(stage, known, _)| *stage == todo.stage && *known == group)
+        {
             items.push(todo);
         } else {
-            groups.push((group, vec![todo]));
+            groups.push((todo.stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(group, _)| group.is_none());
+    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -6770,7 +6926,7 @@ fn render_todo_card_with_style(
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
-        for (group_index, (group, todos)) in groups.into_iter().enumerate() {
+        for (group_index, (stage, group, todos)) in groups.into_iter().enumerate() {
             let done = todos
                 .iter()
                 .filter(|todo| todo.status == "completed")
@@ -6779,6 +6935,15 @@ fn render_todo_card_with_style(
             // column. Give every level an explicit width so each row's flex_1
             // text child receives space instead of collapsing to zero width.
             let mut section = div().flex().flex_col().w_full();
+            if let Some(stage) = stage {
+                section = section.child(
+                    div()
+                        .debug_selector(move || format!("pinned-todo-phase-{stage}"))
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(format!("Phase {stage}")),
+                );
+            }
             let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
                 section = section.child(
@@ -6849,7 +7014,29 @@ fn render_todo_card_with_style(
                                     window,
                                     cx,
                                 )),
-                        ),
+                        )
+                        .children(todo.assigned_to.as_ref().map(|assignee| {
+                            let full = assignee.clone();
+                            let label = assignee
+                                .strip_prefix("session_")
+                                .and_then(|rest| rest.split('_').next())
+                                .unwrap_or(assignee)
+                                .to_owned();
+                            div()
+                                .id(gpui::SharedString::from(format!(
+                                    "{key}-assignee-{group_index}-{todo_index}"
+                                )))
+                                .debug_selector(move || {
+                                    format!("pinned-todo-assignee-{group_index}-{todo_index}")
+                                })
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(Theme::global().TEXT_FAINT)
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| usage::MeterTooltip(full.clone())).into()
+                                })
+                                .child(label)
+                        })),
                 );
             }
             body = body.child(section);
@@ -7217,6 +7404,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "next".into(),
@@ -7225,6 +7414,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -7241,6 +7432,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -7347,6 +7540,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "remaining".into(),
@@ -7355,6 +7550,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -7389,6 +7586,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -10348,6 +10547,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 })
                 .collect(),
                 plan: TodoCardPlan::default(),
@@ -10368,6 +10569,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
@@ -10639,6 +10842,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Plausible),
                     completion_confidence: Some(jcode_base::todo::ConfidenceState::Verified),
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
@@ -10647,6 +10852,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Validated),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Inspect the real offline screenshot".into(),
@@ -10655,6 +10862,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Speculative),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Retired task".into(),
@@ -10663,6 +10872,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
             ],
             plan: TodoCardPlan {

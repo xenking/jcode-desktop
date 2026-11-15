@@ -281,6 +281,11 @@ impl Panel {
             .children(self.render_swarm_list(cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
+            .children(self.picker_search.as_ref().map(|(_, search)| {
+                div()
+                    .debug_selector(|| "picker-search".into())
+                    .child(search.clone())
+            }))
             .child(
                 // The voice button floats inside the input's right edge. The
                 // input reserves matching trailing space for it.

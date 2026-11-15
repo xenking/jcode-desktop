@@ -76,6 +76,7 @@ actions!(
         HistoryPrev,
         HistoryNext,
         Clear,
+        Stash,
         Submit,
         Queue,
         InsertNewline,
@@ -149,6 +150,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
+        KeyBinding::new("ctrl-s", Stash, Some("PromptInput")),
         // Falls through (propagates) unless ghost text is showing.
         KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
         KeyBinding::new("home", Home, Some("PromptInput")),
@@ -195,6 +197,7 @@ pub struct PromptInput {
     history_index: Option<usize>,
     live_draft: String,
     attachments: Vec<Attachment>,
+    stashed_prompt: Option<(String, Range<usize>, Vec<Attachment>)>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
     /// Short-lived feedback such as `Effort: High`, cleared by a timer.
@@ -211,6 +214,8 @@ pub struct PromptInput {
     #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
+    /// A standalone picker owns plain query text rather than a slash command.
+    picker_prefix: Option<&'static str>,
     command_completion: bool,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
@@ -463,7 +468,39 @@ pub struct AttachmentSnapshot {
     pub label: String,
 }
 
+pub(crate) struct PickerSettings {
+    models: Vec<String>,
+    details: HashMap<String, model_menu::ModelDetails>,
+    current_model: Option<String>,
+    effort_ladder: Vec<&'static str>,
+    current_effort: Option<String>,
+}
+
 impl PromptInput {
+    pub(crate) fn picker_settings(&self) -> PickerSettings {
+        PickerSettings {
+            models: self.command_models.clone(),
+            details: self.model_details.clone(),
+            current_model: self.current_model.clone(),
+            effort_ladder: self.effort_ladder.clone(),
+            current_effort: self.current_effort.clone(),
+        }
+    }
+
+    pub(crate) fn apply_picker_settings(
+        &mut self,
+        settings: PickerSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_models = settings.models;
+        self.model_details = settings.details;
+        self.current_model = settings.current_model;
+        self.effort_ladder = settings.effort_ladder;
+        self.current_effort = settings.current_effort;
+        self.suggestions_revision += 1;
+        cx.notify();
+    }
+
     pub fn snapshot(&self) -> PromptInputSnapshot {
         // A transient picker must never replace the user's persisted draft.
         let (content, attachments) = self
@@ -589,6 +626,7 @@ impl PromptInput {
             history_index: None,
             live_draft: String::new(),
             attachments: Vec::new(),
+            stashed_prompt: None,
             model_menu_draft: None,
             attachment_notice: None,
             transient_notice: None,
@@ -599,6 +637,7 @@ impl PromptInput {
             on_change: None,
             on_overlay_cancel: None,
             command_models: Vec::new(),
+            picker_prefix: None,
             command_completion: true,
             command_selection: 0,
             model_details: HashMap::new(),
@@ -766,6 +805,9 @@ impl PromptInput {
 
     /// Tab on a visible slash popup: fill the highlighted row, then cycle.
     fn complete_slash_command(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.picker_prefix.is_some() {
+            return false;
+        }
         if !self.command_completion || !self.attachments.is_empty() {
             return false;
         }
@@ -993,15 +1035,15 @@ impl PromptInput {
                 .command_suggestions()
                 .iter()
                 .any(|row| row.value == format!("/model {model}"))
-                && self
-                    .command_models
-                    .iter()
-                    .any(|candidate| candidate == model)
-            {
-                self.expanded_model_groups
-                    .insert(model_menu::group_key(model, &self.model_details));
-                self.suggestions_revision += 1;
-            }
+            && self
+                .command_models
+                .iter()
+                .any(|candidate| candidate == model)
+        {
+            self.expanded_model_groups
+                .insert(model_menu::group_key(model, &self.model_details));
+            self.suggestions_revision += 1;
+        }
         // A background usage update must not move Enter onto a different model.
         if let Some(index) = selected.and_then(|selected| {
             self.command_suggestions().iter().position(|row| {
@@ -1069,14 +1111,18 @@ impl PromptInput {
             &self.command_models,
             &self.model_details,
         );
-        let trimmed = self.content.trim_start();
+        let picker_content = self
+            .picker_prefix
+            .map(|prefix| format!("{prefix} {}", self.content));
+        let command_content = picker_content.as_deref().unwrap_or(&self.content);
+        let trimmed = command_content.trim_start();
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
                 let query = trimmed.strip_prefix("/model").unwrap_or_default();
                 self.model_stage_rows(query)
             } else {
                 command_suggestions_with_efforts(
-                    &self.content,
+                    command_content,
                     &self.command_models,
                     EffortMenu {
                         ladder: Some(&self.effort_ladder),
@@ -1129,6 +1175,26 @@ impl PromptInput {
         self.submit_prompt(false, window, cx);
     }
 
+    fn stash(&mut self, _: &Stash, _: &mut Window, cx: &mut Context<Self>) {
+        let current = (!self.content.is_empty() || !self.attachments.is_empty()).then(|| {
+            (
+                self.content.to_string(),
+                self.selected_range.clone(),
+                std::mem::take(&mut self.attachments),
+            )
+        });
+        let previous = std::mem::replace(&mut self.stashed_prompt, current);
+        let (text, selection, attachments) = previous.unwrap_or_default();
+        self.set_content(text, cx);
+        self.selected_range = selection;
+        self.attachments = attachments;
+        self.marked_range = None;
+        self.attachment_notice = None;
+        self.attachment_preview = None;
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_text_in_range(None, "\n", window, cx);
     }
@@ -1161,13 +1227,19 @@ impl PromptInput {
             cx.notify();
             return;
         }
-        let raw_content = self.content.to_string();
+        let raw_content = self
+            .picker_prefix
+            .map(|prefix| format!("{prefix} {}", self.content))
+            .unwrap_or_else(|| self.content.to_string());
         let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
         if self.command_completion && self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
+            if self.picker_prefix.is_some() && suggestions.is_empty() {
+                return;
+            }
             if let Some(key) = suggestions
                 .get(self.command_selection)
                 .and_then(|row| row.toggle.clone())
@@ -1193,7 +1265,8 @@ impl PromptInput {
             {
                 // `/eff` + Enter completes to `/effort` like the TUI. Exact
                 // commands and argument searches still send.
-                if !content.contains(char::is_whitespace)
+                if self.picker_prefix.is_none()
+                    && !content.contains(char::is_whitespace)
                     && accepted != content
                     && crate::commands::registered_command(&content).is_none()
                 {
@@ -1258,6 +1331,11 @@ impl PromptInput {
         self.live_draft.clear();
         self.command_selection = 0;
         (self.on_submit)(content, images, queued, window, cx);
+        if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
+            self.set_content(text, cx);
+            self.selected_range = selection;
+            self.attachments = attachments;
+        }
         cx.notify();
     }
 
@@ -1492,15 +1570,17 @@ impl PromptInput {
             return;
         }
         // Inside the picker, Esc steps back before it closes.
-        let in_model_menu = self.content.trim() == "/model"
+        let in_model_menu = self.picker_prefix == Some("/model")
+            || self.content.trim() == "/model"
             || self.content.trim_start().starts_with("/model ");
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
         if let Some(cancel) = &self.on_overlay_cancel
-            && cancel(cx) {
-                return;
-            }
+            && cancel(cx)
+        {
+            return;
+        }
         if !self.content.is_empty() {
             self.set_content(String::new(), cx);
         }
@@ -1545,11 +1625,7 @@ impl PromptInput {
     }
 
     /// One dim line above the partials saying where the words will land.
-    pub(crate) fn set_voice_preview_hint(
-        &mut self,
-        hint: Option<&str>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_voice_preview_hint(&mut self, hint: Option<&str>, cx: &mut Context<Self>) {
         let hint = hint.filter(|hint| !hint.is_empty()).map(SharedString::from);
         if self.voice_preview_hint != hint {
             self.voice_preview_hint = hint;
@@ -1666,6 +1742,9 @@ impl PromptInput {
     }
 
     fn reset_model_groups_after_exit(&mut self) {
+        if self.picker_prefix == Some("/model") {
+            return;
+        }
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
@@ -1674,6 +1753,31 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn start_picker_search(
+        &mut self,
+        prefix: &'static str,
+        fallback_models: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_models.is_empty() {
+            self.set_command_models(fallback_models, cx);
+        }
+        self.picker_prefix = Some(prefix);
+        self.model_stage = Default::default();
+        self.suggestions_revision += 1;
+        self.set_content(String::new(), cx);
+        if prefix == "/effort"
+            && let Some(index) = self
+                .command_suggestions()
+                .iter()
+                .position(|row| row.help == "Current")
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_model_menu(&mut self, fallback_models: Vec<String>, cx: &mut Context<Self>) {
         // Offline/reconnected inputs may not have received route metadata yet.
         // Never replace the canonical grouped routes once they are available.
@@ -1691,25 +1795,6 @@ impl PromptInput {
         self.model_stage = Default::default();
         self.suggestions_revision += 1;
         self.set_content("/model ".into(), cx);
-    }
-
-    /// Show the `/effort` suggestions, stashing the draft like the model menu.
-    pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu_draft.is_none() && !self.effort_menu_open() {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
-            self.attachment_preview = None;
-        }
-        self.set_content("/effort ".into(), cx);
-        // Open on the current level so Enter keeps it and arrows step from it.
-        if let Some(index) = self
-            .command_suggestions()
-            .iter()
-            .position(|row| row.help == "Current")
-        {
-            self.command_selection = index;
-            self.reveal_command(index);
-        }
     }
 
     /// Short feedback under the composer that clears itself, e.g. after an
@@ -2315,10 +2400,12 @@ impl Element for TextElement {
             // Only an active window animates. Background windows show the
             // whole example rather than freezing mid-word.
             placeholder_live = live && window.is_window_active();
-            if live && !placeholder_live
-                && let Some(full) = &full {
-                    text = full.clone();
-                }
+            if live
+                && !placeholder_live
+                && let Some(full) = &full
+            {
+                text = full.clone();
+            }
             (text, to_hsla(Theme::global().TEXT_DIM))
         } else {
             (content, style.color)
@@ -2637,7 +2724,9 @@ impl Render for PromptInput {
             self.command_selection = 0;
         }
         let command_visible = self.command_completion
-            && (!suggestions.is_empty() || self.content.trim_start().starts_with("/model "));
+            && (!suggestions.is_empty()
+                || self.picker_prefix == Some("/model")
+                || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
             crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
@@ -2783,7 +2872,11 @@ impl Render for PromptInput {
                                             .flex_col()
                                             .max_h(popup::scroll_height(
                                                 window.viewport_size().height,
-                                                self.content.trim_start().starts_with("/model"),
+                                                self.picker_prefix == Some("/model")
+                                                    || self
+                                                        .content
+                                                        .trim_start()
+                                                        .starts_with("/model"),
                                             ))
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| {
                                                 cx.stop_propagation();
@@ -2861,6 +2954,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::queue))
@@ -2912,6 +3006,17 @@ impl Render for PromptInput {
                             .child(notice)
                     }),
             )
+            .when(self.stashed_prompt.is_some(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "prompt-stashed".into())
+                        .px_3()
+                        .pt_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_FAINT)
+                        .child("Prompt stashed · Ctrl+S to restore"),
+                )
+            })
             .child(
                 div()
                     .w_full()
@@ -3719,12 +3824,7 @@ mod tests {
         window
             .update(cx, |input, _, cx| {
                 // The current route is pinned first, then newest releases.
-                input.set_model_routes(
-                    Vec::new(),
-                    &routes("atlas-1"),
-                    Some("atlas-1".into()),
-                    cx,
-                );
+                input.set_model_routes(Vec::new(), &routes("atlas-1"), Some("atlas-1".into()), cx);
                 input.set_content("/model".into(), cx);
                 assert_eq!(
                     input.command_suggestions()[0].value,
@@ -3732,12 +3832,7 @@ mod tests {
                 );
                 // The catalog changes and atlas-1 is no longer current, so it
                 // drops out of the top three. The highlight must follow it.
-                input.set_model_routes(
-                    Vec::new(),
-                    &routes("atlas-5"),
-                    Some("atlas-5".into()),
-                    cx,
-                );
+                input.set_model_routes(Vec::new(), &routes("atlas-5"), Some("atlas-5".into()), cx);
                 assert_eq!(
                     input.command_suggestions()[input.command_selection].value,
                     "/model openai-oauth:atlas-1"
@@ -4175,6 +4270,40 @@ mod tests {
                 "editor must not reserve extra left padding for a prompt marker"
             );
         }
+    }
+
+    #[gpui::test]
+    fn prompt_stash_returns_after_send(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "saved draft");
+        cx.simulate_keystrokes(*window, "ctrl-s");
+        window
+            .update(cx, |input, _, _| assert!(input.content.is_empty()))
+            .unwrap();
+        cx.simulate_input(*window, "send this");
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "saved draft")
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn prompt_stash_swaps_and_keeps_indicator(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| input.update(cx, |input, cx| window.focus(&input.focus_handle, cx)));
+        vcx.simulate_keystrokes("a ctrl-s");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-stashed").is_some());
+        vcx.simulate_keystrokes("b ctrl-s");
+        input.update(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "a");
+            assert_eq!(input.stashed_prompt.as_ref().unwrap().0, "b");
+        });
+        vcx.simulate_keystrokes("ctrl-s");
+        input.update(vcx, |input, _| assert_eq!(input.content.as_ref(), "b"));
     }
 
     #[gpui::test]

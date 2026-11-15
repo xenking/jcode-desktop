@@ -162,7 +162,7 @@ impl Panel {
         // arbitrary commands to the normal dispatcher (terminal/files/integrations).
         if !self.login_command(content.trim(), cx) {
             if matches!(content.trim(), "/model" | "/models") {
-                self.open_model_picker(cx);
+                self.open_model_picker_deferred(cx);
             } else if let Some((model, _)) = content
                 .trim()
                 .strip_prefix("/model ")

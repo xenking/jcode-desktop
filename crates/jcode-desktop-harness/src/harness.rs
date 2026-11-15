@@ -174,6 +174,10 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    /// The daemon is still publishing the live session's runtime.
+    SessionAttaching {
+        session_id: String,
+    },
     /// A per-session connection was established again.
     SessionConnected {
         session_id: String,
@@ -2258,6 +2262,36 @@ fn should_log_reconnect(failed_attempts: u32) -> bool {
     failed_attempts < 3 || failed_attempts.is_power_of_two()
 }
 
+fn runtime_owner_is_busy(error: &jcode_sdk::Error) -> bool {
+    matches!(
+        error.kind,
+        jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::Internal)
+    ) && error.message.contains("Failed to restore session:")
+        && error.message.contains("still has a runtime owner")
+}
+
+fn saved_session_identity(
+    home: &std::path::Path,
+    real_id: &str,
+    session_id: &str,
+) -> Option<Update> {
+    let meta = jcode_sdk::worker_meta(home, real_id)?;
+    if meta.model.is_none() && meta.effort.is_none() {
+        return None;
+    }
+    Some(Update::Event {
+        session_id: session_id.to_owned(),
+        event: ApiEvent::ModelInfo {
+            session_id: session_id.to_owned(),
+            provider: meta.provider,
+            model: meta.model,
+            reasoning_effort: meta.effort,
+            auth_method: None,
+            account_label: None,
+        },
+    })
+}
+
 fn session_worker_with_connector(
     session_id: String,
     commands: Receiver<SessionCommand>,
@@ -2282,6 +2316,12 @@ fn session_worker_with_connector(
         }
     };
     let real_id = address.session_id.as_str();
+    if address.host.is_none()
+        && let Ok(home) = jcode_base::storage::jcode_dir()
+        && let Some(identity) = saved_session_identity(&home, real_id, &session_id)
+    {
+        let _ = updates.send(identity);
+    }
     let base_reconnect_delay = if address.host.is_some() {
         Duration::from_secs(2)
     } else {
@@ -2289,6 +2329,7 @@ fn session_worker_with_connector(
     };
     let mut reconnect_delay = base_reconnect_delay;
     let mut failed_attempts: u32 = 0;
+    let mut reported_attaching = false;
 
     let mut pending = VecDeque::new();
     let mut reported_disconnected_events = false;
@@ -2310,6 +2351,7 @@ fn session_worker_with_connector(
         {
             Ok(client) => client,
             Err(error) => {
+                reported_attaching = false;
                 if disconnect::report_protocol_failure(&error, &session_id, &updates) {
                     return;
                 }
@@ -2335,8 +2377,18 @@ fn session_worker_with_connector(
             if disconnect::report_protocol_failure(&error, &session_id, &updates) {
                 return;
             }
-            if should_log_reconnect(failed_attempts) {
-                lost(format!("{error}; reconnecting"));
+            if runtime_owner_is_busy(&error) {
+                if !reported_attaching {
+                    let _ = updates.send(Update::SessionAttaching {
+                        session_id: session_id.clone(),
+                    });
+                    reported_attaching = true;
+                }
+            } else {
+                reported_attaching = false;
+                if should_log_reconnect(failed_attempts) {
+                    lost(format!("{error}; reconnecting"));
+                }
             }
             if collect_disconnected_commands(&commands, &mut pending) {
                 return;
@@ -2346,7 +2398,11 @@ fn session_worker_with_connector(
                 ReconnectWait::Stop => return,
                 ReconnectWait::Woken => reconnect_delay = base_reconnect_delay,
                 ReconnectWait::Elapsed => {
-                    reconnect_delay = next_reconnect_delay(reconnect_delay, &error);
+                    reconnect_delay = if runtime_owner_is_busy(&error) {
+                        next_reconnect_delay(reconnect_delay, &error).min(Duration::from_secs(2))
+                    } else {
+                        next_reconnect_delay(reconnect_delay, &error)
+                    };
                 }
             }
             continue;

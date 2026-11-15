@@ -13,9 +13,14 @@ impl Panel {
             self.focus_input(window, cx);
             return;
         }
-        self.close_model_picker(cx);
-        self.input
-            .update(cx, |input, cx| input.close_effort_menu(cx));
+        if self.model_picker_open {
+            if self.picker_search.is_some() {
+                self.close_model_picker(cx);
+            } else {
+                self.model_picker_open = false;
+            }
+        }
+        self.picker_search = None;
         self.open_login_picker(cx);
         if let Some(state) = self.login.as_mut() {
             state.selection_only = true;
