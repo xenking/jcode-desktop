@@ -1738,7 +1738,9 @@ impl Workspace {
         {
             eprintln!("voice: hot reload is replacing the UI while a recording is active");
         }
-        self.snapshot_inner(window, cx, true)
+        let snapshot = self.snapshot_inner(window, cx, true)?;
+        recovery::remember_reload_snapshot(&snapshot, window, cx);
+        Ok(snapshot)
     }
 
     fn snapshot_inner(

@@ -5,9 +5,11 @@ use super::{Workspace, WorkspaceSnapshot};
 use gpui::{App, Entity, Window};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -181,6 +183,21 @@ struct Writer {
     owner: String,
 }
 
+struct SuspendedSnapshot {
+    window_id: gpui::WindowId,
+    snapshot: Rc<RefCell<Option<WorkspaceSnapshot>>>,
+}
+
+impl gpui::Global for SuspendedSnapshot {}
+
+pub(super) fn remember_reload_snapshot(snapshot: &WorkspaceSnapshot, window: &Window, app: &App) {
+    if let Some(suspended) = app.try_global::<SuspendedSnapshot>()
+        && suspended.window_id == window.window_handle().window_id()
+    {
+        *suspended.snapshot.borrow_mut() = Some(snapshot.clone());
+    }
+}
+
 impl Writer {
     fn begin(path: PathBuf, snapshot: WorkspaceSnapshot) -> anyhow::Result<Self> {
         let _lock = lock(&path)?;
@@ -262,6 +279,14 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
     let quit_writer = writer.clone();
     let quit_workspace = workspace.downgrade();
     let quit_window = window.window_handle();
+    if let Some(previous) = app.try_global::<SuspendedSnapshot>() {
+        previous.snapshot.borrow_mut().take();
+    }
+    let suspended_snapshot = Rc::new(RefCell::new(None));
+    app.set_global(SuspendedSnapshot {
+        window_id: quit_window.window_id(),
+        snapshot: suspended_snapshot.clone(),
+    });
     app.on_app_quit(move |app| {
         let snapshot = quit_window
             .update(app, |_, window, app| {
@@ -271,7 +296,8 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
             })
             .ok()
             .flatten()
-            .and_then(Result::ok);
+            .and_then(Result::ok)
+            .or_else(|| suspended_snapshot.borrow_mut().take());
         if let Err(error) = quit_writer.clean_quit(snapshot) {
             eprintln!("failed to disarm desktop crash recovery: {error:#}");
         }
@@ -360,6 +386,61 @@ mod tests {
         let restored = restore(&record, now_ms(), false).unwrap();
         let saved = serde_json::to_value(&restored.slots[0].panel).unwrap();
         assert_eq!(saved["ask_draft"]["chosen"][0], serde_json::json!([1]));
+    }
+
+    #[gpui::test]
+    fn suspended_window_keeps_ask_selection_on_later_quit(cx: &mut gpui::TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.update(|window, app| install_at_path(&workspace, window, app, path.clone()));
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(
+            r#"{
+            "ev":"ask_request", "session_id":"session-a", "request_id":"ask-1",
+            "tool_call_id":"tool-1", "questions":[{"header":"Database",
+            "question":"Which database?", "options":[{"label":"Postgres"},{"label":"SQLite"}]}]
+        }"#,
+        )
+        .unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            if vcx.debug_bounds("ask-option-0-1").is_some() {
+                break;
+            }
+            vcx.executor().advance_clock(Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        let option = vcx.debug_bounds("ask-option-0-1").unwrap();
+        vcx.simulate_click(option.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.update(|window, app| {
+            let snapshot = workspace
+                .read(app)
+                .snapshot_for_reload(window, app)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&snapshot.slots[0].panel).unwrap()["ask_draft"]["chosen"][0],
+                serde_json::json!([1])
+            );
+            window.remove_window();
+        });
+        cx.quit();
+        let record = read(&path).unwrap();
+        let restored = restore(&record, now_ms(), false).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored.slots[0].panel).unwrap()["ask_draft"]["chosen"][0],
+            serde_json::json!([1])
+        );
     }
 
     #[test]
