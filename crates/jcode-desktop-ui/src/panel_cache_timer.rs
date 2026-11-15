@@ -51,13 +51,14 @@ impl CacheFacts {
     }
 }
 
-/// `cache 47m`, `cache 40s`, `cache cold`. Minutes past the first minute, so a
-/// long window reads as one number instead of a clock face.
+/// `47m`, `40s`, `cold`. Minutes past the first minute, so a long window
+/// reads as one number instead of a clock face. The word "cache" is the drawn
+/// timer (snowflake once cold) in front of it, never text.
 pub(crate) fn label(remaining_secs: u64) -> String {
     match remaining_secs {
-        0 => "cache cold".into(),
-        secs if secs >= 60 => format!("cache {}m", secs.div_ceil(60)),
-        secs => format!("cache {secs}s"),
+        0 => "cold".into(),
+        secs if secs >= 60 => format!("{}m", secs.div_ceil(60)),
+        secs => format!("{secs}s"),
     }
 }
 
@@ -166,11 +167,39 @@ impl Panel {
         ))
     }
 
-    /// The `cache 47m` pill, dimmed once the window lapses and warm when it is
+    /// The cache countdown pill (timer mark + `47m`), dimmed once the window lapses and warm when it is
     /// nearly over. A leaf view so its tick never rebuilds the composer.
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let facts = self.cache_facts()?;
         Some(self.swarm_marks.cache_pill(facts, cx))
+    }
+}
+
+impl Panel {
+    /// Offline screenshot fixture (`JCODE_DESKTOP_SCREENSHOT_BAR=<effort>`):
+    /// a cache-capable route, a level, a context reading and a response that
+    /// touched the cache 12 minutes ago, so the bar shows every drawn mark.
+    pub(crate) fn apply_bar_fixture(&mut self, effort: &str, cx: &mut Context<Self>) {
+        self.provider = Some("anthropic".into());
+        self.model = Some("claude-opus-5-5".into());
+        self.reasoning_effort = Some(effort.into());
+        self.context_tokens = Some(116_000);
+        // The fixture panel is narrow; the location would push the status
+        // marks out of the row, and it is not what this review is about.
+        self.working_dir = None;
+        self.items
+            .push(Item::ResponseStats(super::response_stats::ResponseStats {
+                at_ms: Some(now_ms() - 12 * 60_000),
+                cache_read_tokens: Some(18_200),
+                ..Default::default()
+            }));
+        // `JCODE_DESKTOP_SCREENSHOT_EFFORT_MENU=1` also opens the `/effort`
+        // picker so its drawn rows can be reviewed offline.
+        if std::env::var("JCODE_DESKTOP_SCREENSHOT_EFFORT_MENU").as_deref() == Ok("1") {
+            let input = self.input.clone();
+            cx.defer(move |cx| input.update(cx, |input, cx| input.open_effort_menu(cx)));
+        }
+        cx.notify();
     }
 }
 
@@ -241,9 +270,26 @@ impl Render for CachePill {
         }
         let theme = Theme::global();
         let hover = tooltip(&facts);
+        let ink = tone(&facts, theme);
+        let icon = if facts.is_cold() {
+            crate::swarm_glyph::Icon::Snowflake
+        } else {
+            crate::swarm_glyph::Icon::Timer
+        };
         super::composer::composer_pill("panel-cache")
             .flex_none()
-            .text_color(tone(&facts, theme))
+            .px_2()
+            .gap_1()
+            .text_color(ink)
+            .child(
+                div()
+                    .debug_selector(move || format!("panel-cache-icon-{icon:?}").to_lowercase())
+                    .flex_none()
+                    .child(
+                        crate::swarm_glyph::Mark::still(icon, ink, super::composer::BAR_ICON)
+                            .render(None),
+                    ),
+            )
             .child(
                 div()
                     .debug_selector(|| "panel-cache-label".into())
@@ -259,10 +305,18 @@ mod tests {
 
     #[test]
     fn countdown_reads_in_minutes_and_says_when_it_is_cold() {
-        assert_eq!(label(47 * 60 + 12), "cache 48m");
-        assert_eq!(label(60), "cache 1m");
-        assert_eq!(label(59), "cache 59s");
-        assert_eq!(label(0), "cache cold");
+        assert_eq!(label(47 * 60 + 12), "48m");
+        assert_eq!(label(60), "1m");
+        assert_eq!(label(59), "59s");
+        assert_eq!(label(0), "cold");
+    }
+
+    /// No pill state spells out "cache": the drawn icon carries the word.
+    #[test]
+    fn the_label_never_spells_cache() {
+        for secs in [0, 1, 59, 60, 300, 3600] {
+            assert!(!label(secs).contains("cache"), "{}", label(secs));
+        }
     }
 
     #[test]
@@ -281,7 +335,7 @@ mod tests {
 
         let cold = facts(300, false, 0, 600_000, None);
         assert!(cold.is_cold());
-        assert_eq!(label(cold.remaining_secs), "cache cold");
+        assert_eq!(label(cold.remaining_secs), "cold");
     }
 
     #[test]
@@ -346,6 +400,21 @@ mod tests {
             vcx.debug_bounds("panel-cache-label").is_some(),
             "a known retention with a cache touch earns a countdown"
         );
+        // The word "cache" is a drawn timer, the same size as the other bar
+        // marks, in front of a bare `48m`.
+        let pill = vcx.debug_bounds("panel-cache").expect("pill");
+        let icon = vcx
+            .debug_bounds("panel-cache-icon-timer")
+            .expect("timer icon");
+        let text = vcx.debug_bounds("panel-cache-label").unwrap();
+        assert!(icon.left() >= pill.left() && icon.right() <= text.left());
+        assert_eq!(icon.size.width, px(super::super::composer::BAR_ICON));
+        let shown = panel
+            .read_with(vcx, |panel, _| panel.cache_facts())
+            .map(|facts| label(facts.remaining_secs))
+            .unwrap();
+        assert!(!shown.contains("cache"), "{shown}");
+        assert_eq!(shown, "48m");
         let facts = panel
             .read_with(vcx, |panel, _| panel.cache_facts())
             .expect("facts");

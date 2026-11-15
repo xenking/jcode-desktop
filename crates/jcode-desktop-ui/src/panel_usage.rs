@@ -418,7 +418,7 @@ fn ring_path(
 
 /// Circular context gauge: a faint full track with a colored used arc.
 fn context_ring(used: Option<f32>) -> gpui::AnyElement {
-    const SIZE: f32 = 13.;
+    const SIZE: f32 = super::composer::BAR_ICON;
     let theme = Theme::global();
     let used = used.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
     div()

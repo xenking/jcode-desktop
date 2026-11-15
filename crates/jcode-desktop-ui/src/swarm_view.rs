@@ -246,17 +246,17 @@ impl Worker {
             .filter(|model| !model.is_empty())
     }
 
-    /// The reasoning rung as a row shows it: the same filling circle the
-    /// composer pill draws (`◒` for high), because a worker row has no room
-    /// for the word. Swarm modes are not rungs and keep their name; a record
-    /// with no effort shows nothing rather than an empty circle.
-    pub fn effort_label(&self) -> Option<String> {
+    /// The reasoning level a row draws, normalized (`" Low "` is `low`). The
+    /// row paints it as the same drawn circle the composer pill uses, because
+    /// a worker row has no room for the word. A record with no effort shows
+    /// nothing rather than an empty circle.
+    pub fn effort_level(&self) -> Option<String> {
         self.meta
             .effort
             .as_deref()
             .map(str::trim)
             .filter(|effort| !effort.is_empty())
-            .map(crate::effort::compact)
+            .map(str::to_ascii_lowercase)
     }
 
     /// `↑12k ↓3k`, or the half that is known.
@@ -1031,24 +1031,23 @@ mod tests {
         assert!(tooltip.contains("↑12k ↓3.1k"), "{tooltip}");
     }
 
-    /// A row carries the rung as the pill's filling circle, not the word, so
-    /// the model line reads `ds-4.1f ◒` the same way the composer does. Modes
-    /// are not rungs and a record without effort claims nothing.
+    /// A row draws the rung as the pill's circle, keyed by the normalized
+    /// level. A record without effort claims nothing.
     #[test]
-    fn a_worker_row_shows_the_effort_as_the_pill_glyph() {
+    fn a_worker_row_draws_the_effort_level() {
         let high = with_meta(
             "poodle",
             Some("running"),
             record("deepseek-v4.1-flash", "opencode-go", Some("high")),
         );
-        assert_eq!(high.effort_label().as_deref(), Some("◒"));
+        assert_eq!(high.effort_level().as_deref(), Some("high"));
 
         let max = with_meta(
             "rose",
             Some("running"),
             record("gpt-5.6", "openai", Some("max")),
         );
-        assert_eq!(max.effort_label().as_deref(), Some("◉"));
+        assert_eq!(max.effort_level().as_deref(), Some("max"));
 
         // Provider echoes carry stray case and whitespace.
         let echoed = with_meta(
@@ -1056,7 +1055,7 @@ mod tests {
             Some("running"),
             record("gpt-5.6", "openai", Some(" Low ")),
         );
-        assert_eq!(echoed.effort_label().as_deref(), Some("◔"));
+        assert_eq!(echoed.effort_level().as_deref(), Some("low"));
 
         // A mode is orchestration, not a rung: it keeps its word.
         let swarm = with_meta(
@@ -1064,16 +1063,16 @@ mod tests {
             Some("running"),
             record("gpt-5.6", "openai", Some("swarm")),
         );
-        assert_eq!(swarm.effort_label().as_deref(), Some("Swarm"));
+        assert_eq!(swarm.effort_level().as_deref(), Some("swarm"));
 
         // No record, or an empty one, shows no circle at all.
-        assert_eq!(worker("rose", Some("running")).effort_label(), None);
+        assert_eq!(worker("rose", Some("running")).effort_level(), None);
         let blank = with_meta(
             "rose",
             Some("running"),
             record("gpt-5.6", "openai", Some(" ")),
         );
-        assert_eq!(blank.effort_label(), None);
+        assert_eq!(blank.effort_level(), None);
     }
 
     /// The report behind this change: `poodle compact-divider · running 26m`

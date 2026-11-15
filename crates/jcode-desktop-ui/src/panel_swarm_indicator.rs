@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::swarm_glyph::{Icon, Mark, Motion};
-use crate::swarm_view::{Activity, Glyph, Indicator, Turn, Worker};
+use crate::swarm_view::{Activity, Indicator, Turn, Worker};
 
 /// A worker row (composer list, sidebar, or transcript card) was clicked.
 pub(crate) struct OpenSwarmWorker(pub String);
@@ -125,42 +125,51 @@ impl Panel {
         Activity::resolve(turn, live)
     }
 
-    /// The activity icon, always present so a quiet agent reads as idle
-    /// rather than missing.
-    pub(super) fn render_activity_icon(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// The activity icon, present so a quiet agent reads as idle rather than
+    /// missing. Waiting on workers is drawn inside the swarm pill, next to the
+    /// count it is waiting on, so this slot steps aside for it.
+    pub(super) fn render_activity_icon(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let theme = Theme::global();
         let activity = self.agent_activity();
+        if activity == Activity::WaitingOnWorkers {
+            return None;
+        }
         let label = activity.label();
-        let icon = self
-            .swarm_marks
-            .element("activity", Mark::activity(activity, 13.0), cx);
-        div()
-            .id("composer-activity")
-            .debug_selector(move || {
-                format!(
-                    "composer-activity-{}",
-                    label.to_ascii_lowercase().replace(' ', "-")
-                )
-            })
-            .flex_none()
-            .h(px(super::composer::TAB_HEIGHT))
-            .w(px(18.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(theme.TEXT_FAINT)
-            .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(label.into())).into())
-            .child(icon)
-            .into_any_element()
+        let icon = self.swarm_marks.element(
+            "activity",
+            Mark::activity(activity, super::composer::BAR_ICON),
+            cx,
+        );
+        Some(
+            div()
+                .id("composer-activity")
+                .debug_selector(move || {
+                    format!(
+                        "composer-activity-{}",
+                        label.to_ascii_lowercase().replace(' ', "-")
+                    )
+                })
+                .flex_none()
+                .h(px(super::composer::TAB_HEIGHT))
+                .w(px(18.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme.TEXT_FAINT)
+                .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(label.into())).into())
+                .child(icon)
+                .into_any_element(),
+        )
     }
 
-    /// Worker count plus a three-segment bar: one segment per swarm state
-    /// (running, waiting, done), so the bar says where the work stands without
-    /// a word. A coordinator parked on an await adds a pause mark and names
-    /// who it is waiting for in the hover.
-    ///
-    /// The old indicator was a lone partial circle, which read as decoration
-    /// and hid everything except the count.
+    /// The swarm pill: the worker cluster (the upstream sidebar's swarm mark,
+    /// breathing while anything runs), the number of live workers (running or
+    /// waiting on a dependency), and, when the coordinator is parked on them,
+    /// the hourglass right beside that number. Finished workers are not
+    /// counted: they are listed in the hover.
     pub(super) fn render_swarm_indicator(
         &mut self,
         cx: &mut Context<Self>,
@@ -184,49 +193,43 @@ impl Panel {
         }
         let tooltip = tooltip.join("\n");
         let open = self.swarm_list_open;
-        // The running segment breathes so a live swarm is visible without the
-        // eye landing on a spinning glyph first.
-        let running = (tally.running > 0).then(|| {
-            self.swarm_marks.element(
-                "workers-running-segment",
+        let live = tally.running + tally.waiting;
+        let waiting_on_workers = self.agent_activity() == Activity::WaitingOnWorkers;
+        // Running breathes, the way the activity mark does while thinking;
+        // a swarm parked on dependencies is warm and still; a finished one
+        // is faint, there only to carry the hover.
+        let (color, motion) = if tally.running > 0 {
+            (theme.ACCENT, Motion::Pulse(Duration::from_millis(1600)))
+        } else if live > 0 {
+            (theme.WARN, Motion::Still)
+        } else {
+            (theme.TEXT_FAINT, Motion::Still)
+        };
+        let cluster = div()
+            .debug_selector(|| "composer-workers-icon".into())
+            .flex_none()
+            .child(self.swarm_marks.element(
+                "workers-cluster",
                 Mark {
-                    icon: Icon::Idle,
-                    color: theme.ACCENT,
-                    size: 9.0,
-                    motion: Motion::Pulse(Duration::from_millis(1600)),
+                    icon: Icon::Workers,
+                    color,
+                    size: super::composer::BAR_ICON,
+                    motion,
                 },
                 cx,
-            )
-        });
-        let waiting_segment = (tally.waiting > 0).then(|| {
-            let color = theme.WARN;
+            ));
+        let count = (live > 0).then(|| {
             div()
-                .debug_selector(|| "composer-workers-waiting".into())
-                .flex_none()
-                .w(px(3.5))
-                .h(px(9.0))
-                .rounded(px(1.5))
-                .bg(color)
+                .debug_selector(|| "composer-workers-count".into())
+                .child(live.to_string())
         });
-        let done_segment = (tally.done > 0).then(|| {
-            let color = theme.OK;
-            div()
-                .debug_selector(|| "composer-workers-done".into())
-                .flex_none()
-                .w(px(3.5))
-                .h(px(9.0))
-                .rounded(px(1.5))
-                .bg(color)
-        });
-        // Parked on an await: a pause mark, the same glyph the worker rows use
-        // for a blocked worker.
-        let paused = (!awaiting.is_empty()).then(|| {
+        let wait = waiting_on_workers.then(|| {
             div()
                 .debug_selector(|| "composer-workers-awaiting".into())
                 .flex_none()
                 .child(self.swarm_marks.element(
                     "workers-awaiting",
-                    Mark::glyph(Glyph::Pause, 10.0),
+                    Mark::activity(Activity::WaitingOnWorkers, super::composer::BAR_ICON),
                     cx,
                 ))
         });
@@ -234,7 +237,7 @@ impl Panel {
             super::composer::composer_pill("composer-workers")
                 .flex_none()
                 .px_2()
-                .gap_1p5()
+                .gap_1()
                 .when(open, |el| el.bg(theme.USER_BG).text_color(theme.TEXT))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::usage::MeterTooltip(tooltip.clone()))
@@ -245,22 +248,9 @@ impl Panel {
                     this.swarm_list_open = !this.swarm_list_open;
                     cx.notify();
                 }))
-                .children(paused)
-                .child(
-                    div()
-                        .debug_selector(|| "composer-workers-count".into())
-                        .child(tally.total().to_string()),
-                )
-                .child(
-                    div()
-                        .debug_selector(|| "composer-workers-bar".into())
-                        .flex()
-                        .items_center()
-                        .gap(px(2.0))
-                        .children(running)
-                        .children(waiting_segment)
-                        .children(done_segment),
-                )
+                .child(cluster)
+                .children(count)
+                .children(wait)
                 .into_any_element(),
         )
     }
@@ -301,13 +291,9 @@ impl Panel {
                 // what it has spent and what it is doing.
                 let tooltip = worker.tooltip();
                 let model = worker.model_label();
-                let effort = worker.effort_label();
-                let effort_ink = worker
-                    .meta
-                    .effort
-                    .as_deref()
-                    .map(|effort| crate::effort::tint(effort, theme))
-                    .unwrap_or(theme.TEXT_FAINT);
+                let effort = worker
+                    .effort_level()
+                    .and_then(|effort| crate::effort_icon::icon(&effort, 11.0));
                 let provider = crate::provider_mark::render(
                     worker.meta.provider.as_deref(),
                     worker.meta.model.as_deref(),
@@ -385,10 +371,7 @@ impl Panel {
                                 div()
                                     .debug_selector(move || format!("swarm-list-effort-{index}"))
                                     .flex_none()
-                                    // A rung, drawn at row text height and in
-                                    // its own heat tint, not a faint speck.
-                                    .text_size(px(13.0))
-                                    .text_color(effort_ink)
+                                    // A drawn rung in its own heat tint.
                                     .child(effort)
                             }))
                     }))
@@ -512,10 +495,13 @@ mod tests {
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
         });
         vcx.run_until_parked();
+        // Idle with a live worker is waiting, not hung. The wait mark is drawn
+        // inside the swarm pill, beside the count it waits on.
         assert!(
-            vcx.debug_bounds(selector("waiting-on-workers")).is_some(),
+            vcx.debug_bounds("composer-workers-awaiting").is_some(),
             "idle with a live worker is waiting, not hung"
         );
+        assert!(vcx.debug_bounds(selector("waiting-on-workers")).is_none());
         assert!(vcx.debug_bounds("composer-workers").is_some());
 
         panel.update(vcx, |panel, cx| {
@@ -523,9 +509,10 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(selector("idle")).is_some());
-        // The worker reported, so the bar no longer claims anything runs; the
-        // pill stays only long enough to show the finished segment.
-        assert!(vcx.debug_bounds("composer-workers-done").is_some());
+        // The worker reported, so the bar no longer claims anything runs: no
+        // live count, no wait mark.
+        assert!(vcx.debug_bounds("composer-workers-count").is_none());
+        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
     }
 
     #[gpui::test]
@@ -586,8 +573,7 @@ mod tests {
             "no live worker, but the await still earns a pill"
         );
         assert!(
-            vcx.debug_bounds("composer-activity-waiting-on-workers")
-                .is_some(),
+            vcx.debug_bounds("composer-activity-idle").is_none(),
             "a parked coordinator is waiting, not idle"
         );
 
@@ -718,5 +704,87 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list-model-0").is_some());
         assert!(vcx.debug_bounds("swarm-list-effort-0").is_none());
+    }
+
+    fn inside(inner: gpui::Bounds<gpui::Pixels>, outer: gpui::Bounds<gpui::Pixels>) -> bool {
+        inner.left() >= outer.left()
+            && inner.right() <= outer.right()
+            && inner.top() >= outer.top()
+            && inner.bottom() <= outer.bottom()
+    }
+
+    /// The `38 ◦ ▮` report: finished workers inflated the count and the pill
+    /// had no worker icon. The number is live workers only (running plus
+    /// waiting), the drawn swarm mark leads, and the done ones live in the
+    /// hover.
+    #[gpui::test]
+    fn the_pill_counts_live_workers_only_behind_a_drawn_swarm_icon(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let mut workers = vec![
+            worker("rose", "running"),
+            worker("tulip", "running"),
+            worker("fox", "blocked"),
+        ];
+        for index in 0..35 {
+            workers.push(worker(&format!("done{index}"), "ready"));
+        }
+        panel.update(vcx, |panel, cx| panel.set_swarm_workers(workers, cx));
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").expect("pill");
+        let icon = vcx.debug_bounds("composer-workers-icon").expect("icon");
+        let count = vcx.debug_bounds("composer-workers-count").expect("count");
+        assert!(inside(icon, pill) && inside(count, pill));
+        assert!(icon.right() <= count.left(), "the icon leads the count");
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| {
+                let tally = crate::swarm_view::SwarmTally::of(&panel.swarm_workers);
+                tally.running + tally.waiting
+            }),
+            3
+        );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.test_swarm_indicator_count()),
+            3
+        );
+        // The old segment bar is gone: no text-ish blocks after the number.
+        for gone in [
+            "composer-workers-bar",
+            "composer-workers-done",
+            "composer-workers-waiting",
+        ] {
+            assert!(vcx.debug_bounds(gone).is_none(), "{gone} must not render");
+        }
+    }
+
+    /// The hourglass used to sit apart from the pill, further right. It is
+    /// drawn inside the pill, right after the count, while the coordinator
+    /// waits; the separate activity slot steps aside.
+    #[gpui::test]
+    fn the_wait_mark_sits_inside_the_swarm_pill_beside_the_count(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "running")], cx);
+            panel.set_pending_awaits(
+                vec![jcode_sdk::PendingAwait {
+                    requested_ids: vec!["session_rose_1_a".into()],
+                    deadline_unix_ms: u64::MAX,
+                }],
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").expect("pill");
+        let count = vcx.debug_bounds("composer-workers-count").expect("count");
+        let wait = vcx.debug_bounds("composer-workers-awaiting").expect("wait");
+        assert!(
+            inside(wait, pill),
+            "wait mark inside the pill: {wait:?} {pill:?}"
+        );
+        assert!(count.right() <= wait.left(), "wait mark follows the count");
+        assert!(
+            vcx.debug_bounds("composer-activity-waiting-on-workers")
+                .is_none(),
+            "no second hourglass outside the pill"
+        );
     }
 }

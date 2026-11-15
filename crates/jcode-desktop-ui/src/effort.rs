@@ -79,39 +79,16 @@ pub(crate) fn label(effort: &str) -> &str {
     }
 }
 
-/// The compact glyph for a level: one filling circle per rung, the ladder omp
-/// draws (`○ ◔ ◑ ◒ ◕ ◉`). `None` for swarm modes, which are orchestration
-/// modes rather than reasoning rungs and keep their text label.
-///
-/// This dot is not the decorative status dot the design rules forbid: it *is*
-/// the level, the same way a slider thumb is its value, and the name it
-/// replaces lives in the pill's hover.
-pub(crate) fn glyph(effort: &str) -> Option<&'static str> {
-    jcode_provider_core::reasoning_effort_glyph(effort)
-}
-
-/// What a chrome pill shows: the glyph alone, so the level reads at a glance
-/// and its name lives in the tooltip. Modes and unknown values keep text
-/// because a symbol would invent a rung that does not exist.
-pub(crate) fn compact(effort: &str) -> String {
-    match glyph(effort) {
-        Some(glyph) => glyph.to_string(),
-        None => label(effort).to_string(),
-    }
-}
-
-/// Hover copy for a compact glyph: the level name the dots replaced.
+/// Hover copy for the drawn level mark: the level name the shape replaces.
 pub(crate) fn tooltip(effort: &str) -> String {
     format!("Reasoning effort: {}", spoken(effort))
 }
 
-/// Glyph plus level name, for the places that must stay legible without a
-/// hover: picker rows, transcript notices.
+/// The level name, for the places that must stay legible without a hover:
+/// picker rows (beside the drawn mark), transcript notices. No text glyph:
+/// the level's shape is drawn by `effort_icon`, never typed.
 pub(crate) fn spoken(effort: &str) -> String {
-    match glyph(effort) {
-        Some(glyph) => format!("{glyph} {}", label(effort)),
-        None => label(effort).to_string(),
-    }
+    label(effort.trim()).to_string()
 }
 
 /// Ink for a level glyph.
@@ -342,39 +319,19 @@ pub(crate) fn bound_keys_label(cx: &App) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The pill is the glyph alone: the ladder omp draws, rung by rung, and no
-    /// word that a hover can carry instead.
+    /// Spoken copy is the level name only: the shape is drawn, so no text
+    /// circle leaks into notices, hovers or picker rows.
     #[test]
-    fn compact_pill_is_a_glyph_per_rung() {
-        assert_eq!(compact("none"), "⦸");
-        assert_eq!(compact("minimal"), "○");
-        assert_eq!(compact("low"), "◔");
-        assert_eq!(compact("medium"), "◑");
-        assert_eq!(compact("high"), "◒");
-        assert_eq!(compact("xhigh"), "◕");
-        assert_eq!(compact("max"), "◉");
-        for level in ["high", "medium", "max"] {
-            assert_ne!(
-                compact(level),
-                label(level),
-                "{level} must not render as text"
+    fn spoken_copy_carries_no_text_glyph() {
+        assert_eq!(tooltip("xhigh"), "Reasoning effort: xHigh");
+        assert_eq!(tooltip("swarm"), "Reasoning effort: Swarm");
+        for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let text = spoken(level);
+            assert!(
+                text.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                "{level} spoke {text:?}"
             );
         }
-    }
-
-    /// Modes are not rungs, so they keep their word rather than borrowing a
-    /// circle that would claim a reasoning level they do not have.
-    #[test]
-    fn compact_pill_keeps_mode_labels() {
-        assert_eq!(compact("swarm"), "Swarm");
-        assert_eq!(compact("swarm-deep"), "Swarm Deep");
-        assert_eq!(compact("future"), "future");
-    }
-
-    #[test]
-    fn tooltip_carries_the_level_name_the_glyph_replaced() {
-        assert_eq!(tooltip("xhigh"), "Reasoning effort: ◕ xHigh");
-        assert_eq!(tooltip("swarm"), "Reasoning effort: Swarm");
     }
 
     /// The ladder is a heat scale: cool low rungs, a neutral middle, warm high

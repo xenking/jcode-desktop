@@ -30,6 +30,12 @@ pub(crate) enum Icon {
     Thinking,
     Tool,
     Waiting,
+    /// The swarm: three connected nodes, the upstream sidebar's worker mark.
+    Workers,
+    /// The prompt-cache countdown while the window is open.
+    Timer,
+    /// The prompt cache once its window has lapsed.
+    Snowflake,
 }
 
 impl Icon {
@@ -49,6 +55,9 @@ impl Icon {
             Self::Thinking => icon!("thinking"),
             Self::Tool => icon!("tool"),
             Self::Waiting => icon!("waiting"),
+            Self::Workers => icon!("workers"),
+            Self::Timer => icon!("timer"),
+            Self::Snowflake => icon!("snowflake"),
         }
     }
 }
@@ -115,7 +124,17 @@ impl Mark {
         }
     }
 
-    fn render(self, phase: Option<f32>) -> gpui::Svg {
+    /// A still mark, for callers that draw outside a `Marks` cache.
+    pub(crate) fn still(icon: Icon, color: Rgba, size: f32) -> Self {
+        Self {
+            icon,
+            color,
+            size,
+            motion: Motion::Still,
+        }
+    }
+
+    pub(crate) fn render(self, phase: Option<f32>) -> gpui::Svg {
         let mut icon = svg()
             .data(self.icon.data())
             .size(px(self.size))
@@ -232,7 +251,7 @@ impl Marks {
         view.into_any_element()
     }
 
-    /// The `cache 47m` pill, updated in place when a newer turn refreshes the
+    /// The cache countdown pill, updated in place when a newer turn refreshes the
     /// window so its countdown anchor moves with the facts.
     pub(crate) fn cache_pill<T: 'static>(
         &mut self,
@@ -308,6 +327,9 @@ mod tests {
             Icon::Thinking,
             Icon::Tool,
             Icon::Waiting,
+            Icon::Workers,
+            Icon::Timer,
+            Icon::Snowflake,
         ] {
             let svg = std::str::from_utf8(icon.data()).unwrap();
             assert!(svg.starts_with("<svg "), "{icon:?}");

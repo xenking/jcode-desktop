@@ -10,6 +10,9 @@ use super::*;
 
 /// Pill height.
 pub(super) const TAB_HEIGHT: f32 = 22.;
+/// One size for every drawn mark in the bar: the context ring, the effort
+/// circle, the worker cluster, the wait mark and the cache timer.
+pub(crate) const BAR_ICON: f32 = 13.;
 /// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
 /// Distance from the input's right edge to the in-box voice button.
@@ -125,7 +128,7 @@ impl Panel {
                     .overflow_hidden()
                     .children(workers_pill)
                     .children(cache_pill)
-                    .child(activity_icon)
+                    .children(activity_icon)
                     .children(self.render_voice_status(status_line))
                     .children(self.render_image_pane_toggle(cx)),
             );
@@ -166,21 +169,22 @@ impl Panel {
                             })),
                     )
                     .children(effort.map(|effort| {
-                        let ink = crate::effort::tint(&effort, theme);
                         let hover = crate::effort::tooltip(&effort);
+                        // The level is a drawn circle the size of the context
+                        // ring beside it, filled to the rung and heat-tinted.
+                        // An unknown value keeps its word.
+                        let mark = crate::effort_icon::icon(&effort, BAR_ICON);
+                        let word = mark.is_none().then(|| {
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(crate::effort::label(&effort).to_string())
+                        });
                         composer_pill("panel-model-effort")
                             .flex_shrink(3.)
-                            .min_w(px(30.))
-                            // The glyph is the level, so it is drawn at text
-                            // height rather than as small as the pill's label.
-                            .text_size(px(15.))
-                            .text_color(ink)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(crate::effort::compact(&effort)),
-                            )
+                            .px_1p5()
+                            .children(mark)
+                            .children(word)
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_effort_picker(window, cx);
@@ -670,6 +674,32 @@ mod tests {
         });
         assert!(identity.0.contains("Opus 5.5"), "{}", identity.0);
         assert_eq!(identity.1.as_deref(), Some("max"));
+    }
+
+    /// The bar's effort mark is drawn (canvas), not a `◑` glyph: the level's
+    /// shape sits in the pill at the context ring's size, and an unknown
+    /// level keeps its word instead of inventing a rung.
+    #[gpui::test]
+    fn the_effort_pill_draws_the_level_at_the_context_ring_size(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            panel.update(vcx, |panel, cx| {
+                panel.model = Some("gpt-5.6-sol".into());
+                panel.provider = Some("openai".into());
+                panel.reasoning_effort = Some(level.into());
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill");
+            let selector: &'static str = Box::leak(format!("effort-icon-{level}").into_boxed_str());
+            let icon = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{level} icon"));
+            let ring = vcx.debug_bounds("panel-context-ring").expect("ring");
+            assert!(icon.left() >= pill.left() && icon.right() <= pill.right());
+            assert_eq!(icon.size, ring.size, "{level} matches the context ring");
+        }
+        assert!(crate::effort_icon::icon("future", BAR_ICON).is_none());
     }
 
     #[test]

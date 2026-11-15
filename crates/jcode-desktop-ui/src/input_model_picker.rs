@@ -360,11 +360,26 @@ impl PromptInput {
                         .child(parts.auth.label()),
                 )
         });
+        // Effort rows lead with the drawn level mark (never a text glyph),
+        // the same shape the composer pill paints.
+        let effort_mark = suggestion
+            .value
+            .strip_prefix("/effort ")
+            .filter(|_| model.is_none())
+            .and_then(|effort| {
+                let effort = effort.to_string();
+                crate::effort_icon::icon(&effort, 14.0).map(|icon| {
+                    div()
+                        .debug_selector(move || format!("effort-row-icon-{index}"))
+                        .flex_none()
+                        .child(icon)
+                })
+            });
         let stage_row = suggestion.action.is_some() && model.is_none();
         let label = match (model, suggestion.value.strip_prefix("/effort ")) {
             (Some(model), _) => model_menu::pretty_title(model, &self.model_details),
-            // Effort rows lead with the ramp glyph and keep the level name:
-            // a picker has no hover to hide it in.
+            // Effort rows keep the level name beside the drawn mark: a
+            // picker has no hover to hide it in.
             (None, Some(effort)) => effort_row_label(effort),
             _ => suggestion.value.clone(),
         };
@@ -418,6 +433,7 @@ impl PromptInput {
                             .items_center()
                             .gap_3()
                             .children(logo)
+                            .children(effort_mark)
                             .font_family(if model.is_some() || stage_row {
                                 Theme::global().FONT_UI
                             } else {
@@ -512,10 +528,9 @@ impl PromptInput {
     }
 }
 
-/// The label of an `/effort <level>` row in the picker's effort step: the ramp
-/// glyph the composer pill draws, then the level name, because a list row has
-/// no hover to hide the name in. Modes are orchestration, not rungs, and keep
-/// their word.
+/// The label of an `/effort <level>` row in the picker's effort step: the level
+/// name, because a list row has no hover to hide it in. The level's shape is
+/// drawn beside it by `effort_icon`, so the label carries no text glyph.
 pub(super) fn effort_row_label(effort: &str) -> String {
     crate::effort::spoken(effort)
 }

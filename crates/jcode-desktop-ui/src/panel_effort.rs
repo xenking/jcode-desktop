@@ -276,7 +276,7 @@ mod tests {
                 .read(cx)
                 .transient_notice()
                 .map(str::to_string)),
-            Some("Effort: ◒ High".into())
+            Some("Effort: High".into())
         );
         assert_eq!(
             panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
@@ -383,6 +383,44 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(sent_efforts(&commands), ["low"]);
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("low"));
+    }
+
+    /// The `/effort` picker rows (None … Max, Swarm) each lead with a drawn
+    /// level mark, never a `◔◑◕●` text glyph: the row label is the name alone
+    /// and the shape is a canvas element beside it.
+    #[gpui::test]
+    fn effort_picker_rows_draw_their_level_marks(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, _commands) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.toggle_effort_picker(window, cx))
+        });
+        vcx.run_until_parked();
+        let rows = panel.read_with(vcx, |panel, _| {
+            panel
+                .effort_ladder()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+        assert!(rows.len() >= 5, "{rows:?}");
+        let mut drawn = 0;
+        for (index, level) in rows.iter().enumerate() {
+            let label = crate::effort::spoken(level);
+            assert!(
+                label.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                "{level} row label carries a text glyph: {label:?}"
+            );
+            let selector: &'static str =
+                Box::leak(format!("effort-row-icon-{index}").into_boxed_str());
+            if vcx.debug_bounds(selector).is_some() {
+                drawn += 1;
+            }
+            assert!(
+                crate::effort_icon::shape(level).is_some(),
+                "{level} has a shape"
+            );
+        }
+        assert!(drawn > 0, "visible rows draw their marks");
     }
 
     /// The pill menu opens on the current level, so Enter keeps it.

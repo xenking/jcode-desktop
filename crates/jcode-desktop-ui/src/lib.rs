@@ -15,6 +15,7 @@ mod diff_block;
 mod diff_review_content;
 mod diff_view;
 mod effort;
+mod effort_icon;
 mod example_prompts;
 mod fps_counter;
 mod html_preview;
@@ -342,10 +343,34 @@ unsafe extern "C-unwind" fn activate(
             let fixture = harness::screenshot_mode();
             // `JCODE_DESKTOP_SCREENSHOT_SEARCH=<query>`: the screenshot harness
             // needs the results screen populated without a keyboard or a daemon.
-            if fixture
-                && let Ok(query) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SEARCH")
-            {
+            if fixture && let Ok(query) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SEARCH") {
                 workspace.open_search_for_screenshot(&query, window, cx);
+            }
+            // `JCODE_DESKTOP_SCREENSHOT_PNG=<path>`: render the settled frame
+            // through the window's own renderer into a PNG and quit. Unlike
+            // `screencapture`, this works for an offscreen, occluded or
+            // locked-screen window, so fixture reviews do not flake.
+            if fixture && let Some(path) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_PNG") {
+                cx.spawn_in(window, async move |_, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(4))
+                        .await;
+                    let _ = cx.update(|window, _| window.refresh());
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    let _ = cx.update(|window, cx| {
+                        match window.render_to_image() {
+                            Ok(image) => match image.save(&path) {
+                                Ok(()) => eprintln!("screenshot: wrote {}", path.display()),
+                                Err(error) => eprintln!("screenshot: save failed: {error}"),
+                            },
+                            Err(error) => eprintln!("screenshot: render failed: {error:#}"),
+                        }
+                        cx.quit();
+                    });
+                })
+                .detach();
             }
             let changelog_enabled = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
                 != jcode_desktop_api::LaunchMode::SinglePanel

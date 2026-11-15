@@ -216,13 +216,9 @@ pub(super) fn render_workers(
                 .map(|glyph| format!("{glyph:?}").to_ascii_lowercase());
             let tooltip = worker.tooltip();
             let model = worker.model_label();
-            let effort = worker.effort_label();
-            let effort_ink = worker
-                .meta
-                .effort
-                .as_deref()
-                .map(|effort| crate::effort::tint(effort, theme))
-                .unwrap_or(theme.TEXT_FAINT);
+            let effort = worker
+                .effort_level()
+                .and_then(|effort| crate::effort_icon::icon(&effort, 10.0));
             let provider = crate::provider_mark::render(
                 worker.meta.provider.as_deref(),
                 worker.meta.model.as_deref(),
@@ -330,7 +326,6 @@ pub(super) fn render_workers(
                                     format!("sidebar-worker-effort-{sidebar_index}-{index}")
                                 })
                                 .flex_none()
-                                .text_color(effort_ink)
                                 .child(effort)
                         }))
                 }))
@@ -1033,12 +1028,11 @@ mod tests {
             );
         });
         vcx.run_until_parked();
-        // Nothing runs now, so the pill claims no running segment; the two
-        // finished workers still read as the done segment until the workspace
-        // refreshes the swarm list.
+        // Nothing runs now: the pill keeps its icon for the hover that lists
+        // the finished workers, but counts no live worker.
         assert!(vcx.debug_bounds("composer-workers").is_some());
-        assert!(vcx.debug_bounds("composer-workers-done").is_some());
-        assert!(vcx.debug_bounds("composer-workers-waiting").is_none());
+        assert!(vcx.debug_bounds("composer-workers-icon").is_some());
+        assert!(vcx.debug_bounds("composer-workers-count").is_none());
         assert!(vcx.debug_bounds("swarm-list").is_none());
         // Worker rows stay in the sidebar, with their final glyphs.
         assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
