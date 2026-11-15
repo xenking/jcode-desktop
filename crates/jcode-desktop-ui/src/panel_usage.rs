@@ -497,6 +497,16 @@ impl Panel {
         }
         let theme = Theme::global();
         let window = self.model.as_deref().and_then(context_window_for_model);
+        // Fill the ring toward the compaction trigger, not the raw window, so
+        // the user sees when the session will fold (e.g. 500k on a 1M window).
+        let window = self
+            .model
+            .as_deref()
+            .zip(window)
+            .and_then(|(model, window)| {
+                super::compaction_threshold_for_model(self.provider.as_deref(), model, window)
+            })
+            .or(window);
         let used = self.context_tokens;
         let percent = used
             .zip(window)

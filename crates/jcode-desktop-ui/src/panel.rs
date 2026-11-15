@@ -5779,10 +5779,35 @@ fn pretty_auth_method(method: &str) -> String {
 }
 
 fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Option<String> {
+    context_usage_label_with(model, context_tokens, |model, window| {
+        compaction_threshold_for_model(None, model, window)
+    })
+}
+
+/// Same as [`context_usage_label`], with the compaction threshold lookup
+/// injected so tests do not depend on the user's config.
+fn context_usage_label_with(
+    model: Option<&str>,
+    context_tokens: Option<u64>,
+    threshold: impl Fn(&str, u64) -> Option<u64>,
+) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(used) = context_tokens {
-        match model.and_then(context_window_for_model) {
-            Some(window) => {
+        let window = model.and_then(context_window_for_model);
+        let compact_at = model
+            .zip(window)
+            .and_then(|(model, window)| threshold(model, window));
+        match (window, compact_at) {
+            (Some(window), Some(compact_at)) => {
+                let percent = (used as f64 / compact_at as f64 * 100.0).min(100.0);
+                parts.push(format!(
+                    "{} / {} to compact ({percent:.0}%), window {}",
+                    format_tokens(used),
+                    format_tokens(compact_at),
+                    format_tokens(window)
+                ));
+            }
+            (Some(window), None) => {
                 let percent = (used as f64 / window as f64 * 100.0).min(100.0);
                 parts.push(format!(
                     "{} / {} ({percent:.0}%)",
@@ -5790,7 +5815,7 @@ fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Opti
                     format_tokens(window)
                 ));
             }
-            None => parts.push(format!("{} tokens", format_tokens(used))),
+            (None, _) => parts.push(format!("{} tokens", format_tokens(used))),
         }
     }
     if parts.is_empty() {
@@ -5810,6 +5835,17 @@ fn compact_dir(path: &str) -> String {
 /// Use the same model capacity catalog as the CLI instead of desktop-only guesses.
 fn context_window_for_model(model: &str) -> Option<u64> {
     jcode_base::provider::context_limit_for_model_with_provider(model, None).map(|n| n as u64)
+}
+
+/// Reactive compaction trigger for the model, from the same `[compaction]`
+/// config (including `[compaction.models.*]` overrides) the daemon uses.
+pub(crate) fn compaction_threshold_for_model(
+    provider: Option<&str>,
+    model: &str,
+    window: u64,
+) -> Option<u64> {
+    jcode_base::compaction::compaction_threshold_tokens(provider, Some(model), window as usize)
+        .map(|n| n as u64)
 }
 
 /// Match the TUI's output-token estimate and thresholds, using desktop theme
@@ -7940,12 +7976,17 @@ mod tests {
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
         assert_eq!(context_usage_label(None, None), None);
         assert_eq!(
-            context_usage_label(Some("gpt-5.6-sol"), Some(100_000)).as_deref(),
+            context_usage_label_with(Some("gpt-5.6-sol"), Some(100_000), |_, _| None).as_deref(),
             Some("100.0k / 272.0k (37%)")
         );
         assert_eq!(
             context_usage_label(Some("mystery-model"), Some(1_500)).as_deref(),
             Some("1.5k tokens")
+        );
+        assert_eq!(
+            context_usage_label_with(Some("gpt-5.4-alto"), Some(233_000), |_, _| Some(500_000))
+                .as_deref(),
+            Some("233.0k / 500.0k to compact (47%), window 1.0m")
         );
     }
 
