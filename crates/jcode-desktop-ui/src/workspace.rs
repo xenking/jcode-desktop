@@ -66,6 +66,8 @@ mod sidebar_collections;
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
+#[path = "workspace_sidebar_metadata.rs"]
+mod sidebar_metadata;
 #[path = "sidebar_projects.rs"]
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
@@ -76,8 +78,6 @@ mod sidebar_swarm;
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
-#[path = "workspace_sidebar_metadata.rs"]
-mod sidebar_metadata;
 use sidebar_metadata::SidebarPanelMetadata;
 
 use std::collections::{HashMap, HashSet};
@@ -6096,7 +6096,10 @@ impl Workspace {
             .into_iter()
             .enumerate()
             .map(|(position, (_, slot))| {
-                (sidebar_panels[&slot.panel.entity_id()].session_id.clone(), position)
+                (
+                    sidebar_panels[&slot.panel.entity_id()].session_id.clone(),
+                    position,
+                )
             })
             .collect::<HashMap<_, _>>();
         open_sessions.sort_by_key(|session| {
@@ -10576,6 +10579,7 @@ mod tests {
                     image_pane_open: false,
                     side_document: None,
                     prompt_queue: Default::default(),
+                    ask_draft: None,
                     session_id: "terminal".into(),
                     title: "build shell".into(),
                     working_dir: Some("/workspace".into()),
@@ -10810,6 +10814,7 @@ mod tests {
                             image_pane_open: false,
                             side_document: None,
                             prompt_queue: Default::default(),
+                            ask_draft: None,
                             session_id: "session_fox_1234567890000_deadbeef".into(),
                             title: "Still running".into(),
                             working_dir: Some("/home/example/project".into()),

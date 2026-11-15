@@ -4,6 +4,15 @@
 use super::*;
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AskDraft {
+    request_id: String,
+    questions: Vec<AskQuestion>,
+    chosen: Vec<Vec<usize>>,
+    other: Vec<Option<String>>,
+    comments: Vec<Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AskCard {
     pub request_id: String,
@@ -35,6 +44,49 @@ impl AskCard {
             cursor_question: 0,
             cursor_option: 0,
             voice_target: (n > 0).then_some((0, None)),
+        }
+    }
+
+    pub fn draft(&self) -> AskDraft {
+        AskDraft {
+            request_id: self.request_id.clone(),
+            questions: self.questions.clone(),
+            chosen: self.chosen.clone(),
+            other: self.other.clone(),
+            comments: self.comments.clone(),
+        }
+    }
+
+    pub fn restore_draft(&mut self, draft: AskDraft, cx: &mut Context<Panel>) {
+        if draft.questions != self.questions
+            || draft.chosen.len() != self.questions.len()
+            || draft.other.len() != self.questions.len()
+            || draft.comments.len() != self.questions.len()
+            || draft
+                .chosen
+                .iter()
+                .zip(&self.questions)
+                .any(|(selected, q)| selected.iter().any(|&i| i >= q.options.len()))
+            || draft
+                .comments
+                .iter()
+                .zip(&self.questions)
+                .any(|(comments, q)| comments.len() != q.options.len())
+        {
+            return;
+        }
+        self.chosen = draft.chosen;
+        self.other = draft.other;
+        self.comments = draft.comments;
+        for (q, input) in self.other_inputs.iter().enumerate() {
+            let text = self.other[q].clone().unwrap_or_default();
+            input.update(cx, |input, cx| input.set_content(text, cx));
+        }
+        for (q, inputs) in self.comment_inputs.iter().enumerate() {
+            for (o, input) in inputs.iter().enumerate() {
+                let text = self.comments[q][o].clone();
+                input.update(cx, |input, cx| input.set_content(text, cx));
+            }
         }
     }
 
@@ -802,6 +854,54 @@ mod tests {
                 card.other_inputs[3].read(cx).snapshot().content,
                 "saved draft"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn ask_draft_survives_snapshot_and_matching_request(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace.push_test_panel("session-b", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let first = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let second = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(1))
+            .unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        first.update(vcx, |panel, cx| {
+            panel.apply(&event, cx);
+            let card = panel.ask_card.as_mut().unwrap();
+            card.toggle(0, 1);
+            card.comments[0][1] = "important note".into();
+        });
+        let bytes = first.read_with(vcx, |panel, cx| {
+            serde_json::to_vec(&panel.snapshot(cx)).unwrap()
+        });
+        let snapshot: PanelSnapshot = serde_json::from_slice(&bytes).unwrap();
+        second.update(vcx, |panel, cx| {
+            panel.restore_snapshot(snapshot, cx);
+            panel.apply(&event, cx);
+        });
+        second.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.chosen[0], vec![1]);
+            assert_eq!(card.comments[0][1], "important note");
+            assert_eq!(
+                card.comment_inputs[0][1].read(cx).snapshot().content,
+                "important note"
+            );
+        });
+        second.update(vcx, |panel, cx| panel.apply(&event, cx));
+        second.read_with(vcx, |panel, _| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.chosen[0], vec![1]);
+            assert_eq!(card.comments[0][1], "important note");
         });
     }
 

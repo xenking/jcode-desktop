@@ -528,6 +528,8 @@ pub struct PanelSnapshot {
     pub title: String,
     pub working_dir: Option<String>,
     pub draft: PromptInputSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_draft: Option<ask::AskDraft>,
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub stick_to_bottom: bool,
@@ -731,6 +733,7 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    pending_ask_draft: Option<ask::AskDraft>,
     /// `/btw` answer streaming from a hidden fork of this conversation.
     side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
@@ -1221,6 +1224,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            pending_ask_draft: None,
             side_question: None,
             model_picker_open: false,
             picker_search: None,
@@ -1911,6 +1915,11 @@ impl Panel {
             title: self.title.to_string(),
             working_dir: self.working_dir.clone(),
             draft: self.input.read(cx).snapshot(),
+            ask_draft: self
+                .ask_card
+                .as_ref()
+                .map(ask::AskCard::draft)
+                .or_else(|| self.pending_ask_draft.clone()),
             scroll_x: f32::from(offset.x),
             scroll_y: f32::from(offset.y),
             stick_to_bottom: self.stick_to_bottom,
@@ -1939,6 +1948,7 @@ impl Panel {
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
+        self.pending_ask_draft = snapshot.ask_draft;
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
         self.stick_to_bottom = snapshot.stick_to_bottom;
@@ -3138,8 +3148,18 @@ impl Panel {
                 questions,
                 ..
             } => {
+                if self.ask_card.as_ref().is_some_and(|card| {
+                    card.request_id == *request_id && card.questions == *questions
+                }) {
+                    return;
+                }
                 self.ask_card = Some(ask::AskCard::new(request_id.clone(), questions.clone()));
                 self.prepare_ask_inputs(cx);
+                if let (Some(draft), Some(card)) =
+                    (self.pending_ask_draft.take(), self.ask_card.as_mut())
+                {
+                    card.restore_draft(draft, cx);
+                }
                 self.stick_to_bottom = true;
             }
             ApiEvent::RuntimeCommandResult {
