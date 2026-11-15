@@ -279,10 +279,17 @@ impl Workspace {
             .filter(|slot| !slot.closing)
             .map(|slot| slot.panel.entity_id());
         {
-            chips.into_iter().map(|chip| {
+            chips
+                .into_iter()
+                .map(|chip| {
                     let id = format!("sidebar-quota-{}", chip.logo);
                     let selector = id.clone();
-                    let tooltip = chip.tooltip();
+                    let account = accounts
+                        .0
+                        .iter()
+                        .find(|account| account.id == chip.logo && account.status == "available")
+                        .expect("quota chip has a matching account");
+                    let tooltip = crate::panel::usage::quota_card(account, &chip);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => {
                             crate::panel::usage::usage_color(percent, theme)
@@ -312,10 +319,7 @@ impl Workspace {
                         .font_family(theme.FONT_MONO)
                         .text_color(color)
                         .when(chip.cached, |el| el.opacity(0.6))
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone()))
-                                .into()
-                        })
+                        .tooltip(move |_, cx| cx.new(|_| tooltip.clone()).into())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             match source {
@@ -432,6 +436,14 @@ mod tests {
             "the block no longer spells the account name inline"
         );
         assert!(vcx.debug_bounds("sidebar-account-detail").is_none());
+        vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limits-tooltip").is_some());
+        assert!(vcx.debug_bounds("panel-limit-0").is_some());
+        assert!(vcx.debug_bounds("panel-limit-bar-0").is_some());
         assert!(
             vcx.debug_bounds("sidebar-quota").is_none(),
             "no separate quota row above the block"

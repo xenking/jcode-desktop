@@ -308,7 +308,15 @@ impl Render for CachePill {
                     .debug_selector(|| "panel-cache-label".into())
                     .child(label(facts.remaining_secs)),
             )
-            .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(hover.clone())).into())
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    super::usage::RowsTooltip::separated(
+                        "Prompt cache",
+                        hover.strip_prefix("Prompt cache: ").unwrap_or(&hover),
+                    )
+                })
+                .into()
+            })
     }
 }
 

@@ -1,5 +1,5 @@
 //! Compact, session-scoped edit totals shared by regular and swarm sidebar rows.
-use gpui::{Context, IntoElement, Render, SharedString, Window, div, prelude::*, px};
+use gpui::{IntoElement, SharedString, div, prelude::*, px};
 
 use crate::theme::Theme;
 
@@ -19,45 +19,13 @@ pub(super) fn refresh_after(event: &jcode_sdk::ApiEvent) -> bool {
     }
 }
 
-struct EditTooltip(String);
-
-impl Render for EditTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("EditTooltip");
-        div()
-            .debug_selector(|| "sidebar-edits-tooltip".into())
-            .px_3()
-            .py_2()
-            .max_w(px(340.))
-            .rounded_md()
-            .bg(Theme::global().HEADER_BG)
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .text_size(px(11.))
-            .text_color(Theme::global().TEXT_DIM)
-            .child(self.0.clone())
-    }
-}
-
-fn tooltip_text(added: u64, removed: u64, approximate: bool) -> String {
-    format!(
-        "{added} lines added, {removed} lines removed by this session's recorded file edits. Cumulative edits, not the repository's uncommitted diff. Shell commands and external edits are not included.{}",
-        if approximate {
-            " Some historical edits are incomplete, so these counts are approximate."
-        } else {
-            ""
-        }
-    )
-}
-
 pub(super) fn render(
     session_id: &str,
     added: u64,
     removed: u64,
-    approximate: bool,
+    _approximate: bool,
 ) -> gpui::AnyElement {
     let selector = format!("sidebar-edits-{session_id}");
-    let detail = tooltip_text(added, removed, approximate);
     div()
         .id(SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
@@ -67,7 +35,6 @@ pub(super) fn render(
         .gap_1()
         .font_family(Theme::global().FONT_MONO)
         .text_size(px(9.))
-        .tooltip(move |_, cx| cx.new(|_| EditTooltip(detail.clone())).into())
         .child(
             div()
                 .text_color(Theme::global().OK)
@@ -182,12 +149,7 @@ mod tests {
         vcx.executor()
             .advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-edits-tooltip").is_some());
-        let explanation = super::tooltip_text(128, 37, true);
-        assert!(explanation.contains("this session's recorded file edits"));
-        assert!(explanation.contains("not the repository's uncommitted diff"));
-        assert!(explanation.contains("Shell commands and external edits are not included"));
-        assert!(explanation.contains("approximate"));
+        assert!(vcx.debug_bounds("sidebar-edits-tooltip").is_none());
         assert!(vcx.debug_bounds("sidebar-edits-unknown").is_none());
         let first_row = vcx.debug_bounds("sidebar-session-0").unwrap();
         assert!(first_badge.right() <= first_row.right());

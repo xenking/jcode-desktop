@@ -6,6 +6,57 @@ use crate::accounts::{Account, UsageLimit};
 pub(crate) struct StatusAccounts(pub Vec<Account>);
 impl gpui::Global for StatusAccounts {}
 
+/// Compact structured hover for multi-fact sidebar and composer controls.
+pub(crate) struct RowsTooltip {
+    pub(crate) title: String,
+    pub(crate) rows: Vec<String>,
+}
+
+impl RowsTooltip {
+    pub(crate) fn separated(title: impl Into<String>, text: &str) -> Self {
+        Self {
+            title: title.into(),
+            rows: text
+                .lines()
+                .flat_map(|line| line.split(" · "))
+                .filter(|row| !row.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+}
+
+impl Render for RowsTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        div()
+            .debug_selector(|| "rows-tooltip".into())
+            .px_3()
+            .py_2()
+            .min_w(px(180.))
+            .max_w(px(320.))
+            .rounded_xl()
+            .bg(theme.HEADER_BG)
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
+            .text_size(px(11.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_color(theme.TEXT)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(self.title.clone()),
+            )
+            .children(
+                self.rows
+                    .iter()
+                    .map(|row| div().text_color(theme.TEXT_DIM).child(row.clone())),
+            )
+    }
+}
+
 pub(crate) struct MeterTooltip(pub(crate) String);
 impl Render for MeterTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -31,14 +82,17 @@ impl Render for MeterTooltip {
 pub(crate) enum LimitsSummary {
     Limits(Vec<UsageLimit>),
     Unavailable(String),
+    Details(Vec<String>),
 }
 
 /// Hover card for the method pill: the credential name plus one bar per
 /// quota window with its reset time.
 #[allow(dead_code)] // see LimitsSummary
+#[derive(Clone)]
 pub(crate) struct LimitsTooltip {
     pub(crate) method: String,
     pub(crate) summary: LimitsSummary,
+    pub(crate) notes: Vec<String>,
 }
 
 impl Render for LimitsTooltip {
@@ -53,6 +107,15 @@ impl Render for LimitsTooltip {
                     .child(format!("Usage limits unavailable because {reason}."))
                     .into_any_element(),
             ],
+            LimitsSummary::Details(rows) => rows
+                .iter()
+                .map(|row| {
+                    div()
+                        .text_color(theme.TEXT_DIM)
+                        .child(row.clone())
+                        .into_any_element()
+                })
+                .collect(),
             LimitsSummary::Limits(limits) => limits
                 .iter()
                 .enumerate()
@@ -79,6 +142,11 @@ impl Render for LimitsTooltip {
                     .child(self.method.clone()),
             )
             .children(body)
+            .children(
+                self.notes
+                    .iter()
+                    .map(|note| div().text_color(theme.TEXT_FAINT).child(note.clone())),
+            )
     }
 }
 
@@ -113,6 +181,7 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
         )
         .children(used.map(|used| {
             div()
+                .debug_selector(move || format!("panel-limit-bar-{index}"))
                 .w_full()
                 .h(px(4.))
                 .rounded_full()
@@ -148,12 +217,12 @@ pub(crate) fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
 /// Footer pill order. Every credential with a reported figure gets one, and a
 /// credential with nothing to report gets none: a bare logo pill would read as
 /// a broken meter.
-const FOOTER_QUOTA_PROVIDERS: [(&str, &str, &str); 5] = [
-    ("claude", "claude", "Claude"),
-    ("openai", "openai", "Codex"),
-    ("opencode-go", "opencode-go", "OpenCode Go"),
-    ("opencode", "opencode", "OpenCode Zen"),
-    ("openrouter", "openrouter", "OpenRouter"),
+const FOOTER_QUOTA_PROVIDERS: [(&str, &str); 5] = [
+    ("claude", "claude"),
+    ("openai", "openai"),
+    ("opencode-go", "opencode-go"),
+    ("opencode", "opencode"),
+    ("openrouter", "openrouter"),
 ];
 
 /// One compact footer chip per credential: its logo and the figure the
@@ -163,7 +232,6 @@ const FOOTER_QUOTA_PROVIDERS: [(&str, &str, &str); 5] = [
 pub(crate) struct QuotaChip {
     /// Logo id for `accounts::logo`.
     pub(crate) logo: &'static str,
-    pub(crate) provider: &'static str,
     /// `23%` for a quota window, `$12.34` for a balance or spend figure.
     pub(crate) value: String,
     /// Tightest reported window, for the colour ramp. `None` on money chips.
@@ -173,19 +241,45 @@ pub(crate) struct QuotaChip {
     pub(crate) detail: Vec<String>,
 }
 
+/// Build the original limits card from the exact login represented by the chip.
+pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
+    let report = account.active_report();
+    let method = serving_account_label(
+        Some(&account.id),
+        Some(&account.auth_kind),
+        report.and_then(|r| r.account_label.as_deref()),
+    );
+    let limits = account.active_limits().unwrap_or_default();
+    let summary = if limits.iter().any(|limit| limit.usage_percent.is_finite()) {
+        LimitsSummary::Limits(limits.to_vec())
+    } else {
+        LimitsSummary::Details(chip.detail.clone())
+    };
+    let mut notes = Vec::new();
+    if let Some(reset) = report
+        .and_then(|r| r.banked_reset.as_ref())
+        .filter(|r| r.available_count > 0)
+    {
+        let noun = if reset.available_count == 1 {
+            "reset"
+        } else {
+            "resets"
+        };
+        notes.push(format!("{} {noun} banked", reset.available_count));
+    }
+    if chip.cached {
+        notes.push("Cached usage".into());
+    }
+    LimitsTooltip {
+        method,
+        summary,
+        notes,
+    }
+}
+
 impl QuotaChip {
     pub(crate) fn label(&self) -> String {
         self.value.clone()
-    }
-
-    pub(crate) fn tooltip(&self) -> String {
-        let mut lines = vec![format!(
-            "{} usage{}",
-            self.provider,
-            if self.cached { " (cached)" } else { "" }
-        )];
-        lines.extend(self.detail.iter().cloned());
-        lines.join("\n")
     }
 }
 
@@ -202,7 +296,7 @@ fn first_usd(text: &str) -> Option<String> {
 
 pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
     let mut chips = Vec::new();
-    for (id, logo, provider) in FOOTER_QUOTA_PROVIDERS {
+    for (id, logo) in FOOTER_QUOTA_PROVIDERS {
         let Some(account) = accounts
             .iter()
             .find(|account| account.id == id && account.status == "available")
@@ -246,7 +340,6 @@ pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
                 .collect();
             chips.push(QuotaChip {
                 logo,
-                provider,
                 value: format!("{percent:.0}%"),
                 percent: Some(percent),
                 cached,
@@ -279,7 +372,6 @@ pub(crate) fn quota_chips(accounts: &[Account]) -> Vec<QuotaChip> {
         };
         chips.push(QuotaChip {
             logo,
-            provider,
             value,
             percent: None,
             cached,
@@ -295,7 +387,8 @@ impl Panel {
         if crate::harness::remote_host(&self.session_id).is_some() {
             return None;
         }
-        let chips = quota_chips(&cx.try_global::<StatusAccounts>()?.0);
+        let accounts = &cx.try_global::<StatusAccounts>()?.0;
+        let chips = quota_chips(accounts);
         if chips.is_empty() {
             return None;
         }
@@ -313,7 +406,11 @@ impl Panel {
                 .children(chips.into_iter().map(|chip| {
                     let id = format!("panel-quota-{}", chip.logo);
                     let selector = id.clone();
-                    let tip = chip.tooltip();
+                    let account = accounts
+                        .iter()
+                        .find(|account| account.id == chip.logo && account.status == "available")
+                        .expect("quota chip has a matching account");
+                    let tip = quota_card(account, &chip);
                     let color = match chip.percent {
                         Some(percent) if percent >= 70. => usage_color(percent, theme),
                         _ => theme.TEXT_DIM,
@@ -329,7 +426,7 @@ impl Panel {
                         .px_1()
                         .text_color(color)
                         .when(chip.cached, |el| el.opacity(0.6))
-                        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tip.clone())).into())
+                        .tooltip(move |_, cx| cx.new(|_| tip.clone()).into())
                         .children(crate::accounts::logo(chip.logo).map(|bytes| {
                             gpui::svg()
                                 .data(bytes)
@@ -680,6 +777,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quota_card_tracks_the_active_login_and_banked_resets() {
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[["Account label","claude-otter"]],"banked_reset":{"provider":"claude","account_label":"claude-otter","available_count":2,"limit_reached":false}}]}"#,
+        );
+        let chip = quota_chips(&accounts).remove(0);
+        let card = quota_card(&accounts[0], &chip);
+        assert_eq!(card.method, "Anthropic · OAuth · claude-otter");
+        assert_eq!(card.notes, ["2 resets banked"]);
+        let LimitsSummary::Limits(limits) = card.summary else {
+            panic!("quota windows missing")
+        };
+        assert_eq!(limits[0].name, "7-day window");
+        assert_eq!(limits[0].usage_percent, 41.0);
+        assert_eq!(limits[0].reset_in.as_deref(), Some("1d 11h"));
+    }
+
+    #[test]
     fn footer_chips_show_tightest_window_and_tooltip_lists_all() {
         let mut accounts = crate::accounts::parse(r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#).unwrap();
         accounts[0].limits = vec![
@@ -705,10 +824,12 @@ mod tests {
             labels,
             vec![("claude", "28%".into()), ("openai", "99%".into())]
         );
-        assert_eq!(
-            chips[0].tooltip(),
-            "Claude usage\n5-hour window: 0% used, resets in 4h\n7-day window: 28% used, resets in 1d 18h"
-        );
+        let LimitsSummary::Limits(windows) = quota_card(&accounts[0], &chips[0]).summary else {
+            panic!("missing quota windows")
+        };
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].reset_in.as_deref(), Some("4h"));
+        assert_eq!(windows[1].reset_in.as_deref(), Some("1d 18h"));
         // Unreported windows are never fabricated.
         accounts[1].limits[0].usage_percent = f32::NAN;
         assert_eq!(quota_chips(&accounts).len(), 1);
@@ -778,15 +899,13 @@ mod tests {
                 ("openrouter", "$12.34".to_string())
             ]
         );
-        let tooltip = chips[0].tooltip();
-        assert!(
-            tooltip.contains("Rolling window: 23% used, resets in 4h"),
-            "{tooltip}"
-        );
-        assert!(
-            tooltip.contains("Monthly window: 4% used, resets in 30d"),
-            "{tooltip}"
-        );
+        let LimitsSummary::Limits(windows) = quota_card(&accounts[0], &chips[0]).summary else {
+            panic!("missing quota windows")
+        };
+        assert_eq!(windows[0].name, "Rolling window");
+        assert_eq!(windows[0].usage_percent, 23.0);
+        assert_eq!(windows[2].name, "Monthly window");
+        assert_eq!(windows[2].reset_in.as_deref(), Some("30d"));
         // A provider whose usage was never reported paints no bare logo pill.
         assert!(chips.iter().all(|chip| chip.logo != "deepseek"));
     }

@@ -215,6 +215,7 @@ pub(super) fn render_workers(
                 .glyph()
                 .map(|glyph| format!("{glyph:?}").to_ascii_lowercase());
             let tooltip = worker.tooltip();
+            let tooltip_name = worker.name.clone();
             let model = worker.model_label();
             let effort = worker
                 .effort_level()
@@ -246,8 +247,15 @@ pub(super) fn render_workers(
                 .text_size(px(10.5))
                 .text_color(theme.TEXT_DIM)
                 .tooltip(move |_, cx| {
-                    cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone()))
-                        .into()
+                    cx.new(|_| {
+                        crate::panel::usage::RowsTooltip::separated(
+                            tooltip_name.clone(),
+                            tooltip
+                                .strip_prefix(&format!("{} · ", tooltip_name))
+                                .unwrap_or(&tooltip),
+                        )
+                    })
+                    .into()
                 })
                 .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                     window.prevent_default();

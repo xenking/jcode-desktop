@@ -240,8 +240,11 @@ impl Panel {
                 .gap_1()
                 .when(open, |el| el.bg(theme.USER_BG).text_color(theme.TEXT))
                 .tooltip(move |_, cx| {
-                    cx.new(|_| super::usage::MeterTooltip(tooltip.clone()))
-                        .into()
+                    cx.new(|_| super::usage::RowsTooltip {
+                        title: "Workers".into(),
+                        rows: tooltip.lines().map(str::to_owned).collect(),
+                    })
+                    .into()
                 })
                 .on_click(cx.listener(|this, _, _, cx| {
                     cx.stop_propagation();
@@ -290,6 +293,7 @@ impl Panel {
                 // name, the row's tooltip spells the name out, then the model,
                 // what it has spent and what it is doing.
                 let tooltip = worker.tooltip();
+                let tooltip_name = worker.name.clone();
                 let model = worker.model_label();
                 let effort = worker
                     .effort_level()
@@ -317,8 +321,15 @@ impl Panel {
                     .text_size(px(11.0))
                     .text_color(theme.TEXT_DIM)
                     .tooltip(move |_, cx| {
-                        cx.new(|_| super::usage::MeterTooltip(tooltip.clone()))
-                            .into()
+                        cx.new(|_| {
+                            super::usage::RowsTooltip::separated(
+                                tooltip_name.clone(),
+                                tooltip
+                                    .strip_prefix(&format!("{} · ", tooltip_name))
+                                    .unwrap_or(&tooltip),
+                            )
+                        })
+                        .into()
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();

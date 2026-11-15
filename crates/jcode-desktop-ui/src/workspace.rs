@@ -6805,7 +6805,7 @@ impl Workspace {
                                                         .when_some(todo_progress, |line, (done, total)| line.child(
                                                             div()
                                                                 .id(("sidebar-todos", sidebar_index))
-                                                                .flex_none()
+                                                                .flex_none().flex().items_center().gap(px(4.0)).text_size(px(11.0))
                                                                 .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
                                                                 .when(details.is_some(), |el| el.mr_1())
                                                                 .when(done == total, |el| el.text_color(Theme::global().OK))
@@ -6819,7 +6819,10 @@ impl Workspace {
                                                                     this.activate_session(todo_session.clone(), window, cx);
                                                                     this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
                                                                 }))
-                                                                .child(format!("☑ {done}/{total}")),
+                                                                .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
+                                                                    gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(14.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
+                                                                ))
+                                                                .child(format!("{done}/{total}")),
                                                         ))
                                                         .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
                                                             line.child(div().min_w_0().truncate().child(details))
@@ -11018,6 +11021,11 @@ mod tests {
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
                 .is_some()
+        );
+        assert!(
+            vcx.debug_bounds(format!("sidebar-todos-icon-{row}").leak())
+                .is_some(),
+            "todo icon is drawn separately from its count"
         );
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
