@@ -124,6 +124,32 @@ pub(crate) fn stage_states<'a>(
     states
 }
 
+/// The checkout `/selfdev` may open: a Jcode Desktop checkout or the jcode
+/// CLI/daemon checkout. A Desktop session created inside a jcode checkout is
+/// put into self-dev mode by the harness server (`selfdev: true`), so build and
+/// reload go through the daemon's selfdev tool.
+pub(crate) fn selfdev_root(path: &str) -> Option<PathBuf> {
+    checkout_root(path).or_else(|| jcode_repo_root(path))
+}
+
+/// The jcode CLI checkout containing `path`. Matches the harness server's
+/// detector (`Cargo.toml` plus `crates/jcode-base`) and requires the root
+/// package to be `jcode`, so unrelated workspaces are not accepted.
+fn jcode_repo_root(path: &str) -> Option<PathBuf> {
+    if path.trim().is_empty() {
+        return None;
+    }
+    let canonical = Path::new(path).canonicalize().ok()?;
+    canonical.ancestors().find_map(|dir| {
+        if !dir.join("crates/jcode-base").is_dir() {
+            return None;
+        }
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+        let manifest: toml::Value = toml::from_str(&manifest).ok()?;
+        (manifest.get("package")?.get("name")?.as_str()? == "jcode").then(|| dir.to_path_buf())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +211,24 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         assert_eq!(checkout_root(other.path().to_str().unwrap()), None);
         assert_eq!(checkout_root(""), None);
+    }
+
+    #[test]
+    fn selfdev_accepts_jcode_and_desktop_checkouts() {
+        let jcode = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(jcode.path().join("crates/jcode-base/src")).unwrap();
+        std::fs::write(
+            jcode.path().join("Cargo.toml"),
+            "[package]\nname = \"jcode\"\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+        let nested = jcode.path().join("crates/jcode-base/src");
+        let expected = jcode.path().canonicalize().unwrap();
+        assert_eq!(selfdev_root(nested.to_str().unwrap()), Some(expected));
+        assert_eq!(checkout_root(nested.to_str().unwrap()), None);
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(selfdev_root(other.path().to_str().unwrap()), None);
+        assert_eq!(selfdev_root(""), None);
     }
 
     #[test]

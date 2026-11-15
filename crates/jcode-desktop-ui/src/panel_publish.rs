@@ -18,6 +18,15 @@ impl Panel {
 
     /// The checkout this panel can publish, only in Desktop self-development.
     pub(crate) fn publish_checkout(&self) -> Option<std::path::PathBuf> {
+        publish::checkout_root(self.local_conversation_dir()?)
+    }
+
+    /// The checkout `/selfdev` opens: Desktop or jcode CLI self-development.
+    pub(crate) fn selfdev_checkout(&self) -> Option<std::path::PathBuf> {
+        publish::selfdev_root(self.local_conversation_dir()?)
+    }
+
+    fn local_conversation_dir(&self) -> Option<&str> {
         if self.transcript_only
             || self.preview_state.is_some()
             || self.is_side_document()
@@ -26,7 +35,7 @@ impl Panel {
         {
             return None;
         }
-        publish::checkout_root(self.working_dir.as_deref()?)
+        self.working_dir.as_deref()
     }
 
     /// Offline screenshot transcript for a tracker partway through a run.
