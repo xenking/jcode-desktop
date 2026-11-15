@@ -526,6 +526,10 @@ fn remote_startup_is_independent_of_local_runtime_and_promotes_draft(
         );
     });
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send {session_id, content, ..}) if session_id == "ssh://desktop/remote-1" && content == "keep my remote draft")
     );

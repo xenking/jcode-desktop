@@ -261,6 +261,8 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
         "first secon[#image 1]"
     );
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images }) if session_id == "ready" && content == "first secon[#image 1]" && images.len() == 1)
     );
@@ -301,6 +303,10 @@ fn concurrent_drafts_attach_out_of_order_without_stealing_focus(cx: &mut gpui::T
     });
     vcx.simulate_input(" stays focused");
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[2].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "second-ready" && content == "second draft stays focused")
     );
@@ -456,6 +462,10 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     vcx.simulate_keystrokes("end");
     vcx.simulate_input(" after reload");
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[1].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft[#image 1] after reload")
     );
