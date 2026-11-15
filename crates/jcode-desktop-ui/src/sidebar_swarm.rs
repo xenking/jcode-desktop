@@ -1,5 +1,6 @@
 //! Swarm ownership is distinct from transcript ancestry: user forks stay roots.
 use super::*;
+use crate::panel::expandable;
 use jcode_sdk::SessionInfo;
 
 #[derive(Clone)]
@@ -127,6 +128,20 @@ pub(super) fn render_workers(
         .mb(px(2.0))
         .children(workers.iter().enumerate().map(|(index, (depth, worker))| {
             let id = worker.session_id.clone();
+            // The row stays one line while collapsed. A worker whose task name
+            // does not fit gets a chevron that wraps it in place, so the whole
+            // assignment is readable without leaving the sidebar.
+            let expand_key = expandable::key::worker(&worker.session_id);
+            let expanded = cx
+                .entity()
+                .read(&*cx)
+                .expanded_lines
+                .contains(&expand_key);
+            let toggle_key = expand_key.clone();
+            let label_truncated = worker
+                .label
+                .as_deref()
+                .is_some_and(|label| expandable::preview(label, expandable::LABEL).is_some());
             let mark = worker.state.glyph().map(|glyph| {
                 marks.element(
                     &format!("worker:{}", worker.session_id),
@@ -145,10 +160,11 @@ pub(super) fn render_workers(
                 .debug_selector(move || format!("sidebar-worker-{sidebar_index}-{index}"))
                 .ml(px(base + (*depth as f32 - 1.0) * 10.0))
                 .mr(px(crate::scrollbar::GUTTER + 8.0))
-                .h(px(18.0))
+                .min_h(px(18.0))
                 .px_1()
                 .flex()
-                .items_center()
+                .when(expanded, |el| el.items_start().flex_wrap())
+                .when(!expanded, |el| el.items_center())
                 .gap(px(5.0))
                 .rounded_md()
                 .cursor_pointer()
@@ -180,10 +196,23 @@ pub(super) fn render_workers(
                 .children(worker.label.clone().map(|label| {
                     div()
                         .min_w_0()
-                        .truncate()
+                        .when(!expanded, |el| el.truncate())
+                        .when(expanded, |el| el.max_w_full())
                         .text_color(theme.TEXT_FAINT)
                         .child(label)
                 }))
+                .when(label_truncated, |el| {
+                    let key = toggle_key.clone();
+                    el.child(expandable::glyph_toggle(
+                        format!("sidebar-worker-expand-{sidebar_index}-{index}").into(),
+                        expanded,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            expandable::flip(&mut this.expanded_lines, &key);
+                            cx.notify();
+                        }),
+                    ))
+                })
                 .child(div().flex_1())
                 .child(
                     div()

@@ -792,6 +792,9 @@ pub struct Workspace {
     tutorial_page: usize,
     onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
+    /// Truncated workspace text the user opened: a worker label, a coach
+    /// hint. Runtime-only UI state, never part of the saved layout.
+    expanded_lines: HashSet<String>,
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
@@ -1138,6 +1141,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -1558,6 +1562,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,

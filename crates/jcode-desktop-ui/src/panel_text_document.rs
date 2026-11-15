@@ -238,10 +238,15 @@ pub(super) fn segments_with_display(
                 }
             }
         }
-        Item::Error(message) => push(
-            format!("{index}-error"),
-            recovery::native_error_message(message),
-        ),
+        Item::Error(message) => {
+            push(
+                format!("{index}-error"),
+                recovery::native_error_message(message),
+            );
+            if open.details {
+                push(format!("{index}-error-raw"), message.clone());
+            }
+        }
         Item::Stopped(notice) => {
             if notice.shows_error() {
                 push(

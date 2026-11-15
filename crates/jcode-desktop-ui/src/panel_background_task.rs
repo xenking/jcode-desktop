@@ -25,13 +25,14 @@ pub(super) fn render(
     summary: &str,
     percent: Option<f32>,
     done: bool,
+    expanded: bool,
     selection: &Entity<TextSelection>,
     window: &Window,
     cx: &App,
 ) -> impl IntoElement {
     let theme = Theme::global();
     if done {
-        return completed_card(index, task_id, label, summary, selection, window, cx)
+        return completed_card(index, task_id, label, summary, expanded, selection, window, cx)
             .into_any_element();
     }
     let details = format!(
@@ -47,10 +48,12 @@ pub(super) fn render(
         .debug_selector(|| "background-task-card".into())
         .flex()
         .flex_none()
-        .items_center()
+        .when(expanded, |el| el.flex_col().items_start())
+        .when(!expanded, |el| el.items_center())
         .gap_2()
         .min_w_0()
-        .h(px(24.0))
+        .when(expanded, |el| el.min_h(px(24.0)))
+        .when(!expanded, |el| el.h(px(24.0)))
         .px_1()
         .text_size(px(11.0))
         .tooltip(move |_, cx| cx.new(|_| TaskTooltip(details.clone())).into())
@@ -62,9 +65,10 @@ pub(super) fn render(
         )
         .child(
             div()
-                .max_w(relative(0.4))
+                .when(expanded, |el| el.w_full())
+                .when(!expanded, |el| el.max_w(relative(0.4)))
                 .min_w_0()
-                .truncate()
+                .when(!expanded, |el| el.truncate())
                 .text_color(theme.TOOL_TEXT)
                 .child(text_selection::plain(
                     selection.clone(),
@@ -78,7 +82,7 @@ pub(super) fn render(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .when(!expanded, |el| el.truncate())
                 .text_color(theme.TEXT_DIM)
                 .child(text_selection::plain(
                     selection.clone(),
@@ -147,6 +151,7 @@ fn completed_card(
     _task_id: &str,
     label: &str,
     summary: &str,
+    expanded: bool,
     selection: &Entity<TextSelection>,
     window: &Window,
     cx: &App,
@@ -155,13 +160,16 @@ fn completed_card(
     // wrapper and the completed marker on the row itself.
     div()
         .debug_selector(|| "background-task-card".into())
-        .child(completed_row(index, label, summary, selection, window, cx))
+        .child(completed_row(
+            index, label, summary, expanded, selection, window, cx,
+        ))
 }
 
 fn completed_row(
     index: usize,
     label: &str,
     summary: &str,
+    expanded: bool,
     selection: &Entity<TextSelection>,
     window: &Window,
     cx: &App,
@@ -172,7 +180,8 @@ fn completed_row(
         .debug_selector(|| "background-task-completed".into())
         .flex()
         .flex_none()
-        .items_center()
+        .when(expanded, |el| el.flex_col().items_start())
+        .when(!expanded, |el| el.items_center())
         .gap_2()
         .min_w_0()
         .py_1()
@@ -181,7 +190,7 @@ fn completed_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .when(!expanded, |el| el.truncate())
                 .text_size(px(13.0))
                 .text_color(theme.TOOL_TEXT)
                 .child(text_selection::plain(

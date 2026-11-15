@@ -127,6 +127,14 @@ impl Panel {
             .enumerate()
             .map(|(index, worker)| {
                 let id = worker.session_id.clone();
+                // A worker's task name can be a whole sentence. Keep one line
+                // while collapsed and wrap it in place from the chevron.
+                let expand_key = expandable::key::worker(&worker.session_id);
+                let expanded = self.expanded_regions.contains(&expand_key);
+                let toggle_key = expand_key.clone();
+                let label_truncated = worker.label.as_deref().is_some_and(|label| {
+                    expandable::preview(label, expandable::LABEL).is_some()
+                });
                 let mark = worker.state.glyph().map(|glyph| {
                     self.swarm_marks.element(
                         &format!("worker:{}", worker.session_id),
@@ -137,7 +145,8 @@ impl Panel {
                 div()
                     .id(("swarm-list-worker", index))
                     .debug_selector(move || format!("swarm-list-worker-{index}"))
-                    .h(px(20.0))
+                    .min_h(px(20.0))
+                    .when(expanded, |el| el.items_start().flex_wrap())
                     .px_2()
                     .flex()
                     .items_center()
@@ -158,10 +167,24 @@ impl Panel {
                     .children(worker.label.clone().map(|label| {
                         div()
                             .min_w_0()
-                            .truncate()
+                            .when(!expanded, |el| el.truncate())
+                            .when(expanded, |el| el.max_w_full())
                             .text_color(theme.TEXT_FAINT)
                             .child(label)
                     }))
+                    .when(label_truncated, |el| {
+                        let key = toggle_key.clone();
+                        el.child(expandable::glyph_toggle(
+                            format!("swarm-list-worker-expand-{index}").into(),
+                            expanded,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                expandable::flip(&mut this.expanded_regions, &key);
+                                this.transcript_measurements.dirty = true;
+                                cx.notify();
+                            }),
+                        ))
+                    })
                     .child(div().flex_1())
                     .child(
                         div()

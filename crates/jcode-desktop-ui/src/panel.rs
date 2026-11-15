@@ -105,7 +105,7 @@ mod effort_switch;
 // One disclosure model for every truncated line: tool titles, errors, output,
 // prompts, notices, background tasks and swarm lines.
 #[path = "expandable.rs"]
-pub(super) mod expandable;
+pub(crate) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -3997,18 +3997,50 @@ impl Panel {
                 summary,
                 percent,
                 done,
-            } => background_task::render(
-                index,
-                task_id,
-                label,
-                summary,
-                *percent,
-                *done,
-                &self.transcript_selection,
-                window,
-                cx,
-            )
-            .into_any_element(),
+            } => {
+                // The row keeps one line while collapsed and wraps to the whole
+                // label and summary when the user opens it.
+                let key = expandable::key::task(task_id);
+                let expanded = self.expanded_regions.contains(&key);
+                let toggle_key = key.clone();
+                div()
+                    .id(("background-task-toggle", index))
+                    .debug_selector(|| "background-task-expand".into())
+                    .flex_none()
+                    .min_w_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        this.toggle_line(&toggle_key, cx);
+                    }))
+                    .child(background_task::render(
+                        index,
+                        task_id,
+                        label,
+                        summary,
+                        *percent,
+                        *done,
+                        expanded,
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    ))
+                    // The label is selectable text, so the row also carries an
+                    // explicit chevron: a click on the text still toggles, and
+                    // so does a click on the control.
+                    .child({
+                        let key = key.clone();
+                        expandable::glyph_toggle(
+                            format!("background-task-chevron-{index}").into(),
+                            expanded,
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_line(&key, cx);
+                            }),
+                        )
+                    })
+                    .into_any_element()
+            }
             Item::Tool {
                 call_id,
                 name,
@@ -6935,6 +6967,9 @@ fn acknowledge_next(
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
 #[cfg(test)]
+#[path = "panel_expandable_tests.rs"]
+mod expandable_tests;
+#[cfg(test)]
 #[path = "panel_image_flicker_tests.rs"]
 mod image_flicker_tests;
 #[cfg(test)]
@@ -7665,13 +7700,15 @@ mod tests {
         assert!(detail.contains("\"a\": 1"));
         assert!(detail.contains("\n\nOutput\nline1\nline2"));
         assert!(detail.contains("line2"));
-        let long: String = (0..50).map(|n| format!("l{n}\n")).collect();
-        let clipped = tool_detail("bash", "{}", &long);
-        assert!(clipped.contains("Tool call\nbash\n{}"));
-        assert!(clipped.contains("lines hidden"));
-        // The tail survives: results and errors live at the end of output.
-        assert!(clipped.contains("l49"));
-        assert!(clipped.contains("l0"));
+        // Nothing is dropped from the middle: the painted region scrolls and
+        // Copy keeps every line, so the detail is the complete output.
+        let long: String = (0..500).map(|n| format!("l{n}\n")).collect();
+        let detail = tool_detail("bash", "{}", &long);
+        assert!(detail.contains("Tool call\nbash\n{}"));
+        for n in [0, 250, 499] {
+            assert!(detail.contains(&format!("l{n}")), "line {n} is kept");
+        }
+        assert!(!detail.contains("lines hidden"));
     }
 
     #[test]
@@ -8780,7 +8817,9 @@ mod tests {
         assert!(rendered.contains("\"command\": \"make build\""));
         assert!(rendered.contains("\n\nOutput\n"));
         assert!(rendered.contains("line 0") && rendered.contains("line 59"));
-        assert!(rendered.contains("lines hidden"));
+        // The complete output is reachable now, not a 40-line window around a
+        // `lines hidden` marker.
+        assert!(!rendered.contains("lines hidden"));
 
         // Clicking the header or output card leaves it open.
         // The compact header's center may land on the token button.

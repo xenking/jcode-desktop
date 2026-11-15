@@ -12,36 +12,36 @@ use super::*;
 
 /// How much of a text a collapsed region shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Budget {
+pub(crate) struct Budget {
     chars: usize,
     lines: usize,
 }
 
 impl Budget {
-    pub(super) const fn new(chars: usize, lines: usize) -> Self {
+    pub(crate) const fn new(chars: usize, lines: usize) -> Self {
         Self { chars, lines }
     }
 }
 
 /// A one-row tool title.
-pub(super) const TITLE: Budget = Budget::new(90, 1);
+pub(crate) const TITLE: Budget = Budget::new(90, 1);
 /// A tool error: the opening claim plus its first wrapped lines.
-pub(super) const ERROR: Budget = Budget::new(300, 4);
+pub(crate) const ERROR: Budget = Budget::new(300, 4);
 /// A notice or swarm line that reads as prose.
-pub(super) const NOTICE: Budget = Budget::new(200, 2);
+pub(crate) const NOTICE: Budget = Budget::new(200, 2);
 /// A dense sidebar or strip label.
-pub(super) const LABEL: Budget = Budget::new(60, 1);
+pub(crate) const LABEL: Budget = Budget::new(60, 1);
 
 /// Expanded text taller than this scrolls inside the card instead of pushing
 /// the rest of the transcript off screen.
-pub(super) const MAX_HEIGHT: f32 = 320.;
+pub(crate) const MAX_HEIGHT: f32 = 320.;
 /// Expanded text longer than this many lines is painted up to this point and
 /// the copy control carries the remainder, so one huge tool result cannot make
 /// the transcript lay out millions of glyphs.
-pub(super) const MAX_LINES: usize = 400;
+pub(crate) const MAX_LINES: usize = 400;
 
 /// The prefix painted while collapsed, or `None` when the complete text fits.
-pub(super) fn preview(text: &str, budget: Budget) -> Option<&str> {
+pub(crate) fn preview(text: &str, budget: Budget) -> Option<&str> {
     let mut lines = 1;
     for (characters, (byte, ch)) in text.char_indices().enumerate() {
         if characters >= budget.chars || (ch == '\n' && lines >= budget.lines) {
@@ -55,13 +55,13 @@ pub(super) fn preview(text: &str, budget: Budget) -> Option<&str> {
 }
 
 /// The collapsed text with its trailing ellipsis, or `None` when it all fits.
-pub(super) fn collapsed(text: &str, budget: Budget) -> Option<String> {
+pub(crate) fn collapsed(text: &str, budget: Budget) -> Option<String> {
     preview(text, budget).map(|prefix| format!("{}…", prefix.trim_end()))
 }
 
 /// The body painted inside an expanded region, and how many lines only the
 /// copy control keeps.
-pub(super) fn expanded_body(text: &str) -> (String, usize) {
+pub(crate) fn expanded_body(text: &str) -> (String, usize) {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= MAX_LINES {
         return (lines.join("\n"), 0);
@@ -71,21 +71,21 @@ pub(super) fn expanded_body(text: &str) -> (String, usize) {
 
 /// Which disclosure controls a transcript row currently has open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Open {
+pub(crate) struct Open {
     /// The prompt bubble shows its complete markdown.
-    pub(super) prompt: bool,
+    pub(crate) prompt: bool,
     /// A tool card shows its complete title, error and output.
-    pub(super) card: bool,
+    pub(crate) card: bool,
     /// A stop, cache-miss or connection notice shows its complete detail.
-    pub(super) notice: bool,
+    pub(crate) notice: bool,
     /// An error card shows the provider's raw message, or a background task
     /// and swarm line show their complete text.
-    pub(super) details: bool,
+    pub(crate) details: bool,
 }
 
 impl Open {
     /// The disclosure state a row paints from the region keys the panel holds.
-    pub(super) fn for_row(
+    pub(crate) fn for_row(
         regions: &HashSet<String>,
         item: &Item,
         index: usize,
@@ -107,46 +107,42 @@ impl Open {
 
     /// Packed into the low bits of a text-document fingerprint, so a settled
     /// row still notices when only its disclosure changed.
-    pub(super) fn bits(self) -> u64 {
+    pub(crate) fn bits(self) -> u64 {
         u64::from(self.prompt)
             | u64::from(self.card) << 1
             | u64::from(self.notice) << 2
             | u64::from(self.details) << 3
     }
 
-    pub(super) const MASK: u64 = 0b1111;
+    pub(crate) const MASK: u64 = 0b1111;
 }
 
 /// Region keys. A tool card is keyed by its call id, everything else by its
 /// row, so state survives row movement and never collides.
-pub(super) mod key {
-    pub(super) fn notice(index: usize) -> String {
+pub(crate) mod key {
+    pub(crate) fn notice(index: usize) -> String {
         format!("notice:{index}")
     }
 
-    pub(super) fn details(index: usize) -> String {
+    pub(crate) fn details(index: usize) -> String {
         format!("details:{index}")
     }
 
-    pub(super) fn task(task_id: &str) -> String {
+    pub(crate) fn task(task_id: &str) -> String {
         format!("task:{task_id}")
     }
 
-    pub(super) fn swarm(label: &str) -> String {
-        format!("swarm:{label}")
-    }
-
-    pub(super) fn worker(session_id: &str) -> String {
+    pub(crate) fn worker(session_id: &str) -> String {
         format!("worker:{session_id}")
     }
 
-    pub(super) fn toast(id: &str) -> String {
+    pub(crate) fn toast(id: &str) -> String {
         format!("toast:{id}")
     }
 }
 
 /// Flip one region open or closed and report the new state.
-pub(super) fn flip(regions: &mut HashSet<String>, key: &str) -> bool {
+pub(crate) fn flip(regions: &mut HashSet<String>, key: &str) -> bool {
     if regions.remove(key) {
         false
     } else {
@@ -157,7 +153,7 @@ pub(super) fn flip(regions: &mut HashSet<String>, key: &str) -> bool {
 
 /// The disclosure control. Every truncated surface uses it, so one gesture and
 /// one set of words expands a prompt, a tool card and a notice.
-pub(super) fn toggle(
+pub(crate) fn toggle(
     id: SharedString,
     expanded: bool,
     closed: &'static str,
@@ -184,7 +180,7 @@ pub(super) fn toggle(
 }
 
 /// A chevron-only control for rows too dense for words.
-pub(super) fn glyph_toggle(
+pub(crate) fn glyph_toggle(
     id: SharedString,
     expanded: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -211,7 +207,7 @@ pub(super) fn glyph_toggle(
 
 /// Expanded text in a bounded, scrollable region so a long tool result stays
 /// inside its card.
-pub(super) fn scrolled(
+pub(crate) fn scrolled(
     id: SharedString,
     max_height: f32,
     body: gpui::AnyElement,
@@ -284,7 +280,6 @@ mod tests {
             key::notice(3),
             key::details(3),
             key::task("3"),
-            key::swarm("3"),
             key::worker("3"),
             key::toast("3"),
         ];
