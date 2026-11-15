@@ -259,6 +259,23 @@ pub enum Command {
         content: String,
         images: Vec<(String, String)>,
     },
+    QueuePrompt {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+    },
+    SetQueuedPromptMode {
+        session_id: String,
+        client_id: String,
+        mode: jcode_sdk::api::QueuedPromptMode,
+    },
+    InterruptQueuedPrompt {
+        session_id: String,
+        client_id: String,
+    },
+    CancelQueuedPrompt {
+        session_id: String,
+        client_id: String,
+    },
     Cancel {
         session_id: String,
     },
@@ -378,6 +395,10 @@ enum SessionCommand {
         content: String,
         images: Vec<(String, String)>,
     },
+    QueuePrompt(jcode_sdk::api::QueuedPrompt),
+    SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
+    InterruptQueuedPrompt(String),
+    CancelQueuedPrompt(String),
     /// Send a side question with its steering hidden from the transcript.
     SendSideQuestion {
         question: String,
@@ -1174,6 +1195,48 @@ fn run_with_transports(
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
+            }
+            Command::QueuePrompt { session_id, prompt } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::QueuePrompt(prompt),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SetQueuedPromptMode {
+                session_id,
+                client_id,
+                mode,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SetQueuedPromptMode(client_id, mode),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::InterruptQueuedPrompt {
+                session_id,
+                client_id,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::InterruptQueuedPrompt(client_id),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::CancelQueuedPrompt {
+                session_id,
+                client_id,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::CancelQueuedPrompt(client_id),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
             }
             Command::Cancel { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
@@ -2448,6 +2511,17 @@ fn session_worker_with_connector(
 
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
+        if client.supports("queued_prompts")
+            && let Ok(prompts) = client.get_queued_prompts(real_id)
+        {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::QueuedPrompts {
+                    session_id: session_id.clone(),
+                    prompts,
+                },
+            });
+        }
 
         // Identity for the panel's status footer: which model and provider are
         // serving this session, and through which credential route. Delivered
@@ -2519,6 +2593,47 @@ fn session_worker_with_connector(
                                 reason: format!(
                                     "Signed in, but this session could not switch to the new account: {error}"
                                 ),
+                            });
+                        }
+                    }
+                    SessionCommand::QueuePrompt(prompt) => {
+                        if let Err(error) = client.queue_prompt(real_id, prompt) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Queued prompt not confirmed: {error}"),
+                            });
+                        }
+                    }
+                    SessionCommand::SetQueuedPromptMode(client_id, mode) => {
+                        if let Err(error) = client.set_queued_prompt_mode(real_id, &client_id, mode)
+                        {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::InterruptQueuedPrompt(client_id) => {
+                        if let Err(error) = client.interrupt_queued_prompt(real_id, &client_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::CancelQueuedPrompt(client_id) => {
+                        if let Err(error) = client.cancel_soft_interrupt(real_id, &client_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        } else if let Ok(prompts) = client.get_queued_prompts(real_id) {
+                            let _ = updates.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::QueuedPrompts {
+                                    session_id: session_id.clone(),
+                                    prompts,
+                                },
                             });
                         }
                     }

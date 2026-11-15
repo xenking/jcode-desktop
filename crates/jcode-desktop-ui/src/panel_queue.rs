@@ -23,6 +23,15 @@ pub struct PromptQueue {
     /// transcript, until `soft_interrupt_injected` says they were delivered.
     #[serde(skip)]
     steered: Vec<QueuedPrompt>,
+    /// Durable server state plus submissions not yet acknowledged in a snapshot.
+    #[serde(skip)]
+    remote: Vec<jcode_sdk::api::QueuedPrompt>,
+    #[serde(skip)]
+    remote_supported: bool,
+    #[serde(default)]
+    pending_remote: Vec<jcode_sdk::api::QueuedPrompt>,
+    #[serde(default)]
+    default_after_yield: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,11 +43,20 @@ struct QueuedPrompt {
 impl Panel {
     pub(super) fn has_queued_prompts(&self) -> bool {
         !self.prompt_queue.prompts.is_empty()
+            || !self.prompt_queue.remote.is_empty()
+            || !self.prompt_queue.pending_remote.is_empty()
     }
 
     /// Prompts handed to the runtime as steering and not yet delivered.
     pub(crate) fn steered_prompt_count(&self) -> usize {
         self.prompt_queue.steered.len()
+            + self
+                .prompt_queue
+                .remote
+                .iter()
+                .chain(&self.prompt_queue.pending_remote)
+                .filter(|prompt| prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer)
+                .count()
     }
 
     /// True when a send goes to a turn that is already running, so the model
@@ -136,6 +154,41 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.prompt_queue.remote_supported
+            && !self.is_pending_session()
+            && self.activity_active()
+            && !self.prompt_queue.waiting_for_connection
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            let id = format!(
+                "desktop-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            );
+            let prompt = jcode_sdk::api::QueuedPrompt {
+                client_id: id,
+                content,
+                images,
+                mode: if queued || self.prompt_queue.default_after_yield {
+                    jcode_sdk::api::QueuedPromptMode::AfterYield
+                } else {
+                    jcode_sdk::api::QueuedPromptMode::Steer
+                },
+            };
+            self.prompt_queue.pending_remote.push(prompt.clone());
+            self.bridge.send(Command::QueuePrompt {
+                session_id: self.session_id.clone(),
+                prompt,
+            });
+            crate::sounds::play(crate::sounds::Cue::Sent, cx);
+            cx.notify();
+            return;
+        }
         if self.is_pending_session()
             || self.prompt_queue.waiting_for_connection
             || (queued && (self.activity_active() || !self.pending_users.is_empty()))
@@ -187,7 +240,9 @@ impl Panel {
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
             // take it once the model has seen it.
-            self.prompt_queue.steered.push(QueuedPrompt { content, images });
+            self.prompt_queue
+                .steered
+                .push(QueuedPrompt { content, images });
             crate::sounds::play(crate::sounds::Cue::Sent, cx);
             return;
         }
@@ -206,6 +261,48 @@ impl Panel {
     }
 
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        match event {
+            ApiEvent::QueuedPrompts { prompts, .. } => {
+                self.prompt_queue.remote_supported = true;
+                self.prompt_queue
+                    .pending_remote
+                    .retain(|pending| !prompts.iter().any(|p| p.client_id == pending.client_id));
+                self.prompt_queue.remote = prompts.clone();
+            }
+            ApiEvent::SoftInterruptInjected {
+                client_ids,
+                display_role: None,
+                ..
+            } if !client_ids.is_empty() => {
+                let mut delivered = Vec::new();
+                self.prompt_queue.remote.retain(|prompt| {
+                    if client_ids.contains(&prompt.client_id) {
+                        delivered.push(prompt.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.prompt_queue.pending_remote.retain(|prompt| {
+                    if client_ids.contains(&prompt.client_id) {
+                        if !delivered.iter().any(|p| p.client_id == prompt.client_id) {
+                            delivered.push(prompt.clone());
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if !delivered.is_empty() {
+                    self.flush_reasoning();
+                    self.flush_streaming();
+                }
+                for prompt in delivered {
+                    self.push_user_prompt(prompt.content, prompt.images);
+                }
+            }
+            _ => {}
+        }
         self.observe_steered_prompts(event);
         self.prompt_queue.auto_poke.observe(event);
         match event {
@@ -325,9 +422,10 @@ impl Panel {
     /// Everything waiting above the composer: prompts already handed to the
     /// runtime as steering, then prompts held back until the turn ends.
     pub(super) fn render_prompt_queue(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let remote = self.render_remote_prompts(cx);
         let steered = self.render_steered_prompts();
         let waiting = self.render_waiting_prompts(cx);
-        if steered.is_none() && waiting.is_none() {
+        if remote.is_none() && steered.is_none() && waiting.is_none() {
             return None;
         }
         Some(
@@ -337,8 +435,126 @@ impl Panel {
                 .flex_col()
                 .gap_2()
                 .min_w_0()
+                .children(remote)
                 .children(steered)
                 .children(waiting)
+                .into_any_element(),
+        )
+    }
+
+    fn render_remote_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.prompt_queue.remote_supported
+            || (!self.activity_active()
+                && self.prompt_queue.remote.is_empty()
+                && self.prompt_queue.pending_remote.is_empty())
+        {
+            return None;
+        }
+        let theme = Theme::global();
+        let default = if self.prompt_queue.default_after_yield {
+            "Follow-up"
+        } else {
+            "Steer"
+        };
+        let rows = self
+            .prompt_queue
+            .remote
+            .iter()
+            .map(|prompt| (prompt, false))
+            .chain(
+                self.prompt_queue
+                    .pending_remote
+                    .iter()
+                    .map(|prompt| (prompt, true)),
+            );
+        Some(
+            div()
+                .id("daemon-prompt-queue")
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .mx_2()
+                .p_2()
+                .rounded_md()
+                .bg(theme.TOOL_BG)
+                .text_size(px(12.))
+                .text_color(theme.TEXT_DIM)
+                .child(
+                    div()
+                        .id("queue-default-mode")
+                        .cursor_pointer()
+                        .child(format!("Default: {default} ▾"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.prompt_queue.default_after_yield =
+                                !this.prompt_queue.default_after_yield;
+                            cx.notify();
+                        })),
+                )
+                .children(rows.map(|(prompt, pending)| {
+                    let id = prompt.client_id.clone();
+                    let id2 = id.clone();
+                    let retry = prompt.clone();
+                    let mode = prompt.mode;
+                    let label = match mode {
+                        jcode_sdk::api::QueuedPromptMode::Steer => "Steer",
+                        jcode_sdk::api::QueuedPromptMode::AfterYield => "Follow-up",
+                    };
+                    let next = match mode {
+                        jcode_sdk::api::QueuedPromptMode::Steer => {
+                            jcode_sdk::api::QueuedPromptMode::AfterYield
+                        }
+                        jcode_sdk::api::QueuedPromptMode::AfterYield => {
+                            jcode_sdk::api::QueuedPromptMode::Steer
+                        }
+                    };
+                    div()
+                        .id(SharedString::from(format!("daemon-queued-{id}")))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("queue-mode-{id}")))
+                                .cursor_pointer()
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    if !pending {
+                                        this.bridge.send(Command::SetQueuedPromptMode {
+                                            session_id: this.session_id.clone(),
+                                            client_id: id.clone(),
+                                            mode: next,
+                                        });
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(steered_preview(&prompt.content, prompt.images.len())),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("queue-interrupt-{id2}")))
+                                .cursor_pointer()
+                                .child(if pending { "Retry" } else { "Interrupt ↵" })
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    if pending {
+                                        this.bridge.send(Command::QueuePrompt {
+                                            session_id: this.session_id.clone(),
+                                            prompt: retry.clone(),
+                                        });
+                                    } else {
+                                        this.bridge.send(Command::InterruptQueuedPrompt {
+                                            session_id: this.session_id.clone(),
+                                            client_id: id2.clone(),
+                                        });
+                                    }
+                                })),
+                        )
+                }))
                 .into_any_element(),
         )
     }
@@ -369,26 +585,32 @@ impl Panel {
                 .gap_1()
                 .text_size(px(12.))
                 .text_color(theme.TEXT_DIM)
-                .children(steered.iter().take(SHOWN).enumerate().map(|(index, prompt)| {
-                    let preview = steered_preview(&prompt.content, prompt.images.len());
-                    div()
-                        .debug_selector(move || format!("steered-prompt-{index}"))
-                        .flex()
-                        .flex_none()
-                        .min_w_0()
-                        .items_center()
-                        .gap_2()
-                        .child(div().flex_none().child("queued ⏎"))
-                        .child(div().flex_1().min_w_0().truncate().child(preview))
-                        .when(index == 0 && count > 1, |row| {
-                            row.child(
-                                div()
-                                    .debug_selector(|| "steered-count".into())
-                                    .flex_none()
-                                    .child(format!("⏎ {count}")),
-                            )
-                        })
-                }))
+                .children(
+                    steered
+                        .iter()
+                        .take(SHOWN)
+                        .enumerate()
+                        .map(|(index, prompt)| {
+                            let preview = steered_preview(&prompt.content, prompt.images.len());
+                            div()
+                                .debug_selector(move || format!("steered-prompt-{index}"))
+                                .flex()
+                                .flex_none()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .child(div().flex_none().child("queued ⏎"))
+                                .child(div().flex_1().min_w_0().truncate().child(preview))
+                                .when(index == 0 && count > 1, |row| {
+                                    row.child(
+                                        div()
+                                            .debug_selector(|| "steered-count".into())
+                                            .flex_none()
+                                            .child(format!("⏎ {count}")),
+                                    )
+                                })
+                        }),
+                )
                 .when(count > SHOWN, |el| {
                     el.child(div().child(format!("+{} more queued", count - SHOWN)))
                 })

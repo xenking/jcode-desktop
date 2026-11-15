@@ -1,6 +1,49 @@
 use super::*;
 use serde_json::json;
 
+#[gpui::test]
+fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
+        panel.submit_or_queue("steer me".into(), vec![], false, cx);
+        panel.submit_or_queue("afterwards".into(), vec![], true, cx);
+    });
+    let first = match commands.try_recv().unwrap() {
+        Command::QueuePrompt { prompt, .. } => prompt,
+        _ => panic!("expected queued prompt"),
+    };
+    let second = match commands.try_recv().unwrap() {
+        Command::QueuePrompt { prompt, .. } => prompt,
+        _ => panic!("expected queued prompt"),
+    };
+    assert_eq!(first.mode, jcode_sdk::api::QueuedPromptMode::Steer);
+    assert_eq!(second.mode, jcode_sdk::api::QueuedPromptMode::AfterYield);
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[first, second]})), cx);
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"steer me", "point":"D", "client_ids":[first.client_id]})), cx);
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"steer me", "point":"D", "client_ids":[first.client_id]})), cx);
+    });
+    panel.read_with(cx, |panel, _| {
+        assert_eq!(panel.prompt_queue.remote.len(), 1);
+        assert!(panel.prompt_queue.pending_remote.is_empty());
+        assert_eq!(
+            panel
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::User(text) if text == "steer me"))
+                .count(),
+            1
+        );
+    });
+}
+
 fn event(mut value: serde_json::Value) -> ApiEvent {
     if value.get("session_id").is_none() {
         value["session_id"] = json!("queue-test");
@@ -592,7 +635,10 @@ fn steered_panel<'a>(
         p.items.push(Item::User("First request".into()));
         p.pending_users.push_back(0);
         p.apply(&event(json!({"ev":"message_accepted"})), cx);
-        p.apply(&event(json!({"ev":"text_delta", "text":"Working on it"})), cx);
+        p.apply(
+            &event(json!({"ev":"text_delta", "text":"Working on it"})),
+            cx,
+        );
         p
     });
     (panel, vcx, commands)
@@ -624,13 +670,19 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
         .expect("queued row must render immediately");
     let input = vcx.debug_bounds("prompt-input").unwrap();
     assert!(row.bottom() <= input.top(), "row sits above the composer");
-    assert!(vcx.debug_bounds("steered-count").is_none(), "one message needs no count");
+    assert!(
+        vcx.debug_bounds("steered-count").is_none(),
+        "one message needs no count"
+    );
 
     panel.update(vcx, |p, cx| {
         p.submit_or_queue("and this too".into(), vec![], false, cx)
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("steered-count").is_some(), "count marker with two");
+    assert!(
+        vcx.debug_bounds("steered-count").is_some(),
+        "count marker with two"
+    );
 
     // Delivered: both become one transcript pass, after the streamed text.
     panel.update(vcx, |p, cx| {
@@ -665,9 +717,7 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
 }
 
 #[gpui::test]
-fn two_steered_messages_are_queued_or_in_the_transcript_never_both(
-    cx: &mut gpui::TestAppContext,
-) {
+fn two_steered_messages_are_queued_or_in_the_transcript_never_both(cx: &mut gpui::TestAppContext) {
     fn user_texts(panel: &Panel) -> Vec<&str> {
         panel
             .items
@@ -690,7 +740,11 @@ fn two_steered_messages_are_queued_or_in_the_transcript_never_both(
     // Before the runtime injects, the text lives only in the queued rows.
     panel.read_with(vcx, |p, _| {
         assert_eq!(p.steered_prompt_count(), 2);
-        assert_eq!(user_texts(p), ["First request"], "queued text is not a message yet");
+        assert_eq!(
+            user_texts(p),
+            ["First request"],
+            "queued text is not a message yet"
+        );
     });
     assert!(vcx.debug_bounds("steered-prompt-0").is_some());
     assert!(vcx.debug_bounds("steered-prompt-1").is_some());
@@ -761,24 +815,36 @@ fn steered_row_does_not_appear_when_idle_and_survives_no_turn_end(cx: &mut gpui:
         p.status = "idle".into();
         p
     });
-    panel.update(vcx, |p, cx| p.submit_or_queue("hello".into(), vec![], false, cx));
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("hello".into(), vec![], false, cx)
+    });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("steered-prompt-0").is_none());
     panel.read_with(vcx, |p, _| {
         assert_eq!(p.steered_prompt_count(), 0);
-        assert!(p.items.iter().any(|item| matches!(item, Item::User(t) if t == "hello")));
+        assert!(
+            p.items
+                .iter()
+                .any(|item| matches!(item, Item::User(t) if t == "hello"))
+        );
     });
 }
 
 #[gpui::test]
 fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestAppContext) {
     let (panel, vcx, _commands) = steered_panel(cx, "steer-end");
-    panel.update(vcx, |p, cx| p.submit_or_queue("late note".into(), vec![], false, cx));
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("late note".into(), vec![], false, cx)
+    });
     panel.update(vcx, |p, cx| {
         p.apply(&event(json!({"ev":"turn_done"})), cx);
     });
     panel.read_with(vcx, |p, _| {
         assert_eq!(p.steered_prompt_count(), 0);
-        assert!(p.items.iter().any(|item| matches!(item, Item::User(t) if t == "late note")));
+        assert!(
+            p.items
+                .iter()
+                .any(|item| matches!(item, Item::User(t) if t == "late note"))
+        );
     });
 }
