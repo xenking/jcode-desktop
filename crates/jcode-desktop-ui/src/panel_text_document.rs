@@ -2,6 +2,8 @@
 use super::*;
 use std::hash::{Hash, Hasher};
 
+use expandable::{collapsed, Open};
+
 type Segments = Vec<(SharedString, SharedString)>;
 
 #[derive(Default)]
@@ -24,7 +26,7 @@ impl TranscriptTextDocument {
         items: &Transcript,
         rows: &[TranscriptRenderRow],
         expanded_prompts: &HashSet<(usize, bool)>,
-        expanded_tools: &HashSet<String>,
+        expanded_regions: &HashSet<String>,
     ) -> Option<Segments> {
         let display = crate::config::display();
         let preferences_changed = self.display.as_ref() != Some(&display);
@@ -41,30 +43,25 @@ impl TranscriptTextDocument {
                 TranscriptRowSource::Settled(index) => &items[*index],
                 TranscriptRowSource::Owned(item) => item,
             };
-            let prompt_expanded = expanded_prompts.contains(&(row.index, false));
-            let tool_expanded = match item {
-                Item::Tool { call_id, name, .. } => {
-                    expanded_tools.contains(call_id)
-                        ^ (name == "agentgrep" && display.show_agentgrep_output)
-                }
-                Item::Stopped(_) | Item::CacheMiss(_) => {
-                    expanded_tools.contains(&format!("notice:{}", row.index))
-                }
-                _ => false,
-            };
-            let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);
+            let open = Open::for_row(
+                expanded_regions,
+                item,
+                row.index,
+                expanded_prompts.contains(&(row.index, false)),
+            );
+            let flags = open.bits();
             if settled_unchanged
                 && matches!(row.source, TranscriptRowSource::Settled(_))
                 && self
                     .rows
                     .get(&row.index)
-                    .is_some_and(|entry| entry.0 & 0b11 == flags)
+                    .is_some_and(|entry| entry.0 & Open::MASK == flags)
             {
                 continue;
             }
-            // The low two bits carry the disclosure flags so a settled row
+            // The low bits carry the disclosure flags so a settled row
             // skipped above still notices when it is expanded or collapsed.
-            let fingerprint = (fingerprint(item, prompt_expanded, tool_expanded) & !0b11) | flags;
+            let fingerprint = (fingerprint(item, open) & !Open::MASK) | flags;
             if self
                 .rows
                 .get(&row.index)
@@ -72,7 +69,7 @@ impl TranscriptTextDocument {
             {
                 continue;
             }
-            let segments = segments(item, row.index, prompt_expanded, tool_expanded);
+            let segments = segments(item, row.index, open);
             self.rows.insert(row.index, (fingerprint, segments));
             changed = true;
         }
@@ -92,11 +89,10 @@ impl TranscriptTextDocument {
     }
 }
 
-fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
+fn fingerprint(item: &Item, open: Open) -> u64 {
     let mut state = std::collections::hash_map::DefaultHasher::new();
     std::mem::discriminant(item).hash(&mut state);
-    prompt_expanded.hash(&mut state);
-    tool_expanded.hash(&mut state);
+    open.bits().hash(&mut state);
     match item {
         Item::User(text) | Item::Assistant(text) | Item::Reasoning(text) | Item::Error(text) => {
             text.hash(&mut state)
@@ -131,21 +127,14 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
     state.finish()
 }
 
-fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: bool) -> Segments {
-    segments_with_display(
-        item,
-        index,
-        prompt_expanded,
-        tool_expanded,
-        &crate::config::display(),
-    )
+fn segments(item: &Item, index: usize, open: Open) -> Segments {
+    segments_with_display(item, index, open, &crate::config::display())
 }
 
 pub(super) fn segments_with_display(
     item: &Item,
     index: usize,
-    prompt_expanded: bool,
-    tool_expanded: bool,
+    open: Open,
     display: &crate::config::DisplayConfig,
 ) -> Segments {
     if display.screenshot_mode {
@@ -180,7 +169,7 @@ pub(super) fn segments_with_display(
         }
         Item::User(text) => {
             let (text, _) = super::voice::tag::strip(text);
-            let visible = if prompt_expanded {
+            let visible = if open.prompt {
                 &*text
             } else {
                 prompt::compact_prompt(&text).unwrap_or(&text)
@@ -221,17 +210,30 @@ pub(super) fn segments_with_display(
                 }
             } else {
                 push(format!("tool-name-{index}"), name.clone());
-                push(format!("tool-summary-{index}"), tool_summary(input));
-                if tool_expanded {
+                // The document carries exactly what the row paints: the cut
+                // title while collapsed, the whole intent once expanded.
+                let summary = tool_summary_full(input);
+                push(
+                    format!("tool-summary-{index}"),
+                    match collapsed(&summary, expandable::TITLE) {
+                        Some(preview) if !open.card => preview,
+                        _ => summary,
+                    },
+                );
+                if open.card {
                     push(
                         format!("tool-detail-{index}"),
                         tool_detail(name, input, output),
                     );
                 }
                 if let Some(error) = error {
+                    let full = strip_ansi(error);
                     push(
                         format!("tool-error-{index}"),
-                        condense(&strip_ansi(error), 300),
+                        match collapsed(&full, expandable::ERROR) {
+                            Some(preview) if !open.card => preview,
+                            _ => full,
+                        },
                     );
                 }
             }
@@ -407,9 +409,12 @@ mod tests {
     #[test]
     fn prompt_document_matches_collapsed_preview_and_expansion() {
         let text = format!("{}\nTAIL", "first line\n".repeat(8));
-        let collapsed = segments(&Item::User(text.clone()), 0, false, false);
+        let collapsed = segments(&Item::User(text.clone()), 0, Open::default());
         assert!(!collapsed.iter().any(|(_, text)| text.contains("TAIL")));
-        let expanded = segments(&Item::User(text), 0, true, false);
+        let expanded = segments(&Item::User(text), 0, Open {
+            prompt: true,
+            ..Open::default()
+        });
         assert!(expanded.iter().any(|(_, text)| text.contains("TAIL")));
     }
 
@@ -424,7 +429,7 @@ mod tests {
             done: true,
             error: None,
         };
-        let doc = segments(&edit, 5, false, false);
+        let doc = segments(&edit, 5, Open::default());
         assert_eq!(
             doc,
             vec![
@@ -435,7 +440,10 @@ mod tests {
         );
         assert_eq!(
             doc,
-            segments(&edit, 99, false, true),
+            segments(&edit, 99, Open {
+                card: true,
+                ..Open::default()
+            }),
             "keys survive row movement"
         );
         let mut failed = edit.clone();
@@ -443,22 +451,22 @@ mod tests {
             *input = r#"{"intent":"  ","file_path":"src/main.rs","old_string":"before","new_string":"after"}"#.into();
             *error = Some("Edit failed".into());
         }
-        let failed_doc = segments(&failed, 5, false, false);
+        let failed_doc = segments(&failed, 5, Open::default());
         assert_eq!(failed_doc[..3], doc);
         assert_eq!(
             failed_doc[3],
             ("tool-edit-edit-0-error".into(), "Edit failed".into())
         );
         assert_ne!(
-            fingerprint(&edit, false, false),
-            fingerprint(&failed, false, false)
+            fingerprint(&edit, Open::default()),
+            fingerprint(&failed, Open::default())
         );
     }
 
     #[test]
     fn multi_file_edit_document_keeps_each_header_in_order_with_stable_call_keys() {
         let mut tool = diff_review::fixture_items().pop().unwrap();
-        let doc = segments(&tool, 12, false, false);
+        let doc = segments(&tool, 12, Open::default());
         assert_eq!(
             doc,
             vec![
@@ -482,13 +490,13 @@ mod tests {
                 ),
             ]
         );
-        let old_fingerprint = fingerprint(&tool, false, false);
+        let old_fingerprint = fingerprint(&tool, Open::default());
         if let Item::Tool { call_id, .. } = &mut tool {
             *call_id = "replacement-call".into();
         }
-        assert_ne!(old_fingerprint, fingerprint(&tool, false, false));
+        assert_ne!(old_fingerprint, fingerprint(&tool, Open::default()));
         assert!(
-            segments(&tool, 12, false, false)
+            segments(&tool, 12, Open::default())
                 .iter()
                 .all(|(key, _)| key.contains("replacement-call"))
         );

@@ -94,6 +94,10 @@ pub(crate) use swarm_strip::state_color as swarm_state_color;
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+// One disclosure model for every truncated line: tool titles, errors, output,
+// prompts, notices, background tasks and swarm lines.
+#[path = "expandable.rs"]
+pub(super) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -588,8 +592,10 @@ pub struct Panel {
     /// A stored transcript is being read. Suppress the fresh-session empty
     /// state so an established conversation never flashes the new-chat prompt.
     awaiting_persisted: bool,
-    /// Tool rows the user expanded, keyed by call id.
-    expanded_tools: HashSet<String>,
+    /// Regions the user expanded, keyed by tool call id and by row key (see
+    /// `expandable::key`). One flat set, so every disclosure toggles the same
+    /// way and is hashed into the transcript fingerprint the same way.
+    expanded_regions: HashSet<String>,
     /// Retain closing cards until their fade finishes, and allow smooth reversal.
     tool_detail_motion: HashMap<String, crate::transition::AnimatedValue>,
     prompt_queue: queue::PromptQueue,
@@ -1062,7 +1068,7 @@ impl Panel {
             provisional_items: 0,
             provisional_task: None,
             awaiting_persisted: false,
-            expanded_tools: HashSet::new(),
+            expanded_regions: HashSet::new(),
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
@@ -3559,12 +3565,12 @@ impl Panel {
                 entry.hash(&mut state);
                 sum = sum.wrapping_add(state.finish());
             }
-            for entry in &self.expanded_tools {
+            for entry in &self.expanded_regions {
                 let mut state = std::collections::hash_map::DefaultHasher::new();
                 entry.hash(&mut state);
                 sum = sum.wrapping_add(state.finish().rotate_left(17));
             }
-            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_tools.len() as u64
+            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_regions.len() as u64
         };
         let key = TranscriptDerivedKey {
             items_revision: self.items.revision(),
@@ -3590,7 +3596,7 @@ impl Panel {
                 &self.items,
                 &rows,
                 &self.expanded_prompts,
-                &self.expanded_tools,
+                &self.expanded_regions,
             ) {
                 self.transcript_selection
                     .update(cx, |selection, _| selection.set_document(document));
@@ -4085,7 +4091,7 @@ impl Panel {
                 if let Some(compose) = gmail_draft_card::parse(name, input) {
                     let compose = gmail_draft_card::merge_output(compose, output, *done);
                     let superseded = self.superseded_drafts().get(call_id).copied();
-                    let expanded = self.expanded_tools.contains(call_id);
+                    let expanded = self.expanded_regions.contains(call_id);
                     let toggle_id = call_id.clone();
                     let card = gmail_draft_card::render(
                         index,
@@ -4097,8 +4103,8 @@ impl Panel {
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
+                            if !this.expanded_regions.remove(&toggle_id) {
+                                this.expanded_regions.insert(toggle_id.clone());
                             }
                             this.transcript_measurements.dirty = true;
                             cx.notify();
@@ -4119,7 +4125,7 @@ impl Panel {
                 if let Some(view) =
                     gmail_read_card::parse(name, input, output, *done, error.as_deref())
                 {
-                    let expanded = self.expanded_tools.contains(call_id);
+                    let expanded = self.expanded_regions.contains(call_id);
                     let toggle_id = call_id.clone();
                     let card = gmail_read_card::render(
                         index,
@@ -4128,8 +4134,8 @@ impl Panel {
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
+                            if !this.expanded_regions.remove(&toggle_id) {
+                                this.expanded_regions.insert(toggle_id.clone());
                             }
                             this.transcript_measurements.dirty = true;
                             cx.notify();
@@ -4150,7 +4156,7 @@ impl Panel {
                 if let Some(view) =
                     mcp_list_card::parse(name, input, output, *done, error.as_deref())
                 {
-                    let expanded = self.expanded_tools.contains(call_id);
+                    let expanded = self.expanded_regions.contains(call_id);
                     let toggle_id = call_id.clone();
                     let card = mcp_list_card::render(
                         index,
@@ -4159,8 +4165,8 @@ impl Panel {
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
+                            if !this.expanded_regions.remove(&toggle_id) {
+                                this.expanded_regions.insert(toggle_id.clone());
                             }
                             this.transcript_measurements.dirty = true;
                             cx.notify();
@@ -4178,7 +4184,7 @@ impl Panel {
                         .child(card)
                         .into_any_element();
                 }
-                let expanded = self.expanded_tools.contains(call_id)
+                let expanded = self.expanded_regions.contains(call_id)
                     ^ (name == "agentgrep" && display.show_agentgrep_output);
                 let detail_progress = self
                     .tool_detail_motion
@@ -4189,11 +4195,20 @@ impl Panel {
                     })
                     .unwrap_or(if expanded { 1.0 } else { 0.0 });
                 let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
-                let summary = if display.screenshot_mode {
+                // The title is always the complete intent; only its paint is
+                // clipped, so expanding reveals text that was never dropped.
+                let full_summary = if display.screenshot_mode {
                     String::new()
                 } else {
-                    tool_summary(input)
+                    tool_summary_full(input)
                 };
+                let summary_preview = expandable::collapsed(&full_summary, expandable::TITLE);
+                let summary_truncated = summary_preview.is_some();
+                let summary = match (&summary_preview, expanded) {
+                    (Some(preview), false) => preview.clone(),
+                    _ => full_summary,
+                };
+                let toggle_key = call_id.clone();
                 // Pretty-printing the arguments and stripping ANSI from the
                 // whole output is the costly part of a tool row, and it was
                 // done for every collapsed row on every frame. The detail
@@ -4252,10 +4267,21 @@ impl Panel {
                                 el.child(
                                     div()
                                         .debug_selector(|| "tool-summary".into())
+                                        .id(("tool-summary-text", index))
                                         .flex_1()
                                         .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
+                                        .when(!expanded, |el| {
+                                            el.overflow_hidden().whitespace_nowrap()
+                                        })
+                                        .when(summary_truncated, |el| {
+                                            let key = toggle_key.clone();
+                                            el.cursor_pointer().on_click(cx.listener(
+                                                move |this, _event, _window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.toggle_region(&key, cx);
+                                                },
+                                            ))
+                                        })
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(Theme::global().TOOL_TEXT)
                                         .child(text_selection::plain(
@@ -4266,6 +4292,20 @@ impl Panel {
                                             cx,
                                         )),
                                 )
+                            })
+                            // A cut title carries its own chevron, so the full
+                            // intent is one click away without hunting for the
+                            // token pill.
+                            .when(summary_truncated, |el| {
+                                let key = toggle_key.clone();
+                                el.child(expandable::glyph_toggle(
+                                    format!("tool-title-{index}").into(),
+                                    expanded,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_region(&key, cx);
+                                    }),
+                                ))
                             })
                             .children(self.render_tool_clock(
                                 index,
@@ -4298,6 +4338,7 @@ impl Panel {
                             // The token pill is the sole expansion control,
                             // including while a tool is still running.
                             .when(has_detail, |el| {
+                                let key = call_id.clone();
                                 el.child(
                                     div()
                                         .id(("tool-output-toggle", index))
@@ -4315,34 +4356,15 @@ impl Panel {
                                         .text_color(token_color)
                                         .on_click(cx.listener(move |this, _event, _window, cx| {
                                             cx.stop_propagation();
-                                            let was_expanded = expanded;
-                                            if !this.expanded_tools.remove(&call_id) {
-                                                this.expanded_tools.insert(call_id.clone());
-                                            }
-                                            let duration = crate::transition::policy(
-                                                crate::transition::Transition::Overlay,
-                                            )
-                                            .duration;
-                                            if cx.reduce_motion() || duration.is_zero() {
-                                                this.tool_detail_motion.remove(&call_id);
-                                            } else {
-                                                this.tool_detail_motion
-                                                    .entry(call_id.clone())
-                                                    .or_insert_with(|| {
-                                                        crate::transition::AnimatedValue::new(
-                                                            if was_expanded { 1.0 } else { 0.0 },
-                                                            duration,
-                                                        )
-                                                    })
-                                                    .set(
-                                                        if was_expanded { 0.0 } else { 1.0 },
-                                                        Instant::now(),
-                                                    );
-                                            }
-                                            this.transcript_measurements.dirty = true;
-                                            cx.notify();
+                                            this.toggle_region(&key, cx);
                                         }))
-                                        .child(token_label),
+                                        // The chevron makes the pill read as a
+                                        // disclosure control, not just a cost.
+                                        .child(if expanded {
+                                            format!("▾ {token_label}")
+                                        } else {
+                                            format!("▸ {token_label}")
+                                        }),
                                 )
                             }),
                         *done,
@@ -4350,6 +4372,10 @@ impl Panel {
                         running_veil,
                     ))
                     .when_some(detail.filter(|_| has_detail), |el, detail| {
+                        // The complete output lives in a bounded scrolling
+                        // region; Copy carries every line, including any the
+                        // region stops painting.
+                        let (body, hidden) = expandable::expanded_body(&detail);
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
@@ -4368,36 +4394,165 @@ impl Panel {
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
                                 .text_color(Theme::global().CODE_TEXT)
-                                .child(text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("tool-detail-{index}"),
-                                    detail,
-                                    window,
-                                    cx,
-                                )),
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(expandable::scrolled(
+                                    format!("tool-detail-{index}-scroll").into(),
+                                    expandable::MAX_HEIGHT,
+                                    text_selection::plain(
+                                        self.transcript_selection.clone(),
+                                        format!("tool-detail-{index}"),
+                                        body,
+                                        window,
+                                        cx,
+                                    ),
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(recovery::copy_pill(
+                                            "tool-detail-copy",
+                                            index,
+                                            detail.clone(),
+                                        ))
+                                        .when(hidden > 0, |el| {
+                                            el.child(
+                                                div()
+                                                    .text_size(px(10.0))
+                                                    .text_color(Theme::global().TEXT_FAINT)
+                                                    .child(format!(
+                                                        "{hidden} more lines kept by Copy"
+                                                    )),
+                                            )
+                                        }),
+                                ),
                         )
                     })
                     .children(error.clone().map(|message| {
+                        // A refusal can run to paragraphs, and its first lines
+                        // are the ones that judge the command. Show those while
+                        // collapsed; the toggle reveals the whole message in a
+                        // scrolling region, and Copy keeps the raw text.
+                        let full = strip_ansi(&message);
+                        let preview = expandable::collapsed(&full, expandable::ERROR);
+                        let truncated = preview.is_some();
+                        let shown = truncated && expanded;
+                        let body = if shown {
+                            expandable::expanded_body(&full).0
+                        } else {
+                            preview.clone().unwrap_or_else(|| full.clone())
+                        };
                         div()
                             .debug_selector(|| "tool-error".into())
+                            .id(("tool-error-row", index))
                             .ml(px(24.0))
                             .pr_1()
                             .py_1()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
                             .text_size(px(11.5))
                             .font_family(Theme::global().FONT_MONO)
                             .text_color(Theme::global().ERROR)
-                            .child(text_selection::plain(
-                                self.transcript_selection.clone(),
-                                format!("tool-error-{index}"),
-                                condense(&strip_ansi(&message), 300),
-                                window,
-                                cx,
-                            ))
+                            .when(truncated, |el| {
+                                let key = call_id.clone();
+                                el.cursor_pointer().on_click(cx.listener(
+                                    move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_region(&key, cx);
+                                    },
+                                ))
+                            })
+                            .child(if shown {
+                                expandable::scrolled(
+                                    format!("tool-error-{index}-scroll").into(),
+                                    expandable::MAX_HEIGHT,
+                                    text_selection::plain(
+                                        self.transcript_selection.clone(),
+                                        format!("tool-error-{index}"),
+                                        body,
+                                        window,
+                                        cx,
+                                    ),
+                                )
+                                .into_any_element()
+                            } else {
+                                text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    format!("tool-error-{index}"),
+                                    body,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .when(truncated, |el| {
+                                let key = call_id.clone();
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(expandable::toggle(
+                                            format!("tool-error-{index}-expand").into(),
+                                            shown,
+                                            "▸ Show full error",
+                                            "▾ Collapse error",
+                                            cx.listener(move |this, _event, _window, cx| {
+                                                cx.stop_propagation();
+                                                this.toggle_region(&key, cx);
+                                            }),
+                                        ))
+                                        .child(recovery::copy_pill(
+                                            "tool-error-copy",
+                                            index,
+                                            full,
+                                        )),
+                                )
+                            })
                     }))
                     .into_any_element()
             }
             Item::Error(message) => self.render_recovery_error(index, message, window, cx),
         }
+    }
+
+    /// Flip one disclosure region (`expandable::Open`). A tool card fades its
+    /// detail in and out; every other region appears at once.
+    pub(super) fn toggle_region(&mut self, key: &str, cx: &mut Context<Self>) {
+        let was_expanded = self.expanded_regions.contains(key);
+        if !self.expanded_regions.remove(key) {
+            self.expanded_regions.insert(key.to_owned());
+        }
+        let duration =
+            crate::transition::policy(crate::transition::Transition::Overlay).duration;
+        if cx.reduce_motion() || duration.is_zero() {
+            self.tool_detail_motion.remove(key);
+        } else {
+            self.tool_detail_motion
+                .entry(key.to_owned())
+                .or_insert_with(|| {
+                    crate::transition::AnimatedValue::new(
+                        if was_expanded { 1.0 } else { 0.0 },
+                        duration,
+                    )
+                })
+                .set(if was_expanded { 0.0 } else { 1.0 }, Instant::now());
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
+    /// Flip one disclosure region that has no animated detail: a notice body,
+    /// a background task, a swarm line or an error card's raw message.
+    pub(super) fn toggle_line(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.expanded_regions.remove(key) {
+            self.expanded_regions.insert(key.to_owned());
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
     }
 
     pub fn focus_input(&self, window: &mut Window, cx: &mut App) {
@@ -6674,11 +6829,17 @@ fn render_todo_card_with_style(
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
 fn tool_summary(input: &str) -> String {
+    condense(&tool_summary_full(input), 90)
+}
+
+/// The same intent, complete. Collapsing it is a paint decision
+/// (`expandable::TITLE`), so the text is never lost on the way in.
+fn tool_summary_full(input: &str) -> String {
     if let Some(summary) = tool_streaming::summary(input) {
-        return condense(&summary, 90);
+        return summary.split_whitespace().collect::<Vec<_>>().join(" ");
     }
     if serde_json::from_str::<serde_json::Value>(input).is_ok() {
-        condense(input, 90)
+        input.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
         // The name already identifies the tool. Do not fill its header with
         // unfinished JSON while waiting for a useful argument to complete.
@@ -6695,7 +6856,9 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Expanded tool detail: the exact invocation plus a clipped output tail.
+/// Expanded tool detail: the exact invocation and the complete output. The
+/// painted region scrolls and the copy control carries everything, so no part
+/// of a tool result is unreachable.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
     let arguments = if input.trim().is_empty() {
         "{}"
@@ -6709,13 +6872,10 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
     let mut parts = vec![format!(
         "Tool call\n{}\n{}",
         name.trim(),
-        clip_lines(&pretty, 40)
+        pretty.trim_end()
     )];
     if !output.trim().is_empty() {
-        parts.push(format!(
-            "Output\n{}",
-            clip_lines(strip_ansi(output).trim(), 40)
-        ));
+        parts.push(format!("Output\n{}", strip_ansi(output).trim_end()));
     }
     parts.join("\n\n")
 }
@@ -6729,22 +6889,6 @@ fn acknowledge_next(
     if let Some(index) = pending.pop_front() {
         accepted.insert(index, now);
     }
-}
-
-/// Keep a block short by keeping its head and tail: for command output the
-/// end (results, errors) usually matters more than the middle.
-fn clip_lines(text: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= max_lines {
-        return text.to_string();
-    }
-    let head = max_lines * 2 / 3;
-    let tail = max_lines - head;
-    let hidden = lines.len() - head - tail;
-    let mut kept = lines[..head].join("\n");
-    kept.push_str(&format!("\n… {hidden} lines hidden …\n"));
-    kept.push_str(&lines[lines.len() - tail..].join("\n"));
-    kept
 }
 
 #[cfg(test)]
@@ -8618,7 +8762,7 @@ mod tests {
             "closing card remains mounted during exit"
         );
         panel.read_with(vcx, |panel, _| {
-            assert!(!panel.expanded_tools.contains("call-1"));
+            assert!(!panel.expanded_regions.contains("call-1"));
             assert!(panel.tool_detail_motion.contains_key("call-1"));
         });
         // Reverse a closing card without unmounting it or jumping back to zero.
@@ -8626,7 +8770,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
         settle_tool_details(&panel, vcx);
-        assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call-1")));
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call-1")));
         let button = vcx.debug_bounds("tool-output-size").unwrap();
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

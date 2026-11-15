@@ -1,5 +1,12 @@
 use super::*;
 
+const CARD: expandable::Open = expandable::Open {
+    prompt: false,
+    card: true,
+    notice: false,
+    details: false,
+};
+
 #[test]
 fn screenshot_selection_excludes_tool_metadata_but_keeps_user_content() {
     let item = Item::Tool {
@@ -11,19 +18,31 @@ fn screenshot_selection_excludes_tool_metadata_but_keeps_user_content() {
         error: None,
     };
     let mut display = crate::config::DisplayConfig::default();
-    assert!(!text_document::segments_with_display(&item, 0, false, true, &display).is_empty());
+    assert!(!text_document::segments_with_display(&item, 0, CARD, &display).is_empty());
     display.screenshot_mode = true;
-    assert!(text_document::segments_with_display(&item, 0, false, true, &display).is_empty());
+    assert!(text_document::segments_with_display(&item, 0, CARD, &display).is_empty());
     let user = Item::User("User content is not automatically redacted".into());
-    assert!(!text_document::segments_with_display(&user, 1, false, false, &display).is_empty());
+    assert!(
+        !text_document::segments_with_display(&user, 1, expandable::Open::default(), &display)
+            .is_empty()
+    );
 }
 
 #[test]
 fn compact_notification_selection_preserves_full_detail() {
     let notice = Item::Stopped(stop_reason::StopNotice::cancel_requested());
     let display = crate::config::DisplayConfig::default();
-    let collapsed = text_document::segments_with_display(&notice, 0, false, false, &display);
-    let expanded = text_document::segments_with_display(&notice, 0, false, true, &display);
+    let collapsed =
+        text_document::segments_with_display(&notice, 0, expandable::Open::default(), &display);
+    let expanded = text_document::segments_with_display(
+        &notice,
+        0,
+        expandable::Open {
+            notice: true,
+            ..expandable::Open::default()
+        },
+        &display,
+    );
     assert_eq!(collapsed, expanded);
     assert!(expanded[0].1.contains("Waiting for the runtime"));
 }

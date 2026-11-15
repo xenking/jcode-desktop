@@ -1087,7 +1087,7 @@ mod tests {
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("diff-review").is_some());
-        assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.is_empty()));
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.is_empty()));
     }
 
     #[test]
@@ -1278,7 +1278,7 @@ mod tests {
             workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert!(
-            panel.read_with(vcx, |p, _| p.expanded_tools.is_empty()),
+            panel.read_with(vcx, |p, _| p.expanded_regions.is_empty()),
             "counts click must not toggle raw JSON"
         );
         let file = vcx.debug_bounds("diff-tree-file-1").unwrap();

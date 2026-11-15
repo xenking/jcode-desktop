@@ -10,7 +10,7 @@ pub struct TranscriptSnapshot {
     status: String,
     connection_phase: String,
     #[serde(default)]
-    expanded_tools: HashSet<String>,
+    expanded_regions: HashSet<String>,
     #[serde(default)]
     user_times: HashMap<usize, i64>,
 }
@@ -40,7 +40,7 @@ impl Panel {
             history_loaded: self.history_loaded,
             status: self.status.clone(),
             connection_phase: self.connection_phase.clone(),
-            expanded_tools: self.expanded_tools.clone(),
+            expanded_regions: self.expanded_regions.clone(),
             user_times: self.user_times.clone(),
         }
     }
@@ -56,7 +56,7 @@ impl Panel {
             && (!snapshot.items.is_empty()
                 || !snapshot.streaming_text.is_empty()
                 || !snapshot.streaming_reasoning.is_empty());
-        self.expanded_tools = snapshot.expanded_tools;
+        self.expanded_regions = snapshot.expanded_regions;
         self.user_times = snapshot.user_times;
         *self.items = snapshot.items;
         for item in &mut self.items {

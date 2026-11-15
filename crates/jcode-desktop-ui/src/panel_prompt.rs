@@ -273,27 +273,22 @@ impl Panel {
             })
             .when(preview.is_some(), |card| {
                 card.child(
-                    div()
-                        .id(("prompt-expand", index))
-                        .debug_selector(move || format!("prompt-expand-{index}").into())
-                        .mt_1()
-                        .text_size(px(11.))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(Theme::global().TEXT_USER))
-                        .on_click(cx.listener(move |panel, _, _, cx| {
+                    // The same control every other truncated surface uses, so
+                    // a cut prompt is expanded the same way as a cut tool row.
+                    div().mt_1().child(super::expandable::toggle(
+                        format!("prompt-expand-{index}").into(),
+                        expanded,
+                        "▸ Expand prompt",
+                        "▾ Collapse prompt",
+                        cx.listener(move |panel, _, _, cx| {
                             cx.stop_propagation();
                             if !panel.expanded_prompts.remove(&(index, pinned)) {
                                 panel.expanded_prompts.insert((index, pinned));
                             }
                             panel.transcript_measurements.dirty = true;
                             cx.notify();
-                        }))
-                        .child(if expanded {
-                            "Collapse prompt"
-                        } else {
-                            "… Expand prompt"
                         }),
+                    )),
                 )
             })
             .into_any_element();

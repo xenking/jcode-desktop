@@ -169,7 +169,7 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
             done: true,
             error: Some("A useful error".into()),
         }];
-        panel.expanded_tools.insert("call".into());
+        panel.expanded_regions.insert("call".into());
         panel
     });
     assert_eq!(
@@ -184,12 +184,12 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
         drag_copy(vcx, "selectable-text-tool-error-0"),
         "A useful error"
     );
-    assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
     // Text gestures must not steal the adjacent disclosure control.
     let toggle = vcx.debug_bounds("tool-output-size").unwrap();
     vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert!(!panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(!panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]
@@ -449,7 +449,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
             },
             Item::Assistant("```rust\nlet βeta = 1;\n```\n\nDone.".into()),
         ];
-        panel.expanded_tools.insert("call".into());
+        panel.expanded_regions.insert("call".into());
         panel
     });
     vcx.run_until_parked();
@@ -464,7 +464,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
             tool_detail("bash", input, "Finished")
         )
     );
-    assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]
