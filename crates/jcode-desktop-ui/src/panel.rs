@@ -1949,6 +1949,15 @@ impl Panel {
         self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
         self.pending_ask_draft = snapshot.ask_draft;
+        if let (Some(draft), Some(card)) = (&self.pending_ask_draft, &self.ask_card)
+            && draft.matches_questions(&card.questions)
+        {
+            let draft = self.pending_ask_draft.take().expect("checked above");
+            self.ask_card
+                .as_mut()
+                .expect("checked above")
+                .restore_draft(draft, cx);
+        }
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
         self.stick_to_bottom = snapshot.stick_to_bottom;

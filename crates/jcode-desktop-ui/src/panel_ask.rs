@@ -55,6 +55,12 @@ pub struct AskDraft {
     comments: Vec<Vec<String>>,
 }
 
+impl AskDraft {
+    pub(super) fn matches_questions(&self, questions: &[AskQuestion]) -> bool {
+        self.questions == questions
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AskCard {
     pub request_id: String,
@@ -1119,6 +1125,43 @@ mod tests {
             let card = panel.ask_card.as_ref().unwrap();
             assert_eq!(card.chosen[0], vec![1]);
             assert_eq!(card.comments[0][1], "important note");
+        });
+    }
+
+    #[gpui::test]
+    fn ask_draft_restores_if_request_arrives_before_snapshot(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace.push_test_panel("session-b", cx);
+            workspace
+        });
+        let first = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let second = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(1))
+            .unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        first.update(vcx, |panel, cx| {
+            panel.apply(&event, cx);
+            let card = panel.ask_card.as_mut().unwrap();
+            card.toggle(0, 1);
+            card.comments[0][1] = "important note".into();
+        });
+        let snapshot = first.read_with(vcx, |panel, cx| panel.snapshot(cx));
+        second.update(vcx, |panel, cx| {
+            panel.apply(&event, cx);
+            panel.restore_snapshot(snapshot, cx);
+        });
+        second.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.chosen[0], vec![1]);
+            assert_eq!(
+                card.comment_inputs[0][1].read(cx).snapshot().content,
+                "important note"
+            );
         });
     }
 
