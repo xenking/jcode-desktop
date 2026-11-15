@@ -72,6 +72,12 @@ pub use snapshot::TranscriptSnapshot;
 #[path = "panel_background_task.rs"]
 mod background_task;
 
+#[path = "panel_compaction.rs"]
+pub(crate) mod compaction;
+
+#[path = "panel_compaction_render.rs"]
+mod compaction_render;
+
 #[path = "panel_activity.rs"]
 mod activity;
 #[path = "panel_activity_state.rs"]
@@ -331,6 +337,9 @@ pub enum Item {
     Todos(TodoCardPayload),
     Error(String),
     Stopped(stop_reason::StopNotice),
+    /// A completed or in-progress context compaction: one full-width rule with a
+    /// centered label that expands to the summary and elided-message detail.
+    Compaction(compaction::CompactionRow),
     /// Daemon-reported KV (prompt) cache miss for a provider request.
     CacheMiss(cache_miss::CacheMissNotice),
     /// An applet instance placed in this transcript that is not anchored to
@@ -2615,6 +2624,16 @@ impl Panel {
                         }
                     }
                 }
+                // A stored compaction divider. Its body already carries the
+                // label and the expandable detail, so it renders identically
+                // before and after a reload.
+                "compaction" => {
+                    if !message.content.trim().is_empty() {
+                        items.push(Item::Compaction(compaction::CompactionRow::complete(
+                            message.content,
+                        )));
+                    }
+                }
                 _ => {}
             }
         }
@@ -3066,6 +3085,28 @@ impl Panel {
                     percent: None,
                     done: false,
                 });
+            }
+            // A compaction started or finished. The divider replaces the old
+            // transient "Context compaction" card: it is one rule line, it
+            // carries the method/token/duration label, and the completed row is
+            // also written to session history so it survives a reload.
+            ApiEvent::CompactionDivider {
+                content,
+                running,
+                post_tokens,
+                ..
+            } => {
+                if *running {
+                    self.show_compaction_running(content.clone());
+                } else {
+                    self.finish_compaction_divider(content.clone());
+                    // The composer's context figure described the pre-compaction
+                    // transcript until the next provider report; adopt the
+                    // daemon's measured post-compaction size now.
+                    if let Some(post_tokens) = post_tokens {
+                        self.context_tokens = Some(*post_tokens);
+                    }
+                }
             }
             ApiEvent::BackgroundProgress {
                 task_id,
@@ -3867,6 +3908,7 @@ impl Panel {
                     .unwrap_or_else(|| div().into_any_element())
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::Compaction(row) => self.render_compaction_divider(index, row, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
@@ -5949,6 +5991,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::Compaction(_)
         | Item::CacheMiss(_)
         | Item::Applet(_)
         | Item::Error(_) => None,

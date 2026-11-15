@@ -121,6 +121,12 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
             notice.retry.hash(&mut state);
         }
         Item::CacheMiss(notice) => notice.text().hash(&mut state),
+        // A divider's text is selectable, so its state participates in the
+        // document hash: expanding it must invalidate the cached document.
+        Item::Compaction(row) => {
+            row.content.hash(&mut state);
+            row.state.hash(&mut state);
+        }
         Item::Image(_) | Item::ResponseStats(_) | Item::Todos(_) => {}
         Item::Applet(instance) => instance.hash(&mut state),
     }
@@ -262,6 +268,14 @@ pub(super) fn segments_with_display(
             push(format!("background-summary-{index}"), summary.clone());
         }
         Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
+        Item::Compaction(row) => {
+            push(format!("{index}-compaction-label"), row.label().to_string());
+            if row.state.is_expanded()
+                && let Some(detail) = row.detail()
+            {
+                push(format!("{index}-compaction-detail"), detail.to_string());
+            }
+        }
         // Pinned todos and non-text chrome are outside the transcript document.
         Item::Todos(_) | Item::Image(_) | Item::ResponseStats(_) | Item::Applet(_) => {}
     }
