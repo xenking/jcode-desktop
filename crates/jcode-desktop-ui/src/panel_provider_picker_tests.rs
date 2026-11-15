@@ -187,9 +187,12 @@ fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppCon
         account_label: None,
         routes,
     };
+    // The composer bar no longer carries a login pill (usage moved to the
+    // sidebar account block), so open the picker the way that block does.
     let open_picker = |vcx: &mut gpui::VisualTestContext| {
-        let pill = vcx.debug_bounds("panel-login").unwrap();
-        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.toggle_provider_picker(window, cx));
+        });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("composer-provider-picker").is_some());
     };
