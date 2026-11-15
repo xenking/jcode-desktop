@@ -548,8 +548,12 @@ pub(crate) struct PickerSettings {
 }
 
 impl PromptInput {
+    pub(crate) fn editor_contains_position(&self, position: Point<Pixels>) -> bool {
+        self.editor_scroll.bounds().contains(&position)
+    }
+
     pub(crate) fn editor_can_scroll_wheel(&self, position: Point<Pixels>, delta: Pixels) -> bool {
-        if !self.editor_scroll.bounds().contains(&position) {
+        if !self.editor_contains_position(position) {
             return false;
         }
         let offset = self.editor_scroll.offset().y;
@@ -1491,6 +1495,14 @@ impl PromptInput {
             content
         };
         let mut attachments = std::mem::take(&mut self.attachments);
+        // History stores only text, so it must not replay image chips without
+        // their payloads. The actual submission retains the original markers.
+        let mut history_content = content.clone();
+        for attachment in &attachments {
+            if let Some(start) = history_content.find(attachment.label.as_ref()) {
+                history_content.replace_range(start..start + attachment.label.len(), "");
+            }
+        }
         attachments.sort_by_key(|image| content.find(image.label.as_ref()).unwrap_or(usize::MAX));
         let images = attachments
             .into_iter()
@@ -1507,7 +1519,9 @@ impl PromptInput {
         self.visual_line_count = 1;
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.history.push(content.clone());
+        if !history_content.trim().is_empty() {
+            self.history.push(history_content);
+        }
         self.history_index = None;
         self.live_draft.clear();
         self.command_selection = 0;
@@ -3375,6 +3389,31 @@ mod tests {
         vcx.run_until_parked();
         input.read_with(vcx, |input, _| {
             assert_eq!(input.content.as_ref(), "before after");
+            assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn image_history_never_replays_a_chip_without_its_image(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("describe ".into(), cx);
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.simulate_keystrokes("enter up");
+        input.read_with(vcx, |input, _| {
+            assert!(!input.content.contains("[#image"));
             assert!(input.attachments.is_empty());
         });
     }
