@@ -135,3 +135,138 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Whether something is actually listening on a Unix socket path. A socket
+/// file left behind by a dead process still exists, so `Path::exists` (which
+/// the SDK uses) reports it as healthy and nothing is ever respawned.
+#[cfg(unix)]
+pub fn socket_live(path: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+#[cfg(not(unix))]
+pub fn socket_live(path: &Path) -> bool {
+    path.exists()
+}
+
+/// Remove a socket file nobody listens on, so a respawn is not short-circuited
+/// by the stale path. Returns whether a stale file was removed.
+pub fn clear_stale_socket(path: &Path) -> bool {
+    if cfg!(unix) && path.exists() && !socket_live(path) {
+        return std::fs::remove_file(path).is_ok();
+    }
+    false
+}
+
+/// Pick the runtime directory whose daemon socket is live when the inherited
+/// one is not. An agent shell may export `TMPDIR` to a scratch directory that
+/// holds a stale `jcode.sock`; the shared daemon lives in the per-user Darwin
+/// temp dir. Returns `None` when the default resolution is already right or
+/// nothing better is live.
+pub fn better_runtime_dir(
+    current: &Path,
+    candidates: &[PathBuf],
+    live: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if live(&current.join("jcode.sock")) {
+        return None;
+    }
+    candidates
+        .iter()
+        .find(|dir| dir.as_path() != current && live(&dir.join("jcode.sock")))
+        .cloned()
+}
+
+/// The per-user Darwin temp directory (`getconf DARWIN_USER_TEMP_DIR`), which
+/// is the `TMPDIR` launchd gives GUI apps and where the shared daemon listens.
+#[cfg(target_os = "macos")]
+pub fn darwin_user_temp_dir() -> Option<PathBuf> {
+    let output = std::process::Command::new("/usr/bin/getconf")
+        .arg("DARWIN_USER_TEMP_DIR")
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    let text = text.trim().trim_end_matches('/');
+    (!text.is_empty()).then(|| PathBuf::from(text))
+}
+
+/// Align `JCODE_RUNTIME_DIR` with the live shared daemon before any thread
+/// starts. Explicit `JCODE_RUNTIME_DIR`/`XDG_RUNTIME_DIR` choices are kept.
+///
+/// # Safety
+/// Mutates the process environment, so call before other threads exist.
+pub unsafe fn normalize_runtime_dir() {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var_os("JCODE_RUNTIME_DIR").is_some()
+            || std::env::var_os("XDG_RUNTIME_DIR").is_some()
+        {
+            return;
+        }
+        let current = jcode_sdk::api::runtime_dir();
+        let mut candidates = Vec::new();
+        if let Some(socket) = std::env::var_os("JCODE_SOCKET")
+            && let Some(parent) = Path::new(&socket).parent()
+        {
+            candidates.push(parent.to_path_buf());
+        }
+        candidates.extend(darwin_user_temp_dir());
+        if let Some(dir) = better_runtime_dir(&current, &candidates, socket_live) {
+            eprintln!(
+                "jcode desktop: runtime dir {} has no live daemon, using {}",
+                current.display(),
+                dir.display()
+            );
+            // SAFETY: the caller guarantees no other thread exists yet.
+            unsafe {
+                std::env::set_var("JCODE_RUNTIME_DIR", &dir);
+                std::env::set_var("JCODE_SOCKET", dir.join("jcode.sock"));
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod socket_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn a_stale_socket_file_is_not_live_and_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jcode-api.sock");
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists(), "the dead listener leaves its file behind");
+        assert!(!socket_live(&path));
+        assert!(clear_stale_socket(&path));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_listening_socket_is_live_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jcode-api.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(socket_live(&path));
+        assert!(!clear_stale_socket(&path));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn tmpdir_with_a_stale_daemon_socket_falls_back_to_the_live_one() {
+        let scratch = tempfile::tempdir().unwrap();
+        drop(UnixListener::bind(scratch.path().join("jcode.sock")).unwrap());
+        let darwin = tempfile::tempdir().unwrap();
+        let _daemon = UnixListener::bind(darwin.path().join("jcode.sock")).unwrap();
+        let candidates = vec![darwin.path().to_path_buf()];
+        assert_eq!(
+            better_runtime_dir(scratch.path(), &candidates, socket_live),
+            Some(darwin.path().to_path_buf())
+        );
+        // A healthy inherited dir is left alone.
+        assert_eq!(
+            better_runtime_dir(darwin.path(), &candidates, socket_live),
+            None
+        );
+    }
+}

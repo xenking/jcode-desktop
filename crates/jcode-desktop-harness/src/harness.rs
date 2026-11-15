@@ -667,7 +667,7 @@ const RUNTIME_REVIVE_INTERVAL: Duration = Duration::from_secs(2);
 /// daemon socket away for a moment, and spawning a competing `jcode serve`
 /// from every reconnecting panel would fight the handoff.
 fn revive_local_runtime() -> bool {
-    if !jcode_sdk::socket_accepts(&jcode_sdk::api::legacy_socket_path()) {
+    if !crate::platform::socket_live(&jcode_sdk::api::legacy_socket_path()) {
         return false;
     }
     static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
@@ -685,6 +685,10 @@ fn revive_local_runtime() -> bool {
         ..Default::default()
     };
     let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
+    // The SDK treats an existing socket file as a running bridge, so a dead
+    // bridge's leftover file would make this a no-op forever.
+    crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
+    eprintln!("jcode desktop: reviving harness API bridge");
     match jcode_sdk::ensure_runtime(&options, &|_| {}) {
         Ok(()) => true,
         Err(error) => {
@@ -753,6 +757,7 @@ fn start_local_runtime(updates: UpdateSender) {
         };
         let started = {
             let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
+            crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
             jcode_sdk::ensure_runtime(&options, &|status| {
                 let _ = updates.send(Update::Status(status.to_string()));
             })

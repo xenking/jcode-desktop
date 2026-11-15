@@ -19,6 +19,10 @@ struct Checkpoint {
     owner: String,
     pid: u32,
     updated_at_ms: u64,
+    /// Written by a normal quit. The open panels then reopen on the next
+    /// launch no matter how much later, like a browser restoring its tabs.
+    #[serde(default)]
+    clean: bool,
     snapshot: WorkspaceSnapshot,
 }
 
@@ -64,9 +68,10 @@ fn process_alive(pid: u32) -> bool {
 
 fn eligible(checkpoint: &Checkpoint, now: u64, alive: bool) -> bool {
     !alive
-        && now
-            .checked_sub(checkpoint.updated_at_ms)
-            .is_some_and(|age| age <= RECOVERY_WINDOW_MS)
+        && (checkpoint.clean
+            || now
+                .checked_sub(checkpoint.updated_at_ms)
+                .is_some_and(|age| age <= RECOVERY_WINDOW_MS))
 }
 
 fn private_file(path: &Path) -> io::Result<File> {
@@ -108,6 +113,8 @@ fn read(path: &Path) -> Option<Checkpoint> {
 struct CheckpointOwner {
     owner: String,
     pid: u32,
+    #[serde(default)]
+    clean: bool,
 }
 
 fn read_owner(path: &Path) -> Option<CheckpointOwner> {
@@ -134,9 +141,18 @@ pub(crate) fn load() -> Option<WorkspaceSnapshot> {
     let _lock = lock(&path).ok()?;
     let checkpoint = read(&path)?;
     let now = now_ms();
-    let snapshot = restore(&checkpoint, now, process_alive(checkpoint.pid))?;
+    // A cleanly quit owner is gone by definition. Its pid may since belong
+    // to an unrelated process, which must not block restoring the panels.
+    let alive = !checkpoint.clean && process_alive(checkpoint.pid);
+    let snapshot = restore(&checkpoint, now, alive)?;
     eprintln!(
-        "restoring desktop panels from recent crash ({} ms since checkpoint)",
+        "restoring {} desktop panels from {} ({} ms since checkpoint)",
+        snapshot.slots.len(),
+        if checkpoint.clean {
+            "last session"
+        } else {
+            "recent crash"
+        },
         now.saturating_sub(checkpoint.updated_at_ms)
     );
     Some(snapshot)
@@ -170,7 +186,9 @@ impl Writer {
         let _lock = lock(&path)?;
         if let Some(previous) = read_owner(&path) {
             anyhow::ensure!(
-                previous.pid == std::process::id() || !process_alive(previous.pid),
+                previous.clean
+                    || previous.pid == std::process::id()
+                    || !process_alive(previous.pid),
                 "another desktop process owns the crash checkpoint"
             );
         }
@@ -189,6 +207,7 @@ impl Writer {
             owner: self.owner.clone(),
             pid: std::process::id(),
             updated_at_ms,
+            clean: false,
             snapshot,
         }
     }
@@ -204,8 +223,14 @@ impl Writer {
 
     fn clean_quit(&self) -> anyhow::Result<()> {
         let _lock = lock(&self.path)?;
-        if read_owner(&self.path).is_some_and(|record| record.owner == self.owner) {
-            fs::remove_file(&self.path)?;
+        if read_owner(&self.path).is_some_and(|record| record.owner == self.owner)
+            && let Some(mut record) = read(&self.path)
+        {
+            // Keep the last checkpoint and mark it final. Retiring the owner
+            // also stops any in-flight background save from overwriting it.
+            record.clean = true;
+            record.owner = format!("{}-quit", self.owner);
+            write(&self.path, &record)?;
         }
         Ok(())
     }
@@ -317,6 +342,7 @@ mod tests {
             owner: "old".into(),
             pid: 123,
             updated_at_ms: 100_000,
+            clean: false,
             snapshot: snapshot(),
         };
         assert!(eligible(&record, 100_000, false));
@@ -346,6 +372,7 @@ mod tests {
             owner: "dead".into(),
             pid: 123,
             updated_at_ms: 100_000,
+            clean: false,
             snapshot: serde_json::from_value(state).unwrap(),
         };
         let restored = restore(&record, 110_000, false).unwrap();
@@ -381,9 +408,24 @@ mod tests {
         assert!(writer.save(snapshot(), 123).unwrap());
         assert_eq!(read(&path).unwrap().updated_at_ms, 123);
         writer.clean_quit().unwrap();
-        assert!(!path.exists());
         assert!(!writer.save(snapshot(), 456).unwrap());
-        assert!(!path.exists());
+        let record = read(&path).expect("a clean quit keeps the open panels");
+        assert!(record.clean);
+        assert_eq!(record.updated_at_ms, 123, "late save is ignored");
+    }
+
+    #[test]
+    fn a_clean_quit_restores_open_sessions_on_any_later_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        let writer = Writer::begin(path.clone(), snapshot()).unwrap();
+        assert!(writer.save(snapshot(), 100_000).unwrap());
+        writer.clean_quit().unwrap();
+        let record = read(&path).unwrap();
+        // Hours later, owner gone: relaunch must reopen the workspace.
+        assert!(restore(&record, 100_000 + 6 * 3_600_000, false).is_some());
+        // A still-running owner keeps its checkpoint to itself.
+        assert!(restore(&record, 100_000 + 6 * 3_600_000, true).is_none());
     }
 
     #[test]
