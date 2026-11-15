@@ -369,6 +369,12 @@ impl Panel {
 
     /// `normal` marks an intentional user cancel. Everything else is logged
     /// as ABNORMAL so unexpected stops can be found and fixed.
+    pub(super) fn cancel_ask_voice(&mut self, cx: &mut Context<Self>) {
+        if self.ask_card.is_some() && self.voice_active() {
+            self.cancel_voice(true, "ask answered", cx);
+        }
+    }
+
     fn cancel_voice(&mut self, normal: bool, reason: &'static str, cx: &mut Context<Self>) {
         if self.voice.phase != Phase::Idle {
             self.voice
@@ -645,8 +651,13 @@ impl Panel {
                 // never inserted: only `Finished` edits the draft, once.
                 self.voice.live_transcript = text;
                 let live = self.voice.live_transcript.clone();
-                let hint = dictation_hint(dictation_mode());
-                self.input.update(cx, |input, cx| {
+                let hint = if self.ask_voice_input().is_some() {
+                    "Inserts into your answer for editing"
+                } else {
+                    dictation_hint(dictation_mode())
+                };
+                let target = self.ask_voice_input().unwrap_or_else(|| self.input.clone());
+                target.update(cx, |input, cx| {
                     input.set_voice_preview_hint(Some(hint), cx);
                     input.set_voice_preview(Some(live), cx);
                 });
@@ -659,7 +670,8 @@ impl Panel {
     /// Drop the dim recognition preview. The final words replace it, either in
     /// the draft or in the chat.
     fn clear_voice_preview(&mut self, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| {
+        let target = self.ask_voice_input().unwrap_or_else(|| self.input.clone());
+        target.update(cx, |input, cx| {
             input.set_voice_preview(None, cx);
             input.set_voice_preview_hint(None, cx);
         });
@@ -683,9 +695,9 @@ impl Panel {
             TranscriptMode::Insert => self
                 .input
                 .update(cx, |input, cx| input.insert_dictation(text, cx)),
-            TranscriptMode::Append => self.input.update(cx, |input, cx| {
-                input.append_dictation(&tag::wrap(text), cx)
-            }),
+            TranscriptMode::Append => self
+                .input
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx)),
             TranscriptMode::Replace => self.input.update(cx, |input, cx| {
                 input.replace_dictation(&tag::wrap(text), cx)
             }),
@@ -727,9 +739,9 @@ impl Panel {
             TranscriptMode::Insert => self
                 .input
                 .update(cx, |input, cx| input.insert_dictation(text, cx)),
-            TranscriptMode::Append => self.input.update(cx, |input, cx| {
-                input.append_dictation(&tag::wrap(text), cx)
-            }),
+            TranscriptMode::Append => self
+                .input
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx)),
             TranscriptMode::Replace => self.input.update(cx, |input, cx| {
                 input.replace_dictation(&tag::wrap(text), cx)
             }),
@@ -822,6 +834,12 @@ impl Panel {
         self.clear_voice_preview(cx);
         match result {
             Ok(text) if !text.trim().is_empty() => {
+                if let Some(input) = self.ask_voice_input() {
+                    input.update(cx, |input, cx| input.insert_dictation(&text, cx));
+                    self.voice.error = None;
+                    cx.notify();
+                    return;
+                }
                 if self.voice.global_capture {
                     self.voice.phase = Phase::Transcribing;
                     let attempt = self.voice.canceled.clone();
@@ -831,9 +849,8 @@ impl Panel {
                     self.voice.task = Some(cx.spawn(async move |this, cx| {
                         let allowed = check.await;
                         let _ = this.update(cx, |panel, cx| {
-                            panel.finish_global_voice_text(
-                                &attempt, text, audio, allowed, mode, cx,
-                            );
+                            panel
+                                .finish_global_voice_text(&attempt, text, audio, allowed, mode, cx);
                         });
                     }));
                     cx.notify();
@@ -860,9 +877,10 @@ impl Panel {
             Err(error) => self.voice.error = Some(error.to_string()),
         }
         if self.voice.global_capture
-            && let Some(error) = &self.voice.error {
-                eprintln!("global voice: finished without text: {error}");
-            }
+            && let Some(error) = &self.voice.error
+        {
+            eprintln!("global voice: finished without text: {error}");
+        }
         cx.notify();
     }
 
@@ -1709,7 +1727,10 @@ mod tests {
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert_eq!(panel.items.len(), before + 1, "sent exactly once");
             panel.input.read_with(cx, |input, _| {
-                assert!(input.voice_preview().is_none(), "final words replace the preview")
+                assert!(
+                    input.voice_preview().is_none(),
+                    "final words replace the preview"
+                )
             });
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
@@ -1766,9 +1787,7 @@ mod tests {
     /// Partials are visible while recording as dim composer text, and the
     /// draft itself stays empty: nothing is inserted until the recording ends.
     #[gpui::test]
-    fn voice_meter_and_dim_composer_partials_show_while_recording(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn voice_meter_and_dim_composer_partials_show_while_recording(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.voice.phase = Phase::Recording;
@@ -2037,6 +2056,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ask_dictation_in_send_mode_edits_answer_without_sending_chat(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| Panel::new("voice-ask".into(), None, None, bridge, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("original draft".into(), cx)
+            });
+            panel.apply(&event, cx);
+            panel.finish_voice_with_mode(
+                Ok("dictated answer".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.other[0].as_deref(), Some("dictated answer"));
+            assert_eq!(panel.input.read(cx).snapshot().content, "original draft");
+        });
+        assert!(
+            commands
+                .try_iter()
+                .all(|command| !matches!(command, Command::Send { .. }))
+        );
+    }
+
+    #[gpui::test]
     fn voice_sends_transcript_without_touching_draft(cx: &mut gpui::TestAppContext) {
         let panel = cx.new(|cx| {
             Panel::new(
@@ -2168,9 +2216,9 @@ mod tests {
         cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
-            panel
-                .input
-                .update(cx, |input, cx| input.set_content("half-typed draft".into(), cx));
+            panel.input.update(cx, |input, cx| {
+                input.set_content("half-typed draft".into(), cx)
+            });
             panel.apply_command_transcript(
                 &jcode_voice::dictation::DictationRun {
                     text: "spoken words".into(),

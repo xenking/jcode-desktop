@@ -1083,6 +1083,20 @@ impl Panel {
         } else {
             "idle"
         };
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("ask") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let questions: Vec<_> = (0..4).map(|i| serde_json::json!({
+                    "header": format!("Section {}", i + 1),
+                    "question": format!("Section {}: Which option works best for this project?", i + 1),
+                    "options": (0..5).map(|o| serde_json::json!({"label": format!("Option {}", o + 1), "description": "A longer description to show how the answer wraps across multiple lines in a compact card."})).collect::<Vec<_>>()
+                })).collect();
+                let event = serde_json::json!({"ev":"ask_request", "session_id":"screenshot-fixture", "request_id":"screenshot-ask", "tool_call_id":"screenshot-tool", "questions":questions});
+                if let Ok(event) = serde_json::from_value::<ApiEvent>(event) {
+                    let _ = panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                }
+            });
+        }
         let activity_owner = cx.entity();
         Self {
             session_id,
@@ -3125,6 +3139,7 @@ impl Panel {
                 ..
             } => {
                 self.ask_card = Some(ask::AskCard::new(request_id.clone(), questions.clone()));
+                self.prepare_ask_inputs(cx);
                 self.stick_to_bottom = true;
             }
             ApiEvent::RuntimeCommandResult {
@@ -4907,6 +4922,7 @@ impl Panel {
                 .as_deref()
                 .is_some_and(|text| !text.is_empty() && text.chars().all(|c| !c.is_control()))
             || self.transcript_only
+            || self.ask_card.is_some()
             || self.login.is_some()
             || self.recovery_picker_open
             || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
@@ -5814,7 +5830,9 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.resume_composer_typing(event, false, window, cx) {
+                if this.handle_ask_key(event, window, cx)
+                    || this.resume_composer_typing(event, false, window, cx)
+                {
                     cx.stop_propagation();
                 }
             }))

@@ -330,6 +330,22 @@ impl Panel {
             ..background
         };
         let panel = cx.entity().downgrade();
+        if self.ask_card.is_some() && self.input.read(cx).focus_handle.is_focused(window) {
+            let panel = panel.clone();
+            window.defer(cx, move |window, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    let focus = {
+                        let panel = panel.read(cx);
+                        (panel.ask_card.is_some()
+                            && panel.input.read(cx).focus_handle.is_focused(window))
+                        .then(|| panel.focus_handle.clone())
+                    };
+                    if let Some(focus) = focus {
+                        window.focus(&focus, cx);
+                    }
+                }
+            });
+        }
         div()
             .debug_selector(|| "composer-dock".into())
             .absolute()
@@ -348,7 +364,11 @@ impl Panel {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     if !this.owns_keyboard_focus(window, cx) {
-                        this.focus_input(window, cx);
+                        if this.ask_card.is_some() {
+                            window.focus(&this.focus_handle, cx);
+                        } else {
+                            this.focus_input(window, cx);
+                        }
                     }
                 }),
             )
@@ -386,10 +406,20 @@ impl Panel {
                             .gap_2()
                             .children(self.render_ask_card(window, cx))
                             .children(self.render_side_question_card(cx))
-                            .children(self.render_prompt_queue(cx))
+                            .children(if self.ask_card.is_none() {
+                                self.render_prompt_queue(cx)
+                            } else {
+                                None
+                            })
                             .children(self.render_voice_pending())
-                            .child(self.render_composer(window, cx))
-                            .child(startup::input_marker(input_bounds)),
+                            .children(
+                                self.ask_card
+                                    .is_none()
+                                    .then(|| self.render_composer(window, cx)),
+                            )
+                            .when(self.ask_card.is_none(), |el| {
+                                el.child(startup::input_marker(input_bounds))
+                            }),
                     ),
             )
             .child(

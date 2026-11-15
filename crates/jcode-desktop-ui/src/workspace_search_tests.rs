@@ -82,6 +82,39 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
 }
 
 #[gpui::test]
+fn sidebar_search_remains_clickable_during_ask(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("chat", cx);
+        w.show_sidebar = true;
+        w
+    });
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0)).unwrap();
+    panel.update(vcx, |panel, cx| panel.test_settled_conversation(40, cx));
+    for _ in 0..120 {
+        if vcx.debug_bounds("composer-dock").is_some() {
+            break;
+        }
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+    }
+    let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"chat","request_id":"r","tool_call_id":"t","questions":[{"question":"Pick one","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+    panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("ask-card").is_some());
+    let button = vcx
+        .debug_bounds("sidebar-search-icon")
+        .or_else(|| vcx.debug_bounds("sidebar-search"))
+        .unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(workspace.read_with(vcx, |w, _| w.search_screen_open()));
+}
+
+#[gpui::test]
 fn sidebar_magnifier_opens_the_search_screen(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
