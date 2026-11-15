@@ -4179,6 +4179,7 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64",
+ "chrono",
  "image",
  "reqwest 0.12.28",
  "serde",

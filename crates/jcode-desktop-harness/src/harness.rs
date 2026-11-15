@@ -642,7 +642,7 @@ impl Drop for UpdateReceiver {
 /// Spawn the bridge. Returns immediately; connection happens on the thread.
 pub fn spawn() -> Bridge {
     if screenshot_mode() {
-        return spawn_inert();
+        return spawn_screenshot();
     }
     let (update_tx, update_rx) = update_channel();
     let (command_tx, command_rx) = channel::<Command>();
@@ -659,6 +659,108 @@ pub fn spawn() -> Bridge {
         _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
         commands: command_tx,
         updates: update_rx,
+    }
+}
+
+/// A bridge that answers search from fixtures, so the screenshot harness can
+/// render the results screen without a daemon, an index, or a network.
+fn spawn_screenshot() -> Bridge {
+    let (update_tx, update_rx) = update_channel();
+    let (command_tx, command_rx) = channel::<Command>();
+    std::thread::Builder::new()
+        .name("jcode-bridge-screenshot".into())
+        .spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                let Command::SearchSessions { query, generation } = command else {
+                    continue;
+                };
+                let started = std::time::Instant::now();
+                let _ = update_tx.send(Update::SessionSearch {
+                    query: query.clone(),
+                    generation,
+                    result: Ok(screenshot_search_results(&query)),
+                    elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
+                });
+            }
+        })
+        .expect("spawn screenshot bridge thread");
+    Bridge {
+        _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
+        commands: command_tx,
+        updates: update_rx,
+    }
+}
+
+/// Hit rows for the screenshot: several sessions, a user prompt whose raw
+/// snippet is full of newlines, assistant answers with their models, and a
+/// title match.
+fn screenshot_search_results(query: &str) -> jcode_sdk::SessionSearchResults {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_default();
+    let minute = 60_000i64;
+    let highlight = |start: u32, end: u32| jcode_sdk::SessionSearchHighlight { start, end };
+    let prompt = "Can you make the global search results readable?\n\nThe rows currently spread over four lines, and the match lands far to the right of the text that introduces it, which looks broken.";
+    let prompt_start = prompt.find("readable").unwrap_or_default() as u32;
+    let answer = "Done. Each hit is now one line: the snippet is whitespace-collapsed and windowed about forty characters before the match, with ellipses on both sides.";
+    let answer_start = answer.find("whitespace-collapsed").unwrap_or_default() as u32;
+    jcode_sdk::SessionSearchResults {
+        query: query.to_string(),
+        titles: vec![jcode_sdk::SessionSearchHit {
+            session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+            title: "Global search: one line per hit".into(),
+            role: jcode_sdk::SessionSearchRole::Title,
+            model: None,
+            snippet: "Global search: one line per hit".into(),
+            highlights: vec![highlight(0, 6)],
+            timestamp_ms: now - 3 * minute,
+            message_id: None,
+        }],
+        messages: vec![
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+                title: "Global search: one line per hit".into(),
+                role: jcode_sdk::SessionSearchRole::User,
+                model: None,
+                snippet: prompt.into(),
+                highlights: vec![highlight(prompt_start, prompt_start + 8)],
+                timestamp_ms: now - 3 * 60 * minute,
+                message_id: Some("message_1".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+                title: "Global search: one line per hit".into(),
+                role: jcode_sdk::SessionSearchRole::Assistant,
+                model: Some("claude-opus-5-5".into()),
+                snippet: answer.into(),
+                highlights: vec![highlight(answer_start, answer_start + 20)],
+                timestamp_ms: now - 2 * 60 * minute,
+                message_id: Some("message_2".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_otter_1794720000000_bbbbbbbbbbbb".into(),
+                title: "Indexer: classify by message source".into(),
+                role: jcode_sdk::SessionSearchRole::Assistant,
+                model: Some("deepseek-v4.1-flash".into()),
+                snippet: "The indexer now classifies a user-role message by its source, so an auto-poke or a swarm report is no longer attributed to you.".into(),
+                highlights: vec![highlight(26, 34)],
+                timestamp_ms: now - 5 * 3_600_000,
+                message_id: Some("message_3".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_heron_1794700000000_cccccccccccc".into(),
+                title: "Titlebar inset for full-height screens".into(),
+                role: jcode_sdk::SessionSearchRole::User,
+                model: None,
+                snippet: "The search screen draws under the traffic lights, so the heading collides with the red and yellow buttons.".into(),
+                highlights: vec![highlight(4, 10)],
+                timestamp_ms: now - 27 * 3_600_000,
+                message_id: Some("message_4".into()),
+            },
+        ],
+        indexed_sessions: 214,
+        truncated: false,
     }
 }
 

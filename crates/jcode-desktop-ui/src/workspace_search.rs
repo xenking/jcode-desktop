@@ -10,7 +10,8 @@
 
 use super::*;
 use crate::global_search::{
-    self, Effect, Highlight, OpenTarget, Results, Role, Row, Screen, SearchHit, Status,
+    self, Effect, Highlight, OpenTarget, Results, Role, Row, Screen, SearchHit, Status, time_label,
+    window_snippet,
 };
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,18 @@ impl Workspace {
         self.search_screen = None;
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// Screenshot fixture entry: open the screen already typing `query`, so a
+    /// capture shows real result rows instead of an empty prompt.
+    pub(crate) fn open_search_for_screenshot(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_search_screen(&GlobalSearch, window, cx);
+        self.search_query_changed(query, cx);
     }
 
     /// The query field is the only focusable thing on this screen, so the
@@ -179,12 +192,30 @@ impl Workspace {
         }
     }
 
+    fn search_toggle_group(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.search_screen.as_mut()
+            && state.screen.toggle_group(index)
+        {
+            cx.notify();
+        }
+    }
+
     /// Enter, or a click on a row.
     pub(super) fn search_open_selected(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A session header is a disclosure control, not a destination: Enter on
+        // it opens the group instead of leaving the search screen.
+        if let Some(state) = self.search_screen.as_mut()
+            && let Some(selected) = state.screen.selected()
+            && state.screen.selected_group().is_some()
+        {
+            state.screen.toggle_group(selected);
+            cx.notify();
+            return;
+        }
         let Some(target) = self
             .search_screen
             .as_ref()
@@ -325,22 +356,66 @@ impl Workspace {
                             .child(label.to_uppercase()),
                     );
                 }
-                Row::Group { title, .. } => {
+                Row::Group {
+                    title,
+                    count,
+                    expanded,
+                    ..
+                } => {
                     let label = if title.trim().is_empty() {
                         "Untitled session".to_string()
                     } else {
                         title.clone()
                     };
+                    let (count, expanded) = (*count, *expanded);
+                    let click_index = index;
                     list = list.child(
                         div()
+                            .id(("global-search-group-row", index))
                             .debug_selector(move || format!("global-search-group-{index}"))
+                            .mx_2()
                             .px_3()
                             .pt_3()
                             .pb_1()
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT_DIM)
-                            .text_ellipsis()
-                            .child(label),
+                            .rounded_md()
+                            .cursor_pointer()
+                            .when(selected == Some(index), |el| el.bg(theme.TOOL_BG))
+                            .hover(|el| el.bg(theme.TOOL_BG))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.search_toggle_group(click_index, cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(10.0))
+                                            .text_color(theme.TEXT_FAINT)
+                                            .child(if expanded { "▾" } else { "▸" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(px(12.0))
+                                            .text_color(theme.TEXT)
+                                            .text_ellipsis()
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .px_2()
+                                            .rounded_sm()
+                                            .bg(theme.TOOL_BG)
+                                            .text_size(px(10.0))
+                                            .text_color(theme.TEXT_DIM)
+                                            .child(format!("{count}"))
+                                    ),
+                            ),
                     );
                 }
                 Row::Hit { hit, role } => {
@@ -376,12 +451,15 @@ impl Workspace {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(role_badge(*role, theme))
+                                    // The badge answers "who": the human, or the
+                                    // model that wrote the answer.
+                                    .child(badge(&data, theme))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .text_size(px(12.0))
+                                            .whitespace_nowrap()
                                             .text_ellipsis()
                                             .child(snippet_element(&data, theme)),
                                     )
@@ -390,7 +468,11 @@ impl Workspace {
                                             .flex_none()
                                             .text_size(px(11.0))
                                             .text_color(theme.TEXT_FAINT)
-                                            .child(hit_time(data.timestamp_ms)),
+                                            .whitespace_nowrap()
+                                            .child(time_label(
+                                                data.timestamp_ms,
+                                                now_ms(),
+                                            )),
                                     ),
                             ),
                     );
@@ -420,7 +502,12 @@ impl Workspace {
         div()
             .debug_selector(|| "global-search-screen".into())
             .size_full()
-            .p_4()
+            // The screen replaces the canvas, so nothing above it reserves the
+            // macOS titlebar: without this the heading sits under the traffic
+            // lights.
+            .px_4()
+            .pb_4()
+            .pt(px(content_top_inset(false, window.is_fullscreen()) + 16.0))
             .flex()
             .flex_col()
             .gap_3()
@@ -457,7 +544,12 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_size(px(22.0)).child("Search sessions"))
+                    .child(
+                        div()
+                            .debug_selector(|| "global-search-title".into())
+                            .text_size(px(22.0))
+                            .child("Search sessions"),
+                    )
                     .child(
                         div()
                             .id("global-search-close")
@@ -500,6 +592,17 @@ fn convert_results(results: jcode_sdk::SessionSearchResults) -> Results {
 }
 
 fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> SearchHit {
+    // One visual line per hit, with the highlight offsets recomputed for the
+    // windowed text the screen actually draws.
+    let highlights: Vec<Highlight> = hit
+        .highlights
+        .into_iter()
+        .map(|highlight| Highlight {
+            start: highlight.start,
+            end: highlight.end,
+        })
+        .collect();
+    let (snippet, highlights) = window_snippet(&hit.snippet, &highlights);
     SearchHit {
         session_id: hit.session_id,
         title: hit.title,
@@ -508,22 +611,17 @@ fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> SearchHit {
             jcode_sdk::SessionSearchRole::User => Role::User,
             jcode_sdk::SessionSearchRole::Assistant => Role::Assistant,
         },
-        snippet: hit.snippet,
-        highlights: hit
-            .highlights
-            .into_iter()
-            .map(|highlight| Highlight {
-                start: highlight.start,
-                end: highlight.end,
-            })
-            .collect(),
+        model: hit.model,
+        snippet,
+        highlights,
         timestamp_ms: hit.timestamp_ms,
         message_id: hit.message_id,
     }
 }
 
-fn role_badge(role: Role, theme: &crate::theme::Theme) -> gpui::AnyElement {
-    let color = match role {
+/// Who the hit came from: "You", the model that answered, or a title match.
+fn badge(hit: &SearchHit, theme: &crate::theme::Theme) -> gpui::AnyElement {
+    let color = match hit.role {
         Role::Title => theme.TEXT_DIM,
         Role::User => theme.TEXT,
         Role::Assistant => theme.ACCENT,
@@ -536,7 +634,7 @@ fn role_badge(role: Role, theme: &crate::theme::Theme) -> gpui::AnyElement {
         .bg(theme.TOOL_BG)
         .text_size(px(10.0))
         .text_color(color)
-        .child(role.label())
+        .child(hit.badge())
         .into_any_element()
 }
 
@@ -576,22 +674,9 @@ fn snippet_element(hit: &SearchHit, theme: &crate::theme::Theme) -> gpui::AnyEle
     element.into_any_element()
 }
 
-/// When a hit happened, relative to now: a search result is recalled as "a
-/// while ago", not as an absolute date.
-fn hit_time(timestamp_ms: i64) -> String {
-    if timestamp_ms <= 0 {
-        return String::new();
-    }
-    let now_ms = std::time::SystemTime::now()
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or_default();
-    let ago = now_ms.saturating_sub(timestamp_ms) / 1_000;
-    match ago {
-        ..=59 => "now".to_string(),
-        60..=3_599 => format!("{}m", ago / 60),
-        3_600..=86_399 => format!("{}h", ago / 3_600),
-        86_400..=2_592_000 => format!("{}d", ago / 86_400),
-        _ => format!("{}mo", ago / 2_592_000),
-    }
+        .unwrap_or_default()
 }

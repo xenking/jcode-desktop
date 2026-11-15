@@ -197,3 +197,29 @@ fn focusing_the_active_panel_while_searching_keeps_the_query_field_typing(
         "regaining focus must not close or replace the screen"
     );
 }
+
+/// The screen replaces the canvas, so it draws where the window's titlebar is.
+/// On macOS that puts its heading under the traffic lights unless the screen
+/// reserves the same inset the single-panel workspace does.
+#[gpui::test]
+fn the_search_heading_clears_the_titlebar_inset(cx: &mut gpui::TestAppContext) {
+    let (workspace, mut vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("chat", cx);
+        w
+    });
+    vcx.run_until_parked();
+    open_search(&workspace, &mut vcx);
+
+    let screen = vcx
+        .debug_bounds("global-search-screen")
+        .expect("the search screen rendered");
+    let title = vcx
+        .debug_bounds("global-search-title")
+        .expect("the heading rendered");
+    let inset = content_top_inset(false, false);
+    assert!(
+        title.top() >= screen.top() + px(inset),
+        "heading {title:?} must sit below the {inset}px titlebar inset inside {screen:?}"
+    );
+}
