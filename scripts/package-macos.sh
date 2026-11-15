@@ -18,6 +18,14 @@ ZIP="$OUT/Jcode-macOS-universal.zip"
 DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
+# Local builds pick up the Sparkle keypair from the 0600 env file so the app
+# embeds SUPublicEDKey and the appcast is signed. CI passes secrets directly.
+SPARKLE_ENV="${SPARKLE_ENV:-$HOME/Library/Application Support/jcode/sparkle.env}"
+if [[ -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
+  SPARKLE_PUBLIC_KEY="$(sed -n 's/^SPARKLE_PUBLIC_KEY=//p' "$SPARKLE_ENV")"
+  SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY:-$(sed -n 's/^SPARKLE_PRIVATE_KEY=//p' "$SPARKLE_ENV")}"
+fi
+RELEASES_BASE="${RELEASES_BASE:-https://github.com/xenking/jcode-desktop/releases/download}"
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/xenking/jcode-desktop/releases/download/desktop-latest/appcast.xml}"
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
@@ -188,4 +196,15 @@ fi
 EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
   "$ROOT/scripts/verify-macos-package.sh" "$APP" "$DMG"
 (cd "$OUT" && shasum -a 256 "$(basename "$ZIP")" "$(basename "$DMG")" > SHA256SUMS)
+if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+  UPDATES="$OUT/updates"
+  ARCHIVE="Jcode-${VERSION}-macOS-universal.zip"
+  rm -rf "$UPDATES" && mkdir -p "$UPDATES"
+  cp "$ZIP" "$UPDATES/$ARCHIVE"
+  printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$SPARKLE_ROOT/bin/generate_appcast" \
+    --ed-key-file - --download-url-prefix "$RELEASES_BASE/desktop-v$VERSION/" "$UPDATES"
+  grep -q 'sparkle:edSignature=' "$UPDATES/appcast.xml"
+  cp "$UPDATES/appcast.xml" "$OUT/appcast.xml"
+  echo "signed appcast: $OUT/appcast.xml"
+fi
 echo "macOS beta artifacts: $OUT"
