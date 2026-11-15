@@ -10329,6 +10329,50 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         })
         .collect();
     }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("expandable") {
+        // Every truncated class in one transcript: a cut title, a cut error and
+        // an output long past the old 40-line clip.
+        return vec![
+            Item::User(
+                "Run the release checks, then tell me why the cleanup command was refused."
+                    .into(),
+            ),
+            Item::Tool {
+                call_id: "expandable-title".into(),
+                name: "bash".into(),
+                input: serde_json::json!({
+                    "command": "cargo test --workspace --all-targets -- --nocapture \
+                                && cargo clippy --workspace --all-targets \
+                                && cargo build --release"
+                })
+                .to_string(),
+                output: (0..60)
+                    .map(|n| format!("test workspace::case_{n} ... ok"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                done: true,
+                error: None,
+            },
+            Item::Tool {
+                call_id: "expandable-error".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "rm -rf ./build"}).to_string(),
+                output: String::new(),
+                done: true,
+                error: Some(
+                    "Error: This command was not run. It is irreversible:\n\n\
+                     Deleting the build directory removes artifacts the user did not name.\n\
+                     Before it can proceed, stop and check it against the user's actual request:\n\
+                     - Which specific thing the user asked for requires deleting this?\n\
+                     - Did the user name this path, or did you infer it?\n\
+                     - If you inferred it, is a narrower target enough?\n\
+                     If it is genuinely what the user asked for, re-issue the same call with a \
+                     `justification` field explaining which request it serves."
+                        .into(),
+                ),
+            },
+        ];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-streaming") {
         return tool_streaming::fixture_items();
     }
