@@ -192,13 +192,32 @@ pub struct Report {
     pub woke: bool,
 }
 
+/// Await directories to read: beside the daemon socket first, then the
+/// resolved runtime dir. The app can inherit a `TMPDIR` (an agent scratch
+/// dir) that is not where the shared daemon writes `jcode-await-members`, so
+/// `runtime_dir()` alone found only stale waits and the strip never showed.
+pub fn await_dirs(socket: Option<&Path>, runtime: &Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    for base in socket.and_then(Path::parent).into_iter().chain([runtime]) {
+        let dir = base.join(AWAIT_MEMBERS_DIR);
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// Await state per coordinator from the daemon's durable await files.
 pub fn load_awaits(dir: &Path, now_ms: u64) -> HashMap<String, AwaitState> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return HashMap::new();
-    };
-    let files = entries
-        .flatten()
+    load_awaits_from(std::slice::from_ref(&dir.to_path_buf()), now_ms)
+}
+
+/// Like [`load_awaits`], merging several directories.
+pub fn load_awaits_from(dirs: &[std::path::PathBuf], now_ms: u64) -> HashMap<String, AwaitState> {
+    let files = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
         .filter_map(|p| std::fs::read(p).ok())
@@ -431,5 +450,49 @@ mod tests {
         let map = load_awaits(dir.path(), 5);
         assert_eq!(map.len(), 1);
         assert_eq!(map["c"].waiting_on, vec!["w"]);
+    }
+
+    /// Live acceptance regression: the coordinator's real pending await
+    /// (copied from the daemon's `jcode-await-members`) lives beside the
+    /// daemon socket, while the app's `TMPDIR` scratch dir holds only an old,
+    /// resolved one. Reading `runtime_dir()` alone showed no strip.
+    #[test]
+    fn live_pending_await_beside_daemon_socket_shows_waiting_strip() {
+        let daemon = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        for (base, name, body) in [
+            (
+                daemon.path(),
+                "pending.json",
+                include_str!("swarm_view_fixtures/live_pending_await.json"),
+            ),
+            (
+                scratch.path(),
+                "old.json",
+                include_str!("swarm_view_fixtures/live_resolved_await.json"),
+            ),
+        ] {
+            let dir = base.join(AWAIT_MEMBERS_DIR);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let coordinator = "session_microbe_1794670947943_2648f3bbec7c7e5e";
+        let now = 1_794_718_800_000;
+        let before = load_awaits(&scratch.path().join(AWAIT_MEMBERS_DIR), now);
+        assert!(
+            before
+                .get(coordinator)
+                .is_none_or(|a| a.waiting_on.is_empty())
+        );
+
+        let dirs = await_dirs(Some(&daemon.path().join("jcode.sock")), scratch.path());
+        let awaits = load_awaits_from(&dirs, now);
+        let state = &awaits[coordinator];
+        assert_eq!(state.waiting_on.len(), 3);
+        let s = strip(&[], Some(state), now).unwrap();
+        assert_eq!(
+            s.waiting.as_deref(),
+            Some("Waiting for 3 workers: fish, fox, hamster · wakes when they report")
+        );
     }
 }

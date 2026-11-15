@@ -2241,9 +2241,13 @@ impl Workspace {
                                 let todos = crate::harness::jcode_home()
                                     .map(|home| crate::harness::todo_progress_in(&home, &sessions))
                                     .unwrap_or_default();
-                                let awaits = crate::swarm_view::load_awaits(
-                                    &jcode_base::storage::runtime_dir()
-                                        .join(crate::swarm_view::AWAIT_MEMBERS_DIR),
+                                let socket =
+                                    std::env::var_os("JCODE_SOCKET").map(std::path::PathBuf::from);
+                                let awaits = crate::swarm_view::load_awaits_from(
+                                    &crate::swarm_view::await_dirs(
+                                        socket.as_deref(),
+                                        &jcode_base::storage::runtime_dir(),
+                                    ),
                                     swarm_now_ms(),
                                 );
                                 (crate::example_prompts::load(&sessions), todos, awaits)
@@ -8607,8 +8611,7 @@ impl Render for Workspace {
         // Reserve the update footer outside the session canvas, only while
         // it has an action to offer.
         let footer_height = version::footer_height();
-        let viewport_h =
-            (f32::from(viewport.height) - content_top_inset - footer_height).max(0.0);
+        let viewport_h = (f32::from(viewport.height) - content_top_inset - footer_height).max(0.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
