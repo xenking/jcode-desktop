@@ -308,6 +308,13 @@ The fixture renders production UI, but is not a capture of the live window or
 evidence of live compositor performance. `JCODE_DESKTOP_SCREENSHOT=1` selects
 the offline fixture internally. Prefer the script, which also supplies isolation.
 
+`JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT=expandable` renders one transcript with
+every truncated class a row can carry: a tool title past its budget, a long tool
+output and an error long enough to be cut. Adding
+`JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in that fixture
+before the first frame, so a capture shows the expanded text (wrapped title,
+scrolling output region with Copy, full error) without replaying a click.
+
 ## Updating on Linux
 
 Type `/update` in Desktop to check and update a managed x86_64 or ARM64 archive install
