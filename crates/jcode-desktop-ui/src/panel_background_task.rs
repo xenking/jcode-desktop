@@ -122,9 +122,29 @@ fn completion_color(summary: &str) -> Rgba {
     }
 }
 
+/// The short trailing text of a finished task: just the duration when it
+/// succeeded, the status first when it did not.
+fn compact_summary(summary: &str) -> String {
+    let parts: Vec<&str> = summary.split('·').map(str::trim).collect();
+    let status = parts.first().copied().unwrap_or_default();
+    let duration = parts
+        .iter()
+        .find(|p| p.ends_with('s') && p.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .copied();
+    let ok = status.to_lowercase().contains("completed")
+        && !parts
+            .iter()
+            .any(|p| p.starts_with("exit ") && *p != "exit 0");
+    match (ok, duration) {
+        (true, Some(d)) => d.to_owned(),
+        (true, None) => String::new(),
+        (false, _) => summary.trim().to_owned(),
+    }
+}
+
 fn completed_card(
     index: usize,
-    task_id: &str,
+    _task_id: &str,
     label: &str,
     summary: &str,
     selection: &Entity<TextSelection>,
@@ -135,63 +155,59 @@ fn completed_card(
     div()
         .id(("background-task", index))
         .debug_selector(|| "background-task-card".into())
+        .debug_selector(|| "background-task-completed".into())
         .flex()
         .flex_none()
-        .flex_col()
+        .items_center()
+        .gap_2()
         .min_w_0()
-        .rounded_lg()
-        .overflow_hidden()
-        .bg(theme.CODE_BG)
-        .px_3()
-        .py_2()
-        .gap_1()
+        .py_1()
+        .child(crate::tool_icon::render("bg"))
         .child(
             div()
-                .debug_selector(|| "background-task-completed".into())
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(crate::tool_icon::render("bg"))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.TOOL_TEXT)
-                        .child(text_selection::plain(
-                            selection.clone(),
-                            format!("background-label-{index}"),
-                            label.to_owned(),
-                            window,
-                            cx,
-                        )),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(completion_color(summary))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(13.0))
+                .text_color(theme.TOOL_TEXT)
                 .child(text_selection::plain(
                     selection.clone(),
-                    format!("background-summary-{index}"),
-                    summary.to_owned(),
+                    format!("background-label-{index}"),
+                    label.to_owned(),
                     window,
                     cx,
                 )),
         )
         .child(
             div()
-                .text_size(px(10.0))
-                .font_family(theme.FONT_MONO)
-                .text_color(theme.TEXT_FAINT)
-                .child(format!("Background task · {task_id}")),
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(match completion_color(summary) {
+                    c if c == theme.OK => theme.TEXT_FAINT,
+                    c => c,
+                })
+                .child(text_selection::plain(
+                    selection.clone(),
+                    format!("background-summary-{index}"),
+                    compact_summary(summary),
+                    window,
+                    cx,
+                )),
         )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[core::prelude::v1::test]
+    fn compact_summary_keeps_only_what_matters() {
+        assert_eq!(compact_summary("✓ completed · 11.0s · exit 0"), "11.0s");
+        assert_eq!(
+            compact_summary("✗ failed · 2s · exit 1"),
+            "✗ failed · 2s · exit 1"
+        );
+    }
 
     #[core::prelude::v1::test]
     fn completion_status_does_not_assume_success() {
