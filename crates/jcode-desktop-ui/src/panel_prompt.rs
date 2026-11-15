@@ -7,6 +7,13 @@ pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
 const COLLAPSED_PROMPT_LINES: usize = 6;
 const COLLAPSED_PROMPT_MAX_HEIGHT: f32 = 140.;
 
+#[derive(Clone, Default)]
+pub(super) struct PromptScroll {
+    pub(super) handle: ScrollHandle,
+    pub(super) hitbox: Rc<std::cell::RefCell<Option<gpui::Hitbox>>>,
+    overflow_visible: Rc<Cell<bool>>,
+}
+
 /// Bound both long pasted paragraphs and newline-heavy snippets. Return a
 /// source prefix, never alter the actual prompt sent to the harness or stored.
 pub(super) fn compact_prompt(text: &str) -> Option<&str> {
@@ -196,6 +203,25 @@ impl Panel {
         let preview = compact_prompt(text);
         let expanded = self.expanded_prompts.contains(&(index, pinned));
         let collapsed = preview.is_some() && !expanded;
+        let region = if expanded {
+            self.prompt_scrolls
+                .borrow_mut()
+                .entry((index, pinned))
+                .or_default()
+                .clone()
+        } else {
+            PromptScroll::default()
+        };
+        let scroll = region.handle.clone();
+        let viewport_height = self.expandable_viewport_height;
+        let viewport_height = if viewport_height > px(0.) {
+            viewport_height
+        } else {
+            window.viewport_size().height
+        };
+        // Reserve room inside the cap for the disclosure header and card padding.
+        let body_height = (f32::from(viewport_height) * 0.6 - if transcribed { 56. } else { 32. })
+            .clamp(1., super::expandable::MAX_HEIGHT);
         let card = div()
             .relative()
             .debug_selector(move || format!("user-prompt-{index}"))
@@ -207,43 +233,112 @@ impl Panel {
             .px_2()
             .py_1()
             .text_color(Theme::global().TEXT_USER)
+            .when(preview.is_some() && expanded, |card| {
+                card.child(super::expandable::toggle(
+                    format!("prompt-expand-{index}").into(),
+                    true,
+                    "▸ Expand prompt",
+                    "▾ Collapse prompt",
+                    cx.listener(move |panel, _, _, cx| {
+                        cx.stop_propagation();
+                        panel.expanded_prompts.remove(&(index, pinned));
+                        panel.prompt_scrolls.borrow_mut().remove(&(index, pinned));
+                        panel.transcript_measurements.dirty = true;
+                        cx.notify();
+                    }),
+                ))
+            })
             .child(
                 div()
-                    .debug_selector(move || format!("prompt-content-{index}"))
-                    // Also bound rendered markdown (headings, tables, images)
-                    // and wrapping in narrow chat panes, not just source length.
-                    // Clamp wrapped text to whole visual lines with an
-                    // ellipsis, so the stepped background is shaped from the
-                    // truncated layout instead of being sliced mid-line.
-                    .when(collapsed, |content| {
-                        // The fill extends 8px/4px past the text. Grow the
-                        // clip box by the same amount with padding and cancel
-                        // it with negative margins, so layout is unchanged but
-                        // the rounded bottom edge is not sliced off.
-                        content
-                            .line_clamp(COLLAPSED_PROMPT_LINES)
-                            .text_ellipsis()
-                            .px(px(8.))
-                            .mx(px(-8.))
-                            .py(px(4.))
-                            .my(px(-4.))
-                            .max_h(px(COLLAPSED_PROMPT_MAX_HEIGHT + 8.))
-                            .overflow_hidden()
-                    })
-                    .child(markdown::render_prompt_with_prefix(
-                        if collapsed { preview.unwrap() } else { text },
-                        index,
-                        &if pinned {
-                            format!("pinned-{index}")
-                        } else {
-                            index.to_string()
-                        },
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                        self.media_preview_handler(cx),
-                        background,
-                    )),
+                    .relative()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .id((
+                                if pinned {
+                                    "pinned-prompt-scroll"
+                                } else {
+                                    "prompt-scroll"
+                                },
+                                index,
+                            ))
+                            .debug_selector(move || format!("prompt-content-{index}"))
+                            // Also bound rendered markdown (headings, tables, images)
+                            // and wrapping in narrow chat panes, not just source length.
+                            // Clamp wrapped text to whole visual lines with an
+                            // ellipsis, so the stepped background is shaped from the
+                            // truncated layout instead of being sliced mid-line.
+                            .when(collapsed, |content| {
+                                // The fill extends 8px/4px past the text. Grow the
+                                // clip box by the same amount with padding and cancel
+                                // it with negative margins, so layout is unchanged but
+                                // the rounded bottom edge is not sliced off.
+                                content
+                                    .line_clamp(COLLAPSED_PROMPT_LINES)
+                                    .text_ellipsis()
+                                    .px(px(8.))
+                                    .mx(px(-8.))
+                                    .py(px(4.))
+                                    .my(px(-4.))
+                                    .max_h(px(COLLAPSED_PROMPT_MAX_HEIGHT + 8.))
+                                    .overflow_hidden()
+                            })
+                            .when(expanded, |content| {
+                                content
+                                    .debug_selector(move || format!("prompt-scroll-{index}"))
+                                    .max_h(px(body_height))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&scroll)
+                            })
+                            .child(markdown::render_prompt_with_prefix(
+                                if collapsed { preview.unwrap() } else { text },
+                                index,
+                                &if pinned {
+                                    format!("pinned-{index}")
+                                } else {
+                                    index.to_string()
+                                },
+                                &self.transcript_selection,
+                                window,
+                                cx,
+                                self.media_preview_handler(cx),
+                                background,
+                            )),
+                    )
+                    .when(expanded, |wrapper| {
+                        let hitbox = region.hitbox.clone();
+                        let overflow_visible = region.overflow_visible.clone();
+                        let measured_scroll = scroll.clone();
+                        let panel = cx.entity().downgrade();
+                        wrapper
+                            .child(
+                                gpui::canvas(
+                                    |bounds, window, _| {
+                                        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                    },
+                                    move |_, painted_hitbox, window, cx| {
+                                        *hitbox.borrow_mut() = Some(painted_hitbox);
+                                        let overflow = measured_scroll.max_offset().y > px(0.5);
+                                        if overflow_visible.replace(overflow) != overflow {
+                                            let panel = panel.clone();
+                                            window.defer(cx, move |_, cx| {
+                                                if let Some(panel) = panel.upgrade() {
+                                                    cx.notify(panel.entity_id());
+                                                }
+                                            });
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                            .child(crate::scrollbar::vertical_with_track(
+                                &scroll,
+                                "prompt-scrollbar",
+                            ))
+                    }),
             )
             .when(transcribed, |card| {
                 let theme = Theme::global();
@@ -271,7 +366,7 @@ impl Panel {
                         .child("Transcribed"),
                 )
             })
-            .when(preview.is_some(), |card| {
+            .when(preview.is_some() && !expanded, |card| {
                 card.child(
                     // The same control every other truncated surface uses, so
                     // a cut prompt is expanded the same way as a cut tool row.
@@ -284,6 +379,16 @@ impl Panel {
                             cx.stop_propagation();
                             if !panel.expanded_prompts.remove(&(index, pinned)) {
                                 panel.expanded_prompts.insert((index, pinned));
+                                if !pinned {
+                                    let position = panel.transcript_render_rows().iter().position(|row| {
+                                        matches!(&row.source, TranscriptRowSource::Settled(item_index) if *item_index == index)
+                                    });
+                                    if let Some(position) = position {
+                                        panel.stick_to_bottom = false;
+                                        panel.cancel_transcript_momentum();
+                                        panel.transcript_list.scroll_to_reveal_item(position);
+                                    }
+                                }
                             }
                             panel.transcript_measurements.dirty = true;
                             cx.notify();

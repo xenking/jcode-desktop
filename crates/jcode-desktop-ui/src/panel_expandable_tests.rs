@@ -13,7 +13,9 @@ fn irreversible_error() -> String {
             "- Check {n}: did the user name this path, or did you infer it?\n"
         ));
     }
-    text.push_str("Re-issue the same call with a justification field explaining which request it serves.");
+    text.push_str(
+        "Re-issue the same call with a justification field explaining which request it serves.",
+    );
     text
 }
 
@@ -65,6 +67,162 @@ fn document_text(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> St
             .collect::<Vec<_>>()
             .join("\n")
     })
+}
+
+#[gpui::test]
+fn long_prompt_is_bounded_scrollable_and_collapsible_in_short_window(
+    cx: &mut gpui::TestAppContext,
+) {
+    let prompt: String = (0..100)
+        .map(|n| format!("Prompt line {n}: enough text to wrap.\n\n"))
+        .collect();
+    let (panel, vcx) = panel_with(cx, vec![Item::User(prompt)]);
+    let window = vcx.window_handle();
+    vcx.simulate_window_resize(window, gpui::size(px(600.), px(400.)));
+    vcx.run_until_parked();
+    let compact = vcx.debug_bounds("user-prompt-0").unwrap();
+    click(vcx, "prompt-expand-0");
+    let viewport = panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    let expanded = vcx.debug_bounds("user-prompt-0").unwrap();
+    let scroll = vcx
+        .debug_bounds("prompt-scroll-0")
+        .expect("expanded prompt scrolls");
+    let control = vcx
+        .debug_bounds("prompt-expand-0")
+        .expect("collapse control paints");
+    assert!(
+        vcx.debug_bounds("prompt-scrollbar").is_some(),
+        "scrollbar is visible immediately"
+    );
+    assert!(
+        expanded.size.height <= viewport.size.height * 0.6,
+        "{expanded:?} vs {viewport:?}"
+    );
+    assert!(scroll.size.height < expanded.size.height);
+    assert!(control.top() >= viewport.top() && control.bottom() <= viewport.bottom());
+    let handle = panel.read_with(&*vcx, |panel, _| {
+        panel
+            .prompt_scrolls
+            .borrow()
+            .get(&(0, false))
+            .unwrap()
+            .handle
+            .clone()
+    });
+    assert!(handle.max_offset().y > px(0.));
+    vcx.simulate_mouse_move(scroll.center(), None, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    assert!(handle.offset().y < px(0.), "wheel must move the prompt");
+    assert!(
+        vcx.debug_bounds("prompt-scrollbar").is_some(),
+        "overflow has a visible scrollbar"
+    );
+    assert_eq!(
+        vcx.debug_bounds("prompt-expand-0").unwrap().origin,
+        control.origin,
+        "collapse stays fixed"
+    );
+    vcx.simulate_window_resize(window, gpui::size(px(600.), px(300.)));
+    vcx.run_until_parked();
+    let resized_viewport =
+        panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    let resized = vcx.debug_bounds("user-prompt-0").unwrap();
+    assert!(
+        resized.size.height <= resized_viewport.size.height * 0.6,
+        "{resized:?} vs {resized_viewport:?}"
+    );
+    click(vcx, "prompt-expand-0");
+    assert_eq!(
+        vcx.debug_bounds("user-prompt-0").unwrap().size.height,
+        compact.size.height
+    );
+}
+
+#[gpui::test]
+fn prompt_wheel_hands_off_to_transcript_at_bottom(cx: &mut gpui::TestAppContext) {
+    let mut items = vec![Item::User("A long prompt paragraph.\n\n".repeat(100))];
+    items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
+    let (panel, vcx) = panel_with(cx, items);
+    let window = vcx.window_handle();
+    vcx.simulate_window_resize(window, gpui::size(px(600.), px(400.)));
+    vcx.run_until_parked();
+    click(vcx, "prompt-expand-0");
+    let scroll = vcx.debug_bounds("prompt-scroll-0").unwrap();
+    let handle = panel.read_with(&*vcx, |panel, _| {
+        panel
+            .prompt_scrolls
+            .borrow()
+            .get(&(0, false))
+            .unwrap()
+            .handle
+            .clone()
+    });
+    handle.set_offset(gpui::point(px(0.), -handle.max_offset().y));
+    let before = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    vcx.simulate_mouse_move(scroll.center(), None, gpui::Modifiers::default());
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    super::scroll_momentum_tests::settle(vcx);
+    let after = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert!(
+        before.item_ix != after.item_ix || before.offset_in_item != after.offset_in_item,
+        "wheel at prompt bottom moves the transcript"
+    );
+}
+
+#[gpui::test]
+fn pinned_expanded_prompt_scrolls_without_moving_transcript(cx: &mut gpui::TestAppContext) {
+    let mut items = vec![Item::User("A long prompt paragraph.\n\n".repeat(100))];
+    items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
+    let (panel, vcx) = panel_with(cx, items);
+    let window = vcx.window_handle();
+    vcx.simulate_window_resize(window, gpui::size(px(600.), px(500.)));
+    panel.update(vcx, |panel, cx| {
+        panel.stick_to_bottom = true;
+        panel.transcript_list.scroll_to_end();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
+    click(vcx, "prompt-expand-0");
+    let bounds = vcx.debug_bounds("prompt-scroll-0").unwrap();
+    let handle = panel.read_with(&*vcx, |panel, _| {
+        panel
+            .prompt_scrolls
+            .borrow()
+            .get(&(0, true))
+            .unwrap()
+            .handle
+            .clone()
+    });
+    let before = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    vcx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::default());
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    assert!(handle.offset().y < px(0.));
+    let after = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert_eq!(
+        (before.item_ix, before.offset_in_item),
+        (after.item_ix, after.offset_in_item)
+    );
+    click(vcx, "prompt-expand-0");
+    panel.read_with(&*vcx, |panel, _| {
+        assert!(!panel.expanded_prompts.contains(&(0, true)))
+    });
 }
 
 #[gpui::test]
@@ -129,7 +287,10 @@ fn tool_output_expands_past_the_old_clip_and_scrolls(cx: &mut gpui::TestAppConte
         error: None,
     }];
     let (panel, vcx) = panel_with(cx, items);
-    assert!(vcx.debug_bounds("tool-detail").is_none(), "collapsed by default");
+    assert!(
+        vcx.debug_bounds("tool-detail").is_none(),
+        "collapsed by default"
+    );
     click(vcx, "tool-output-size");
     let detail = vcx
         .debug_bounds("tool-detail")
@@ -144,7 +305,10 @@ fn tool_output_expands_past_the_old_clip_and_scrolls(cx: &mut gpui::TestAppConte
 
 #[gpui::test]
 fn tool_title_expands_from_one_line_to_the_whole_intent(cx: &mut gpui::TestAppContext) {
-    let command = format!("{} --and-then-some-more", "cargo test --workspace ".repeat(8));
+    let command = format!(
+        "{} --and-then-some-more",
+        "cargo test --workspace ".repeat(8)
+    );
     let items = vec![Item::Tool {
         call_id: "call".into(),
         name: "bash".into(),
@@ -165,7 +329,10 @@ fn tool_title_expands_from_one_line_to_the_whole_intent(cx: &mut gpui::TestAppCo
         "the title wraps: {compact:?} -> {wrapped:?}"
     );
     let full = document_text(&panel, vcx);
-    assert!(full.contains("--and-then-some-more"), "full intent reachable");
+    assert!(
+        full.contains("--and-then-some-more"),
+        "full intent reachable"
+    );
     click(vcx, "tool-title-0");
     assert_eq!(
         vcx.debug_bounds("tool-header").unwrap().size.height,
@@ -231,7 +398,11 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
         .size;
     click(vcx, "background-task-chevron-0");
     panel.read_with(&*vcx, |panel, _| {
-        assert!(panel.expanded_regions.contains(&expandable::key::task("task-1")));
+        assert!(
+            panel
+                .expanded_regions
+                .contains(&expandable::key::task("task-1"))
+        );
     });
     let expanded = vcx
         .debug_bounds("background-task-card")
@@ -246,7 +417,10 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
     assert!(text.contains("Rebuild the search index across every collection"));
     click(vcx, "background-task-chevron-0");
     assert_eq!(
-        vcx.debug_bounds("background-task-card").unwrap().size.height,
+        vcx.debug_bounds("background-task-card")
+            .unwrap()
+            .size
+            .height,
         compact.height
     );
 }
@@ -326,9 +500,15 @@ fn recovery_error_reveals_the_raw_provider_message(cx: &mut gpui::TestAppContext
     assert!(vcx.debug_bounds("0-error-raw-scroll").is_none());
     click(vcx, "0-error-expand");
     panel.read_with(&*vcx, |panel, _| {
-        assert!(panel.expanded_regions.contains(&expandable::key::details(0)));
+        assert!(
+            panel
+                .expanded_regions
+                .contains(&expandable::key::details(0))
+        );
     });
-    let expanded = vcx.debug_bounds("recovery-error").expect("error card paints");
+    let expanded = vcx
+        .debug_bounds("recovery-error")
+        .expect("error card paints");
     assert!(expanded.size.height > compact.height);
     assert!(
         vcx.debug_bounds("0-error-raw-scroll").is_some(),

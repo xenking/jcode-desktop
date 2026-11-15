@@ -627,6 +627,7 @@ pub struct Panel {
     image_preview_drag: Option<gpui::Point<gpui::Pixels>>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
+    expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
     transcript_measurements: TranscriptMeasurements,
     flicker_diagnostics: std::rc::Rc<std::cell::RefCell<flicker::Detector>>,
@@ -635,6 +636,8 @@ pub struct Panel {
     offscreen_prompt_clip: Option<gpui::Pixels>,
     /// Inline and pinned prompts expand independently so the reminder stays compact.
     expanded_prompts: HashSet<(usize, bool)>,
+    prompt_scrolls:
+        std::cell::RefCell<std::collections::HashMap<(usize, bool), prompt::PromptScroll>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
@@ -1159,6 +1162,7 @@ impl Panel {
             image_preview_drag: None,
             focus_handle: cx.focus_handle(),
             transcript_list,
+            expandable_viewport_height: px(0.),
             transcript_row_count: 0,
             transcript_measurements: Default::default(),
             flicker_diagnostics: Default::default(),
@@ -1166,6 +1170,7 @@ impl Panel {
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
+            prompt_scrolls: Default::default(),
             publish_tracker: false,
             publish_armed_at: None,
             todo_card_hidden: false,
@@ -2973,6 +2978,7 @@ impl Panel {
             .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
             .collect();
         self.expanded_prompts.clear();
+        self.prompt_scrolls.borrow_mut().clear();
         false
     }
 
@@ -5188,6 +5194,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Panel");
+        self.expandable_viewport_height = self.transcript_list.viewport_bounds().size.height;
         if std::mem::take(&mut self.focus_pending) {
             self.focus_input(window, cx);
         }
@@ -6051,6 +6058,54 @@ impl Render for Panel {
                                         }
                                         let panel = wheel_panel.read(cx);
                                         if panel.transcript_list.is_scrollbar_dragging() {
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        // The transcript's smooth-wheel handler runs in capture
+                                        // phase, before GPUI's nested div scroll handlers. Give
+                                        // an expanded prompt first refusal, but hand movement at
+                                        // either edge back to the transcript.
+                                        let inner = {
+                                            let scrolls = panel.prompt_scrolls.borrow();
+                                            [true, false].into_iter().find_map(|pinned| {
+                                                panel
+                                                    .expanded_prompts
+                                                    .iter()
+                                                    .filter(|(_, p)| *p == pinned)
+                                                    .find_map(|key| {
+                                                        if pinned
+                                                            && panel.offscreen_prompt != Some(key.0)
+                                                        {
+                                                            return None;
+                                                        }
+                                                        if !pinned
+                                                            && panel.offscreen_prompt == Some(key.0)
+                                                        {
+                                                            return None;
+                                                        }
+                                                        let region = scrolls.get(key)?;
+                                                        if !region
+                                                            .hitbox
+                                                            .borrow()
+                                                            .as_ref()
+                                                            .is_some_and(|hitbox| {
+                                                                hitbox.should_handle_scroll(window)
+                                                            })
+                                                        {
+                                                            return None;
+                                                        }
+                                                        let scroll = &region.handle;
+                                                        let old = scroll.offset();
+                                                        let next = (old.y + delta.y)
+                                                            .clamp(-scroll.max_offset().y, px(0.));
+                                                        (next != old.y)
+                                                            .then(|| (scroll.clone(), old, next))
+                                                    })
+                                            })
+                                        };
+                                        if let Some((scroll, old, next)) = inner {
+                                            scroll.set_offset(gpui::point(old.x, next));
+                                            cx.notify(wheel_panel.entity_id());
                                             cx.stop_propagation();
                                             return;
                                         }
