@@ -31,12 +31,10 @@ pub(crate) fn age() -> String {
         .unwrap_or_else(|_| "Build time unavailable".into())
 }
 
-pub fn label() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    footer_label(VERSION, development(), BUILT_AT.parse().ok(), now)
+/// The version as the user reads it in Settings → About and the account
+/// popup: `v0.3.0 · Dev 12`, not the raw `0.3.0-dev.12`.
+pub(crate) fn display_version() -> String {
+    format!("v{}", version_label(VERSION))
 }
 
 pub(crate) fn development() -> bool {
@@ -71,26 +69,6 @@ fn version_label(raw: &str) -> String {
     } else {
         format!("{base} · {channel} {suffix}")
     }
-}
-
-fn footer_label(version: &str, development: bool, built_at: Option<u64>, now: u64) -> String {
-    let mut label = format!("v{}", version_label(version));
-    if development {
-        // Keep local builds distinct from the installed release, even when
-        // Cargo's base package version has not changed between rebuilds.
-        let already_dev = semver::Version::parse(version.strip_prefix('v').unwrap_or(version))
-            .is_ok_and(|version| version.pre.as_str().split('.').next() == Some("dev"));
-        if !already_dev {
-            label.push_str(" · Dev");
-        }
-        if let Some(built_at) = built_at {
-            label.push_str(&format!(
-                " · built {}",
-                format_age(now.saturating_sub(built_at))
-            ));
-        }
-    }
-    label
 }
 
 pub(crate) struct BuildTooltip;
@@ -144,22 +122,40 @@ fn format_age(seconds: u64) -> String {
 mod tests {
     use super::*;
 
+    /// The footer must never carry a version or build stamp, on any frame and
+    /// under the pointer. A brand-new panel used to paint one for its first
+    /// frame, which is what readers saw at the bottom right of the composer.
     #[gpui::test]
-    fn footer_exposes_exact_build_details_on_hover(cx: &mut gpui::TestAppContext) {
+    fn the_composer_footer_never_shows_a_version(cx: &mut gpui::TestAppContext) {
         let (bridge, _commands) = crate::harness::spawn_recording();
         let (_panel, vcx) = cx.add_window_view(|_, cx| {
-            crate::panel::Panel::new("version-label-test".into(), None, None, bridge, cx)
+            crate::panel::Panel::new(
+                "footer-has-no-version".into(),
+                None,
+                Some("/workspace/example".into()),
+                bridge,
+                cx,
+            )
         });
         vcx.run_until_parked();
-        let footer = vcx
-            .debug_bounds("panel-build")
-            .expect("version label renders");
+        assert!(
+            vcx.debug_bounds("panel-build").is_none(),
+            "no version or build stamp in the composer footer"
+        );
+        let footer = vcx.debug_bounds("panel-meta").expect("the footer paints");
         vcx.update(|window, cx| window.simulate_mouse_move(footer.center(), cx));
         vcx.run_until_parked();
         vcx.executor()
             .advance_clock(std::time::Duration::from_secs(1));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-build-tooltip").is_some());
+        assert!(
+            vcx.debug_bounds("panel-build-tooltip").is_none(),
+            "no build tooltip hides in the footer either"
+        );
+        assert!(
+            vcx.debug_bounds("composer-location").is_some(),
+            "the working directory stays in the footer"
+        );
     }
 
     #[test]
@@ -182,29 +178,14 @@ mod tests {
     }
 
     #[test]
-    fn footer_distinguishes_local_builds_without_exposing_epoch_ids() {
+    fn display_version_reads_like_a_release_channel() {
         assert_eq!(
-            footer_label("0.1.0", true, Some(100), 100),
-            "v0.1.0 · Dev · built just now"
+            display_version(),
+            format!("v{}", version_label(VERSION)),
+            "About and the account popup name the same build"
         );
-        assert_eq!(
-            footer_label("0.1.0", true, Some(100), 220),
-            "v0.1.0 · Dev · built 2m ago"
-        );
-        assert_eq!(
-            footer_label("0.1.0-beta.15", false, Some(100), 220),
-            "v0.1.0 · Beta 15"
-        );
-        assert_eq!(footer_label("0.1.0", false, None, 220), "v0.1.0");
-        assert_eq!(footer_label("0.1.0", true, None, 220), "v0.1.0 · Dev");
-        assert_eq!(
-            footer_label("0.1.0-dev", true, Some(300), 220),
-            "v0.1.0-dev · built just now"
-        );
-        assert_eq!(
-            footer_label("0.3.0-dev.12", true, Some(100), 220),
-            "v0.3.0 · Dev 12 · built 2m ago"
-        );
+        assert!(display_version().starts_with('v'));
+        assert!(!display_version().contains("built "), "age stays out of it");
     }
 
     #[test]
@@ -226,6 +207,6 @@ mod tests {
             development()
         );
         assert!(crate::build_version().starts_with(&format!("v{VERSION} (")));
-        assert!(label().contains(&version_label(VERSION)));
+        assert!(display_version().contains(&version_label(VERSION)));
     }
 }

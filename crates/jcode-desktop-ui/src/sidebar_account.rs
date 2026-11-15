@@ -104,6 +104,9 @@ impl JcodeAccount {
 
 impl Workspace {
     pub(super) fn render_sidebar_account(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // The avatar is the app's single update control. `render_sidebar` has
+        // already started the release check for this frame.
+        let offer = version::offered_update();
         let theme = Theme::global();
         let account = JcodeAccount::current();
         let signed_in = account.signed_in;
@@ -176,6 +179,7 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(|| "sidebar-account-avatar".into())
+                            .relative()
                             .size(px(26.0))
                             .flex_none()
                             .flex()
@@ -189,7 +193,58 @@ impl Workspace {
                             })
                             .text_size(px(11.0))
                             .text_color(ink)
-                            .child(account.initial(show_email)),
+                            .child(account.initial(show_email))
+                            // Update indication lives on the avatar and nowhere
+                            // else. No update means a plain avatar with no
+                            // extra text, exactly as before.
+                            .when_some(offer, |el, offer| {
+                                el.child(
+                                    div()
+                                        .id("sidebar-update-badge")
+                                        .debug_selector(|| "sidebar-update-badge".into())
+                                        .absolute()
+                                        .top(px(-3.0))
+                                        .right(px(-3.0))
+                                        .size(px(13.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(theme.ACCENT)
+                                        .text_color(theme.BG)
+                                        .text_size(px(9.0))
+                                        .line_height(px(9.0))
+                                        .cursor_pointer()
+                                        .hover(|el| el.opacity(0.85))
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| {
+                                                live_tabs::TabTooltip(
+                                                    format!(
+                                                        "{}\nClick to {}",
+                                                        offer.label,
+                                                        offer.action.to_lowercase()
+                                                    )
+                                                    .into(),
+                                                )
+                                            })
+                                            .into()
+                                        })
+                                        // The badge acts on the press and keeps
+                                        // the click from opening the account
+                                        // popup, so a restart is never a
+                                        // side effect of a mis-aimed click.
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|_, _, window, cx| {
+                                                cx.stop_propagation();
+                                                window.prevent_default();
+                                                Self::check_and_apply_update(cx);
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child("↑"),
+                                )
+                            }),
                     )
                     .child(
                         div()

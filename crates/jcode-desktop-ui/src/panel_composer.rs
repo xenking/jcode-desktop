@@ -82,8 +82,10 @@ impl Panel {
                 }
             });
         let can_switch_location = remote_machine.is_none() && self.offers_directory_switch();
-        // Build info, usage limits and status share the pill row, so the
-        // panel needs no separate footer bar below the composer.
+        // Usage limits and status share the pill row, so the panel needs no
+        // separate footer bar below the composer. The build label is gone from
+        // the footer entirely: the version lives in Settings → About and the
+        // account popup.
         let status_line = self.status_line();
         // Worker count (only while workers run) then the activity icon. Both
         // are leaf views, so their animation never rebuilds the composer.
@@ -119,20 +121,7 @@ impl Panel {
                     .children(self.render_voice_status(status_line))
                     .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
-            )
-            .when(self.show_build_footer && !screenshot_mode, |el| {
-                el.child(
-                    div()
-                        .id("panel-build")
-                        .debug_selector(|| "panel-build".into())
-                        .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
-                        // Build metadata yields space to the identity pills.
-                        .flex_shrink_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(crate::build_info::label()),
-                )
-            });
+            );
         let pills = div()
             .debug_selector(|| "composer-tabs".into())
             .w_full()

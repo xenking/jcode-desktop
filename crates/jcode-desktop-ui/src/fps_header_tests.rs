@@ -69,17 +69,11 @@ fn fps_and_new_session_share_the_tab_row_without_a_top_header(cx: &mut gpui::Tes
                         tabs.size.width > px(0.0),
                         "width={width}, sidebar={sidebar}, minimap={minimap}"
                     );
-                    if let Some(version) = vcx.debug_bounds("workspace-version") {
-                        assert!(version.top() >= canvas.bottom());
-                        assert!(version.right() <= body.right());
-                        assert_eq!(version.size.height, px(18.0));
-                        let build = vcx.debug_bounds("workspace-build").unwrap();
-                        assert!(
-                            build.size.height <= px(16.0),
-                            "version must stay on one line"
-                        );
-                        assert!(version.top() > counter.bottom());
-                    }
+                    assert!(
+                        vcx.debug_bounds("workspace-version").is_none(),
+                        "the chrome never carries a version strip"
+                    );
+                    assert!(vcx.debug_bounds("workspace-build").is_none());
                     if sidebar && !responsive::is_compact(width) {
                         assert_eq!(vcx.debug_bounds("sidebar").unwrap().top(), body.top());
                     }

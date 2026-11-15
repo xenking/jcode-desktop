@@ -537,7 +537,6 @@ pub struct Panel {
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
     pub input: Entity<PromptInput>,
-    pub(super) show_build_footer: bool,
     /// Coordinator-only: its swarm workers, for the composer indicator.
     swarm_workers: Vec<crate::swarm_view::Worker>,
     /// The worker list opened from the composer's count is showing.
@@ -1030,7 +1029,6 @@ impl Panel {
             animate_stream_in_tests: false,
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
-            show_build_footer: true,
             swarm_workers: Vec::new(),
             swarm_list_open: false,
             swarm_marks: Default::default(),
@@ -4717,12 +4715,11 @@ impl Panel {
         }
     }
 
-    /// Whether `set_surface_focused(focused)` or the one-shot build footer would
-    /// change anything. Callers drawing a frame check this first, since GPUI
-    /// counts any update made while drawing as a change to the views reading it.
+    /// Whether `set_surface_focused(focused)` would change anything. Callers
+    /// drawing a frame check this first, since GPUI counts any update made
+    /// while drawing as a change to the views reading it.
     pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
-        self.show_build_footer
-            || self.surface_focused != focused
+        self.surface_focused != focused
             || (focused && self.finished_unseen)
             || self
                 .terminal

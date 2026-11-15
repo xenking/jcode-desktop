@@ -121,10 +121,16 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
                 model.right() <= login.left(),
                 "identity controls must not overlap"
             );
-            let build = vcx.debug_bounds("panel-build").unwrap();
+            let location = vcx
+                .debug_bounds("composer-location")
+                .expect("the directory label stays in the footer");
             assert!(
-                login.right() <= build.left() && build.top() >= input.bottom(),
-                "build metadata shares the pill row after the identity pills: {login:?} {build:?} {input:?} {footer:?}"
+                location.top() >= input.bottom(),
+                "the directory label shares the pill row: {location:?} {input:?}"
+            );
+            assert!(
+                vcx.debug_bounds("panel-build").is_none(),
+                "the footer never shows a version or build label"
             );
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {

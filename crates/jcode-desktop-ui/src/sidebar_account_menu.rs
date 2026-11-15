@@ -674,6 +674,23 @@ impl Workspace {
                     ),
             );
 
+        // The versions: the build running now, and the release the badge above
+        // offers, with the one button that applies it. This is the only place
+        // besides Settings → About where the number appears.
+        let versions = version::version_block(
+            &updates::release_status(),
+            &updates::current(),
+            updates::is_source_build(),
+        );
+        body = body.child(version::render_version_block(
+            &versions,
+            cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                Workspace::check_and_apply_update(cx);
+                cx.notify();
+            }),
+        ));
+
         // Usage this period.
         body = body.child(match snapshot {
             Some(snapshot) => {

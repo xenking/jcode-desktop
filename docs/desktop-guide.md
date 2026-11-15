@@ -320,6 +320,13 @@ System/`.deb` installs must use their original installer. In a source checkout,
 Git files. See [Linux updates](linux-updates.md) for supported layouts,
 security boundaries, error recovery, and verification.
 
+The Desktop build version appears in Settings → About and in the account popup,
+never in the composer footer. While an update is available the sidebar account
+avatar wears a small badge; pressing the badge runs the update (or restarts into
+a staged one), and the account popup names both the installed and the offered
+version beside the same Update/Restart button. A current build shows the plain
+avatar and no extra text.
+
 ## FPS counter
 
 The FPS readout sits on the left of the session tab row, with a **+** button on

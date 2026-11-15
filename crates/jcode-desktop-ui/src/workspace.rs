@@ -875,8 +875,6 @@ pub struct Workspace {
     sidebar_title_pulses: crate::pulse_text::Tickers,
     /// Animated status glyphs of nested workers, one leaf view each.
     swarm_marks: crate::swarm_glyph::Marks,
-    /// Breathing "Checking…" beside the version while an update check runs.
-    version_pulse: crate::pulse_text::Tickers,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -931,7 +929,7 @@ impl Workspace {
         crate::input::bind_keys(cx);
         crate::init_harness();
         // Launch work that must not wait for a pane: a packaged build whose
-        // release state is still `Unknown` paints no version footer, so a
+        // release state is still `Unknown` shows no update badge, so a
         // render-triggered release check would never start the automatic update
         // loop for a user who stays in the session view.
         updates::ensure_release_check();
@@ -1204,7 +1202,6 @@ impl Workspace {
             sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
-            version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -1625,7 +1622,6 @@ impl Workspace {
             sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
-            version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -4888,10 +4884,6 @@ impl Workspace {
             // treats any update while drawing as a change to what they read.
             if slot.panel.read(cx).needs_surface_update(focused, cx) {
                 slot.panel.update(cx, |panel, cx| {
-                    if panel.show_build_footer {
-                        panel.show_build_footer = false;
-                        cx.notify();
-                    }
                     panel.set_surface_focused(focused, cx);
                 });
             }
@@ -5762,10 +5754,10 @@ impl Workspace {
 
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         // Release checks and the packaged automatic-update loop start here, on
-        // the first frame of the window, and not from the version footer: a
-        // fresh packaged launch has no release state yet, so `footer_visible()`
-        // is false and the footer's own render never runs. Idempotent, so every
-        // later render is free.
+        // the first frame of the window, not from the avatar's update badge: a
+        // fresh packaged launch has no release state yet, so there is nothing
+        // for the badge to show until this runs. Idempotent, so every later
+        // render is free.
         updates::ensure_release_check();
         let active_id = self
             .slots
@@ -7145,9 +7137,6 @@ impl Workspace {
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
-            .when(version::footer_visible(), |el| {
-                el.child(self.render_version_footer(cx))
-            })
             .child(self.render_sidebar_account(cx))
             .into_any_element()
     }
@@ -8828,10 +8817,9 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
-        // Reserve the update footer outside the session canvas, only while
-        // it has an action to offer.
-        let footer_height = version::footer_height();
-        let viewport_h = (f32::from(viewport.height) - content_top_inset - footer_height).max(0.0);
+        // The sidebar owns the update control, so the session canvas keeps the
+        // whole viewport.
+        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -9102,7 +9090,6 @@ impl Render for Workspace {
             .child(
                 div()
                     .debug_selector(|| "workspace-body".into())
-                    .pb(px(footer_height))
                     .relative()
                     .w_full()
                     .flex_1()
