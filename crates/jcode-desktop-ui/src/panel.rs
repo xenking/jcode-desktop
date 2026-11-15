@@ -8339,8 +8339,8 @@ mod tests {
             if done {
                 assert!(vcx.debug_bounds("background-task-completed").is_some());
                 assert!(
-                    row.size.height > px(28.0) && row.size.height <= px(100.0),
-                    "finished tasks use a compact result card: {row:?}"
+                    row.size.height > px(0.0) && row.size.height <= px(40.0),
+                    "finished tasks render as one compact row: {row:?}"
                 );
             } else {
                 assert!(vcx.debug_bounds("background-task-completed").is_none());

@@ -151,10 +151,24 @@ fn completed_card(
     window: &Window,
     cx: &App,
 ) -> impl IntoElement {
+    // An element carries one debug selector, so the card marker sits on a
+    // wrapper and the completed marker on the row itself.
+    div()
+        .debug_selector(|| "background-task-card".into())
+        .child(completed_row(index, label, summary, selection, window, cx))
+}
+
+fn completed_row(
+    index: usize,
+    label: &str,
+    summary: &str,
+    selection: &Entity<TextSelection>,
+    window: &Window,
+    cx: &App,
+) -> impl IntoElement {
     let theme = Theme::global();
     div()
         .id(("background-task", index))
-        .debug_selector(|| "background-task-card".into())
         .debug_selector(|| "background-task-completed".into())
         .flex()
         .flex_none()

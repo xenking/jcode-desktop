@@ -480,7 +480,7 @@ mod tests {
         ];
         for expected in pages
             .into_iter()
-            .chain(std::iter::repeat_n(SidebarView::Settings, 6))
+            .chain(std::iter::repeat_n(SidebarView::Settings, 7))
             .chain([SidebarView::Sessions])
         {
             vcx.simulate_event(gpui::ScrollWheelEvent {
@@ -643,9 +643,9 @@ mod tests {
         for (dx, dy, expected) in [
             (-48.0, 0.0, SidebarView::Learn),
             (0.0, -96.0, SidebarView::Accounts),
-            (-432.0, -1.0, SidebarView::Sessions),
+            (-480.0, -1.0, SidebarView::Sessions),
             (48.0, 1.0, SidebarView::Sessions),
-            (0.0, 528.0, SidebarView::Sessions),
+            (0.0, 576.0, SidebarView::Sessions),
         ] {
             vcx.simulate_event(gpui::ScrollWheelEvent {
                 position: tabs.center(),
