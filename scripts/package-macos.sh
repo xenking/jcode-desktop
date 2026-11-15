@@ -27,7 +27,7 @@ if [[ -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
 fi
 RELEASES_BASE="${RELEASES_BASE:-https://github.com/xenking/jcode-desktop/releases/download}"
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/xenking/jcode-desktop/releases/download/desktop-latest/appcast.xml}"
-TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
+read -r -a TARGETS <<< "${PACKAGE_TARGETS:-aarch64-apple-darwin x86_64-apple-darwin}"
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
 notarize() {
