@@ -223,16 +223,16 @@ fn fresh_session_tall_prompt_starts_at_top_then_follows_response(cx: &mut gpui::
     let row = vcx.debug_bounds("transcript-row-0").unwrap();
     let transcript = vcx.debug_bounds("transcript").unwrap();
     assert!((f32::from(row.top() - transcript.top())).abs() < 1.);
-    assert!(row.bottom() > transcript.bottom());
+    assert!(row.bottom() <= transcript.bottom());
+    let prompt_scroll = panel.read_with(vcx, |panel, _| {
+        panel.prompt_scrolls.borrow().get(&(0, false)).unwrap().handle.clone()
+    });
+    assert!(prompt_scroll.max_offset().y > px(0.));
     panel.update(vcx, |panel, cx| {
         panel.streaming_text = "RESPONSE ARRIVED".into();
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(
-        panel
-            .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())
-            .unwrap()
-    );
+    assert!(panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
     assert!(vcx.debug_bounds("transcript-row-1").is_some());
 }

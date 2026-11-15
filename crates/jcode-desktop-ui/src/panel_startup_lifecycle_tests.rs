@@ -34,11 +34,12 @@ fn focused_startup_panel(
 }
 
 #[gpui::test]
-fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
+fn startup_tall_preview_scrolls_inside_prompt_without_moving_transcript(
     cx: &mut gpui::TestAppContext,
 ) {
     for discrete in [false, true] {
         let (panel, vcx) = focused_startup_panel(cx);
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
         // About scrolling, not typing: commit the 1300-char prompt at once.
         crate::test_input::commit_text(
             vcx,
@@ -58,50 +59,28 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
                 px(0.)
             );
         });
-        panel.update(vcx, |panel, cx| {
-            if discrete {
-                panel.glide_transcript_wheel(40., cx);
-                // Exercise the same glide steps without wall-clock timer waits.
-                for _ in 0..128 {
-                    if !panel.advance_transcript_wheel(cx) {
-                        break;
-                    }
-                }
+        let bounds = vcx.debug_bounds("prompt-scroll-0").unwrap();
+        let scroll = panel.read_with(vcx, |panel, _| {
+            panel.prompt_scrolls.borrow().get(&(0, false)).unwrap().handle.clone()
+        });
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: bounds.center(),
+            delta: if discrete {
+                gpui::ScrollDelta::Lines(gpui::point(0., -2.))
             } else {
-                panel.scroll_transcript_direct(-40., cx);
-            }
+                gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-40.)))
+            },
+            ..Default::default()
         });
         vcx.run_until_parked();
-        let offset = panel.read_with(vcx, |panel, _| {
-            let offset = -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-            let max = f32::from(panel.transcript_list.max_offset_for_scrollbar().y);
-            assert!(
-                !panel.stick_to_bottom,
-                "manual scrolling must detach first-prompt preview"
-            );
-            assert!(
-                (30. ..=45.).contains(&offset),
-                "40px scroll became {offset}px (discrete={discrete})"
-            );
-            assert!(
-                offset < max / 2.,
-                "first downward gesture jumped to the tail"
-            );
-            offset
-        });
+        assert!(scroll.offset().y < px(0.), "prompt scrolls (discrete={discrete})");
+        let offset = scroll.offset();
         panel.update(vcx, |panel, cx| {
             panel.streaming_text = "Answer arrived while reading the beginning".into();
             cx.notify();
         });
         vcx.run_until_parked();
-        panel.read_with(vcx, |panel, _| {
-            assert!(!panel.stick_to_bottom);
-            let after = -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-            assert!(
-                (after - offset).abs() < 1.,
-                "response stole detached scroll position"
-            );
-        });
+        assert_eq!(scroll.offset(), offset, "response stole prompt scroll position");
     }
 }
 
@@ -193,6 +172,7 @@ fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
     cx: &mut gpui::TestAppContext,
 ) {
     let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     let fresh = vcx.debug_bounds("prompt-input").unwrap();
     vcx.simulate_input("Short first prompt");
     vcx.simulate_keystrokes("enter");

@@ -126,8 +126,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            *panel.items = vec![Item::User("A long prompt line\n".repeat(1000))];
-            panel.expanded_prompts.insert((0, false));
+            *panel.items = (0..40).map(|n| Item::User(format!("Prompt {n}"))).collect();
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             cx.notify();
