@@ -358,7 +358,7 @@ impl PromptInput {
             (Some(model), _) => model_menu::pretty_title(model, &self.model_details),
             // Effort rows lead with the ramp glyph and keep the level name:
             // a picker has no hover to hide it in.
-            (None, Some(effort)) => crate::effort::spoken(effort),
+            (None, Some(effort)) => effort_row_label(effort),
             _ => suggestion.value.clone(),
         };
         div()
@@ -503,4 +503,12 @@ impl PromptInput {
             )
             .into_any_element()
     }
+}
+
+/// The label of an `/effort <level>` row in the picker's effort step: the ramp
+/// glyph the composer pill draws, then the level name, because a list row has
+/// no hover to hide the name in. Modes are orchestration, not rungs, and keep
+/// their word.
+pub(super) fn effort_row_label(effort: &str) -> String {
+    crate::effort::spoken(effort)
 }

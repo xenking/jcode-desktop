@@ -1322,10 +1322,28 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_SWARM").as_deref() == Ok("real") {
                 workspace.load_real_swarm_fixture(cx);
             } else if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
-                for (index, (label, status)) in [
-                    ("API reviewer", "working"),
-                    ("Sidebar implementation", "working"),
-                    ("Test runner", "completed"),
+                for (index, (label, status, model, provider, effort)) in [
+                    (
+                        "API reviewer",
+                        "working",
+                        "claude-opus-5-5",
+                        "claude-oauth",
+                        "high",
+                    ),
+                    (
+                        "Sidebar implementation",
+                        "working",
+                        "gpt-5.6",
+                        "openai",
+                        "low",
+                    ),
+                    (
+                        "Test runner",
+                        "completed",
+                        "deepseek-v4.1-flash",
+                        "opencode-go",
+                        "max",
+                    ),
                 ]
                 .into_iter()
                 .enumerate()
@@ -1340,6 +1358,20 @@ impl Workspace {
                         removed: 2 + index as u64 * 8,
                         approximate: index == 1,
                     });
+                    // The rows draw each worker's model and its reasoning rung,
+                    // so the fixture must carry a record or the screenshot
+                    // shows a bare name and proves nothing about the dots.
+                    workspace.worker_meta.insert(
+                        child.session_id.clone(),
+                        jcode_sdk::WorkerMeta {
+                            model: Some(model.into()),
+                            provider: Some(provider.into()),
+                            effort: Some(effort.into()),
+                            input_tokens: Some(12_400 + index as u64 * 3_000),
+                            output_tokens: Some(3_100 + index as u64 * 800),
+                            ..jcode_sdk::WorkerMeta::default()
+                        },
+                    );
                     workspace.sessions.push(child);
                 }
             }

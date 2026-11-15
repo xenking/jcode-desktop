@@ -238,3 +238,18 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
         );
     });
 }
+
+/// The picker's effort step has no hover, so each row leads with the ramp
+/// glyph the composer pill draws and keeps the level name beside it.
+#[test]
+fn effort_step_rows_lead_with_the_ladder_glyph_and_keep_the_name() {
+    use super::model_picker::effort_row_label;
+    assert_eq!(effort_row_label("none"), "⦸ None");
+    assert_eq!(effort_row_label("low"), "◔ Low");
+    assert_eq!(effort_row_label("medium"), "◑ Medium");
+    assert_eq!(effort_row_label("high"), "◒ High");
+    assert_eq!(effort_row_label("xhigh"), "◕ xHigh");
+    assert_eq!(effort_row_label("max"), "◉ Max");
+    // Modes are orchestration, not rungs: no borrowed circle.
+    assert_eq!(effort_row_label("swarm"), "Swarm");
+}

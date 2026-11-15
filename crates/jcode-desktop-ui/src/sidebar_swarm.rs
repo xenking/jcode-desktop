@@ -203,6 +203,13 @@ pub(super) fn render_workers(
                 .map(|glyph| format!("{glyph:?}").to_ascii_lowercase());
             let tooltip = worker.tooltip();
             let model = worker.model_label();
+            let effort = worker.effort_label();
+            let effort_ink = worker
+                .meta
+                .effort
+                .as_deref()
+                .map(|effort| crate::effort::tint(effort, theme))
+                .unwrap_or(theme.TEXT_FAINT);
             let provider = crate::provider_mark::render(
                 worker.meta.provider.as_deref(),
                 worker.meta.model.as_deref(),
@@ -301,6 +308,17 @@ pub(super) fn render_workers(
                         .text_color(theme.TEXT_FAINT)
                         .child(provider)
                         .child(model)
+                        // The rung rides beside the model: one circle is the
+                        // level, and the tooltip still spells it out.
+                        .children(effort.map(|effort| {
+                            div()
+                                .debug_selector(move || {
+                                    format!("sidebar-worker-effort-{sidebar_index}-{index}")
+                                })
+                                .flex_none()
+                                .text_color(effort_ink)
+                                .child(effort)
+                        }))
                 }))
                 .child(
                     div()
@@ -849,6 +867,69 @@ mod tests {
 
     fn sel(text: String) -> &'static str {
         Box::leak(text.into_boxed_str())
+    }
+
+    /// The rung rides beside the model on a nested worker row, the same circle
+    /// the composer pill and the composer's worker list draw.
+    #[gpui::test]
+    fn sidebar_worker_rows_carry_the_effort_circle(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            let mut worker = session("rose", Some("lead"));
+            worker.swarm_status = Some("running".into());
+            w.sidebar_closed_sessions.extend(["lead".into(), "rose".into()]);
+            w.sessions = vec![session("lead", None), worker];
+            w.worker_meta.insert(
+                "rose".into(),
+                jcode_sdk::WorkerMeta {
+                    model: Some("claude-opus-5-5".into()),
+                    provider: Some("claude-oauth".into()),
+                    effort: Some("high".into()),
+                    ..jcode_sdk::WorkerMeta::default()
+                },
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let model = vcx
+            .debug_bounds("sidebar-worker-model-0-0")
+            .expect("the row shows its model");
+        let effort = vcx
+            .debug_bounds("sidebar-worker-effort-0-0")
+            .expect("the row shows its rung as a circle");
+        let state = vcx
+            .debug_bounds("sidebar-worker-state-0-0")
+            .expect("the row shows its state");
+        assert!(
+            model.left() < effort.left() && effort.right() <= state.left(),
+            "effort follows the model: {model:?} {effort:?} {state:?}"
+        );
+    }
+
+    /// A worker whose record names no effort keeps the row as it was.
+    #[gpui::test]
+    fn sidebar_worker_rows_without_effort_show_no_circle(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            let mut worker = session("rose", Some("lead"));
+            worker.swarm_status = Some("running".into());
+            w.sidebar_closed_sessions.extend(["lead".into(), "rose".into()]);
+            w.sessions = vec![session("lead", None), worker];
+            w.worker_meta.insert(
+                "rose".into(),
+                jcode_sdk::WorkerMeta {
+                    model: Some("claude-opus-5-5".into()),
+                    provider: Some("claude-oauth".into()),
+                    ..jcode_sdk::WorkerMeta::default()
+                },
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-model-0-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-worker-effort-0-0").is_none());
     }
 
     fn lead_with_workers(

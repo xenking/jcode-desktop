@@ -161,6 +161,13 @@ impl Panel {
                 // what it has spent and what it is doing.
                 let tooltip = worker.tooltip();
                 let model = worker.model_label();
+                let effort = worker.effort_label();
+                let effort_ink = worker
+                    .meta
+                    .effort
+                    .as_deref()
+                    .map(|effort| crate::effort::tint(effort, theme))
+                    .unwrap_or(theme.TEXT_FAINT);
                 let provider = crate::provider_mark::render(
                     worker.meta.provider.as_deref(),
                     worker.meta.model.as_deref(),
@@ -231,6 +238,15 @@ impl Panel {
                             .text_color(theme.TEXT_FAINT)
                             .child(provider)
                             .child(model)
+                            // Same circle as the composer pill, right after the
+                            // model it applies to.
+                            .children(effort.map(|effort| {
+                                div()
+                                    .debug_selector(move || format!("swarm-list-effort-{index}"))
+                                    .flex_none()
+                                    .text_color(effort_ink)
+                                    .child(effort)
+                            }))
                     }))
                     .children(tokens.map(|tokens| {
                         div()
@@ -402,6 +418,7 @@ mod tests {
         for selector in [
             "swarm-list-worker-0",
             "swarm-list-model-0",
+            "swarm-list-effort-0",
             "swarm-list-tokens-0",
             "swarm-list-state-0",
         ] {
@@ -417,5 +434,31 @@ mod tests {
         let label = vcx.debug_bounds("swarm-list-model-0").unwrap();
         let state = vcx.debug_bounds("swarm-list-state-0").unwrap();
         assert!(label.right() <= state.left(), "model sits before the state");
+        // The reasoning rung rides directly after the model it belongs to.
+        let effort = vcx.debug_bounds("swarm-list-effort-0").unwrap();
+        assert!(
+            label.left() < effort.left() && effort.right() <= state.left(),
+            "effort sits after the model and before the state: {label:?} {effort:?} {state:?}"
+        );
+    }
+
+    /// A worker whose record names no effort shows no circle; the row must not
+    /// claim the default rung.
+    #[gpui::test]
+    fn worker_rows_without_effort_show_no_circle(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let mut row = worker("poodle", "running");
+        row.meta = jcode_sdk::WorkerMeta {
+            model: Some("deepseek-v4.1-flash".into()),
+            provider: Some("opencode-go".into()),
+            ..jcode_sdk::WorkerMeta::default()
+        };
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![row], cx);
+            panel.swarm_list_open = true;
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list-model-0").is_some());
+        assert!(vcx.debug_bounds("swarm-list-effort-0").is_none());
     }
 }
