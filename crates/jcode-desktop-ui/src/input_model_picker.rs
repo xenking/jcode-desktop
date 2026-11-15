@@ -10,6 +10,206 @@ pub(super) struct SuggestionsCache {
 }
 
 impl PromptInput {
+    /// Rows for whichever step of the two-step model picker is showing.
+    pub(super) fn model_stage_rows(&self, query: &str) -> Vec<CommandSuggestion> {
+        match &self.model_stage {
+            model_stage::ModelStage::Models => self.model_rows(query),
+            model_stage::ModelStage::Efforts { model } => self.effort_rows(model, query),
+            model_stage::ModelStage::Manage => self.manage_rows(query),
+        }
+    }
+
+    /// The route the active session is on, which stays listed even if hidden.
+    fn current_route(&self) -> Option<&str> {
+        model_menu::current_spec(
+            self.current_model.as_deref(),
+            &self.command_models,
+            &self.model_details,
+        )
+    }
+
+    /// Step one: visible routes, grouped and ranked. A model with reasoning
+    /// levels opens step two instead of switching.
+    fn model_rows(&self, query: &str) -> Vec<CommandSuggestion> {
+        let current = self.current_route();
+        let hidden: Vec<String> = crate::config::hidden_models()
+            .into_iter()
+            .filter(|hidden| Some(hidden.as_str()) != current)
+            .collect();
+        let models = model_stage::visible_models(&self.command_models, &hidden);
+        let searching = !query.trim().is_empty();
+        let mut rows: Vec<CommandSuggestion> = model_menu::grouped_rows(
+            &models,
+            &self.model_details,
+            self.current_model.as_deref(),
+            &self.expanded_model_groups,
+            query,
+        )
+        .into_iter()
+        .map(|row| {
+            let action = row
+                .value
+                .strip_prefix("/model ")
+                .filter(|spec| !self.picker_efforts(spec).is_empty())
+                .map(|spec| {
+                    model_stage::StageStep::Goto(model_stage::ModelStage::Efforts {
+                        model: spec.to_string(),
+                    })
+                });
+            CommandSuggestion {
+                value: row.value,
+                help: String::new(),
+                detail: None,
+                header: row.header,
+                toggle: row.toggle,
+                action,
+            }
+        })
+        .collect();
+        if !searching {
+            rows.push(CommandSuggestion {
+                value: "Manage models".into(),
+                help: match hidden.len() {
+                    0 => String::new(),
+                    count => format!("{count} hidden"),
+                },
+                detail: None,
+                header: None,
+                toggle: None,
+                action: Some(model_stage::StageStep::Goto(
+                    model_stage::ModelStage::Manage,
+                )),
+            });
+        }
+        rows
+    }
+
+    /// Levels offered in step two. `swarm` is a Jcode sentinel, not something
+    /// the model accepts, so it is not a reasoning choice here.
+    pub(super) fn picker_efforts(&self, spec: &str) -> Vec<&'static str> {
+        model_stage::model_efforts(spec, &self.model_details)
+            .into_iter()
+            .filter(|effort| !effort.starts_with("swarm"))
+            .collect()
+    }
+
+    /// Step two: only the levels this model supports.
+    fn effort_rows(&self, model: &str, query: &str) -> Vec<CommandSuggestion> {
+        let query = query.trim().to_ascii_lowercase();
+        let on_current_model = self.current_route() == Some(model);
+        self.picker_efforts(model)
+            .into_iter()
+            .filter(|effort| query.is_empty() || effort.contains(&query))
+            .enumerate()
+            .map(|(index, effort)| CommandSuggestion {
+                value: format!("/effort {effort}"),
+                help: if on_current_model && self.current_effort.as_deref() == Some(effort) {
+                    "Current".into()
+                } else {
+                    String::new()
+                },
+                detail: None,
+                header: (index == 0)
+                    .then(|| model_stage::effort_header(model, &self.model_details)),
+                toggle: None,
+                action: self.model_stage.pick_effort(effort),
+            })
+            .collect()
+    }
+
+    /// Every route, hidden or not, each flipping its visibility on Enter.
+    fn manage_rows(&self, query: &str) -> Vec<CommandSuggestion> {
+        let hidden = crate::config::hidden_models();
+        let open: HashSet<String> = self
+            .command_models
+            .iter()
+            .map(|model| model_menu::group_key(model, &self.model_details))
+            .collect();
+        model_menu::grouped_rows(
+            &self.command_models,
+            &self.model_details,
+            self.current_model.as_deref(),
+            &open,
+            query,
+        )
+        .into_iter()
+        .filter_map(|row| {
+            let spec = row.value.strip_prefix("/model ")?.to_string();
+            Some(CommandSuggestion {
+                help: if hidden.contains(&spec) {
+                    "Hidden".into()
+                } else {
+                    "Shown".into()
+                },
+                action: Some(model_stage::StageStep::ToggleHidden(spec)),
+                value: row.value,
+                detail: None,
+                header: row.header,
+                toggle: None,
+            })
+        })
+        .collect()
+    }
+
+    /// Move between picker steps, keeping the highlight sensible: step two
+    /// opens on the level the model will use, and going back lands on the
+    /// model that was open.
+    pub(super) fn go_to_model_stage(
+        &mut self,
+        stage: model_stage::ModelStage,
+        cx: &mut Context<Self>,
+    ) {
+        let from = std::mem::replace(&mut self.model_stage, stage);
+        self.suggestions_revision += 1;
+        self.set_content("/model ".into(), cx);
+        let target = match &self.model_stage {
+            model_stage::ModelStage::Efforts { model } => {
+                let ladder = self.picker_efforts(model);
+                let on_current = self.current_route() == Some(model.as_str());
+                let current = on_current
+                    .then_some(self.current_effort.as_deref())
+                    .flatten();
+                model_stage::preferred_effort(&ladder, current)
+                    .map(|effort| format!("/effort {effort}"))
+            }
+            _ => match from {
+                model_stage::ModelStage::Efforts { model } => Some(format!("/model {model}")),
+                _ => None,
+            },
+        };
+        if let Some(index) = target.and_then(|target| {
+            self.command_suggestions()
+                .iter()
+                .position(|row| row.value == target)
+        }) {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+        cx.notify();
+    }
+
+    /// Esc inside the picker: one step back, or false when it should close.
+    pub(super) fn model_stage_back(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.model_stage.back() {
+            Some(previous) => {
+                self.go_to_model_stage(previous, cx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Flip whether `spec` is hidden and persist it. The highlight stays put.
+    pub(super) fn toggle_model_hidden(&mut self, spec: &str, cx: &mut Context<Self>) {
+        let next = model_stage::toggled(&crate::config::hidden_models(), spec);
+        if let Err(error) = crate::config::set_hidden_models(&next) {
+            self.set_transient_notice(format!("Could not save hidden models: {error}"), cx);
+            return;
+        }
+        self.suggestions_revision += 1;
+        cx.notify();
+    }
+
     pub(super) fn reveal_command(&self, index: usize) {
         if self.command_scroll.bounds_for_item(index).is_some() {
             self.command_scroll.scroll_to_reveal_item(index);
@@ -153,9 +353,12 @@ impl PromptInput {
                         .child(parts.auth.label()),
                 )
         });
-        let label = model
-            .map(|model| model_menu::pretty_title(model, &self.model_details))
-            .unwrap_or_else(|| suggestion.value.clone());
+        let stage_row = suggestion.action.is_some() && model.is_none();
+        let label = match (model, suggestion.value.strip_prefix("/effort ")) {
+            (Some(model), _) => model_menu::pretty_title(model, &self.model_details),
+            (None, Some(effort)) if stage_row => crate::effort::label(effort).to_string(),
+            _ => suggestion.value.clone(),
+        };
         div()
             .w_full()
             .flex_none()
@@ -206,7 +409,7 @@ impl PromptInput {
                             .items_center()
                             .gap_3()
                             .children(logo)
-                            .font_family(if model.is_some() {
+                            .font_family(if model.is_some() || stage_row {
                                 Theme::global().FONT_UI
                             } else {
                                 Theme::global().FONT_MONO
@@ -270,6 +473,11 @@ impl PromptInput {
                             window.focus(&this.focus_handle, cx);
                             if let Some(key) = suggestion.toggle.clone() {
                                 this.toggle_model_group(key, cx);
+                                return;
+                            }
+                            if let Some(step) = suggestion.action.clone() {
+                                this.command_selection = index;
+                                this.run_stage_step(step, false, window, cx);
                                 return;
                             }
                             if matches!(suggestion.value.as_str(), "/model" | "/models") {

@@ -37,10 +37,37 @@ impl Panel {
     /// Validate and send one effort change. Returns false, after reporting
     /// why in the transcript, when the level is not offered.
     pub(super) fn request_effort(&mut self, level: &str, cx: &mut Context<Self>) -> bool {
+        let ladder = self.effort_ladder();
+        self.request_effort_on(&ladder, level, cx)
+    }
+
+    /// Switch model and effort together, from the picker's second step. The
+    /// level is checked against the new model's ladder, not the serving one.
+    pub(super) fn switch_model_with_effort(
+        &mut self,
+        model: &str,
+        level: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let ladder = effort::ladder(None, Some(model));
+        self.bridge.send(Command::SetModel {
+            session_id: self.session_id.clone(),
+            model: model.to_string(),
+        });
+        self.items
+            .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        self.request_effort_on(&ladder, level, cx);
+    }
+
+    fn request_effort_on(
+        &mut self,
+        ladder: &[&'static str],
+        level: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.is_side_document() || self.preview_state.is_some() {
             return false;
         }
-        let ladder = self.effort_ladder();
         if ladder.is_empty() {
             self.items.push(Item::Error(format!(
                 "Reasoning effort is not available for {}.",

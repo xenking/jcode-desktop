@@ -36,7 +36,7 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
         input.set_model_routes(Vec::new(), &routes, None, cx);
         input.set_content("/model ".into(), cx);
         let collapsed = input.command_suggestions();
-        assert_eq!(collapsed.len(), 4);
+        assert_eq!(collapsed.len(), 5); // Three models, disclosure, Manage.
         assert!(Arc::ptr_eq(&collapsed, &input.command_suggestions()));
 
         // Changing only highlight must not rebuild the metadata vector.
@@ -63,12 +63,15 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
         assert_eq!(current[0].value, "/model openai-api:atlas-0006");
         assert_eq!(current[0].help, "Current");
 
-        let group = current.last().unwrap().toggle.clone().unwrap();
+        let group = current
+            .iter()
+            .find_map(|row| row.toggle.clone())
+            .unwrap();
         input.toggle_model_group(group.clone(), cx);
         let expanded = input.command_suggestions();
         assert!(!Arc::ptr_eq(&current, &expanded));
-        assert_eq!(expanded.len(), 8); // Seven available models and disclosure.
-        assert_eq!(expanded.last().unwrap().value, "Show fewer models");
+        assert_eq!(expanded.len(), 9); // Seven models, disclosure and Manage.
+        assert_eq!(expanded[expanded.len() - 2].value, "Show fewer models");
         input.toggle_model_group(group, cx);
         let recollapsed = input.command_suggestions();
         assert!(!Arc::ptr_eq(&expanded, &recollapsed));
@@ -171,16 +174,17 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, size(px(1000.), px(800.)));
     let mut catalog = routes(1000);
-    // The current longer name matches the final short name's query and is
-    // ranked first. Clicking the short name must not submit that first match.
-    catalog[998].model = "atlas-0999-long".into();
+    // Newest first puts atlas-0000 last. The current longer name matches the
+    // final short name's query and is ranked first. Clicking the short name
+    // must not submit that first match.
+    catalog[1].model = "atlas-0000-long".into();
     input.update(vcx, |input, cx| {
-        input.set_model_routes(Vec::new(), &catalog, Some("atlas-0999-long".into()), cx);
+        input.set_model_routes(Vec::new(), &catalog, Some("atlas-0000-long".into()), cx);
         input.set_content("/model atlas".into(), cx);
         let rows = input.command_suggestions();
         assert_eq!(rows.len(), 1000);
-        assert_eq!(rows[0].value, "/model openai-api:atlas-0999-long");
-        assert_eq!(rows[999].value, "/model openai-api:atlas-0999");
+        assert_eq!(rows[0].value, "/model openai-api:atlas-0000-long");
+        assert_eq!(rows[999].value, "/model openai-api:atlas-0000");
     });
     vcx.run_until_parked();
     vcx.update(|window, cx| window.draw(cx).clear(cx));
@@ -223,15 +227,14 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
     assert!((1..50).contains(&visible), "painted {visible} rows at end");
     vcx.simulate_click(last.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert_eq!(
-        submitted.borrow().as_slice(),
-        ["/model openai-api:atlas-0999"]
-    );
+    // Clicking a model with reasoning levels opens step two for that exact route.
+    assert!(submitted.borrow().is_empty());
     input.read_with(vcx, |input, _| {
-        assert!(input.content.is_empty());
         assert_eq!(
-            input.history.last().unwrap(),
-            "/model openai-api:atlas-0999"
+            input.model_stage,
+            model_stage::ModelStage::Efforts {
+                model: "openai-api:atlas-0000".into()
+            }
         );
     });
 }

@@ -36,6 +36,9 @@ mod model_menu;
 mod model_picker;
 #[path = "input_model_search.rs"]
 mod model_search;
+#[path = "input_model_stage.rs"]
+mod model_stage;
+pub(crate) use model_stage::parse_model_pick;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
 
@@ -214,6 +217,8 @@ pub struct PromptInput {
     /// steady share of main-thread time in live profiles.
     applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
     expanded_model_groups: HashSet<String>,
+    /// Which step of the two-step model picker is showing.
+    model_stage: model_stage::ModelStage,
     current_model: Option<String>,
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
@@ -314,6 +319,9 @@ struct CommandSuggestion {
     detail: Option<String>,
     header: Option<String>,
     toggle: Option<String>,
+    /// What Enter or a click does inside the model picker, in place of
+    /// submitting `value`.
+    action: Option<model_stage::StageStep>,
 }
 
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
@@ -352,6 +360,7 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                action: None,
             })
             .collect();
     }
@@ -376,6 +385,7 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                action: None,
             })
             .collect();
     }
@@ -399,6 +409,7 @@ fn command_suggestions_with_efforts(
             detail: None,
             header: None,
             toggle: None,
+            action: None,
         })
         .collect()
 }
@@ -410,10 +421,7 @@ fn accepted_command_submission(
     let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
     // Matching includes descriptions, not only command-name prefixes. Enter
     // must select the highlighted result for either kind of search.
-    suggestion
-        .toggle
-        .is_none()
-        .then(|| suggestion.value.clone())
+    (suggestion.toggle.is_none() && suggestion.action.is_none()).then(|| suggestion.value.clone())
 }
 
 #[derive(Clone)]
@@ -592,6 +600,7 @@ impl PromptInput {
             model_details: HashMap::new(),
             applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
+            model_stage: Default::default(),
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
@@ -766,7 +775,12 @@ impl PromptInput {
                 let suggestions = self.command_suggestions();
                 let values: Vec<String> = suggestions
                     .iter()
-                    .filter(|row| row.toggle.is_none())
+                    .filter(|row| {
+                        row.toggle.is_none()
+                            && (row.action.is_none()
+                                || (self.model_stage == model_stage::ModelStage::Models
+                                    && row.value.starts_with("/model ")))
+                    })
                     .map(|row| row.value.clone())
                     .collect();
                 if values.is_empty() {
@@ -1056,22 +1070,7 @@ impl PromptInput {
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
                 let query = trimmed.strip_prefix("/model").unwrap_or_default();
-                model_menu::grouped_rows(
-                    &self.command_models,
-                    &self.model_details,
-                    self.current_model.as_deref(),
-                    &self.expanded_model_groups,
-                    query,
-                )
-                .into_iter()
-                .map(|row| CommandSuggestion {
-                    value: row.value,
-                    help: String::new(),
-                    detail: None,
-                    header: row.header,
-                    toggle: row.toggle,
-                })
-                .collect()
+                self.model_stage_rows(query)
             } else {
                 command_suggestions_with_efforts(
                     &self.content,
@@ -1086,17 +1085,20 @@ impl PromptInput {
             .into_iter()
             .map(|mut suggestion| {
                 if let Some(model) = suggestion.value.strip_prefix("/model ") {
+                    let managing = self.model_stage == model_stage::ModelStage::Manage;
                     suggestion.detail = Some(
                         self.model_details
                             .get(model)
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    suggestion.help = if current == Some(model) {
-                        "Current".into()
-                    } else {
-                        String::new()
-                    };
+                    if !managing {
+                        suggestion.help = if current == Some(model) {
+                            "Current".into()
+                        } else {
+                            String::new()
+                        };
+                    }
                 }
                 suggestion
             })
@@ -1176,6 +1178,13 @@ impl PromptInput {
             {
                 return;
             }
+            if let Some(step) = suggestions
+                .get(self.command_selection)
+                .and_then(|row| row.action.clone())
+            {
+                self.run_stage_step(step, queued, window, cx);
+                return;
+            }
             if let Some(accepted) =
                 accepted_command_submission(&suggestions, self.command_selection)
             {
@@ -1193,6 +1202,34 @@ impl PromptInput {
                 content = accepted;
             }
         }
+        self.dispatch_submission(content, queued, window, cx);
+    }
+
+    /// Run what Enter or a click on a picker row means.
+    fn run_stage_step(
+        &mut self,
+        step: model_stage::StageStep,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match step {
+            model_stage::StageStep::Goto(stage) => self.go_to_model_stage(stage, cx),
+            model_stage::StageStep::ToggleHidden(spec) => self.toggle_model_hidden(&spec, cx),
+            model_stage::StageStep::Submit(command) => {
+                self.dispatch_submission(command, queued, window, cx)
+            }
+        }
+    }
+
+    /// Clear the composer and hand `content` to the host.
+    fn dispatch_submission(
+        &mut self,
+        content: String,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let content = if content.is_empty() {
             "[image]".to_string()
         } else {
@@ -1206,6 +1243,7 @@ impl PromptInput {
         self.attachment_preview = None;
         self.content = "".into();
         self.expanded_model_groups.clear();
+        self.model_stage = Default::default();
         self.suggestions_revision += 1;
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
@@ -1450,6 +1488,12 @@ impl PromptInput {
             cx.notify();
             return;
         }
+        // Inside the picker, Esc steps back before it closes.
+        let in_model_menu = self.content.trim() == "/model"
+            || self.content.trim_start().starts_with("/model ");
+        if in_model_menu && self.model_stage_back(cx) {
+            return;
+        }
         if let Some(cancel) = &self.on_overlay_cancel {
             if cancel(cx) {
                 return;
@@ -1597,6 +1641,7 @@ impl PromptInput {
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
+            self.model_stage = Default::default();
             self.suggestions_revision += 1;
         }
     }
@@ -1615,6 +1660,8 @@ impl PromptInput {
                 Some((self.content.clone(), std::mem::take(&mut self.attachments)));
             self.attachment_preview = None;
         }
+        self.model_stage = Default::default();
+        self.suggestions_revision += 1;
         self.set_content("/model ".into(), cx);
     }
 
@@ -3550,12 +3597,13 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.simulate_keystrokes(*window, "enter");
+        // Step one opens the effort list, step two submits the pair.
+        cx.simulate_keystrokes(*window, "enter enter");
         window
             .update(cx, |input, _, _| {
                 assert_eq!(
                     input.history.last().map(String::as_str),
-                    Some("/model openai-api:atlas-5")
+                    Some("/model openai-api:atlas-5 --effort medium")
                 );
                 assert!(input.content.is_empty());
                 assert!(input.expanded_model_groups.is_empty());
@@ -3597,13 +3645,26 @@ mod tests {
         };
         window
             .update(cx, |input, _, cx| {
-                input.set_model_routes(Vec::new(), &routes("atlas-1"), None, cx);
+                // The current route is pinned first, then newest releases.
+                input.set_model_routes(
+                    Vec::new(),
+                    &routes("atlas-1"),
+                    Some("atlas-1".into()),
+                    cx,
+                );
                 input.set_content("/model".into(), cx);
                 assert_eq!(
                     input.command_suggestions()[0].value,
                     "/model openai-oauth:atlas-1"
                 );
-                input.set_model_routes(Vec::new(), &routes("atlas-5"), None, cx);
+                // The catalog changes and atlas-1 is no longer current, so it
+                // drops out of the top three. The highlight must follow it.
+                input.set_model_routes(
+                    Vec::new(),
+                    &routes("atlas-5"),
+                    Some("atlas-5".into()),
+                    cx,
+                );
                 assert_eq!(
                     input.command_suggestions()[input.command_selection].value,
                     "/model openai-oauth:atlas-1"
@@ -3666,6 +3727,7 @@ mod tests {
                 );
                 let suggestions = input.command_suggestions();
                 assert_eq!(input.command_selection, 1);
+                // No effort levels for this id, so Enter submits directly.
                 assert_eq!(
                     accepted_command_submission(&suggestions, input.command_selection).as_deref(),
                     Some("/model a-rare")
@@ -4207,6 +4269,14 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+#[cfg(test)]
+#[path = "input_model_order_tests.rs"]
+mod model_order_tests;
+
+#[cfg(test)]
+#[path = "input_model_stage_tests.rs"]
+mod model_stage_tests;
 
 /// Pick the route spec to switch to when the user selects `provider`.
 ///

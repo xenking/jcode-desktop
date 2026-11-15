@@ -122,28 +122,144 @@ pub(super) fn current_spec<'a>(
         .map(String::as_str)
 }
 
-/// Order routes by usage, then recommendation, then spec.
+/// How one model id sorts inside its provider group.
+///
+/// Splits a catalog id such as `anthropic/claude-opus-5.5:batch` into the
+/// vendor namespace, the family (`claude-opus`), the version (`[5, 5]`), and
+/// whether it is a `~...-latest` alias or a `:tag` variant of a base model.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ModelKey {
+    vendor: String,
+    family: String,
+    version: Vec<u64>,
+    alias: bool,
+    variant: String,
+}
+
+fn model_key(raw: &str) -> ModelKey {
+    let bare = jcode_provider_core::explicit_model_provider_prefix(raw)
+        .map_or(raw, |(_, _, bare)| bare)
+        .to_ascii_lowercase();
+    let (bare, mut alias) = match bare.strip_prefix('~') {
+        Some(rest) => (rest.to_string(), true),
+        None => (bare, false),
+    };
+    let (vendor, name) = bare.rsplit_once('/').unwrap_or(("", bare.as_str()));
+    let vendor = vendor.trim_start_matches('~').to_string();
+    let mut variant = String::new();
+    let mut name = name.to_string();
+    if let Some(index) = name.find('[') {
+        variant = name.split_off(index);
+    }
+    if let Some((head, tag)) = name.split_once(':') {
+        variant = format!("{tag}{variant}");
+        name = head.to_string();
+    }
+    let mut family = Vec::new();
+    let mut version = Vec::new();
+    for token in name.split(['-', '_']).filter(|token| !token.is_empty()) {
+        let numeric = token.strip_prefix('v').unwrap_or(token);
+        if token == "latest" {
+            alias = true;
+        } else if !numeric.is_empty()
+            && numeric.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && numeric.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            // Date stamps (`20251001`) tie-break nothing a reader can see.
+            version.extend(
+                numeric
+                    .split('.')
+                    .filter(|part| (1..6).contains(&part.len()))
+                    .filter_map(|part| part.parse::<u64>().ok()),
+            );
+        } else {
+            family.push(token);
+        }
+    }
+    ModelKey {
+        vendor,
+        family: family.join("-"),
+        version,
+        alias,
+        variant,
+    }
+}
+
+impl ModelKey {
+    /// A base release, not an alias or a `:batch`-style variant. Collapsed
+    /// groups lead with these.
+    fn primary(&self) -> bool {
+        !self.alias && self.variant.is_empty()
+    }
+}
+
+fn model_raw_name<'a>(spec: &'a str, details: &'a HashMap<String, ModelDetails>) -> &'a str {
+    details
+        .get(spec)
+        .map_or(spec, |detail| detail.model.as_str())
+}
+
+/// Whether the collapsed picker should lead with this route.
+pub(super) fn is_primary(spec: &str, details: &HashMap<String, ModelDetails>) -> bool {
+    model_key(model_raw_name(spec, details)).primary()
+}
+
+type GroupSortKey = (bool, String, u8, String);
+
+/// Provider groups sort by provider name, then account before key, then id.
+/// Routes without metadata trail everything.
+fn group_sort_key(model: &str, details: &HashMap<String, ModelDetails>) -> GroupSortKey {
+    if !details.contains_key(model) {
+        return (true, String::new(), 0, String::new());
+    }
+    let parts = header_parts(model, details);
+    let auth = match parts.auth {
+        AuthKind::Account => 0,
+        AuthKind::Subscription => 1,
+        AuthKind::ApiKey => 2,
+        AuthKind::CloudCredentials => 3,
+        AuthKind::Other => 4,
+    };
+    (
+        false,
+        parts.provider.to_ascii_lowercase(),
+        auth,
+        group_key(model, details).to_ascii_lowercase(),
+    )
+}
+
+/// Deterministic picker order: provider group, then vendor namespace, then
+/// releases newest first (ties by family name), then `~latest` aliases, with
+/// `:batch`-style variants right behind their base model. Usage never
+/// reorders the catalog, so a row stays where the eye expects it.
 ///
 /// Every usage tick rebroadcasts the whole catalog to every panel, so this
-/// runs often on the UI thread. Looking each route up once, instead of four
-/// SipHash lookups per comparison, took it from the top live-profile hotspot
-/// to noise.
+/// runs often on the UI thread. Keys are derived once per route, not once per
+/// comparison.
 pub(super) fn rank(models: &mut Vec<String>, details: &HashMap<String, ModelDetails>) {
-    let mut keyed: Vec<_> = std::mem::take(models)
+    let mut keyed: Vec<(GroupSortKey, ModelKey, bool, String)> = std::mem::take(models)
         .into_iter()
-        .map(|model| {
-            let detail = details.get(&model);
-            let usage = detail.and_then(|detail| detail.usage.as_ref());
-            let recommended = detail.is_some_and(|detail| detail.recommended);
-            (usage, recommended, model)
+        .map(|spec| {
+            (
+                group_sort_key(&spec, details),
+                model_key(model_raw_name(&spec, details)),
+                details.get(&spec).is_some_and(|detail| detail.recommended),
+                spec,
+            )
         })
         .collect();
-    keyed.sort_by(|(a_usage, a_rec, a), (b_usage, b_rec, b)| {
-        compare_model_usage(*a_usage, *b_usage)
+    keyed.sort_by(|(a_group, a, a_rec, a_spec), (b_group, b, b_rec, b_spec)| {
+        a_group
+            .cmp(b_group)
+            .then_with(|| a.vendor.cmp(&b.vendor))
+            .then_with(|| a.alias.cmp(&b.alias))
+            .then_with(|| b.version.cmp(&a.version))
+            .then_with(|| a.family.cmp(&b.family))
+            .then_with(|| a.variant.cmp(&b.variant))
             .then_with(|| b_rec.cmp(a_rec))
-            .then_with(|| a.cmp(b))
+            .then_with(|| a_spec.cmp(b_spec))
     });
-    models.extend(keyed.into_iter().map(|(_, _, model)| model));
+    models.extend(keyed.into_iter().map(|(_, _, _, spec)| spec));
 }
 
 pub(super) fn now_unix_secs() -> u64 {
@@ -570,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_uses_usage_then_stable_names_and_retains_every_model() {
+    fn rank_ignores_usage_and_retains_every_model() {
         let mut models = vec![
             "unknown-z".into(),
             "frequent".into(),
@@ -600,7 +716,7 @@ mod tests {
         rank(&mut models, &details);
         assert_eq!(
             models,
-            ["recent", "frequent", "legacy", "unknown-a", "unknown-z"]
+            ["frequent", "legacy", "recent", "unknown-a", "unknown-z"]
         );
     }
 }
@@ -640,6 +756,34 @@ pub(super) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>)
     } else {
         pretty
     }
+}
+
+/// The three rows a closed group shows, still in ranked order: the current
+/// model, then base releases, and only then aliases and variants.
+fn collapsed_members(
+    members: Vec<String>,
+    current: Option<&str>,
+    details: &HashMap<String, ModelDetails>,
+) -> Vec<String> {
+    let mut chosen: Vec<bool> = members
+        .iter()
+        .map(|model| current == Some(model.as_str()))
+        .collect();
+    for primary_only in [true, false] {
+        for (index, model) in members.iter().enumerate() {
+            if chosen.iter().filter(|chosen| **chosen).count() >= 3 {
+                break;
+            }
+            if !chosen[index] && (!primary_only || is_primary(model, details)) {
+                chosen[index] = true;
+            }
+        }
+    }
+    members
+        .into_iter()
+        .zip(chosen)
+        .filter_map(|(model, chosen)| chosen.then_some(model))
+        .collect()
 }
 
 pub(super) fn grouped_rows(
@@ -720,11 +864,12 @@ pub(super) fn grouped_rows(
     for (key, matching) in groups {
         let count = matching.len();
         let open = expanded.contains(&key);
-        for (index, model) in matching
-            .into_iter()
-            .take(if open { usize::MAX } else { 3 })
-            .enumerate()
-        {
+        let visible = if open {
+            matching
+        } else {
+            collapsed_members(matching, current.as_deref(), details)
+        };
+        for (index, model) in visible.into_iter().enumerate() {
             rows.push(GroupRow {
                 header: (index == 0).then(|| group_label(&model, details)),
                 value: format!("/model {model}"),

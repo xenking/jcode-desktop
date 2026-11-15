@@ -387,11 +387,15 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
         source.update(vcx, |panel, cx| panel.choose_account_model(cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_some());
-        vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("enter enter");
         vcx.run_until_parked();
         assert!(
             matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-api:test")
         );
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SessionOperation { .. })
+        ));
         source.read_with(vcx, |panel, cx| {
             assert_eq!(panel.input.read(cx).content.as_ref(), "keep this draft")
         });

@@ -2162,18 +2162,22 @@ impl Panel {
             cx.notify();
             return true;
         }
-        if let Some(model) = trimmed
+        if let Some((model, effort)) = trimmed
             .strip_prefix("/model ")
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
+            .map(crate::input::parse_model_pick)
+            .filter(|(model, _)| !model.is_empty())
         {
             self.close_model_picker(cx);
-            self.bridge.send(Command::SetModel {
-                session_id: self.session_id.clone(),
-                model: model.to_string(),
-            });
-            self.items
-                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+            if let Some(effort) = effort {
+                self.switch_model_with_effort(model, &effort.to_ascii_lowercase(), cx);
+            } else {
+                self.bridge.send(Command::SetModel {
+                    session_id: self.session_id.clone(),
+                    model: model.to_string(),
+                });
+                self.items
+                    .push(Item::Assistant(format!("Switching model to `{model}`…")));
+            }
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             let effort = effort.to_ascii_lowercase();
             if self.request_effort(&effort, cx) {
@@ -9859,6 +9863,12 @@ mod tests {
             );
         });
         vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "Enter on a model opens the effort step instead of switching"
+        );
+        vcx.simulate_keystrokes("enter");
         let received = commands.recv_timeout(std::time::Duration::from_millis(100));
         match received {
             Ok(Command::SetModel { session_id, model }) => {
@@ -9867,6 +9877,10 @@ mod tests {
             }
             _ => panic!("picker did not emit SetModel"),
         }
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SessionOperation { operation: SessionOperation::SetEffort(_), .. })
+        ));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
@@ -9900,6 +9914,8 @@ mod tests {
             .debug_bounds("slash-command-row-0")
             .expect("model suggestion is clickable");
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(
             matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-oauth:gpt-5.6-sol")

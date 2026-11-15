@@ -13,6 +13,16 @@ pub struct DesktopConfig {
     pub voice: VoiceConfig,
     pub display: DisplayConfig,
     pub completions: CompletionsConfig,
+    pub models: ModelsConfig,
+}
+
+/// Model picker preferences.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelsConfig {
+    /// Route specs (`openai-oauth:gpt-5.6-sol`) hidden from the Desktop model
+    /// picker. The "Manage models" view lists them again so they can be shown.
+    pub hidden: Vec<String>,
 }
 
 /// Inline composer autocomplete (ghost text, Tab accepts).
@@ -121,6 +131,7 @@ impl Default for DesktopConfig {
             voice: VoiceConfig::default(),
             display: DisplayConfig::default(),
             completions: CompletionsConfig::default(),
+            models: ModelsConfig::default(),
         }
     }
 }
@@ -185,6 +196,7 @@ impl DesktopConfig {
             .and_then(|host| jcode_desktop_harness::remote_targets::validate_host(host).ok());
         self.workspace.remote_hosts = normalized_remote_hosts(&self.workspace.remote_hosts);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
+        self.models.hidden = normalized_hidden_models(&self.models.hidden);
         self
     }
 
@@ -474,6 +486,82 @@ fn persist_pinned_working_dir_at(
         "pinned_working_dir",
         &toml::Value::String(directory.into()).to_string(),
     )
+}
+
+/// Sorted, deduplicated, non-empty hidden route specs.
+pub fn normalized_hidden_models(models: &[String]) -> Vec<String> {
+    let mut result: Vec<String> = models
+        .iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
+    result.sort();
+    result.dedup();
+    result
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+static HIDDEN_MODELS: OnceLock<std::sync::RwLock<Vec<String>>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    // Tests never touch the developer's config, and each test thread gets its own list.
+    static HIDDEN_MODELS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Live hidden-model list. Every composer reads this, so a change in one
+/// panel reaches the others on their next rebuild.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn hidden_models() -> Vec<String> {
+    HIDDEN_MODELS
+        .get_or_init(|| std::sync::RwLock::new(get().models.hidden.clone()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn hidden_models() -> Vec<String> {
+    HIDDEN_MODELS.with(|hidden| hidden.borrow().clone())
+}
+
+/// Persist `[desktop.models] hidden` and update the live list. Runtime state
+/// changes only after the write succeeds.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn set_hidden_models(models: &[String]) -> std::io::Result<()> {
+    let models = normalized_hidden_models(models);
+    let state = HIDDEN_MODELS.get_or_init(|| std::sync::RwLock::new(get().models.hidden.clone()));
+    let mut state = state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    persist_hidden_models_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        &models,
+    )?;
+    *state = models;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_hidden_models(models: &[String]) -> std::io::Result<()> {
+    let models = normalized_hidden_models(models);
+    HIDDEN_MODELS.with(|hidden| *hidden.borrow_mut() = models);
+    Ok(())
+}
+
+fn persist_hidden_models_at(
+    path: &std::path::Path,
+    standalone: bool,
+    models: &[String],
+) -> std::io::Result<()> {
+    let value = toml::Value::Array(
+        normalized_hidden_models(models)
+            .into_iter()
+            .map(toml::Value::String)
+            .collect(),
+    );
+    persist_value_at(path, standalone, "models", "hidden", &value.to_string())
 }
 
 /// Save the default SSH target, or an empty string to explicitly select local.
@@ -1313,6 +1401,8 @@ fn desktop_sections(text: &str, standalone: bool) -> String {
 
 #[cfg(test)]
 mod persist_tolerance_tests {
+    use super::*;
+
     #[test]
     fn duplicate_inside_desktop_sections_is_still_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -1349,5 +1439,35 @@ mod persist_tolerance_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(original));
         assert!(text.contains("[desktop.workspace]\npinned_working_dir = \"/tmp/project\""));
+    }
+
+    #[test]
+    fn hidden_models_persist_beside_shared_settings_and_normalize() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "# keep me\nmodel = \"openai:gpt-5\"\n").unwrap();
+        persist_hidden_models_at(
+            &path,
+            false,
+            &["b:x".into(), " a:y ".into(), "b:x".into(), "".into()],
+        )
+        .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("[desktop.models]"));
+        let config = parse(&text, false).unwrap().normalize();
+        assert_eq!(config.models.hidden, ["a:y", "b:x"]);
+        persist_hidden_models_at(&path, false, &[]).unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches("hidden =").count(), 1);
+        assert!(parse(&text, false).unwrap().models.hidden.is_empty());
+    }
+
+    #[test]
+    fn hidden_models_live_list_round_trips() {
+        set_hidden_models(&["z:m".into(), "a:m".into()]).unwrap();
+        assert_eq!(hidden_models(), ["a:m", "z:m"]);
+        set_hidden_models(&[]).unwrap();
+        assert!(hidden_models().is_empty());
     }
 }

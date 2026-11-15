@@ -163,7 +163,11 @@ impl Panel {
         if !self.login_command(content.trim(), cx) {
             if matches!(content.trim(), "/model" | "/models") {
                 self.open_model_picker(cx);
-            } else if let Some(model) = content.trim().strip_prefix("/model ") {
+            } else if let Some((model, _)) = content
+                .trim()
+                .strip_prefix("/model ")
+                .map(crate::input::parse_model_pick)
+            {
                 if self
                     .available_models
                     .iter()

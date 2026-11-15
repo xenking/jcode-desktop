@@ -318,8 +318,18 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
+        commands.try_recv().is_err(),
+        "choosing a model opens the effort step first"
+    );
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
         matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "session-a" && model == "openai-api:test")
     );
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SessionOperation { operation: SessionOperation::SetEffort(effort), .. }) if effort == "medium"
+    ));
     assert!(
         commands.try_recv().is_err(),
         "recovery never automatically resends a prompt"
@@ -353,10 +363,16 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
         .expect("native picker route");
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-api:test")
     );
     assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SessionOperation { operation: SessionOperation::SetEffort(_), .. })
+    ));
 
     panel.update(vcx, |panel, cx| {
         panel.items.clear();
