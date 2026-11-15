@@ -174,6 +174,9 @@ pub struct PromptInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Row height the layout was shaped and painted with. Event handlers run
+    /// outside the element's text style, where `Window::line_height` differs.
+    last_line_height: Option<Pixels>,
     voice_preview: Option<String>,
     voice_preview_scroll: gpui::ScrollHandle,
     composer_bounds: paste_preview::MeasuredBounds,
@@ -557,6 +560,7 @@ impl PromptInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_line_height: None,
             voice_preview: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
             composer_bounds: Default::default(),
@@ -1672,7 +1676,7 @@ impl PromptInput {
         window.focus(&self.focus_handle, cx);
         cx.stop_propagation();
         self.is_selecting = true;
-        let offset = self.index_for_mouse_position(event.position, window.line_height());
+        let offset = self.index_for_mouse_position(event.position, window);
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else if event.click_count == 2 {
@@ -1696,7 +1700,7 @@ impl PromptInput {
     ) {
         if self.is_selecting {
             self.select_to(
-                self.index_for_mouse_position(event.position, window.line_height()),
+                self.index_for_mouse_position(event.position, window),
                 cx,
             );
         }
@@ -1716,7 +1720,12 @@ impl PromptInput {
         }
     }
 
-    fn index_for_mouse_position(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
+    fn painted_line_height(&self, window: &Window) -> Pixels {
+        self.last_line_height.unwrap_or_else(|| window.line_height())
+    }
+
+    fn index_for_mouse_position(&self, position: Point<Pixels>, window: &Window) -> usize {
+        let line_height = self.painted_line_height(window);
         if self.content.is_empty() {
             return 0;
         }
@@ -2004,13 +2013,14 @@ impl EntityInputHandler for PromptInput {
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = last_layout.position_for_index(range.start, window.line_height())?;
-        let end = last_layout.position_for_index(range.end, window.line_height())?;
+        let line_height = self.painted_line_height(window);
+        let start = last_layout.position_for_index(range.start, line_height)?;
+        let end = last_layout.position_for_index(range.end, line_height)?;
         Some(Bounds::from_corners(
             bounds.origin + start,
             point(
                 bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
+                bounds.top() + end.y + line_height,
             ),
         ))
     }
@@ -2024,7 +2034,7 @@ impl EntityInputHandler for PromptInput {
         let local = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
         let utf8_index = last_layout
-            .closest_index_for_position(local, _window.line_height())
+            .closest_index_for_position(local, self.painted_line_height(_window))
             .unwrap_or_else(|index| index)
             .min(self.content.len());
         Some(self.offset_to_utf16(utf8_index))
@@ -2403,6 +2413,7 @@ impl Element for TextElement {
             }
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
+            input.last_line_height = Some(window.line_height());
             let needs_ticker = {
                 let state = input.motion.borrow();
                 state.next.is_some() && state.ticker.is_none()
@@ -2941,6 +2952,52 @@ mod tests {
                 shift_event.modifiers.shift = true;
                 input.on_mouse_down(&shift_event, window, cx);
                 assert_eq!(input.selected_range, 0..2);
+            })
+            .unwrap();
+    }
+
+    /// Mouse handlers run outside paint, where `window.line_height()` reflects
+    /// the window default rather than the composer's 14px text style. The hit
+    /// test must use the row height the layout was actually painted with.
+    #[gpui::test]
+    fn composer_click_on_each_line_places_caret_on_that_line(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        handle
+            .update(cx, |input, _, cx| {
+                input.set_content("first\nsecond\nthird".into(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                assert_eq!(input.visual_line_count, 3);
+                let row_height = bounds.size.height / 3.;
+                for (row, line_start) in [(0, 0), (1, 6), (2, 13)] {
+                    // Just inside the top edge: a taller handler-time line
+                    // height would map this to the row above.
+                    let position = bounds.origin
+                        + point(px(1.), row_height * row as f32 + px(1.));
+                    let event = MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    input.on_mouse_down(&event, window, cx);
+                    assert_eq!(
+                        input.selected_range,
+                        line_start..line_start,
+                        "click at the top of row {row}"
+                    );
+                    input.on_mouse_up(&MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                    }, window, cx);
+                }
             })
             .unwrap();
     }
