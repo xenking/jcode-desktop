@@ -82,3 +82,4 @@
 - Fork-only features: composer prompt autocompletion via jcode-cloud `/v1/completions/prompt`, inline ask card for the agent's `ask` tool, voice backend picker (`[dictation]`, Soniox, SuperWhisper bridge), updater/Sparkle feed pointing at the xenking fork.
 - Builds on macOS need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, e.g. `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer justrust check`.
 - Depends on the sibling `../jcode` checkout, so jcode edits rebuild Desktop.
+- Parallel agents (swarm workers, other sessions) never share a checkout: each works in its own `git worktree` under `~/.jcode/wt/<name>-<repo>` off origin, ships by rebase + fast-forward push to the primary branch, then removes the worktree and branch. This overrides the "Work directly on main" line for parallel work.
