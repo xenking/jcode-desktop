@@ -34,7 +34,8 @@ impl PromptInput {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let preview = self.attachment_preview.as_ref()?;
-        let image = self.attachments.get(preview.index)?.preview.clone();
+        let index = preview.index;
+        let image = self.attachments.get(index)?.preview.clone();
         let viewport = window.viewport_size();
         let overlay = div()
             .id("paste-image-preview")
@@ -56,6 +57,19 @@ impl PromptInput {
                     .justify_between()
                     .text_color(Theme::global().TEXT_DIM)
                     .child("Image preview")
+                    .child(
+                        div()
+                            .id("paste-image-preview-remove")
+                            .px_3()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(Theme::global().QUOTE_BG))
+                            .child("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_attachment(index, cx);
+                                cx.stop_propagation();
+                            })),
+                    )
                     .child(
                         div()
                             .id("paste-image-preview-close")

@@ -443,7 +443,6 @@ struct Attachment {
     encoded: Arc<str>,
     label: SharedString,
     preview: Arc<gpui::Image>,
-    bounds: paste_preview::MeasuredBounds,
 }
 
 #[derive(Clone)]
@@ -501,7 +500,6 @@ fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> 
                 encoded: attachment.encoded.into(),
                 label: attachment.label.into(),
                 preview,
-                bounds: Default::default(),
             })
         })
         .collect()
@@ -684,6 +682,10 @@ impl PromptInput {
         }
         self.attachment_preview = None;
         self.attachment_notice = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
     }
 
@@ -1629,7 +1631,6 @@ impl PromptInput {
                 .into(),
             label: marker.into(),
             preview,
-            bounds: Default::default(),
         });
         self.attachment_preview = None;
         self.attachment_notice = None;
@@ -2159,7 +2160,6 @@ impl PromptInput {
                 media_type,
                 encoded: encoded.into(),
                 preview,
-                bounds: Default::default(),
             });
         }
         for (range, marker) in replacements.into_iter().rev() {
@@ -4150,7 +4150,6 @@ mod tests {
                     encoded: "cG5n".into(),
                     label: "4×3".into(),
                     preview: preview_image("image/png", Vec::new()).unwrap(),
-                    bounds: Default::default(),
                 });
                 let previous_edits = input.undo.len();
                 input.append_dictation("first line\nsecond line", cx);
@@ -4184,7 +4183,6 @@ mod tests {
                 encoded: "cG5n".into(),
                 label: "4×3".into(),
                 preview: preview_image("image/png", Vec::new()).unwrap(),
-                bounds: Default::default(),
             });
             for selected in [false, true] {
                 input.open_model_menu(Vec::new(), cx);
@@ -4683,7 +4681,6 @@ mod tests {
                 encoded: "cG5n".into(),
                 label: "4×3".into(),
                 preview: preview_image("image/png", Vec::new()).unwrap(),
-                bounds: Default::default(),
             });
             input.set_submission_enabled(false, cx);
         });
@@ -4949,7 +4946,6 @@ mod tests {
                     encoded: "cG5n".into(),
                     label: "4×3".into(),
                     preview: preview_image("image/png", Vec::new()).unwrap(),
-                    bounds: Default::default(),
                 });
                 window.focus(&input.focus_handle, cx);
             })
@@ -4983,7 +4979,6 @@ mod tests {
                         encoded: "cG5n".into(),
                         label: label.into(),
                         preview: preview_image("image/png", Vec::new()).unwrap(),
-                        bounds: Default::default(),
                     });
                 }
                 input.remove_attachment(0, cx);
