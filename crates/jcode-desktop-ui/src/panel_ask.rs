@@ -896,6 +896,47 @@ mod tests {
     }"#;
 
     #[gpui::test]
+    fn keyboard_navigates_multiple_groups_and_submits(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        vcx.run_until_parked();
+        for _ in 0..120 {
+            if vcx.debug_bounds("composer-dock").is_some() {
+                break;
+            }
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        vcx.update(|window, cx| window.focus(&panel.read(cx).input_focus_handle(cx), cx));
+        let mut value: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        let second = value["questions"][0].clone();
+        value["questions"].as_array_mut().unwrap().push(second);
+        let event: jcode_sdk::ApiEvent = serde_json::from_value(value).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("j k up space tab j space enter");
+        vcx.run_until_parked();
+        assert!(commands.try_iter().any(|command| matches!(command,
+            crate::harness::Command::AskResponse { response, .. }
+            if response.answers.as_ref().is_some_and(|answers|
+                answers.len() == 2 && answers[0].selected == ["DynamoDB"] && answers[1].selected == ["SQLite"])
+        )), "keyboard selection must submit both groups");
+    }
+
+    #[gpui::test]
     fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
