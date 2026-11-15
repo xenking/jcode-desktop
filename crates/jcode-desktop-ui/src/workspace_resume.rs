@@ -1097,6 +1097,7 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
     {
         let message = |role: &str, content: String| jcode_sdk::HistoryMessage {
             response_stats: None,
+            timestamp_ms: None,
             tool: None,
             role: role.into(),
             content,
@@ -1175,6 +1176,7 @@ mod tests {
     ) {
         let message = |role: &str, content: &str| jcode_sdk::HistoryMessage {
             response_stats: None,
+            timestamp_ms: None,
             tool: None,
             role: role.into(),
             content: content.into(),

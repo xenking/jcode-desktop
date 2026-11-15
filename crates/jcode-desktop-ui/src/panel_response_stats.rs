@@ -9,6 +9,10 @@ pub struct ResponseStats {
     pub cache_read_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
     pub tool_calls: Option<u64>,
+    /// Unix epoch milliseconds when the response arrived (live: when the turn
+    /// finished, restored: the stored message's record time). Never render time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<i64>,
 }
 
 impl From<jcode_sdk::ResponseStats> for ResponseStats {
@@ -20,6 +24,7 @@ impl From<jcode_sdk::ResponseStats> for ResponseStats {
             cache_read_tokens: stats.cache_read_tokens,
             cache_creation_tokens: stats.cache_creation_tokens,
             tool_calls: None,
+            at_ms: None,
         }
     }
 }
@@ -32,6 +37,7 @@ pub(super) fn fixture() -> ResponseStats {
         cache_read_tokens: Some(18_200),
         cache_creation_tokens: None,
         tool_calls: Some(5),
+        at_ms: None,
     }
 }
 
@@ -95,8 +101,36 @@ impl Tracker {
             return None;
         }
         finished.stats.duration_secs = finished.started.map(|at| at.elapsed().as_secs_f64());
-        (!finished.stats.labels().is_empty()).then_some(finished.stats)
+        finished.stats.at_ms = now_ms();
+        (!finished.stats.stat_labels().is_empty()).then_some(finished.stats)
     }
+}
+
+/// Wall-clock time as Unix epoch milliseconds, for stamping live messages.
+pub(super) fn now_ms() -> Option<i64> {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_millis()).ok()
+}
+
+/// `HH:MM` for an epoch-millisecond timestamp in the given zone.
+pub(super) fn clock_label_in<Tz: chrono::TimeZone>(ms: i64, zone: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    Some(
+        zone.timestamp_millis_opt(ms)
+            .single()?
+            .format("%H:%M")
+            .to_string(),
+    )
+}
+
+/// `HH:MM` in the viewer's local zone. Derived from the message's own
+/// timestamp, never from render time.
+pub(super) fn clock_label(ms: i64) -> Option<String> {
+    clock_label_in(ms, &chrono::Local)
 }
 
 fn add(total: &mut Option<u64>, value: u64) {
@@ -149,9 +183,17 @@ impl Render for StatsTooltip {
 
 impl ResponseStats {
     pub(super) fn is_empty(&self) -> bool {
-        self.labels().is_empty()
+        self.stat_labels().is_empty()
     }
+
+    /// The meta line: arrival time first, then the response accounting.
     fn labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self.at_ms.and_then(clock_label).into_iter().collect();
+        labels.extend(self.stat_labels());
+        labels
+    }
+
+    fn stat_labels(&self) -> Vec<String> {
         let mut labels = Vec::new();
         if let Some(duration) = self.duration_secs.and_then(duration_label) {
             labels.push(format!("Worked {duration}"));
@@ -232,6 +274,69 @@ mod tests {
         }
     }
 
+    #[test]
+    fn meta_line_starts_with_the_arrival_time_from_the_message_record() {
+        // 2026-11-15T05:21:14Z rendered in a fixed +11:00 zone.
+        let zone = chrono::FixedOffset::east_opt(11 * 3600).unwrap();
+        assert_eq!(
+            clock_label_in(1_794_720_074_000, &zone).as_deref(),
+            Some("16:21")
+        );
+        let mut stats = fixture();
+        stats.at_ms = Some(1_794_720_074_000);
+        let labels = stats.labels();
+        assert_eq!(labels[0], clock_label(1_794_720_074_000).unwrap());
+        assert_eq!(labels[1], "Worked 1m 24s");
+        stats.at_ms = None;
+        assert_eq!(stats.labels()[0], "Worked 1m 24s");
+    }
+
+    #[gpui::test]
+    fn history_timestamps_survive_loading_and_shift_with_prepended_history(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("stats-time", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.history_loaded = false;
+            let message =
+                |role: &str, content: &str, at: i64, stats: bool| jcode_sdk::HistoryMessage {
+                    role: role.into(),
+                    content: content.into(),
+                    timestamp_ms: Some(at),
+                    tool: None,
+                    response_stats: stats.then(|| jcode_sdk::ResponseStats {
+                        input_tokens: Some(1_000),
+                        ..Default::default()
+                    }),
+                };
+            panel.load_history(
+                vec![
+                    message("user", "Question", 1_794_720_060_000, false),
+                    message("assistant", "Answer", 1_794_720_074_000, true),
+                ],
+                vec![],
+                cx,
+            );
+            assert_eq!(
+                panel.user_clock(0),
+                clock_label(1_794_720_060_000),
+                "prompt shows its stored time, not render time"
+            );
+            let Item::ResponseStats(stats) = &panel.items[2] else {
+                panic!("missing stats")
+            };
+            assert_eq!(stats.at_ms, Some(1_794_720_074_000));
+            assert_eq!(stats.labels()[0], clock_label(1_794_720_074_000).unwrap());
+        });
+    }
+
     #[gpui::test]
     fn response_stats_appear_only_after_completion_and_paint_below_answer(
         cx: &mut gpui::TestAppContext,
@@ -307,7 +412,7 @@ mod tests {
                 panic!("missing footer")
             };
             assert_eq!(
-                stats.labels(),
+                stats.labels()[1..],
                 ["Worked 1m 24s", "↑ 24.6k in", "↓ 1.8k out"]
             );
         });
@@ -335,7 +440,8 @@ mod tests {
             );
         }
         let stats = tracker.finish().unwrap();
-        assert_eq!(stats.labels(), ["2 tools"]);
+        assert_eq!(stats.stat_labels(), ["2 tools"]);
+        assert!(stats.at_ms.is_some(), "a finished live response is stamped");
         assert_eq!(stats.input_tokens, None);
         assert!(stats.detail().contains("not reported"));
         assert!(tracker.finish().is_none());
@@ -358,9 +464,11 @@ mod tests {
                     role: "user".into(),
                     content: "Question".into(),
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                 },
                 jcode_sdk::HistoryMessage {
+                    timestamp_ms: None,
                     role: "assistant".into(),
                     content: "Answer".into(),
                     tool: None,
@@ -425,7 +533,7 @@ mod tests {
                 "authoritative history replaces partial telemetry"
             );
             assert_eq!(stats.output_tokens, Some(500));
-            assert_eq!(stats.labels()[0], "Worked 1m 24s");
+            assert_eq!(stats.stat_labels()[0], "Worked 1m 24s");
         });
     }
 
@@ -439,7 +547,7 @@ mod tests {
         assert_eq!(stats.input_tokens, Some(27_000));
         assert_eq!(stats.output_tokens, Some(1_400));
         assert_eq!(stats.cache_read_tokens, Some(18_000));
-        assert_eq!(stats.labels()[0], "Worked 1m 24s");
+        assert_eq!(stats.stat_labels()[0], "Worked 1m 24s");
         assert!(tracker.finish().is_none());
         tracker.observe(&usage(100, 20, None), Some("openai"));
         assert_eq!(tracker.finish().unwrap().input_tokens, Some(100));

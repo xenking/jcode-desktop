@@ -329,6 +329,20 @@ impl Panel {
                 )
             })
             .child(card)
+            .when_some(self.user_clock(index), |row, clock| {
+                // A quiet arrival time beside the card, from the message record.
+                row.child(
+                    div()
+                        .debug_selector(move || format!("prompt-time-{index}").into())
+                        .flex_none()
+                        .ml(px(6.))
+                        .mt(px(7.))
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_size(px(10.))
+                        .text_color(Theme::global().TEXT_FAINT)
+                        .child(clock),
+                )
+            })
             .into_any_element()
     }
 

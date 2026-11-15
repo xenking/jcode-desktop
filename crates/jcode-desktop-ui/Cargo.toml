@@ -31,6 +31,7 @@ jcode-selfdev-types = { path = "../../../jcode/crates/jcode-selfdev-types" }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"

@@ -94,6 +94,7 @@ impl Panel {
         }
         let index = self.items.len();
         self.items.push(Item::User(content));
+        self.stamp_user(index);
         self.items.extend(
             images.into_iter().map(|(media_type, data)| {
                 Item::Image(TranscriptImage::new(media_type, data, None))

@@ -1699,10 +1699,7 @@ impl PromptInput {
         cx: &mut Context<Self>,
     ) {
         if self.is_selecting {
-            self.select_to(
-                self.index_for_mouse_position(event.position, window),
-                cx,
-            );
+            self.select_to(self.index_for_mouse_position(event.position, window), cx);
         }
     }
 
@@ -1721,7 +1718,8 @@ impl PromptInput {
     }
 
     fn painted_line_height(&self, window: &Window) -> Pixels {
-        self.last_line_height.unwrap_or_else(|| window.line_height())
+        self.last_line_height
+            .unwrap_or_else(|| window.line_height())
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>, window: &Window) -> usize {
@@ -2018,10 +2016,7 @@ impl EntityInputHandler for PromptInput {
         let end = last_layout.position_for_index(range.end, line_height)?;
         Some(Bounds::from_corners(
             bounds.origin + start,
-            point(
-                bounds.left() + end.x,
-                bounds.top() + end.y + line_height,
-            ),
+            point(bounds.left() + end.x, bounds.top() + end.y + line_height),
         ))
     }
 
@@ -2976,8 +2971,7 @@ mod tests {
                 for (row, line_start) in [(0, 0), (1, 6), (2, 13)] {
                     // Just inside the top edge: a taller handler-time line
                     // height would map this to the row above.
-                    let position = bounds.origin
-                        + point(px(1.), row_height * row as f32 + px(1.));
+                    let position = bounds.origin + point(px(1.), row_height * row as f32 + px(1.));
                     let event = MouseDownEvent {
                         button: MouseButton::Left,
                         position,
@@ -2991,12 +2985,16 @@ mod tests {
                         line_start..line_start,
                         "click at the top of row {row}"
                     );
-                    input.on_mouse_up(&MouseUpEvent {
-                        button: MouseButton::Left,
-                        position,
-                        modifiers: Default::default(),
-                        click_count: 1,
-                    }, window, cx);
+                    input.on_mouse_up(
+                        &MouseUpEvent {
+                            button: MouseButton::Left,
+                            position,
+                            modifiers: Default::default(),
+                            click_count: 1,
+                        },
+                        window,
+                        cx,
+                    );
                 }
             })
             .unwrap();

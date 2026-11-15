@@ -11,6 +11,8 @@ pub struct TranscriptSnapshot {
     connection_phase: String,
     #[serde(default)]
     expanded_tools: HashSet<String>,
+    #[serde(default)]
+    user_times: HashMap<usize, i64>,
 }
 
 impl PartialEq for TranscriptImage {
@@ -39,6 +41,7 @@ impl Panel {
             status: self.status.clone(),
             connection_phase: self.connection_phase.clone(),
             expanded_tools: self.expanded_tools.clone(),
+            user_times: self.user_times.clone(),
         }
     }
 
@@ -54,6 +57,7 @@ impl Panel {
                 || !snapshot.streaming_text.is_empty()
                 || !snapshot.streaming_reasoning.is_empty());
         self.expanded_tools = snapshot.expanded_tools;
+        self.user_times = snapshot.user_times;
         *self.items = snapshot.items;
         for item in &mut self.items {
             if let Item::Image(image) = item {
@@ -116,9 +120,15 @@ impl Panel {
                     .map_or(0, |index| index + 1)
             });
         let mut prefix = Vec::new();
+        let mut prefix_times = HashMap::new();
         for message in &messages[..end] {
             match message.role.as_str() {
-                "user" => prefix.push(Item::User(message.content.clone())),
+                "user" => {
+                    if let Some(at) = message.timestamp_ms {
+                        prefix_times.insert(prefix.len(), at);
+                    }
+                    prefix.push(Item::User(message.content.clone()))
+                }
                 "assistant" if !message.content.trim().is_empty() => {
                     prefix.push(Item::Assistant(message.content.clone()))
                 }
@@ -131,6 +141,8 @@ impl Panel {
         for index in &mut self.pending_users {
             *index += offset;
         }
+        self.shift_user_times(offset, 0);
+        self.user_times.extend(prefix_times);
         self.accepted_users = std::mem::take(&mut self.accepted_users)
             .into_iter()
             .map(|(index, at)| (index + offset, at))
@@ -184,7 +196,12 @@ impl Panel {
             self.flush_streaming();
             for message in &messages[next_user..=latest_user] {
                 match message.role.as_str() {
-                    "user" => self.items.push(Item::User(message.content.clone())),
+                    "user" => {
+                        if let Some(at) = message.timestamp_ms {
+                            self.user_times.insert(self.items.len(), at);
+                        }
+                        self.items.push(Item::User(message.content.clone()))
+                    }
                     "assistant" if !message.content.trim().is_empty() => {
                         self.items.push(Item::Assistant(message.content.clone()))
                     }
@@ -210,8 +227,10 @@ impl Panel {
                 if let Some(stats) = response.response_stats {
                     self.finish_response();
                     let mut restored: response_stats::ResponseStats = stats.into();
+                    restored.at_ms = response.timestamp_ms;
                     if let Some(Item::ResponseStats(existing)) = self.items.last_mut() {
                         restored.duration_secs = restored.duration_secs.or(existing.duration_secs);
+                        restored.at_ms = restored.at_ms.or(existing.at_ms);
                         restored.tool_calls = existing.tool_calls;
                         *existing = restored;
                     } else if !restored.is_empty() {

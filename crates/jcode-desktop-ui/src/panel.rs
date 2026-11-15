@@ -595,6 +595,9 @@ pub struct Panel {
     prompt_queue: queue::PromptQueue,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
+    /// Arrival time (Unix epoch ms) of user prompts, by item index. Taken from
+    /// the stored message record or the moment of sending, never render time.
+    user_times: HashMap<usize, i64>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
     /// Item count when each unanchored inline applet first appeared, so an
@@ -1064,6 +1067,7 @@ impl Panel {
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
+            user_times: HashMap::new(),
             arriving_tools: HashMap::new(),
             applet_positions: HashMap::new(),
             applet_selection: cx.new(TextSelection::new),
@@ -2204,6 +2208,7 @@ impl Panel {
                     self.startup_layout = None;
                     self.image_pane_selected = None;
                     self.items.clear();
+                    self.user_times.clear();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
@@ -2498,6 +2503,7 @@ impl Panel {
         });
         let index = self.items.len();
         self.items.push(Item::User(prompt.to_string()));
+        self.stamp_user(index);
         self.pending_users.push_back(index);
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
@@ -2508,7 +2514,8 @@ impl Panel {
     fn history_items(
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
-    ) -> Vec<Item> {
+    ) -> (Vec<Item>, HashMap<usize, i64>) {
+        let mut user_times = HashMap::new();
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
@@ -2542,6 +2549,9 @@ impl Panel {
             }
             match message.role.as_str() {
                 "user" => {
+                    if let Some(at) = message.timestamp_ms {
+                        user_times.insert(items.len(), at);
+                    }
                     items.push(Item::User(message.content));
                     if let Some(images) = images_by_prompt.remove(&user_ordinal) {
                         items.extend(
@@ -2557,7 +2567,8 @@ impl Panel {
                         items.push(Item::Assistant(message.content));
                     }
                     if let Some(stats) = message.response_stats {
-                        let stats: response_stats::ResponseStats = stats.into();
+                        let mut stats: response_stats::ResponseStats = stats.into();
+                        stats.at_ms = message.timestamp_ms;
                         if !stats.is_empty() {
                             items.push(Item::ResponseStats(stats));
                         }
@@ -2577,7 +2588,31 @@ impl Panel {
                 .into_iter()
                 .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
         );
-        items
+        (items, user_times)
+    }
+
+    /// Record when the user prompt at `index` was sent.
+    pub(super) fn stamp_user(&mut self, index: usize) {
+        if let Some(at) = response_stats::now_ms() {
+            self.user_times.insert(index, at);
+        }
+    }
+
+    /// Arrival time of the user prompt at `index`, as `HH:MM` local time.
+    pub(super) fn user_clock(&self, index: usize) -> Option<String> {
+        self.user_times
+            .get(&index)
+            .copied()
+            .and_then(response_stats::clock_label)
+    }
+
+    /// Shift index-keyed prompt times after items were inserted or removed
+    /// before them.
+    fn shift_user_times(&mut self, added: usize, removed: usize) {
+        self.user_times = std::mem::take(&mut self.user_times)
+            .into_iter()
+            .filter_map(|(index, at)| Some((index.checked_sub(removed)? + added, at)))
+            .collect();
     }
 
     /// Paint the locally persisted transcript while the runtime attaches.
@@ -2619,7 +2654,9 @@ impl Panel {
                 if std::mem::take(&mut panel.awaiting_persisted) {
                     cx.notify();
                 }
-                let Ok(items) = result else { return };
+                let Ok((items, user_times)) = result else {
+                    return;
+                };
                 if items.is_empty() || !panel.can_show_provisional() {
                     return;
                 }
@@ -2629,6 +2666,7 @@ impl Panel {
                     started.elapsed()
                 );
                 panel.provisional_items = items.len();
+                panel.user_times = user_times;
                 *panel.items = items;
                 panel.transcript_measurements.dirty = true;
                 if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
@@ -2658,7 +2696,11 @@ impl Panel {
     /// Retire the provisional prefix before the authoritative history lands.
     /// Returns true when the reply matched it exactly and nothing else is
     /// needed, which keeps measurements and scroll position untouched.
-    fn adopt_authoritative_over_provisional(&mut self, items: &[Item]) -> bool {
+    fn adopt_authoritative_over_provisional(
+        &mut self,
+        items: &[Item],
+        user_times: &HashMap<usize, i64>,
+    ) -> bool {
         self.provisional_task = None;
         self.awaiting_persisted = false;
         let count = std::mem::take(&mut self.provisional_items).min(self.items.len());
@@ -2666,9 +2708,12 @@ impl Panel {
             return false;
         }
         if self.items[..count] == *items {
+            self.user_times
+                .extend(user_times.iter().map(|(index, at)| (*index, *at)));
             return true;
         }
         self.items.drain(..count);
+        self.shift_user_times(0, count);
         self.pending_users = self
             .pending_users
             .drain(..)
@@ -2732,8 +2777,8 @@ impl Panel {
         {
             self.startup_layout = None;
         }
-        let mut items = Self::history_items(messages, images);
-        if self.adopt_authoritative_over_provisional(&items) {
+        let (mut items, history_times) = Self::history_items(messages, images);
+        if self.adopt_authoritative_over_provisional(&items, &history_times) {
             self.send_queued_prompts(cx);
             cx.notify();
             return;
@@ -2746,6 +2791,8 @@ impl Panel {
             _ => true,
         });
         let history_len = items.len();
+        self.shift_user_times(history_len, 0);
+        self.user_times.extend(history_times);
         self.pending_users = self
             .pending_users
             .drain(..)
@@ -3278,6 +3325,10 @@ impl Panel {
             }
         }
         self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .map(|(index, at)| (index + usize::from(index >= insertion), at))
+            .collect();
+        self.user_times = std::mem::take(&mut self.user_times)
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
@@ -7090,6 +7141,7 @@ mod tests {
                 vec![
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "user".into(),
                         content: (0..80)
@@ -7099,6 +7151,7 @@ mod tests {
                     },
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "assistant".into(),
                         content: (0..80)
@@ -7145,12 +7198,14 @@ mod tests {
                 vec![
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "user".into(),
                         content: "Fix the rendering".into(),
                     },
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "assistant".into(),
                         content: "Fixed.".into(),
@@ -7269,6 +7324,7 @@ mod tests {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                     role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
                     content: format!("restored message {index}"),
@@ -9137,12 +9193,12 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
-                        response_stats: None, tool: None,
+                        response_stats: None, timestamp_ms: None, tool: None,
                         role: "user".into(),
                         content: "hello".into(),
                     },
                     jcode_sdk::HistoryMessage {
-                        response_stats: None, tool: None,
+                        response_stats: None, timestamp_ms: None, tool: None,
                         role: "assistant".into(),
                         content: "recovered response".into(),
                     },
@@ -9159,8 +9215,8 @@ mod tests {
             *panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
-                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None, tool: None }, jcode_sdk::HistoryMessage {
-                    response_stats: None, tool: None,
+                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None, timestamp_ms: None, tool: None }, jcode_sdk::HistoryMessage {
+                    response_stats: None, timestamp_ms: None, tool: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
                 }],
@@ -9236,6 +9292,7 @@ mod tests {
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                     role: "user".into(),
                     content: "what is in this?".into(),

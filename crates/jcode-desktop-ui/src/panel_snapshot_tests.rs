@@ -17,6 +17,7 @@ fn history(rows: &[(&str, &str)]) -> Vec<jcode_sdk::HistoryMessage> {
             role: (*role).into(),
             content: (*content).into(),
             response_stats: None,
+            timestamp_ms: None,
             tool: None,
         })
         .collect()

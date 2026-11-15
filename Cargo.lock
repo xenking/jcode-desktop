@@ -4207,6 +4207,7 @@ dependencies = [
  "async-channel",
  "async-io",
  "base64",
+ "chrono",
  "flate2",
  "gpui",
  "gpui-thinking-orbs",
