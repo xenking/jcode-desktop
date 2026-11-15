@@ -459,6 +459,16 @@ pub struct PromptInputSnapshot {
     pub history_index: Option<usize>,
     pub live_draft: String,
     pub attachments: Vec<AttachmentSnapshot>,
+    #[serde(default)]
+    pub stashed_prompt: Option<StashedPromptSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StashedPromptSnapshot {
+    pub content: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+    pub attachments: Vec<AttachmentSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -466,6 +476,25 @@ pub struct AttachmentSnapshot {
     pub media_type: String,
     pub encoded: String,
     pub label: String,
+}
+
+fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> {
+    attachments
+        .into_iter()
+        .filter_map(|attachment| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.encoded)
+                .ok()?;
+            let preview = preview_image(&attachment.media_type, bytes)?;
+            Some(Attachment {
+                media_type: attachment.media_type,
+                encoded: attachment.encoded,
+                label: attachment.label.into(),
+                preview,
+                bounds: Default::default(),
+            })
+        })
+        .collect()
 }
 
 pub(crate) struct PickerSettings {
@@ -529,11 +558,36 @@ impl PromptInput {
                     label: attachment.label.to_string(),
                 })
                 .collect(),
+            stashed_prompt: self.stashed_prompt.as_ref().map(
+                |(content, selection, attachments)| StashedPromptSnapshot {
+                    content: content.clone(),
+                    selection_start: selection.start,
+                    selection_end: selection.end,
+                    attachments: attachments
+                        .iter()
+                        .map(|attachment| AttachmentSnapshot {
+                            media_type: attachment.media_type.clone(),
+                            encoded: attachment.encoded.clone(),
+                            label: attachment.label.to_string(),
+                        })
+                        .collect(),
+                },
+            ),
         }
     }
 
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
         self.model_menu_draft = None;
+        self.stashed_prompt = snapshot.stashed_prompt.map(|stash| {
+            let len = stash.content.len();
+            let start = stash.selection_start.min(len);
+            let end = stash.selection_end.min(len);
+            (
+                stash.content,
+                start.min(end)..start.max(end),
+                restore_attachments(stash.attachments),
+            )
+        });
         let len = snapshot.content.len();
         self.content = snapshot.content.into();
         self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
@@ -546,23 +600,7 @@ impl PromptInput {
             .history_index
             .filter(|index| *index < self.history.len());
         self.live_draft = snapshot.live_draft;
-        self.attachments = snapshot
-            .attachments
-            .into_iter()
-            .filter_map(|attachment| {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&attachment.encoded)
-                    .ok()?;
-                let preview = preview_image(&attachment.media_type, bytes)?;
-                Some(Attachment {
-                    media_type: attachment.media_type,
-                    encoded: attachment.encoded,
-                    label: attachment.label.into(),
-                    preview,
-                    bounds: Default::default(),
-                })
-            })
-            .collect();
+        self.attachments = restore_attachments(snapshot.attachments);
         self.attachment_preview = None;
         self.attachment_notice = match self.attachments.len() {
             0 => None,
@@ -4273,6 +4311,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn prompt_stash_survives_snapshot_restart(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| window.focus(&input.focus_handle, cx))
+        });
+        vcx.simulate_keystrokes("a ctrl-s");
+        let encoded = input.read_with(vcx, |input, _| {
+            serde_json::to_string(&input.snapshot()).unwrap()
+        });
+        let snapshot = serde_json::from_str(&encoded).unwrap();
+        let (restarted, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            restarted.update(cx, |input, cx| {
+                input.restore(snapshot, cx);
+                window.focus(&input.focus_handle, cx);
+            })
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-stashed").is_some());
+        vcx.simulate_keystrokes("ctrl-s");
+        restarted.read_with(vcx, |input, _| assert_eq!(input.content.as_ref(), "a"));
+    }
+
+    #[gpui::test]
     fn prompt_stash_returns_after_send(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "saved draft");
@@ -4292,8 +4357,11 @@ mod tests {
     #[gpui::test]
     fn prompt_stash_swaps_and_keeps_indicator(cx: &mut TestAppContext) {
         cx.update(bind_keys);
-        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
-        vcx.update(|window, cx| input.update(cx, |input, cx| window.focus(&input.focus_handle, cx)));
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| window.focus(&input.focus_handle, cx))
+        });
         vcx.simulate_keystrokes("a ctrl-s");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("prompt-stashed").is_some());

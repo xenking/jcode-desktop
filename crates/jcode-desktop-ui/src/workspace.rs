@@ -10550,6 +10550,7 @@ mod tests {
             history: vec!["older prompt".into()],
             history_index: None,
             live_draft: "unfinished prompt".into(),
+            stashed_prompt: None,
             attachments: vec![crate::input::AttachmentSnapshot {
                 media_type: "image/png".into(),
                 encoded: "aW1hZ2U=".into(),
@@ -10817,6 +10818,7 @@ mod tests {
                                 history: Vec::new(),
                                 history_index: None,
                                 live_draft: String::new(),
+                                stashed_prompt: None,
                                 attachments: Vec::new(),
                             },
                             scroll_x: 0.0,

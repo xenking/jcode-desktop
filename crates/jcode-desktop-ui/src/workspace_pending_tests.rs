@@ -71,6 +71,49 @@ fn add_image(input: &Entity<PromptInput>, cx: &mut gpui::VisualTestContext) {
 }
 
 #[gpui::test]
+fn workspace_restart_restores_session_stash_and_indicator(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _) = setup(cx);
+    let original = workspace.read_with(vcx, |w, cx| w.slots[0].panel.read(cx).input.clone());
+    add_image(&original, vcx);
+    vcx.simulate_input("saved draft");
+    vcx.simulate_keystrokes("shift-left ctrl-s");
+    vcx.simulate_input("other draft");
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.push_test_panel("other-session", cx);
+            let encoded = w.snapshot(window, cx).unwrap().encode().unwrap();
+            w.apply_snapshot(WorkspaceSnapshot::decode(&encoded).unwrap(), cx);
+            w.restore_focus(window, cx);
+        });
+    });
+    workspace.read_with(vcx, |w, cx| {
+        let first = w.slots[0].panel.read(cx).input.read(cx).snapshot();
+        let second = w.slots[1].panel.read(cx).input.read(cx).snapshot();
+        assert_eq!(first.content, "other draft");
+        let stash = first.stashed_prompt.unwrap();
+        assert_eq!(stash.content, "saved draft");
+        assert_eq!((stash.selection_start, stash.selection_end), (10, 11));
+        assert_eq!(stash.attachments.len(), 1);
+        assert!(second.stashed_prompt.is_none());
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.active = 0;
+            w.restore_focus(window, cx);
+        })
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-stashed").is_some());
+    vcx.simulate_keystrokes("ctrl-s");
+    workspace.read_with(vcx, |w, cx| {
+        let draft = w.slots[0].panel.read(cx).input.read(cx).snapshot();
+        assert_eq!(draft.content, "saved draft");
+        assert_eq!(draft.attachments.len(), 1);
+        assert_eq!(draft.stashed_prompt.unwrap().content, "other draft");
+    });
+}
+
+#[gpui::test]
 fn local_draft_entrance_slides_a_full_width_editor(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
     workspace.update(vcx, |w, cx| {
