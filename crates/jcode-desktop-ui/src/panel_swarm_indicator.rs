@@ -54,12 +54,21 @@ impl Panel {
         }
     }
 
-    /// Ids this coordinator asked to wait for, in request order, deduplicated.
+    /// Ids this coordinator is still waiting for, in request order,
+    /// deduplicated. A worker that already finished (ready, stopped, failed)
+    /// owes nothing more, so it drops out at once instead of lingering until
+    /// the daemon resolves the whole await. Ids the worker list does not know
+    /// stay: nothing says they are done.
     pub(crate) fn awaiting_ids(&self) -> Vec<String> {
+        let finished = |id: &str| {
+            self.swarm_workers
+                .iter()
+                .any(|worker| worker.session_id == id && worker.state.is_finished())
+        };
         let mut ids = Vec::new();
         for await_ in &self.pending_awaits {
             for id in &await_.requested_ids {
-                if !ids.contains(id) {
+                if !ids.contains(id) && !finished(id) {
                     ids.push(id.clone());
                 }
             }
@@ -547,11 +556,10 @@ mod tests {
             vcx.debug_bounds("composer-workers-awaiting").is_none(),
             "no await, no wait mark"
         );
+        // kangaroo is not in the reloaded worker list at all, so nothing says
+        // it finished; fox finished before the reload.
         panel.update(vcx, |panel, cx| {
-            panel.set_swarm_workers(
-                vec![worker("kangaroo", "ready"), worker("fox", "ready")],
-                cx,
-            );
+            panel.set_swarm_workers(vec![worker("fox", "ready")], cx);
             panel.set_pending_awaits(
                 vec![jcode_sdk::PendingAwait {
                     requested_ids: vec!["session_kangaroo_1_a".into()],
@@ -588,6 +596,57 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
         assert!(vcx.debug_bounds("composer-activity-idle").is_some());
+    }
+
+    /// "Waiting for kangaroo, hedgehog, calf, sunflower" kept naming kangaroo
+    /// and hedgehog after both had finished and stopped. A finished member
+    /// drops out of the wait at once; when every member is finished, the
+    /// coordinator is no longer waiting at all.
+    #[gpui::test]
+    fn finished_workers_drop_out_of_a_pending_await(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let ids = ["kangaroo", "hedgehog", "calf", "sunflower"]
+            .map(|name| format!("session_{name}_1_a"))
+            .to_vec();
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(
+                vec![
+                    worker("kangaroo", "ready"),
+                    worker("hedgehog", "stopped"),
+                    worker("calf", "running"),
+                    worker("sunflower", "running"),
+                ],
+                cx,
+            );
+            panel.set_pending_awaits(
+                vec![jcode_sdk::PendingAwait {
+                    requested_ids: ids.clone(),
+                    deadline_unix_ms: u64::MAX,
+                }],
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            panel
+                .read_with(vcx, |panel, _| panel.await_line())
+                .as_deref(),
+            Some("Waiting for calf, sunflower · wakes when they report")
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(
+                vec![
+                    worker("kangaroo", "ready"),
+                    worker("hedgehog", "stopped"),
+                    worker("calf", "failed"),
+                    worker("sunflower", "ready"),
+                ],
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        assert_eq!(panel.read_with(vcx, |panel, _| panel.await_line()), None);
+        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
     }
 
     /// The row the user reported as "poodle compact-div… running 23m": the

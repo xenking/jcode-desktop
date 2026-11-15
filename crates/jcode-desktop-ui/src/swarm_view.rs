@@ -158,6 +158,12 @@ pub fn resolve_worker_state(
     if producing && recent {
         return WorkerState::Running;
     }
+    // The snapshot forgot this worker (the daemon removed it) and its record
+    // shows nothing in flight: it is not running, whatever an `active` record
+    // says. Reading it as `unknown` was the sidebar's finished-worker bug.
+    if state == WorkerState::Unknown && *meta != WorkerMeta::default() {
+        return WorkerState::Stopped;
+    }
     state
 }
 
@@ -859,6 +865,31 @@ mod tests {
             WorkerState::Running
         );
         assert_eq!(worker_state(&s), WorkerState::Unknown);
+    }
+
+    /// The sidebar rows from the report: kangaroo and hedgehog finished, the
+    /// daemon dropped them from the swarm, and their records still say
+    /// `active` (the snapshot predates the journal's close). With a record
+    /// that shows nothing in flight they are stopped, never `unknown`.
+    #[test]
+    fn a_forgotten_worker_with_a_quiet_record_reads_stopped_not_unknown() {
+        let mut s = session("session_kangaroo_1_a", Some("lead"), None);
+        s.status = "active".into();
+        let now = 10_000_000;
+        let meta = WorkerMeta {
+            model: Some("deepseek-v4.1-flash".into()),
+            provider: Some("opencode-go".into()),
+            phase: Some(WorkerPhase::Idle),
+            last_activity_ms: Some((now - 600_000) as i64),
+            ..WorkerMeta::default()
+        };
+        assert_eq!(
+            resolve_worker_state(&s, Some(&meta), now),
+            WorkerState::Stopped
+        );
+        let row = Worker::from_session(&s, Some(&meta), now);
+        assert_eq!(row.state_text(), "stopped");
+        assert_eq!(row.model_label().as_deref(), Some("ds-4.1f"));
     }
 
     #[test]
