@@ -1056,6 +1056,7 @@ impl PromptInput {
         current: Option<&str>,
     ) -> Option<String> {
         provider_route_spec_in(&self.model_details, provider, current)
+            .or_else(|| provider_fallback_spec(provider))
     }
 
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
@@ -4461,6 +4462,29 @@ mod provider_route_spec_tests {
             Some("copilot:claude-opus-4.6")
         );
     }
+}
+
+/// A route for a signed-in provider the session catalog does not list yet.
+///
+/// A session's catalog follows its current runtime, so after a switch to one
+/// provider the others can be missing from it. Without this the picker had no
+/// way back: every other row was inert until the user signed in again.
+pub(crate) fn provider_fallback_spec(provider: &str) -> Option<String> {
+    let prefix = match provider {
+        "claude" => "claude-oauth",
+        "anthropic-api" => "claude-api",
+        "openai" => "openai-oauth",
+        "openai-api" => "openai-api",
+        "copilot" | "cursor" | "gemini" | "antigravity" => provider,
+        other => {
+            let profile = jcode_base::provider_catalog::openai_compatible_profile_by_id(other)?;
+            return profile
+                .default_model
+                .map(|model| format!("{}:{model}", profile.id));
+        }
+    };
+    let model = jcode_base::auth::lifecycle::default_model_for_provider(provider)?;
+    Some(format!("{prefix}:{model}"))
 }
 
 fn provider_route_methods(provider: &str) -> Vec<String> {

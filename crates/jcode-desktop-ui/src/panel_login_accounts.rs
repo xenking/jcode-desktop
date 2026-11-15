@@ -260,20 +260,16 @@ pub(super) fn build_rows(
             // A confirmed zero is useful information. Only missing provider
             // data is unknown, not an empty reset bank.
             let banked = report.and_then(|r| r.banked_reset.clone());
+            // Only a known answer earns a chip. "Unavailable" when nothing is
+            // known is noise next to every Claude row.
             let reset_status = (provider.id == "claude"
                 && banked.is_none()
-                && (label.is_some() || account.is_some_and(|a| a.status != "not_configured")))
-            .then(|| {
-                if report.is_some_and(|r| {
+                && report.is_some_and(|r| {
                     r.extra_info
                         .iter()
                         .any(|(key, value)| key == "Session resets" && value == "Not eligible")
-                }) {
-                    "Resets not eligible".to_owned()
-                } else {
-                    "Reset availability unavailable".to_owned()
-                }
-            });
+                }))
+            .then(|| "Resets not eligible".to_owned());
             AccountRow {
                 key: account_key(provider.id, label),
                 provider: *provider,
@@ -709,8 +705,28 @@ pub(super) enum PickerChoice {
     Current,
     /// Switches the session to the provider.
     Switch,
-    /// No model in this session's catalog routes through the provider.
-    Unavailable,
+    /// The row cannot take the session, with the reason shown on it.
+    Unavailable(&'static str),
+}
+
+/// The picker's decision for one row: active wins, then a credential that is
+/// known not to work, then whether the session catalog has a route at all.
+/// Pure so the A -> B -> A switch cycle is testable without a window.
+pub(super) fn picker_choice_for(
+    session_provider: Option<&str>,
+    row_provider: &str,
+    status: ConnectionStatus,
+    has_route: bool,
+) -> PickerChoice {
+    if session_provider == Some(row_provider) {
+        return PickerChoice::Current;
+    }
+    match status {
+        ConnectionStatus::NotConnected => PickerChoice::Unavailable("Not connected"),
+        ConnectionStatus::Failed => PickerChoice::Unavailable("Key rejected"),
+        _ if !has_route => PickerChoice::Unavailable("No model for this session"),
+        _ => PickerChoice::Switch,
+    }
 }
 
 /// Login provider id for the session's serving route.
@@ -725,27 +741,19 @@ pub(super) fn session_provider_id(provider: Option<&str>, auth: Option<&str>) ->
         ("claude" | "anthropic", true) => "anthropic-api".into(),
         ("openai" | "chatgpt", false) => "openai".into(),
         ("openai" | "chatgpt", true) => "openai-api".into(),
-        (other, _) => other.into(),
+        (other, _) => other.replace(' ', "-"),
     })
 }
 
 impl Panel {
-    fn picker_choice(&self, provider: LoginProvider, cx: &App) -> PickerChoice {
-        if session_provider_id(self.provider.as_deref(), self.auth_method.as_deref()).as_deref()
-            == Some(provider.id)
-        {
-            return PickerChoice::Current;
-        }
-        if self
+    fn picker_choice(&self, row: &AccountRow, cx: &App) -> PickerChoice {
+        let session = session_provider_id(self.provider.as_deref(), self.auth_method.as_deref());
+        let has_route = self
             .input
             .read(cx)
-            .provider_route_spec(provider.id, self.model.as_deref())
-            .is_some()
-        {
-            PickerChoice::Switch
-        } else {
-            PickerChoice::Unavailable
-        }
+            .provider_route_spec(row.provider.id, self.model.as_deref())
+            .is_some();
+        picker_choice_for(session.as_deref(), row.provider.id, row.status, has_route)
     }
 }
 
@@ -1023,7 +1031,9 @@ impl Panel {
                 (false, false) => 44.,
             }))
             .rounded(px(if selecting { 8. } else { 12. }))
-            .bg(if connected {
+            // Picker rows are all connected credentials: full strength unless
+            // the picker marks one unavailable below.
+            .bg(if connected || selecting {
                 theme.HEADER_BG
             } else {
                 theme.HEADER_BG.opacity(0.55)
@@ -1217,15 +1227,32 @@ impl Panel {
             );
         }
         let label = row.label.clone();
-        let pick = selecting.then(|| self.picker_choice(provider, cx));
+        let pick = selecting.then(|| self.picker_choice(row, cx));
         match pick {
             Some(PickerChoice::Current) => {
-                element = element.child(chip("In use", theme.ACCENT));
+                // The active account stands out: accent outline and fill.
+                element = element
+                    .border_1()
+                    .border_color(theme.ACCENT)
+                    .bg(theme.ACCENT.opacity(0.14))
+                    .cursor_default()
+                    .child(
+                        chip("In use", theme.ACCENT)
+                            .debug_selector(move || format!("picker-active-{}", provider.id)),
+                    );
             }
-            Some(PickerChoice::Unavailable) => {
-                element = element.opacity(0.55).cursor_default();
+            Some(PickerChoice::Unavailable(reason)) => {
+                element = element.opacity(0.5).cursor_default().child(
+                    chip(reason, theme.TEXT_DIM)
+                        .debug_selector(move || format!("picker-unavailable-{}", provider.id)),
+                );
             }
-            Some(PickerChoice::Switch) | None => {}
+            Some(PickerChoice::Switch) => {
+                element = element.child(
+                    div().debug_selector(move || format!("picker-available-{}", provider.id)),
+                );
+            }
+            None => {}
         }
         if pick.is_some_and(|pick| pick != PickerChoice::Switch) {
             // Nothing to do: the row is already in use or has no route.
@@ -1910,6 +1937,45 @@ mod tests {
     }
 
     #[test]
+    fn picker_switches_a_to_b_to_a_and_blocks_providers_without_a_working_key() {
+        use ConnectionStatus::*;
+        // The session's provider id follows each completed switch, as the
+        // daemon's ModelInfo does. Every other connected row stays clickable.
+        let mut session = "claude";
+        for target in ["opencode-go", "openai", "claude", "opencode-go", "claude"] {
+            assert_eq!(
+                picker_choice_for(Some(session), target, Connected, true),
+                PickerChoice::Switch,
+                "{session} -> {target}"
+            );
+            assert_eq!(
+                picker_choice_for(Some(session), session, Connected, true),
+                PickerChoice::Current
+            );
+            session = target;
+        }
+        // A credential that is known not to work cannot take the session.
+        for (status, reason) in [(NotConnected, "Not connected"), (Failed, "Key rejected")] {
+            assert_eq!(
+                picker_choice_for(Some("claude"), "openrouter", status, true),
+                PickerChoice::Unavailable(reason)
+            );
+        }
+        // Untested keys and expired OAuth (refreshed on use) stay selectable.
+        for status in [Unverified, Expired] {
+            assert_eq!(
+                picker_choice_for(Some("claude"), "opencode-go", status, true),
+                PickerChoice::Switch
+            );
+        }
+        // Session provider labels map onto login row ids.
+        assert_eq!(
+            session_provider_id(Some("OpenCode Go"), Some("API key")).as_deref(),
+            Some("opencode-go")
+        );
+    }
+
+    #[test]
     fn confirmed_zero_resets_are_retained_but_missing_counts_are_not_invented() {
         let providers = [provider("claude", LoginMethod::OAuth)];
         let mut data = offline_data();
@@ -1944,10 +2010,8 @@ mod tests {
             .banked_reset = None;
         let rows = build_rows(&providers, None, false, &|_| false, &data);
         assert!(rows[0].banked.is_none());
-        assert_eq!(
-            rows[0].reset_status.as_deref(),
-            Some("Reset availability unavailable")
-        );
+        // Nothing known about resets: no chip at all, not "unavailable" noise.
+        assert_eq!(rows[0].reset_status, None);
         data.accounts
             .as_mut()
             .unwrap()

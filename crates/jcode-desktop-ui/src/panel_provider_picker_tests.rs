@@ -153,3 +153,152 @@ fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppC
         .expect("search row");
     assert!(close.top() >= search.top() && close.bottom() <= search.bottom());
 }
+
+/// Switch Claude -> OpenCode Go -> Claude through the inline picker, with the
+/// session catalog listing only the current runtime's routes (as after a real
+/// switch). The way back must stay clickable, the active row is marked, and a
+/// provider without a working key is dimmed with a reason and sends nothing.
+#[gpui::test]
+fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("session-a", cx);
+        workspace
+    });
+    let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    let route = |model: &str, provider: &str, method: &str| jcode_sdk::ModelRouteInfo {
+        model: model.into(),
+        provider: provider.into(),
+        api_method: method.into(),
+        available: true,
+        detail: String::new(),
+        usage: None,
+    };
+    let runtime = |provider: &str, model: &str, auth: &str, routes| ApiEvent::RuntimeInfo {
+        session_id: "session-a".into(),
+        provider: Some(provider.into()),
+        model: Some(model.into()),
+        reasoning_effort: None,
+        auth_method: Some(auth.into()),
+        account_label: None,
+        routes,
+    };
+    let open_picker = |vcx: &mut gpui::VisualTestContext| {
+        let pill = vcx.debug_bounds("panel-login").unwrap();
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-provider-picker").is_some());
+    };
+    let search = |panel: &gpui::Entity<Panel>, vcx: &mut gpui::VisualTestContext, query: &str| {
+        // The row list scrolls at 240px; narrow it so the row is on screen.
+        panel.update(vcx, |panel, cx| {
+            panel
+                .login
+                .as_ref()
+                .unwrap()
+                .search
+                .update(cx, |input, cx| input.set_content(query.into(), cx));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+    };
+    let set_statuses = |panel: &gpui::Entity<Panel>, vcx: &mut gpui::VisualTestContext| {
+        panel.update(vcx, |panel, cx| {
+            let state = panel.login.as_mut().unwrap();
+            state.status_task = None;
+            state.status_loading = false;
+            state.statuses = Some(
+                [
+                    ("claude".into(), ConnectionStatus::Connected),
+                    ("opencode-go".into(), ConnectionStatus::Unverified),
+                    ("openrouter".into(), ConnectionStatus::Failed),
+                ]
+                .into(),
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+    };
+    // Start on Claude; the catalog lists only Claude routes.
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &runtime(
+                "claude",
+                "claude-opus-5-5",
+                "oauth",
+                vec![route("claude-opus-5-5", "Anthropic", "claude-oauth")],
+            ),
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    open_picker(vcx);
+    set_statuses(&panel, vcx);
+    assert!(
+        vcx.debug_bounds("picker-active-claude").is_some(),
+        "active row marked"
+    );
+    assert!(
+        vcx.debug_bounds("picker-available-opencode-go").is_some(),
+        "OpenCode Go switchable even though this catalog lists no route for it"
+    );
+    assert!(
+        vcx.debug_bounds("picker-unavailable-openrouter").is_some(),
+        "rejected key is dimmed with a reason"
+    );
+    // A rejected provider sends nothing.
+    search(&panel, vcx, "openrouter");
+    let bad = vcx.debug_bounds("login-provider-openrouter").unwrap();
+    vcx.simulate_click(bad.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "unavailable row must not switch"
+    );
+    // Claude -> OpenCode Go.
+    search(&panel, vcx, "opencode");
+    let go = vcx.debug_bounds("login-provider-opencode-go").unwrap();
+    vcx.simulate_click(go.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let sent = commands.recv_timeout(std::time::Duration::from_millis(100));
+    assert!(
+        matches!(&sent, Ok(Command::SetModel { model, .. }) if model.starts_with("opencode-go:")),
+        "expected an OpenCode Go switch"
+    );
+    // The daemon moved the session; its catalog now lists only OpenCode Go.
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &runtime(
+                "OpenCode Go",
+                "deepseek-v4.1-flash",
+                "API key",
+                vec![route(
+                    "deepseek-v4.1-flash",
+                    "OpenCode Go",
+                    "openai-compatible:opencode-go",
+                )],
+            ),
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    // OpenCode Go -> Claude: the way back must not be locked.
+    open_picker(vcx);
+    set_statuses(&panel, vcx);
+    search(&panel, vcx, "");
+    assert!(vcx.debug_bounds("picker-active-opencode-go").is_some());
+    search(&panel, vcx, "claude");
+    assert!(vcx.debug_bounds("picker-available-claude").is_some());
+    let claude = vcx.debug_bounds("login-provider-claude").unwrap();
+    vcx.simulate_click(claude.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let sent = commands.recv_timeout(std::time::Duration::from_millis(100));
+    assert!(
+        matches!(&sent, Ok(Command::SetModel { model, .. }) if model.starts_with("claude-oauth:")),
+        "the way back to Claude must switch"
+    );
+}
