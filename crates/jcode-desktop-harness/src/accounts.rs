@@ -178,6 +178,32 @@ impl UsageReport {
                 .collect()
         })
     }
+
+    /// The provider refused the credential itself (401/403, revoked or expired
+    /// key). A rate limit or a network failure is not a credential problem and
+    /// must never tell the user to sign in again.
+    pub fn auth_failure(&self) -> bool {
+        let Some((_, error)) = self
+            .extra_info
+            .iter()
+            .find(|(key, _)| key == USAGE_ERROR_KEY)
+        else {
+            return false;
+        };
+        let lower = error.to_ascii_lowercase();
+        [
+            "401",
+            "403",
+            "unauthorized",
+            "unauthenticated",
+            "invalid api key",
+            "invalid_api_key",
+            "revoked",
+            "expired",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
