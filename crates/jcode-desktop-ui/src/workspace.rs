@@ -856,6 +856,9 @@ pub struct Workspace {
     /// Persisted todo progress (completed, total) per session, refreshed in
     /// the background with the session list. Open panels override it live.
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
+    /// Pending `await_members` waits and recent reports per coordinator,
+    /// read from the daemon's durable await state with the session list.
+    swarm_awaits: HashMap<String, crate::swarm_view::AwaitState>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
     /// Breathing "Checking…" beside the version while an update check runs.
@@ -1176,6 +1179,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
             version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -1565,6 +1569,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
             version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -2224,19 +2229,25 @@ impl Workspace {
                     }
                 }
                 self.sessions = sessions;
+                self.sync_swarm_strips(cx);
                 // Composer examples come from todos left in closed sessions.
                 // Reading every todo file belongs off the UI thread, and unit
                 // tests must not pick up the developer's own sessions.
                 if !cfg!(test) {
                     let sessions = self.sessions.clone();
                     cx.spawn(async move |this, cx| {
-                        let (prompts, todos) = cx
+                        let (prompts, todos, awaits) = cx
                             .background_executor()
                             .spawn(async move {
                                 let todos = crate::harness::jcode_home()
                                     .map(|home| crate::harness::todo_progress_in(&home, &sessions))
                                     .unwrap_or_default();
-                                (crate::example_prompts::load(&sessions), todos)
+                                let awaits = crate::swarm_view::load_awaits(
+                                    &jcode_base::storage::runtime_dir()
+                                        .join(crate::swarm_view::AWAIT_MEMBERS_DIR),
+                                    swarm_now_ms(),
+                                );
+                                (crate::example_prompts::load(&sessions), todos, awaits)
                             })
                             .await;
                         cx.update(|cx| crate::example_prompts::set(prompts, cx));
@@ -2244,6 +2255,10 @@ impl Workspace {
                             if this.sidebar_todo_progress != todos {
                                 this.sidebar_todo_progress = todos;
                                 cx.notify();
+                            }
+                            if this.swarm_awaits != awaits {
+                                this.swarm_awaits = awaits;
+                                this.sync_swarm_strips(cx);
                             }
                         });
                     })
@@ -2587,6 +2602,13 @@ impl Workspace {
             )
         });
         Panel::connect_input(&panel, cx);
+        cx.subscribe(
+            &panel,
+            |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
+                this.open_swarm_worker(&event.0, cx);
+            },
+        )
+        .detach();
         if !Panel::is_pending_session_id(&session_id) {
             panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
@@ -2649,6 +2671,44 @@ impl Workspace {
             crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
         insert_at
+    }
+
+    /// Push each coordinator panel its worker strip from the catalog and the
+    /// daemon's await state. Non-coordinators get none.
+    fn sync_swarm_strips(&mut self, cx: &mut Context<Self>) {
+        let now = swarm_now_ms();
+        let workers = crate::swarm_view::workers_by_coordinator(&self.sessions, now);
+        for slot in &self.slots {
+            let id = slot.panel.read(cx).session_id.clone();
+            let strip = crate::swarm_view::strip(
+                workers.get(&id).map(Vec::as_slice).unwrap_or_default(),
+                self.swarm_awaits.get(&id),
+                now,
+            );
+            slot.panel
+                .update(cx, |panel, cx| panel.set_swarm_strip(strip, cx));
+        }
+        cx.notify();
+    }
+
+    /// Focus a worker's panel, opening it if needed (strip / sidebar click).
+    fn open_swarm_worker(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(session) = self
+            .sessions
+            .iter()
+            .find(|s| s.session_id == session_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.sidebar_closed_sessions.remove(session_id);
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+            .unwrap_or_else(|| self.open_session(session, cx));
+        self.set_active(index, cx);
+        self.sync_swarm_strips(cx);
     }
 
     fn activate_session(
@@ -5604,17 +5664,28 @@ impl Workspace {
         }
         // Only this window's explicitly closed sessions belong in Past. Keep
         // the full runtime catalog elsewhere for search and session recovery.
-        catalog.retain(|session| {
-            open_marks.contains_key(&session.session_id)
-                || session.user_connected
-                || self.sidebar_closed_sessions.contains(&session.session_id)
-        });
+        let mut kept = catalog
+            .iter()
+            .filter(|session| {
+                open_marks.contains_key(&session.session_id)
+                    || session.user_connected
+                    || self.sidebar_closed_sessions.contains(&session.session_id)
+            })
+            .map(|session| session.session_id.clone())
+            .collect::<HashSet<_>>();
+        // Headless swarm workers are never opened or closed in this window,
+        // but they belong under a coordinator that is listed here.
+        sidebar_swarm::keep_workers_of(&catalog, &mut kept);
+        catalog.retain(|session| kept.contains(&session.session_id));
         let ordered_sessions = sidebar_session_order(&catalog);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
         // nests under its coordinator while it shares that checkout, and
         // surfaces under its own branch when it works in a separate worktree.
         let mut agents: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut nested_workers: HashMap<String, Vec<(usize, crate::swarm_view::Worker)>> =
+            HashMap::new();
+        let swarm_now = swarm_now_ms();
         let mut nested = HashSet::new();
         for (root, children) in &swarm.children {
             let root_checkout = catalog
@@ -5631,12 +5702,15 @@ impl Workspace {
                     continue;
                 }
                 nested.insert(child.session.session_id.clone());
+                nested_workers.entry(root.clone()).or_default().push((
+                    child.depth,
+                    crate::swarm_view::Worker::from_session(&child.session, swarm_now),
+                ));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if matches!(
-                    child.session.swarm_status.as_deref(),
-                    Some("working" | "running" | "active")
-                ) {
+                if crate::swarm_view::WorkerState::parse(child.session.swarm_status.as_deref())
+                    .is_active()
+                {
                     entry.1 += 1;
                 }
             }
@@ -5894,6 +5968,11 @@ impl Workspace {
                             .as_ref()
                             .is_some_and(sidebar_edits::has_changes)),
                     menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
+                    workers: (!row.collapsed)
+                        .then(|| nested_workers.get(&session.session_id))
+                        .flatten()
+                        .map(|workers| sidebar_swarm::layout_key(workers))
+                        .unwrap_or_default(),
                 }
             })
             .collect::<Vec<_>>();
@@ -6371,6 +6450,14 @@ impl Workspace {
                                         )
                                     }),
                             );
+                            if let Some(workers) = nested_workers.get(&menu_session) {
+                                list = list.child(sidebar_swarm::render_workers(
+                                    sidebar_index,
+                                    workers,
+                                    under_checkout,
+                                    cx,
+                                ));
+                            }
                             if menu_open {
                                 let menu = this.render_collection_menu(&menu_session, cx);
                                 list = list.child(div().ml(px(28.0)).mr(px(crate::scrollbar::GUTTER + 8.0)).mb_1().child(menu));
@@ -9198,6 +9285,8 @@ struct SidebarSessionLayout {
     details: bool,
     /// The row's "Move to collection" menu is open beneath it.
     menu: bool,
+    /// Nested worker rows (names and states) change the item height.
+    workers: String,
 }
 
 struct SidebarRow {
@@ -15888,4 +15977,11 @@ mod accounts_panel_tests {
         );
         assert!(commands.try_recv().is_err());
     }
+}
+
+fn swarm_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
 }

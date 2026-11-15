@@ -86,6 +86,10 @@ mod ask;
 mod cache_miss;
 #[path = "panel_composer.rs"]
 mod composer;
+#[path = "panel_swarm_strip.rs"]
+mod swarm_strip;
+pub(crate) use swarm_strip::OpenSwarmWorker;
+pub(crate) use swarm_strip::state_color as swarm_state_color;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_effort.rs"]
@@ -520,6 +524,8 @@ pub struct Panel {
     surface_focused: bool,
     pub input: Entity<PromptInput>,
     pub(super) show_build_footer: bool,
+    /// Coordinator-only: workers, pending await and last report.
+    swarm_strip: Option<crate::swarm_view::Strip>,
     voice: voice::VoiceState,
     image_pane_open: bool,
     image_pane_selected: Option<usize>,
@@ -993,6 +999,7 @@ impl Panel {
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             show_build_footer: true,
+            swarm_strip: None,
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),

@@ -293,6 +293,7 @@ impl Panel {
             .min_w_0()
             .flex()
             .flex_col()
+            .children(self.render_swarm_strip(cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
             .child(

@@ -69,6 +69,104 @@ pub(super) fn groups(sessions: &[SessionInfo]) -> Groups {
     result
 }
 
+/// Add every swarm descendant of a kept session. Headless workers are never
+/// opened in this window, so the window-scoped filter would drop them and
+/// the coordinator would look like it has no workers.
+pub(super) fn keep_workers_of(sessions: &[SessionInfo], kept: &mut HashSet<String>) {
+    loop {
+        let before = kept.len();
+        for session in sessions {
+            if session
+                .parent_session_id
+                .as_deref()
+                .is_some_and(|parent| parent != session.session_id && kept.contains(parent))
+            {
+                kept.insert(session.session_id.clone());
+            }
+        }
+        if kept.len() == before {
+            break;
+        }
+    }
+}
+
+/// Layout identity of a coordinator's nested worker rows.
+pub(super) fn layout_key(workers: &[(usize, crate::swarm_view::Worker)]) -> String {
+    workers
+        .iter()
+        .map(|(depth, w)| format!("{depth}:{}:{}", w.name, w.state.label()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Compact rows under a coordinator: dot, name, task, state and age.
+pub(super) fn render_workers(
+    sidebar_index: usize,
+    workers: &[(usize, crate::swarm_view::Worker)],
+    under_checkout: bool,
+    cx: &mut Context<Workspace>,
+) -> gpui::AnyElement {
+    let theme = Theme::global();
+    let base = if under_checkout { 34.0 } else { 26.0 };
+    div()
+        .debug_selector(move || format!("sidebar-workers-{sidebar_index}"))
+        .flex()
+        .flex_col()
+        .mb(px(2.0))
+        .children(workers.iter().enumerate().map(|(index, (depth, worker))| {
+            let id = worker.session_id.clone();
+            div()
+                .id(gpui::SharedString::from(format!(
+                    "sidebar-worker-{sidebar_index}-{index}"
+                )))
+                .debug_selector(move || format!("sidebar-worker-{sidebar_index}-{index}"))
+                .ml(px(base + (*depth as f32 - 1.0) * 10.0))
+                .mr(px(crate::scrollbar::GUTTER + 8.0))
+                .h(px(18.0))
+                .px_1()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.PANEL_BG))
+                .text_size(px(10.5))
+                .text_color(theme.TEXT_DIM)
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_swarm_worker(&id, cx);
+                    this.focus_active(window, cx);
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .bg(crate::panel::swarm_state_color(worker.state)),
+                )
+                .child(div().flex_none().child(worker.name.clone()))
+                .children(worker.label.clone().map(|label| {
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(label)
+                }))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(worker.status_text()),
+                )
+        }))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +429,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn headless_workers_are_kept_with_their_coordinator() {
+        let sessions = vec![
+            session("lead", None),
+            session("w1", Some("lead")),
+            session("w2", Some("w1")),
+            session("stray", Some("other")),
+            session("self", Some("self")),
+        ];
+        let mut kept = HashSet::from(["lead".to_string()]);
+        keep_workers_of(&sessions, &mut kept);
+        let mut kept = kept.into_iter().collect::<Vec<_>>();
+        kept.sort();
+        assert_eq!(kept, vec!["lead", "w1", "w2"]);
+    }
+
     #[gpui::test]
     fn sidebar_swarm_metadata_refresh_keeps_showcase_absent_and_rows_compact(
         cx: &mut gpui::TestAppContext,
@@ -445,7 +559,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_swarm_children_never_expand_the_session_row(cx: &mut gpui::TestAppContext) {
+    fn sidebar_swarm_workers_nest_as_compact_rows_under_the_coordinator(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
@@ -470,22 +586,78 @@ mod tests {
         });
         vcx.run_until_parked();
         assert_eq!(vcx.debug_bounds("sidebar-session-0").unwrap(), root);
-        assert_eq!(vcx.debug_bounds("sidebar-session-1").unwrap(), other);
+        // Worker rows sit between the coordinator and the next thread.
+        let first = vcx.debug_bounds("sidebar-worker-0-0").unwrap();
+        let last = vcx.debug_bounds("sidebar-worker-0-3").unwrap();
+        assert!(first.origin.y >= root.origin.y + root.size.height);
+        assert!(last.origin.x > first.origin.x, "grandchild is indented");
+        assert!(vcx.debug_bounds("sidebar-session-1").unwrap().origin.y > other.origin.y);
         assert_eq!(vcx.debug_bounds("sidebar-navigation-tabs").unwrap(), header);
         assert_eq!(vcx.debug_bounds("sidebar-session-list").unwrap(), list);
-        for selector in [
-            "swarm-child-child1",
-            "swarm-child-child2",
-            "swarm-child-child3",
-            "swarm-child-grandchild",
-            "swarm-toggle-root",
-            "swarm-lead-root",
-            "sidebar-session-2",
-        ] {
+        for selector in ["sidebar-worker-0-4", "sidebar-session-2"] {
             assert!(
                 vcx.debug_bounds(selector).is_none(),
                 "{selector} must not render"
             );
         }
+    }
+
+    #[gpui::test]
+    fn coordinator_strip_shows_real_wait_and_opens_workers(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let mut worker = session("session_rose_1_a", Some("lead"));
+        worker.swarm_status = Some("running".into());
+        let mut failed = session("session_tulip_2_b", Some("lead"));
+        failed.swarm_status = Some("failed".into());
+        let lead = session("lead", None);
+        workspace.update(vcx, |w, cx| {
+            w.sessions = vec![lead.clone(), worker, failed];
+            w.active = w.open_session(lead, cx);
+            w.swarm_awaits.insert(
+                "lead".into(),
+                crate::swarm_view::AwaitState {
+                    waiting_on: vec!["session_rose_1_a".into()],
+                    reports: vec![crate::swarm_view::Report {
+                        name: "otter".into(),
+                        at_ms: swarm_now_ms(),
+                        woke: true,
+                    }],
+                },
+            );
+            w.sync_swarm_strips(cx);
+        });
+        vcx.run_until_parked();
+        for selector in [
+            "swarm-strip",
+            "swarm-strip-waiting",
+            "swarm-strip-report",
+            "swarm-strip-worker-0",
+            "swarm-strip-worker-1",
+            "sidebar-worker-0-0",
+            "sidebar-worker-0-1",
+        ] {
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector} renders");
+        }
+        let center = vcx.debug_bounds("swarm-strip-worker-1").unwrap().center();
+        vcx.simulate_click(center, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 2);
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                "session_tulip_2_b"
+            );
+        });
+        let center = vcx.debug_bounds("sidebar-worker-0-0").unwrap().center();
+        vcx.simulate_click(center, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 3);
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                "session_rose_1_a"
+            );
+        });
     }
 }
