@@ -25,6 +25,8 @@ pub(crate) struct AskCard {
     pub cursor_question: usize,
     pub cursor_option: usize,
     pub voice_target: Option<(usize, Option<usize>)>,
+    pub submitting: bool,
+    pub submit_error: Option<String>,
 }
 
 impl AskCard {
@@ -44,6 +46,8 @@ impl AskCard {
             cursor_question: 0,
             cursor_option: 0,
             voice_target: (n > 0).then_some((0, None)),
+            submitting: false,
+            submit_error: None,
         }
     }
 
@@ -161,6 +165,15 @@ fn question_without_header<'a>(question: &'a str, header: Option<&str>) -> &'a s
 }
 
 impl Panel {
+    pub(super) fn ask_editor_focused(&self, window: &Window, cx: &App) -> bool {
+        self.ask_card.as_ref().is_some_and(|card| {
+            card.other_inputs
+                .iter()
+                .chain(card.comment_inputs.iter().flatten())
+                .any(|input| input.read(cx).focus_handle.is_focused(window))
+        })
+    }
+
     pub(super) fn ask_voice_input(&self) -> Option<Entity<PromptInput>> {
         let card = self.ask_card.as_ref()?;
         let (q, option) = card.voice_target?;
@@ -216,6 +229,9 @@ impl Panel {
         let Some(card) = self.ask_card.as_ref() else {
             return false;
         };
+        if card.submitting {
+            return true;
+        }
         let editing = card
             .other_inputs
             .iter()
@@ -377,14 +393,42 @@ impl Panel {
 
     pub(super) fn answer_ask(&mut self, response: AskResponse, cx: &mut Context<Self>) {
         self.cancel_ask_voice(cx);
-        let Some(card) = self.ask_card.take() else {
+        let Some(card) = self.ask_card.as_mut() else {
             return;
         };
+        if card.submitting {
+            return;
+        }
+        card.submitting = true;
+        card.submit_error = None;
         self.bridge.send(Command::AskResponse {
             session_id: self.session_id.clone(),
-            request_id: card.request_id,
+            request_id: card.request_id.clone(),
             response,
         });
+        cx.notify();
+    }
+
+    pub(crate) fn ask_response_settled(
+        &mut self,
+        request_id: &str,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(card) = self
+            .ask_card
+            .as_mut()
+            .filter(|card| card.request_id == request_id && card.submitting)
+        else {
+            return;
+        };
+        if let Some(error) = error {
+            card.submitting = false;
+            card.submit_error = Some(error);
+        } else {
+            self.ask_card = None;
+            self.pending_ask_draft = None;
+        }
         cx.notify();
     }
 
@@ -412,6 +456,11 @@ impl Panel {
             .bg(theme.TOOL_BG)
             .text_size(px(13.))
             .text_color(theme.TEXT)
+            .children(
+                card.submit_error
+                    .as_ref()
+                    .map(|error| div().text_color(theme.TEXT_DIM).child(error.clone())),
+            )
             .child(
                 div()
                     .text_size(px(12.))
@@ -634,7 +683,14 @@ impl Panel {
             }
             questions = questions.child(block);
         }
-        body = body.child(questions);
+        body = body.child(
+            div()
+                .relative()
+                .child(questions)
+                .when(card.submitting, |el| {
+                    el.child(div().absolute().inset_0().occlude())
+                }),
+        );
         let complete = card.complete();
         Some(
             body.child(
@@ -670,7 +726,11 @@ impl Panel {
                                     .text_color(theme.TEXT)
                             })
                             .when(!complete, |el| el.text_color(theme.TEXT_FAINT))
-                            .child("Submit")
+                            .child(if card.submitting {
+                                "Sending…"
+                            } else {
+                                "Submit"
+                            })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(response) = this
                                     .ask_card
@@ -858,6 +918,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ask_submission_remains_visible_until_confirmed(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&event, cx);
+            let card = panel.ask_card.as_mut().unwrap();
+            card.toggle(0, 1);
+            let response = card.response();
+            panel.answer_ask(response, cx);
+        });
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(
+                panel
+                    .ask_card
+                    .as_ref()
+                    .expect("must wait for server acknowledgment")
+                    .chosen[0],
+                vec![1]
+            );
+        });
+        let request_id = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().request_id.clone()
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::AskResponseSettled {
+                    session_id: "session-a".into(),
+                    request_id: request_id.clone(),
+                    error: Some("offline".into()),
+                },
+                cx,
+            )
+        });
+        panel.read_with(vcx, |panel, _| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert!(!card.submitting);
+            assert_eq!(card.submit_error.as_deref(), Some("offline"));
+            assert_eq!(card.chosen[0], vec![1]);
+        });
+        panel.update(vcx, |panel, cx| {
+            let response = panel.ask_card.as_ref().unwrap().response();
+            panel.answer_ask(response, cx);
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::AskResponseSettled {
+                    session_id: "session-a".into(),
+                    request_id,
+                    error: None,
+                },
+                cx,
+            )
+        });
+        panel.read_with(vcx, |panel, _| assert!(panel.ask_card.is_none()));
+    }
+
+    #[gpui::test]
     fn ask_draft_survives_snapshot_and_matching_request(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -1009,9 +1134,23 @@ mod tests {
         });
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
+        let request_id = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().request_id.clone()
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::AskResponseSettled {
+                    session_id: "session-a".into(),
+                    request_id,
+                    error: None,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("ask-card").is_none(),
-            "card closes after submit"
+            "card closes only after server acknowledgment"
         );
         panel.read_with(vcx, |panel, cx| {
             assert!(panel.ask_card.is_none());

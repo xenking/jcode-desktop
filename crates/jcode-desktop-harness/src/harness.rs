@@ -153,6 +153,12 @@ pub enum Update {
     MessageSubmitted {
         session_id: String,
     },
+    /// The server accepted or rejected a response to an ask request.
+    AskResponseSettled {
+        session_id: String,
+        request_id: String,
+        error: Option<String>,
+    },
     CommandFailed {
         session_id: String,
         reason: String,
@@ -445,10 +451,11 @@ impl Bridge {
         let mut live = 0usize;
         let mut push = |slots: &mut Vec<Option<Update>>, live: &mut usize, update: Update| {
             if let Some(session) = runtime_info_session(&update)
-                && let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
-                    slots[previous] = None;
-                    *live -= 1;
-                }
+                && let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len())
+            {
+                slots[previous] = None;
+                *live -= 1;
+            }
             slots.push(Some(update));
             *live += 1;
         };
@@ -537,9 +544,10 @@ impl UpdateSender {
         let sequence = queue.sequence;
         queue.sequence = sequence.checked_add(1).expect("update sequence exhausted");
         if let Some(session) = runtime_info_session(&update)
-            && let Some(previous) = queue.runtime.insert(session.to_owned(), sequence) {
-                queue.pending.remove(&previous);
-            }
+            && let Some(previous) = queue.runtime.insert(session.to_owned(), sequence)
+        {
+            queue.pending.remove(&previous);
+        }
         // Replacements take their new chronological position, not the old
         // snapshot's position ahead of intervening deltas and lifecycle events.
         queue.pending.insert(sequence, update);
@@ -560,9 +568,10 @@ impl UpdateReceiver {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         if let Some((sequence, update)) = queue.pending.pop_first() {
             if let Some(session) = runtime_info_session(&update)
-                && queue.runtime.get(session) == Some(&sequence) {
-                    queue.runtime.remove(session);
-                }
+                && queue.runtime.get(session) == Some(&sequence)
+            {
+                queue.runtime.remove(session);
+            }
             let more = !queue.pending.is_empty();
             drop(queue);
             if more && let Some(notify) = self.notify.upgrade() {
@@ -1181,10 +1190,19 @@ fn run_with_transports(
                 request_id,
                 response,
             } => {
-                if let Some(worker) = workers.get(&session_id) {
-                    let _ = worker.send(SessionCommand::AskResponse {
+                let sent = workers.get(&session_id).is_some_and(|worker| {
+                    worker
+                        .send(SessionCommand::AskResponse {
+                            request_id: request_id.clone(),
+                            response,
+                        })
+                        .is_ok()
+                });
+                if !sent {
+                    let _ = updates.send(Update::AskResponseSettled {
+                        session_id,
                         request_id,
-                        response,
+                        error: Some("Session is not connected. Your answer is retained; retry when it reconnects.".into()),
                     });
                 }
             }
@@ -2616,12 +2634,15 @@ fn session_worker_with_connector(
                         request_id,
                         response,
                     } => {
-                        if let Err(error) = client.respond_to_ask(real_id, &request_id, response) {
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Could not send your answer: {error}"),
-                            });
-                        }
+                        let error = client
+                            .respond_to_ask(real_id, &request_id, response)
+                            .err()
+                            .map(|error| format!("Could not send your answer: {error}"));
+                        let _ = updates.send(Update::AskResponseSettled {
+                            session_id: session_id.clone(),
+                            request_id,
+                            error,
+                        });
                     }
                     SessionCommand::BackgroundTool => {
                         if let Err(error) = client.background_tool(real_id) {
@@ -3024,14 +3045,12 @@ fn session_worker_with_connector(
                     jcode_sdk::RetryDecision::Cancelled => {
                         send_retry_phase(&updates, &session_id, String::new());
                     }
-                    _ if closes_turn
-                        && turn_retry.pending().is_some() => {
-                            let phase =
-                                retry_countdown_phase(&turn_retry, std::time::Instant::now())
-                                    .expect("pending retry has a countdown");
-                            retry_countdown = Some(phase.clone());
-                            send_retry_phase(&updates, &session_id, phase);
-                        }
+                    _ if closes_turn && turn_retry.pending().is_some() => {
+                        let phase = retry_countdown_phase(&turn_retry, std::time::Instant::now())
+                            .expect("pending retry has a countdown");
+                        retry_countdown = Some(phase.clone());
+                        send_retry_phase(&updates, &session_id, phase);
+                    }
                     _ => {}
                 }
             } else if client.is_closed() {
@@ -3836,12 +3855,18 @@ mod tests {
             .iter()
             .filter(|s| s.parent_session_id.as_deref() == Some(MICROBE))
             .count();
-        assert_eq!(workers, 45, "every spawned worker is owned by the coordinator");
+        assert_eq!(
+            workers, 45,
+            "every spawned worker is owned by the coordinator"
+        );
         // The coordinator itself is a user session, not nested under its own
         // transcript parent.
         assert_eq!(by_id(MICROBE).parent_session_id, None);
         // Live swarm snapshot status wins over the transcript lifecycle.
-        assert_eq!(by_id("session_badger").swarm_status.as_deref(), Some("running"));
+        assert_eq!(
+            by_id("session_badger").swarm_status.as_deref(),
+            Some("running")
+        );
         assert_eq!(by_id("session_frog").swarm_status.as_deref(), Some("ready"));
         assert_eq!(
             by_id("session_crab").agent_label.as_deref(),
@@ -3881,7 +3906,8 @@ mod tests {
 
     #[test]
     fn large_worker_transcripts_still_report_their_coordinator() {
-        let path = std::env::temp_dir().join(format!("jcode-worker-large-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("jcode-worker-large-{}.json", std::process::id()));
         let padding = "x".repeat(SIDEBAR_METADATA_WINDOW * 3);
         let document = format!(
             r#"{{"id":"w","parent_id":"root","title":"t","messages":[{{"text":"{padding}"}}],"working_dir":"/p","status":"Closed","is_debug":true,"saved":false}}"#

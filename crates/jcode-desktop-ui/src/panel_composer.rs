@@ -330,15 +330,24 @@ impl Panel {
             ..background
         };
         let panel = cx.entity().downgrade();
-        if self.ask_card.is_some() && self.input.read(cx).focus_handle.is_focused(window) {
+        let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
+            self.input.read(cx).focus_handle.is_focused(window)
+                || (card.submitting && self.ask_editor_focused(window, cx))
+        });
+        if should_focus_ask {
             let panel = panel.clone();
             window.defer(cx, move |window, cx| {
                 if let Some(panel) = panel.upgrade() {
                     let focus = {
                         let panel = panel.read(cx);
-                        (panel.ask_card.is_some()
-                            && panel.input.read(cx).focus_handle.is_focused(window))
-                        .then(|| panel.focus_handle.clone())
+                        panel
+                            .ask_card
+                            .as_ref()
+                            .is_some_and(|card| {
+                                panel.input.read(cx).focus_handle.is_focused(window)
+                                    || (card.submitting && panel.ask_editor_focused(window, cx))
+                            })
+                            .then(|| panel.focus_handle.clone())
                     };
                     if let Some(focus) = focus {
                         window.focus(&focus, cx);

@@ -2231,7 +2231,7 @@ impl Workspace {
     /// Session refreshes arrive every two seconds. Most contain the exact same
     /// SDK snapshot, so treating them as changes would rebuild the complete
     /// sidebar and every open panel for no user-visible result.
-    fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
         if let Update::Sessions { sessions } = &mut update {
             // A desktop window can disappear while its daemon-owned sessions keep
             // running. Those panels are restored from the workspace snapshot before
@@ -2722,6 +2722,19 @@ impl Workspace {
                             panel.effort_settled(&effort, error.as_deref(), cx);
                         });
                         break;
+                    }
+                }
+            }
+            Update::AskResponseSettled {
+                session_id,
+                request_id,
+                error,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.ask_response_settled(&request_id, error.clone(), cx);
+                        });
                     }
                 }
             }
