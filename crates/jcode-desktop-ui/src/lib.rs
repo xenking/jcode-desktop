@@ -104,9 +104,9 @@ use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
     FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
     MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
-    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOrchestration, OpenOpenrig, OpenTodoist,
-    Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2,
-    WidthPreset3, WidthPreset4, Workspace,
+    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOpenrig, OpenOrchestration,
+    OpenTodoist, Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1,
+    WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the

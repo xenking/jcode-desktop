@@ -657,3 +657,42 @@ mod tests {
         assert_eq!(s.sections.len(), 11);
     }
 }
+
+/// Newest page of the daemon's activity stream, oldest to newest, as the TUI footer shows it.
+pub fn fetch_stream_tail(base_url: &str, limit: usize) -> Result<Vec<LiveEvent>, String> {
+    let value = get(
+        base_url,
+        &format!("/api/stream/list?limit={limit}&direction=latest"),
+    )?;
+    let items = value
+        .as_array()
+        .or_else(|| value.get("items").and_then(Value::as_array))
+        .cloned()
+        .unwrap_or_default();
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            Some(LiveEvent {
+                ts: field(item, &["tsEmitted", "ts"]).unwrap_or_default(),
+                kind: field(item, &["sourceSession"]).unwrap_or_else(|| "stream".into()),
+                summary: field(item, &["body"])?
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+                rig: None,
+            })
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod stream_tests {
+    #[test]
+    fn stream_tail_parses_items() {
+        let v = serde_json::json!([{"tsEmitted":"2026-11-15T01:00:00Z","sourceSession":"dev@rig","body":"hello\nmore","streamSortKey":"1"}]);
+        let items = v.as_array().unwrap();
+        let e = super::field(&items[0], &["body"]).unwrap();
+        assert!(e.starts_with("hello"));
+    }
+}

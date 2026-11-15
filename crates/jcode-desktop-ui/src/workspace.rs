@@ -3768,7 +3768,11 @@ impl Workspace {
     }
 
     fn open_openrig(&mut self, _: &OpenOpenrig, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.slots.iter().position(|slot| slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID)
+        {
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
@@ -6720,7 +6724,24 @@ impl Workspace {
                                             "settings",
                                             cx,
                                         ))
-                                        .child(div().id("sidebar-openrig").px_2().py_1().rounded_full().cursor_pointer().text_size(px(11.)).text_color(Theme::global().TEXT_DIM).hover(|el| el.bg(Theme::global().HEADER_BG)).on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| this.open_openrig(&OpenOpenrig, window, cx))).child("OpenRig"))
+                                        .child(
+                                            div()
+                                                .id("sidebar-openrig")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_full()
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        this.open_openrig(&OpenOpenrig, window, cx)
+                                                    }),
+                                                )
+                                                .child("OpenRig"),
+                                        )
                                         .child(
                                             div()
                                                 .id("sidebar-orchestration")

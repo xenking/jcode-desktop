@@ -3,7 +3,7 @@ use super::Panel;
 use crate::theme::Theme;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
-    LiveEvent, Snapshot, default_base_url, fetch_snapshot, subscribe_events,
+    LiveEvent, Snapshot, default_base_url, fetch_snapshot, fetch_stream_tail, subscribe_events,
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -256,14 +256,20 @@ impl Panel {
             };
             state._poll = Some(cx.spawn(async move |this, cx| {
                 loop {
-                    let snapshot = cx
+                    let (snapshot, tail) = cx
                         .background_executor()
-                        .spawn(async { fetch_snapshot(&default_base_url()) })
+                        .spawn(async {
+                            let base = default_base_url();
+                            (fetch_snapshot(&base), fetch_stream_tail(&base, 5))
+                        })
                         .await;
                     if this
                         .update(cx, |panel, cx| {
                             if let Some(state) = panel.openrig.as_mut() {
                                 state.snapshot = snapshot;
+                                if let Ok(tail) = tail {
+                                    state.events = tail.into();
+                                }
                                 state.section = state
                                     .section
                                     .min(state.snapshot.sections.len().saturating_sub(1));

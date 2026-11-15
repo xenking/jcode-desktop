@@ -140,10 +140,10 @@ mod gmail_draft_card;
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
 mod mcp_list_card;
-#[path = "panel_orchestration.rs"]
-pub(crate) mod orchestration;
 #[path = "panel_openrig.rs"]
 pub(crate) mod openrig;
+#[path = "panel_orchestration.rs"]
+pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
 mod response_stats;
 #[path = "panel_side_document.rs"]
@@ -1276,7 +1276,10 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork() && self.todoist.is_none() && self.orchestration.is_none() && self.openrig.is_none()
+        self.can_fork()
+            && self.todoist.is_none()
+            && self.orchestration.is_none()
+            && self.openrig.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {

@@ -2645,6 +2645,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontdue"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e796cb6894e6418daacea84b28dd4f98d3b32c74d5bb452ba1ecfbf5ad8e84ca"
+dependencies = [
+ "hashbrown 0.15.5",
+ "ttf-parser",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3397,6 +3407,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -4074,8 +4086,13 @@ version = "0.1.0"
 name = "jcode-compaction-core"
 version = "0.1.0"
 dependencies = [
+ "fontdue",
  "jcode-message-types",
+ "png 0.17.16",
+ "serde",
  "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
