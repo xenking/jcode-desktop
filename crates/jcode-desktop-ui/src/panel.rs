@@ -687,12 +687,19 @@ pub struct Panel {
     /// `/btw` answer streaming from a hidden fork of this conversation.
     side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
+    picker_search: Option<(PickerKind, Entity<PromptInput>)>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
     pub(crate) transcript_only: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerKind {
+    Model,
+    Effort,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1154,6 +1161,7 @@ impl Panel {
             ask_card: None,
             side_question: None,
             model_picker_open: false,
+            picker_search: None,
             focus_pending: false,
             transcript_only: false,
             login: None,
@@ -2220,8 +2228,17 @@ impl Panel {
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             let effort = effort.to_ascii_lowercase();
             if self.request_effort(&effort, cx) {
-                let input = self.input.clone();
-                cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
+                if self
+                    .picker_search
+                    .as_ref()
+                    .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+                {
+                    self.picker_search = None;
+                    self.focus_pending = true;
+                } else {
+                    let input = self.input.clone();
+                    cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
+                }
                 self.items.push(Item::Assistant(format!(
                     "Reasoning effort set to `{effort}`."
                 )));
@@ -2294,7 +2311,7 @@ impl Panel {
                         self.items.push(Item::Todos(TodoCardPayload::default()));
                     }
                 }
-                "/model" | "/models" => self.open_model_picker(cx),
+                "/model" | "/models" => self.open_model_picker_deferred(cx),
                 "/update" => {
                     let request = crate::updates::request_now();
                     let message = match request {
@@ -2459,13 +2476,66 @@ impl Panel {
         }
         self.recovery_picker_open = false;
         self.model_picker_open = true;
-        let models = self.available_models.clone();
-        let input = self.input.clone();
+        self.open_picker_search(PickerKind::Model, cx);
+    }
+
+    fn open_model_picker_deferred(&mut self, cx: &mut Context<Self>) {
+        let panel = cx.weak_entity();
         cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                input.open_model_menu(models, cx);
-            });
+            let _ = panel.update(cx, |panel, cx| panel.open_model_picker(cx));
         });
+    }
+
+    fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
+        let settings = self.input.read(cx).picker_settings();
+        let models = self.available_models.clone();
+        let submit = cx.weak_entity();
+        let cancel = cx.weak_entity();
+        let search = cx.new(|cx| {
+            let placeholder = match kind {
+                PickerKind::Model => "Search models…",
+                PickerKind::Effort => "Search effort…",
+            };
+            let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
+                if let Some(panel) = submit.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        if content.starts_with("/model ") || content.starts_with("/effort ") {
+                            panel.handle_slash_command(&content, cx);
+                        }
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                }
+            })
+            .with_on_overlay_cancel(move |app| {
+                if let Some(panel) = cancel.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                    true
+                } else {
+                    false
+                }
+            });
+            input.apply_picker_settings(settings, cx);
+            input.start_picker_search(
+                match kind {
+                    PickerKind::Model => "/model",
+                    PickerKind::Effort => "/effort",
+                },
+                models,
+                cx,
+            );
+            input
+        });
+        self.picker_search = Some((kind, search));
+        self.focus_pending = true;
+        cx.notify();
     }
 
     /// Toggle the `/effort` suggestion menu from the effort pill.
@@ -2473,27 +2543,42 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
-        if self.model_picker_open {
-            self.close_model_picker(cx);
-        }
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                if input.effort_menu_open() {
-                    input.close_effort_menu(cx);
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+        {
+            self.picker_search = None;
+        } else {
+            if self.model_picker_open {
+                if self.picker_search.is_some() {
+                    self.close_model_picker(cx);
                 } else {
-                    input.open_effort_menu(cx);
+                    // A typed /model is still a draft, not a transient menu.
+                    self.model_picker_open = false;
                 }
-            });
-        });
+            }
+            self.login = None;
+            self.recovery_picker_open = false;
+            self.open_picker_search(PickerKind::Effort, cx);
+        }
         self.focus_input(window, cx);
         cx.notify();
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
         self.model_picker_open = false;
-        let input = self.input.clone();
-        cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Model)
+        {
+            self.picker_search = None;
+            self.focus_pending = true;
+        } else {
+            let input = self.input.clone();
+            cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        }
         cx.notify();
     }
 
@@ -4757,6 +4842,9 @@ impl Panel {
     pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
         if let Some(handle) = self.login_input_focus_handle(cx) {
             return handle;
+        }
+        if let Some((_, search)) = &self.picker_search {
+            return search.read(cx).focus_handle.clone();
         }
         if let Some(handle) = self.document_focus_handle(cx) {
             return handle;

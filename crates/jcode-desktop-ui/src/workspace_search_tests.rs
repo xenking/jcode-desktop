@@ -16,8 +16,16 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
         w.push_test_panel("chat", cx);
         w
     });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |p, cx| {
+        p.input.update(cx, |input, cx| {
+            input.set_content("valuable draft".into(), cx)
+        })
+    });
     vcx.run_until_parked();
-    let canvas = vcx.debug_bounds("workspace-canvas").expect("canvas rendered");
+    let canvas = vcx
+        .debug_bounds("workspace-canvas")
+        .expect("canvas rendered");
     assert!(
         vcx.debug_bounds("global-search-screen").is_none(),
         "the screen is closed until asked for"
@@ -37,8 +45,8 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
         "a full-height screen replaces the canvas rather than floating over it"
     );
     assert!(
-        screen.size.height >= canvas.size.height * 0.95 && screen.size.width >= canvas.size.width
-            * 0.95,
+        screen.size.height >= canvas.size.height * 0.95
+            && screen.size.width >= canvas.size.width * 0.95,
         "screen {screen:?} must fill the {canvas:?} the canvas had"
     );
     assert!(
@@ -48,6 +56,11 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
     assert!(
         vcx.debug_bounds("global-search-results").is_some(),
         "the results list is present before the first query"
+    );
+    vcx.simulate_input("query");
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "valuable draft"
     );
 
     // Escape is the documented way out, and it is a real key path rather than
@@ -61,6 +74,10 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
     assert!(
         vcx.debug_bounds("workspace-canvas").is_some(),
         "the workspace comes back"
+    );
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "valuable draft"
     );
 }
 
@@ -114,7 +131,10 @@ fn typing_into_the_search_screen_reaches_the_query_field(cx: &mut gpui::TestAppC
             .map(|state| state.input.read(cx).content.to_string())
             .unwrap_or_default()
     });
-    assert_eq!(typed, "snap", "typed characters must land in the query field");
+    assert_eq!(
+        typed, "snap",
+        "typed characters must land in the query field"
+    );
 }
 
 fn search_query(workspace: &gpui::Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> String {

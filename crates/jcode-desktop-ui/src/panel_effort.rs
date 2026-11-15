@@ -402,4 +402,33 @@ mod tests {
             "the menu closes after choosing"
         );
     }
+
+    #[gpui::test]
+    fn effort_picker_keeps_draft_while_searching_selecting_and_cancelling(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-5.6-sol", Some("xhigh"));
+        vcx.simulate_input("valuable draft");
+        vcx.update(|window, cx| panel.update(cx, |p, cx| p.toggle_effort_picker(window, cx)));
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        vcx.update(|window, cx| panel.update(cx, |p, cx| p.toggle_effort_picker(window, cx)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("down enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["max"]);
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+    }
 }

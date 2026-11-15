@@ -13,6 +13,9 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
     });
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| {
+        panel.input.update(cx, |input, cx| {
+            input.set_content("valuable draft".into(), cx)
+        });
         let route = |model: &str, method: &str| jcode_sdk::ModelRouteInfo {
             model: model.into(),
             provider: String::new(),
@@ -44,6 +47,10 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
         panel.update(cx, |panel, cx| panel.toggle_provider_picker(window, cx));
     });
     vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "valuable draft"
+    );
     let picker = vcx
         .debug_bounds("composer-provider-picker")
         .expect("inline picker");
@@ -65,6 +72,10 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
             if session_id == "session-a" && model == "claude-oauth:claude-fable-5"
     ));
     assert!(vcx.debug_bounds("composer-provider-picker").is_none());
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "valuable draft"
+    );
     assert!(vcx.debug_bounds("login-busy").is_none());
 }
 

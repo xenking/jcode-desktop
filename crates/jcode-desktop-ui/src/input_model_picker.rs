@@ -161,7 +161,14 @@ impl PromptInput {
     ) {
         let from = std::mem::replace(&mut self.model_stage, stage);
         self.suggestions_revision += 1;
-        self.set_content("/model ".into(), cx);
+        self.set_content(
+            if self.picker_prefix.is_some() {
+                String::new()
+            } else {
+                "/model ".into()
+            },
+            cx,
+        );
         let target = match &self.model_stage {
             model_stage::ModelStage::Efforts { model } => {
                 let ladder = self.picker_efforts(model);

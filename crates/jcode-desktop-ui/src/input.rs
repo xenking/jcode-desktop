@@ -214,6 +214,8 @@ pub struct PromptInput {
     #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
+    /// A standalone picker owns plain query text rather than a slash command.
+    picker_prefix: Option<&'static str>,
     command_completion: bool,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
@@ -466,7 +468,39 @@ pub struct AttachmentSnapshot {
     pub label: String,
 }
 
+pub(crate) struct PickerSettings {
+    models: Vec<String>,
+    details: HashMap<String, model_menu::ModelDetails>,
+    current_model: Option<String>,
+    effort_ladder: Vec<&'static str>,
+    current_effort: Option<String>,
+}
+
 impl PromptInput {
+    pub(crate) fn picker_settings(&self) -> PickerSettings {
+        PickerSettings {
+            models: self.command_models.clone(),
+            details: self.model_details.clone(),
+            current_model: self.current_model.clone(),
+            effort_ladder: self.effort_ladder.clone(),
+            current_effort: self.current_effort.clone(),
+        }
+    }
+
+    pub(crate) fn apply_picker_settings(
+        &mut self,
+        settings: PickerSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_models = settings.models;
+        self.model_details = settings.details;
+        self.current_model = settings.current_model;
+        self.effort_ladder = settings.effort_ladder;
+        self.current_effort = settings.current_effort;
+        self.suggestions_revision += 1;
+        cx.notify();
+    }
+
     pub fn snapshot(&self) -> PromptInputSnapshot {
         // A transient picker must never replace the user's persisted draft.
         let (content, attachments) = self
@@ -603,6 +637,7 @@ impl PromptInput {
             on_change: None,
             on_overlay_cancel: None,
             command_models: Vec::new(),
+            picker_prefix: None,
             command_completion: true,
             command_selection: 0,
             model_details: HashMap::new(),
@@ -770,6 +805,9 @@ impl PromptInput {
 
     /// Tab on a visible slash popup: fill the highlighted row, then cycle.
     fn complete_slash_command(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.picker_prefix.is_some() {
+            return false;
+        }
         if !self.command_completion || !self.attachments.is_empty() {
             return false;
         }
@@ -1073,14 +1111,18 @@ impl PromptInput {
             &self.command_models,
             &self.model_details,
         );
-        let trimmed = self.content.trim_start();
+        let picker_content = self
+            .picker_prefix
+            .map(|prefix| format!("{prefix} {}", self.content));
+        let command_content = picker_content.as_deref().unwrap_or(&self.content);
+        let trimmed = command_content.trim_start();
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
                 let query = trimmed.strip_prefix("/model").unwrap_or_default();
                 self.model_stage_rows(query)
             } else {
                 command_suggestions_with_efforts(
-                    &self.content,
+                    command_content,
                     &self.command_models,
                     EffortMenu {
                         ladder: Some(&self.effort_ladder),
@@ -1185,13 +1227,19 @@ impl PromptInput {
             cx.notify();
             return;
         }
-        let raw_content = self.content.to_string();
+        let raw_content = self
+            .picker_prefix
+            .map(|prefix| format!("{prefix} {}", self.content))
+            .unwrap_or_else(|| self.content.to_string());
         let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
         if self.command_completion && self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
+            if self.picker_prefix.is_some() && suggestions.is_empty() {
+                return;
+            }
             if let Some(key) = suggestions
                 .get(self.command_selection)
                 .and_then(|row| row.toggle.clone())
@@ -1217,7 +1265,8 @@ impl PromptInput {
             {
                 // `/eff` + Enter completes to `/effort` like the TUI. Exact
                 // commands and argument searches still send.
-                if !content.contains(char::is_whitespace)
+                if self.picker_prefix.is_none()
+                    && !content.contains(char::is_whitespace)
                     && accepted != content
                     && crate::commands::registered_command(&content).is_none()
                 {
@@ -1521,8 +1570,9 @@ impl PromptInput {
             return;
         }
         // Inside the picker, Esc steps back before it closes.
-        let in_model_menu =
-            self.content.trim() == "/model" || self.content.trim_start().starts_with("/model ");
+        let in_model_menu = self.picker_prefix == Some("/model")
+            || self.content.trim() == "/model"
+            || self.content.trim_start().starts_with("/model ");
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
@@ -1692,6 +1742,9 @@ impl PromptInput {
     }
 
     fn reset_model_groups_after_exit(&mut self) {
+        if self.picker_prefix == Some("/model") {
+            return;
+        }
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
@@ -1700,6 +1753,31 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn start_picker_search(
+        &mut self,
+        prefix: &'static str,
+        fallback_models: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_models.is_empty() {
+            self.set_command_models(fallback_models, cx);
+        }
+        self.picker_prefix = Some(prefix);
+        self.model_stage = Default::default();
+        self.suggestions_revision += 1;
+        self.set_content(String::new(), cx);
+        if prefix == "/effort"
+            && let Some(index) = self
+                .command_suggestions()
+                .iter()
+                .position(|row| row.help == "Current")
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_model_menu(&mut self, fallback_models: Vec<String>, cx: &mut Context<Self>) {
         // Offline/reconnected inputs may not have received route metadata yet.
         // Never replace the canonical grouped routes once they are available.
@@ -1717,25 +1795,6 @@ impl PromptInput {
         self.model_stage = Default::default();
         self.suggestions_revision += 1;
         self.set_content("/model ".into(), cx);
-    }
-
-    /// Show the `/effort` suggestions, stashing the draft like the model menu.
-    pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu_draft.is_none() && !self.effort_menu_open() {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
-            self.attachment_preview = None;
-        }
-        self.set_content("/effort ".into(), cx);
-        // Open on the current level so Enter keeps it and arrows step from it.
-        if let Some(index) = self
-            .command_suggestions()
-            .iter()
-            .position(|row| row.help == "Current")
-        {
-            self.command_selection = index;
-            self.reveal_command(index);
-        }
     }
 
     /// Short feedback under the composer that clears itself, e.g. after an
@@ -2665,7 +2724,9 @@ impl Render for PromptInput {
             self.command_selection = 0;
         }
         let command_visible = self.command_completion
-            && (!suggestions.is_empty() || self.content.trim_start().starts_with("/model "));
+            && (!suggestions.is_empty()
+                || self.picker_prefix == Some("/model")
+                || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
             crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
@@ -2811,7 +2872,11 @@ impl Render for PromptInput {
                                             .flex_col()
                                             .max_h(popup::scroll_height(
                                                 window.viewport_size().height,
-                                                self.content.trim_start().starts_with("/model"),
+                                                self.picker_prefix == Some("/model")
+                                                    || self
+                                                        .content
+                                                        .trim_start()
+                                                        .starts_with("/model"),
                                             ))
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| {
                                                 cx.stop_propagation();
