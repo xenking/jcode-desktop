@@ -611,9 +611,7 @@ pub struct Panel {
     swarm_marks: crate::swarm_glyph::Marks,
     /// Worker spend (model, provider, total tokens) for inline swarm cards.
     swarm_usage: HashMap<String, jcode_desktop_harness::swarm_usage::WorkerUsage>,
-    /// Status glyphs inside swarm cards. Transcript rows render through
-    /// `&self`, hence the cell.
-    swarm_card_marks: std::cell::RefCell<crate::swarm_glyph::Marks>,
+    swarm_row_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
     voice: voice::VoiceState,
     image_pane_open: bool,
     image_pane_selected: Option<usize>,
@@ -1138,7 +1136,7 @@ impl Panel {
             swarm_list_open: false,
             swarm_marks: Default::default(),
             swarm_usage: Default::default(),
-            swarm_card_marks: Default::default(),
+            swarm_row_focus: Default::default(),
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
@@ -10702,6 +10700,14 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         };
         return vec![
             Item::User("Wait for the footer and swarm workers".into()),
+            Item::Tool {
+                call_id: "swarm-message-example".into(),
+                name: "swarm".into(),
+                input: r#"{"action":"message","to_session":"session_fox_1794718668160_87674d9271df588d","message":"Please check the compact swarm row and report back.\nInclude the test result."}"#.into(),
+                output: "Direct message sent to session_fox_1794718668160_87674d9271df588d: Please check the compact swarm row and report back.".into(),
+                done: true,
+                error: None,
+            },
             call(
                 "session_rose_1794717290730_574aea8d9f6adcc3",
                 "await_members",
