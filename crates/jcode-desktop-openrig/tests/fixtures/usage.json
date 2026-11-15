@@ -1,0 +1,61 @@
+{
+  "asOf": "2026-10-13T18:00:00.000Z",
+  "usage": [
+    {
+      "provider": "codex",
+      "identity": {"accountId": "acct-1", "workspaceId": null, "limitId": "codex", "email": "a@x.example", "planType": "plus", "source": "rateLimits accountId"},
+      "source": {"kind": "codex_app_server", "host": "local"},
+      "observedAt": "2026-10-13T17:20:00.000Z", "seats": "unknown",
+      "windows": [
+        {"window": "primary", "durationMins": 300, "usedPercent": 92, "remainingPercent": 8, "resetsAt": "2026-10-13T19:00:00.000Z", "observedAt": "2026-10-13T17:20:00.000Z", "level": "nearing", "levelReason": "80% or more used", "freshness": "stale", "freshnessReason": "refresh failed at 2026-10-13T17:58:00.000Z; this reading is older"},
+        {"window": "secondary", "durationMins": 10080, "usedPercent": 100, "remainingPercent": 0, "resetsAt": "2026-10-16T09:00:00.000Z", "observedAt": "2026-10-13T17:20:00.000Z", "level": "exhausted", "levelReason": "at the limit", "freshness": "stale"}
+      ],
+      "limitEvidence": null, "latestFromSource": true,
+      "lastRefresh": {"at": "2026-10-13T17:58:00.000Z", "outcome": "failed", "reason": "timeout", "detail": "no answer within 35 s"},
+      "currentAvailability": "unknown",
+      "lastObservedExhausted": {"at": "2026-10-12T08:00:00.000Z", "window": "secondary", "evidence": "provider rejected the window"},
+      "signIn": {"state": "needs_sign_in", "evidence": "401 on refresh", "at": "2026-10-13T17:58:00.000Z"},
+      "savedProfiles": {"names": ["work-a", "work-b"], "note": "saved rig auth profiles: not read"}
+    },
+    {
+      "provider": "claude",
+      "identity": {"orgId": null, "limitId": "all models", "email": null, "orgName": null, "subscriptionType": null, "source": "unresolved"},
+      "source": {"kind": "claude_statusline_samples", "host": "local"},
+      "observedAt": "2026-10-13T17:59:30.000Z", "seats": "unknown",
+      "windows": [
+        {"window": "five_hour", "durationMins": 300, "usedPercent": 40, "remainingPercent": 60, "resetsAt": "2026-10-13T17:00:00.000Z", "observedAt": "2026-10-13T17:59:30.000Z", "seatSession": "dev-build@r", "level": "unknown", "levelReason": "reset passed; a new reading is needed", "freshness": "fresh",
+         "disagreeingSeats": [{"seatSession": "dev-r1@r", "usedPercent": 10, "resetsAt": "2026-10-13T21:00:00.000Z", "observedAt": "2026-10-13T17:59:00.000Z"}],
+         "expectation": {"expectedFullSince": "2026-10-13T17:00:00.000Z", "note": "planning, not a reading"}}
+      ],
+      "limitEvidence": null, "latestFromSource": true, "lastRefresh": null, "currentAvailability": "unknown",
+      "identityNote": "identity not read yet",
+      "unresolved": {"note": "identity not read yet: not matched to any other row", "keptReads": 3, "droppedReads": 1}
+    },
+    {
+      "provider": "codex",
+      "identity": {"accountId": "acct-0", "workspaceId": null, "limitId": "codex", "email": "a@x.example", "planType": "plus", "source": "rateLimits accountId"},
+      "source": {"kind": "codex_app_server", "host": "local"}, "observedAt": "2026-10-13T09:00:00.000Z", "seats": "unknown",
+      "windows": [{"window": "primary", "durationMins": 300, "usedPercent": 5, "remainingPercent": 95, "resetsAt": "2026-10-13T13:00:00.000Z", "observedAt": "2026-10-13T09:00:00.000Z", "level": "ok", "freshness": "stale", "freshnessReason": "a later read exists"}],
+      "limitEvidence": null, "latestFromSource": false, "lastRefresh": null, "currentAvailability": "unknown"
+    },
+    {
+      "provider": "codex", "identity": null, "source": {"kind": "codex_app_server", "host": "local"}, "observedAt": null, "seats": "unknown",
+      "windows": [], "limitEvidence": null, "latestFromSource": false, "lastRefresh": null, "currentAvailability": "unknown",
+      "unavailableReason": "no reading yet: read on request with rig provider status --refresh"
+    }
+  ],
+  "seatAccounts": [
+    {"seatSession": "dev-qa@r", "rigName": "r", "runtime": "codex",
+     "configured": {"source": "registry", "profileRef": "work-a", "recordedAt": "2026-10-12T10:00:00Z", "profileSaved": null},
+     "registryNotes": ["can't tell whether profile work-a is saved on this host"],
+     "allowance": {"linked": false, "reason": "a registry profile name and an observed account are different kinds of fact"},
+     "observed": {"note": "no per-seat observation for Codex"}},
+    {"seatSession": "dev-build@r", "rigName": "r", "runtime": "claude-code",
+     "configured": {"source": "default_login", "home": "/h/.claude", "homeNote": "the login in the daemon's Claude config dir"},
+     "allowance": {"linked": false, "reason": "no configured account"},
+     "observed": {"windowsSampled": true, "lastSampledAt": "2026-10-13T17:59:30.000Z", "differsFrom": ["dev-r1@r"], "note": "possibly a different login"}},
+    {"seatSession": "t@r", "rigName": "r", "runtime": "terminal",
+     "configured": {"source": "unknown", "reason": "no account configuration is known for runtime terminal"},
+     "allowance": {"linked": false, "reason": "no configured account"}}
+  ]
+}

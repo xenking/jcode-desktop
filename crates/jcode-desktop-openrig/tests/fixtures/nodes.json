@@ -1,0 +1,11 @@
+[
+  {"nodeId": "n1", "logicalId": "builder", "podNamespace": "eng", "nodeKind": "agent", "runtime": "jcode", "model": "gpt-x", "effort": "high", "effortSource": "authored",
+   "lifecycleState": "running", "sessionStatus": "running", "terminalActive": true, "canonicalSessionName": "builder@eng",
+   "activityState": {"activity": "working", "display": "working", "decidedBy": "pane"}, "agentActivity": {"state": "running", "evidenceSource": "hook", "eventAt": "2026-10-13T17:59:00Z"},
+   "contextUsage": {"availability": "known", "usedPercentage": 82.4, "contextWindowSize": 200000, "totalInputTokens": 150000, "totalOutputTokens": 12000},
+   "pendingWorkCount": 2, "blockedWorkCount": 1, "assignedWorkCount": 3, "resolvedSpecName": "builder-spec"},
+  {"nodeId": "n2", "logicalId": "reviewer", "podNamespace": "eng", "nodeKind": "agent", "runtime": "codex", "lifecycleState": "running", "sessionStatus": "running", "terminalActive": false,
+   "needsAttention": true, "arbitratedNeedsInput": true, "contextUsage": {"availability": "unknown", "usedPercentage": null}},
+  {"nodeId": "n3", "logicalId": "stray", "nodeKind": "agent", "runtime": "claude-code", "lifecycleState": "stopped", "sessionStatus": "detached", "identityVerdict": {"verdict": "pane_missing", "reason": "session_missing"}},
+  {"nodeId": "n4", "logicalId": "db", "nodeKind": "infrastructure", "runtime": null, "lifecycleState": "running"}
+]
