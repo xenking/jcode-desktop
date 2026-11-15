@@ -30,8 +30,13 @@ fn live_event(v: &Value) -> Option<LiveEvent> {
 }
 
 /// Read one activity SSE connection. The caller decides whether and when to reconnect.
+/// `should_stop` is asked once per frame the stream delivers, keepalive comments
+/// included: a pane that only receives keepalives never parses an event, so an
+/// event-only cancellation check would let its thread and connection outlive the
+/// pane for as long as the daemon keeps the stream open.
 pub fn subscribe_events(
     base_url: &str,
+    should_stop: impl Fn() -> bool + Send,
     mut on_event: impl FnMut(LiveEvent) -> bool + Send,
 ) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
@@ -68,6 +73,9 @@ pub fn subscribe_events(
             == 0
         {
             return Err("activity events: stream ended".into());
+        }
+        if should_stop() {
+            return Ok(());
         }
         size += line.len();
         if size > 1_048_576 {
@@ -775,6 +783,70 @@ mod tests {
         let s = fetch_snapshot("http://127.0.0.1:1");
         assert!(s.error.is_some());
         assert_eq!(s.sections.len(), 11);
+    }
+
+    /// A closed mission-control pane must stop its subscription even when the
+    /// daemon only sends SSE comment keepalives: no JSON event ever arrives, so
+    /// an event-only cancellation check never runs and the thread lives on.
+    #[test]
+    fn keepalive_only_stream_observes_cancellation() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            // Read the request head: a blank line ends the headers, and the GET
+            // carries no body.
+            loop {
+                request.clear();
+                match reader.read_line(&mut request) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+                if request == "\r\n" || request == "\n" {
+                    break;
+                }
+            }
+            let mut socket = stream;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+                .unwrap();
+            let _ = socket.flush();
+            // Keepalive comments only, then a clean close so the pre-fix code
+            // fails fast instead of waiting out the 15-second read timeout.
+            for _ in 0..6 {
+                if socket.write_all(b": keepalive\n").is_err() {
+                    return;
+                }
+                let _ = socket.flush();
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+
+        let frames = AtomicUsize::new(0);
+        let started = Instant::now();
+        let result = subscribe_events(
+            &format!("http://{addr}"),
+            || frames.fetch_add(1, Ordering::SeqCst) >= 2,
+            |_| true,
+        );
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "a cancelled subscription ends cleanly, not with {:?}",
+            result.err()
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the subscription stopped on a keepalive frame after {elapsed:?}"
+        );
     }
 }
 

@@ -688,7 +688,7 @@ impl Panel {
                 input.append_dictation(&tag::wrap(text), cx)
             }),
             TranscriptMode::Replace => self.input.update(cx, |input, cx| {
-                input.set_content(tag::wrap(text), cx)
+                input.replace_dictation(&tag::wrap(text), cx)
             }),
             TranscriptMode::Send => {
                 self.submit_or_queue(tag::wrap(text), Vec::new(), false, cx);
@@ -731,7 +731,7 @@ impl Panel {
                 input.append_dictation(&tag::wrap(text), cx)
             }),
             TranscriptMode::Replace => self.input.update(cx, |input, cx| {
-                input.set_content(tag::wrap(text), cx)
+                input.replace_dictation(&tag::wrap(text), cx)
             }),
             // `send` is handled before this point; never silently send here.
             TranscriptMode::Send => self
@@ -2124,6 +2124,81 @@ mod tests {
                     .unwrap()
                     .contains("offline previews")
             );
+        });
+    }
+
+    /// `[dictation] mode = "replace"` discards a draft, so the discarded draft
+    /// must survive as one undo step. A draft restored after a restart has an
+    /// empty undo stack, so a replacement that merely overwrites the content
+    /// loses the draft for good.
+    #[gpui::test]
+    fn voice_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("original".into(), cx));
+            panel.finish_voice_with_mode(
+                Ok("dictated".into()),
+                jcode_base::protocol::TranscriptMode::Replace,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(!input.content.contains("original"), "{}", input.content);
+                assert!(input.content.contains("dictated"), "{}", input.content);
+            });
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-z");
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "original",
+                "one undo restores the replaced draft"
+            )
+        });
+    }
+
+    /// `/dictate` from a command uses the same replacement rule.
+    #[gpui::test]
+    fn command_transcript_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("half-typed draft".into(), cx));
+            panel.apply_command_transcript(
+                &jcode_voice::dictation::DictationRun {
+                    text: "spoken words".into(),
+                    mode: jcode_base::protocol::TranscriptMode::Replace,
+                },
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(
+                    !input.content.contains("half-typed draft"),
+                    "{}",
+                    input.content
+                );
+                assert!(input.content.contains("spoken words"), "{}", input.content);
+            });
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-z");
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "half-typed draft",
+                "one undo restores the replaced draft"
+            )
         });
     }
 }

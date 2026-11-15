@@ -179,14 +179,19 @@ pub fn workers_by_coordinator(
     map
 }
 
-/// Finished workers kept visible under a coordinator, newest last. A
-/// long-running coordinator has dozens, and the sidebar should show what is
-/// happening, not an archive.
+/// Finished workers kept visible under a coordinator. A long-running
+/// coordinator has dozens, and the sidebar should show what is happening, not
+/// an archive.
 pub const FINISHED_VISIBLE: usize = 3;
 
 /// Rows to show under a coordinator: every live worker, plus the most recent
 /// finished ones, in the original order. Returns how many finished were
 /// folded away.
+///
+/// Rows arrive in descending recency: `sidebar_session_order` sorts sessions
+/// newest first and `sidebar_swarm::groups` keeps that order, so the first
+/// finished row is the newest. The fold therefore drops the tail, never the
+/// head, or the workers that just finished are the first to disappear.
 pub fn visible_workers<T: Clone>(
     rows: &[T],
     state: impl Fn(&T) -> WorkerState,
@@ -198,7 +203,7 @@ pub fn visible_workers<T: Clone>(
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     let hidden = finished.len().saturating_sub(FINISHED_VISIBLE);
-    let folded = &finished[..hidden];
+    let folded = &finished[FINISHED_VISIBLE.min(finished.len())..];
     let shown = rows
         .iter()
         .enumerate()
@@ -429,19 +434,43 @@ mod tests {
 
     #[test]
     fn sidebar_keeps_live_workers_and_only_the_latest_finished() {
-        let rows = ["a", "b", "c", "d", "e", "f"]
+        // The sidebar passes workers in `sidebar_session_order`, which is
+        // descending recency: index 0 is the newest worker.
+        let rows = ["fresh", "second", "third", "fourth", "oldest", "live"]
             .into_iter()
             .zip([
-                "ready", "running", "ready", "failed", "ready", "blocked",
+                "ready", "ready", "failed", "ready", "ready", "running",
             ])
             .map(|(name, status)| worker(name, Some(status)))
             .collect::<Vec<_>>();
         let (shown, hidden) = visible_workers(&rows, |w| w.state);
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
-        // a (oldest finished) folds away. Live b and f stay.
-        assert_eq!(names, ["b", "c", "d", "e", "f"]);
-        assert_eq!(hidden, 1);
-        let (all, none) = visible_workers(&rows[1..], |w| w.state);
-        assert_eq!((all.len(), none), (5, 0));
+        // The two oldest finished workers fold away; the newest three and the
+        // live worker stay, in sidebar order.
+        assert_eq!(names, ["fresh", "second", "third", "live"]);
+        assert_eq!(hidden, 2);
+        // Every live worker is visible however recent the finished ones are.
+        let (all, none) = visible_workers(&rows[..5], |w| w.state);
+        assert_eq!((all.len(), none), (3, 2));
+    }
+
+    /// A coordinator with dozens of finished workers must show the ones that
+    /// just finished, never an archive of the first ones it ever spawned.
+    #[test]
+    fn folded_finished_workers_are_the_oldest_not_the_newest() {
+        let mut rows = (0..10)
+            .map(|n| worker(&format!("w{n}"), Some("ready")))
+            .collect::<Vec<_>>();
+        // Newest first, the order the sidebar actually supplies.
+        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["w0", "w1", "w2"], "the newest finished workers stay");
+        assert_eq!(hidden, 7);
+        // One running worker at the tail never displaces the newest finished.
+        rows[9] = worker("live", Some("running"));
+        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["w0", "w1", "w2", "live"]);
+        assert_eq!(hidden, 6);
     }
 }

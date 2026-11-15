@@ -301,10 +301,16 @@ impl Panel {
                 // Reads time out every 15 s, so a closed pane ends this thread promptly.
                 while lifetime.upgrade().is_some() {
                     let mut received = false;
-                    let result = subscribe_events(&default_base_url(), |event| {
-                        received = true;
-                        lifetime.upgrade().is_some() && tx.send(event).is_ok()
-                    });
+                    let result = subscribe_events(
+                        &default_base_url(),
+                        // Checked on every frame, keepalives included: an idle
+                        // stream must not outlive a closed pane.
+                        || lifetime.upgrade().is_none(),
+                        |event| {
+                            received = true;
+                            tx.send(event).is_ok()
+                        },
+                    );
                     if result.is_ok() || lifetime.upgrade().is_none() {
                         break;
                     }

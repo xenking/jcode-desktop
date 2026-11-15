@@ -507,4 +507,44 @@ mod tests {
         updates::set(UpdateState::Idle);
         updates::set_release_status(ReleaseStatus::Source);
     }
+
+    /// A fresh packaged launch has no release state yet, so `footer_visible()`
+    /// is false and the footer never renders. If the check starts only from
+    /// renders that need it, a user who stays in the session view never learns
+    /// about a release and never gets an automatic update.
+    #[gpui::test]
+    fn session_view_starts_the_release_check_before_any_footer_shows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _guard = updates::test_lock();
+        updates::clear_test_actions();
+        updates::set(UpdateState::Idle);
+        updates::set_release_status(ReleaseStatus::Unknown);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("release-at-launch", cx);
+            w
+        });
+        assert!(
+            !footer_visible(),
+            "an unstarted check offers nothing to do, so the footer stays hidden"
+        );
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| div(),
+        );
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("workspace-version").is_none(),
+            "the hidden footer paints nothing"
+        );
+        assert_ne!(
+            updates::release_status(),
+            ReleaseStatus::Unknown,
+            "the session view starts the release check without the footer"
+        );
+        updates::set_release_status(ReleaseStatus::Source);
+    }
 }

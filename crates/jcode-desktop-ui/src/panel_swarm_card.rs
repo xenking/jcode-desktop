@@ -173,12 +173,14 @@ impl Panel {
         call_id: &str,
         call: &Call,
         done: bool,
-        failed: bool,
+        output: &str,
+        error: Option<&str>,
         offset: f32,
         opacity: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
+        let failed = error.is_some();
         let rows = rows(call, &self.swarm_workers, &self.swarm_usage);
         let summary = match (&call.intent, rows.is_empty()) {
             (Some(intent), _) => format!("{} · {}", call.action, intent),
@@ -242,6 +244,109 @@ impl Panel {
                     )
             })
             .collect::<Vec<_>>();
+        // The card shows worker rows, not the call's own answer. Keep the raw
+        // result and error reachable: a `list` call names no workers, so its
+        // output is the whole answer, and a failed call explains itself only in
+        // the error text.
+        let raw = error
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| (text, true))
+            .or_else(|| {
+                let text = output.trim();
+                (!text.is_empty()).then_some((text, false))
+            });
+        let expanded = self.expanded_regions.contains(call_id);
+        let toggle_key = call_id.to_owned();
+        let result_section = raw.map(|(text, is_error)| {
+            let color = if is_error { theme.ERROR } else { theme.TOOL_TEXT };
+            let preview =
+                expandable::collapsed(text, expandable::ERROR).unwrap_or_else(|| text.to_owned());
+            let body = expandable::expanded_body(text).0;
+            div()
+                .id(("swarm-card-result", index))
+                .debug_selector(move || {
+                    if is_error {
+                        "tool-swarm-error".into()
+                    } else {
+                        "tool-swarm-result".into()
+                    }
+                })
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .ml(px(24.0))
+                .px_1()
+                .pt(px(2.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(11.0))
+                                .text_color(color)
+                                .child(if is_error { "error" } else { "result" }),
+                        )
+                        .when(!expanded, |el| {
+                            el.child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.TEXT_FAINT)
+                                    .child(preview),
+                            )
+                        })
+                        .when(expanded, |el| el.child(div().flex_1()))
+                        .child(
+                            div()
+                                .id(("swarm-card-result-toggle", index))
+                                .debug_selector(|| "tool-swarm-result-toggle".into())
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(12.0))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.TOOL_BORDER))
+                                .text_size(px(9.0))
+                                .line_height(px(12.0))
+                                .text_color(theme.TEXT_FAINT)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if !this.expanded_regions.remove(&toggle_key) {
+                                        this.expanded_regions.insert(toggle_key.clone());
+                                    }
+                                    this.transcript_measurements.dirty = true;
+                                    cx.notify();
+                                }))
+                                .child(if expanded { "▾" } else { "▸" }),
+                        ),
+                )
+                .when(expanded, |el| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "tool-swarm-result-body".into())
+                            .w_full()
+                            .child(expandable::scrolled(
+                                format!("swarm-card-result-body-{index}").into(),
+                                expandable::MAX_HEIGHT,
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(color)
+                                    .child(body)
+                                    .into_any_element(),
+                            )),
+                    )
+                })
+        });
         div()
             .id(("tool", index))
             .debug_selector(|| "tool-swarm".into())
@@ -270,6 +375,7 @@ impl Panel {
                     ),
             )
             .children(lines)
+            .children(result_section)
             .into_any_element()
     }
 }
@@ -407,5 +513,67 @@ mod tests {
         vcx.simulate_click(second.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(opened.borrow().as_slice(), [FOX.to_string()]);
+    }
+
+    /// A parseable swarm call used to render only its action name plus worker
+    /// rows. A `list` call names no workers, so its answer is the output, and a
+    /// failed spawn's reason is the error: both must stay reachable.
+    #[gpui::test]
+    fn swarm_card_keeps_raw_output_and_error_reachable(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("lead", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Tool {
+                call_id: "list-1".into(),
+                name: "swarm".into(),
+                input: r#"{"action":"list"}"#.into(),
+                output: "3 workers: rose running, fox failed, owl ready".into(),
+                done: true,
+                error: None,
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-swarm").is_some(), "a list call still renders the card");
+        assert!(
+            vcx.debug_bounds("swarm-card-worker-0").is_none(),
+            "a list call names no worker rows"
+        );
+        let toggle = vcx
+            .debug_bounds("tool-swarm-result-toggle")
+            .expect("the result of a list call stays reachable");
+        assert!(
+            vcx.debug_bounds("tool-swarm-result-body").is_none(),
+            "the raw result starts collapsed"
+        );
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("tool-swarm-result-body").is_some(),
+            "expanding shows the complete result"
+        );
+
+        // A failed spawn shows why it failed.
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![Item::Tool {
+                call_id: "spawn-1".into(),
+                name: "swarm".into(),
+                input: r#"{"action":"spawn","intent":"Spawn a worker"}"#.into(),
+                output: String::new(),
+                done: true,
+                error: Some("swarm spawn failed: no free lane".into()),
+            }];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("tool-swarm-error").is_some(),
+            "a failed spawn keeps its failure reason"
+        );
     }
 }

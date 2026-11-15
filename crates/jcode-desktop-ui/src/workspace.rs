@@ -930,6 +930,11 @@ impl Workspace {
     ) -> Self {
         crate::input::bind_keys(cx);
         crate::init_harness();
+        // Launch work that must not wait for a pane: a packaged build whose
+        // release state is still `Unknown` paints no version footer, so a
+        // render-triggered release check would never start the automatic update
+        // loop for a user who stays in the session view.
+        updates::ensure_release_check();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let launch = snapshot
@@ -5756,6 +5761,12 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Release checks and the packaged automatic-update loop start here, on
+        // the first frame of the window, and not from the version footer: a
+        // fresh packaged launch has no release state yet, so `footer_visible()`
+        // is false and the footer's own render never runs. Idempotent, so every
+        // later render is free.
+        updates::ensure_release_check();
         let active_id = self
             .slots
             .get(self.active)

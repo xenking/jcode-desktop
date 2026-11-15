@@ -1637,6 +1637,32 @@ impl PromptInput {
         });
     }
 
+    /// Replace the whole draft with dictated text as one undoable edit. This is
+    /// what `[dictation] mode = "replace"` means: the utterance stands where the
+    /// draft was, the discarded draft stays one undo away, and redo is cleared
+    /// because the new content is not a step back toward the old future.
+    pub(crate) fn replace_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.undo.push(self.content.to_string());
+        self.redo.clear();
+        self.marked_range = None;
+        self.history_index = None;
+        self.set_content(text.to_owned(), cx);
+        // Dictation completes inside a parent Panel update. Run its callback
+        // after that lease ends, just as a later native edit would.
+        let input = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = input.update(cx, |input, cx| {
+                if let Some(on_change) = &input.on_change {
+                    on_change(&input.content, cx);
+                }
+            });
+        });
+    }
+
     fn reset_model_groups_after_exit(&mut self) {
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
@@ -3266,6 +3292,48 @@ mod tests {
                 assert!(input.history_index.is_none());
             });
         }
+    }
+
+    /// `[dictation] mode = "replace"` throws a draft away, so it must be one
+    /// undoable edit: the discarded draft comes back with a single undo, and a
+    /// stale redo from before the replacement is cleared.
+    #[gpui::test]
+    fn dictation_replace_is_one_undoable_edit(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        for draft in ["", "half typed", "多行\n草稿", "  keep spacing  "] {
+            input.update(cx, |input, cx| {
+                input.set_content(draft.into(), cx);
+                input.selected_range = 0..input.content.len();
+                input.marked_range = Some(0..2);
+                input.history_index = Some(0);
+                input.undo.clear();
+                input.redo = vec!["stale redo".into()];
+                input.replace_dictation("  spoken words  ", cx);
+                assert_eq!(input.content.as_ref(), "spoken words");
+                assert_eq!(input.undo, vec![draft.to_owned()], "one undo step");
+                assert!(input.redo.is_empty(), "a replacement clears redo");
+                assert_eq!(input.selected_range, 12..12);
+                assert!(input.marked_range.is_none());
+                assert!(input.history_index.is_none());
+            });
+        }
+    }
+
+    /// An empty utterance never wipes the draft and never touches undo history.
+    #[gpui::test]
+    fn empty_replace_dictation_keeps_the_draft(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("keep me".into(), cx);
+            input.undo = vec!["previous".into()];
+            input.redo = vec!["next".into()];
+            input.selected_range = 0..3;
+            input.replace_dictation("   ", cx);
+            assert_eq!(input.content.as_ref(), "keep me");
+            assert_eq!(input.selected_range, 0..3);
+            assert_eq!(input.undo, vec!["previous"]);
+            assert_eq!(input.redo, vec!["next"]);
+        });
     }
 
     /// Simulate a completion arriving for the current draft, bypassing network.
