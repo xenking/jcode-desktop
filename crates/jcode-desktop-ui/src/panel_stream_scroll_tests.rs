@@ -1,6 +1,76 @@
 use super::*;
 
 #[gpui::test]
+fn composer_wheel_does_not_move_transcript_until_editor_edge(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "nested-wheel".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+    panel.update(vcx, |panel, cx| {
+        *panel.items = (0..80)
+            .map(|n| Item::Assistant(format!("History {n}")))
+            .collect();
+        panel.input.update(cx, |input, cx| {
+            input.set_content("long draft line ".repeat(300), cx)
+        });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let input = panel.read_with(vcx, |panel, _| panel.input.clone());
+    vcx.update(|window, cx| input.update(cx, |input, cx| input.focus_handle.focus(window, cx)));
+    vcx.simulate_keystrokes("ctrl-home");
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.stick_to_bottom = false;
+        panel.transcript_list.scroll_to(gpui::ListOffset {
+            item_ix: 30,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let scroll = input.read_with(vcx, |input, _| input.test_editor_scroll());
+    let editor_before = scroll.offset().y;
+    let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    let position = vcx.debug_bounds("prompt-editor").unwrap().center();
+    let wheel = |vcx: &mut gpui::VisualTestContext, y| {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(y))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+    };
+    wheel(vcx, -40.);
+    assert!(scroll.offset().y < editor_before);
+    let after = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert_eq!(
+        (after.item_ix, after.offset_in_item),
+        (before.item_ix, before.offset_in_item)
+    );
+    scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+    vcx.update(|_, cx| cx.refresh_windows());
+    vcx.run_until_parked();
+    wheel(vcx, -100.);
+    let edge = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert_ne!(
+        (edge.item_ix, edge.offset_in_item),
+        (before.item_ix, before.offset_in_item),
+        "transcript must receive wheel at editor edge"
+    );
+}
+
+#[gpui::test]
 fn streaming_chunks_preserve_touchpad_reading_position(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new(

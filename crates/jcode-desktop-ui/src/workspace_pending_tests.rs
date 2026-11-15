@@ -91,7 +91,7 @@ fn workspace_restart_restores_session_stash_and_indicator(cx: &mut gpui::TestApp
         let second = w.slots[1].panel.read(cx).input.read(cx).snapshot();
         assert_eq!(first.content, "other draft");
         let stash = first.stashed_prompt.unwrap();
-        assert_eq!(stash.content, "saved draft");
+        assert_eq!(stash.content, "saved draft[#image 1]");
         assert_eq!((stash.selection_start, stash.selection_end), (10, 11));
         assert_eq!(stash.attachments.len(), 1);
         assert!(second.stashed_prompt.is_none());
@@ -107,7 +107,7 @@ fn workspace_restart_restores_session_stash_and_indicator(cx: &mut gpui::TestApp
     vcx.simulate_keystrokes("ctrl-s");
     workspace.read_with(vcx, |w, cx| {
         let draft = w.slots[0].panel.read(cx).input.read(cx).snapshot();
-        assert_eq!(draft.content, "saved draft");
+        assert_eq!(draft.content, "saved draft[#image 1]");
         assert_eq!(draft.attachments.len(), 1);
         assert_eq!(draft.stashed_prompt.unwrap().content, "other draft");
     });
@@ -234,7 +234,7 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
         "optimistic native panel request-to-editable: {:?} (backend reply withheld)",
         start.elapsed()
     );
-    assert_eq!(before.content, "first second");
+    assert_eq!(before.content, "first second[#image 1]");
     assert_eq!(before.attachments.len(), 1);
     assert_ne!(before.selection_start, before.selection_end);
     assert!(
@@ -258,11 +258,11 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     vcx.simulate_keystrokes("ctrl-z");
     assert_eq!(
         input.read_with(vcx, |i, _| i.content.to_string()),
-        "first secon"
+        "first secon[#image 1]"
     );
     vcx.simulate_keystrokes("enter");
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images }) if session_id == "ready" && content == "first secon" && images.len() == 1)
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images }) if session_id == "ready" && content == "first secon[#image 1]" && images.len() == 1)
     );
 }
 
@@ -457,7 +457,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     vcx.simulate_input(" after reload");
     vcx.simulate_keystrokes("enter");
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft after reload")
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft[#image 1] after reload")
     );
 }
 

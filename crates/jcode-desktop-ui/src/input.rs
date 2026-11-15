@@ -191,8 +191,8 @@ pub struct PromptInput {
     composer_bounds: paste_preview::MeasuredBounds,
     visual_line_count: usize,
     is_selecting: bool,
-    undo: Vec<String>,
-    redo: Vec<String>,
+    undo: Vec<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
     history: Vec<String>,
     history_index: Option<usize>,
     live_draft: String,
@@ -440,10 +440,16 @@ fn accepted_command_submission(
 #[derive(Clone)]
 struct Attachment {
     media_type: String,
-    encoded: String,
+    encoded: Arc<str>,
     label: SharedString,
     preview: Arc<gpui::Image>,
     bounds: paste_preview::MeasuredBounds,
+}
+
+#[derive(Clone)]
+struct EditSnapshot {
+    content: String,
+    attachments: Vec<Attachment>,
 }
 
 fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
@@ -492,11 +498,43 @@ fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> 
             let preview = preview_image(&attachment.media_type, bytes)?;
             Some(Attachment {
                 media_type: attachment.media_type,
-                encoded: attachment.encoded,
+                encoded: attachment.encoded.into(),
                 label: attachment.label.into(),
                 preview,
                 bounds: Default::default(),
             })
+        })
+        .collect()
+}
+
+/// Migrate pre-chip snapshots and preserve attachments when a draft is replaced.
+fn ensure_visible_chips(content: &mut String, attachments: &mut [Attachment]) {
+    for attachment in attachments {
+        let marker = attachment.label.as_ref();
+        if marker.starts_with("[#image ") && marker.ends_with(']') && content.contains(marker) {
+            continue;
+        }
+        let marker = (1..)
+            .map(|n| format!("[#image {n}]"))
+            .find(|marker| !content.contains(marker))
+            .unwrap();
+        if !content.is_empty() && !content.ends_with(char::is_whitespace) {
+            content.push(' ');
+        }
+        content.push_str(&marker);
+        attachment.label = marker.into();
+    }
+}
+
+fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
+    content
+        .match_indices("[#image ")
+        .filter_map(|(start, _)| {
+            let rest = &content[start..];
+            let end = rest.find(']')?;
+            let digits = rest.get(8..end)?;
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then_some(start..start + end + 1)
         })
         .collect()
 }
@@ -510,6 +548,19 @@ pub(crate) struct PickerSettings {
 }
 
 impl PromptInput {
+    pub(crate) fn editor_can_scroll_wheel(&self, position: Point<Pixels>, delta: Pixels) -> bool {
+        if !self.editor_scroll.bounds().contains(&position) {
+            return false;
+        }
+        let offset = self.editor_scroll.offset().y;
+        let max = self.editor_scroll.max_offset().y;
+        (delta < px(0.) && offset > -max) || (delta > px(0.) && offset < px(0.))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_editor_scroll(&self) -> gpui::ScrollHandle {
+        self.editor_scroll.clone()
+    }
     pub(crate) fn picker_settings(&self) -> PickerSettings {
         PickerSettings {
             models: self.command_models.clone(),
@@ -558,7 +609,7 @@ impl PromptInput {
                 .iter()
                 .map(|attachment| AttachmentSnapshot {
                     media_type: attachment.media_type.clone(),
-                    encoded: attachment.encoded.clone(),
+                    encoded: attachment.encoded.to_string(),
                     label: attachment.label.to_string(),
                 })
                 .collect(),
@@ -571,7 +622,7 @@ impl PromptInput {
                         .iter()
                         .map(|attachment| AttachmentSnapshot {
                             media_type: attachment.media_type.clone(),
-                            encoded: attachment.encoded.clone(),
+                            encoded: attachment.encoded.to_string(),
                             label: attachment.label.to_string(),
                         })
                         .collect(),
@@ -583,17 +634,19 @@ impl PromptInput {
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
         self.model_menu_draft = None;
         self.stashed_prompt = snapshot.stashed_prompt.map(|stash| {
-            let len = stash.content.len();
+            let mut content = stash.content;
+            let mut attachments = restore_attachments(stash.attachments);
+            ensure_visible_chips(&mut content, &mut attachments);
+            let len = content.len();
             let start = stash.selection_start.min(len);
             let end = stash.selection_end.min(len);
-            (
-                stash.content,
-                start.min(end)..start.max(end),
-                restore_attachments(stash.attachments),
-            )
+            (content, start.min(end)..start.max(end), attachments)
         });
-        let len = snapshot.content.len();
-        self.content = snapshot.content.into();
+        let mut content = snapshot.content;
+        self.attachments = restore_attachments(snapshot.attachments);
+        ensure_visible_chips(&mut content, &mut self.attachments);
+        let len = content.len();
+        self.content = content.into();
         self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
         if self.selected_range.end < self.selected_range.start {
             self.selected_range = self.selected_range.end..self.selected_range.start;
@@ -604,13 +657,8 @@ impl PromptInput {
             .history_index
             .filter(|index| *index < self.history.len());
         self.live_draft = snapshot.live_draft;
-        self.attachments = restore_attachments(snapshot.attachments);
         self.attachment_preview = None;
-        self.attachment_notice = match self.attachments.len() {
-            0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
-        };
+        self.attachment_notice = None;
         self.marked_range = None;
         self.undo.clear();
         self.redo.clear();
@@ -621,14 +669,70 @@ impl PromptInput {
         if index >= self.attachments.len() {
             return;
         }
-        self.attachments.remove(index);
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        let attachment = self.attachments.remove(index);
+        if let Some(range) = self.chip_range(&attachment) {
+            let mut content = self.content.to_string();
+            content.replace_range(range.clone(), "");
+            self.content = content.into();
+            self.selected_range = range.start..range.start;
+        }
         self.attachment_preview = None;
-        self.attachment_notice = match self.attachments.len() {
-            0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
-        };
+        self.attachment_notice = None;
         cx.notify();
+    }
+
+    fn edit_snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            content: self.content.to_string(),
+            attachments: self.attachments.clone(),
+        }
+    }
+
+    fn chip_range(&self, attachment: &Attachment) -> Option<Range<usize>> {
+        let marker = attachment.label.as_ref();
+        if !marker.starts_with("[#image ") || !marker.ends_with(']') {
+            return None;
+        }
+        let start = self.content.find(marker)?;
+        Some(start..start + marker.len())
+    }
+
+    fn chip_ranges(&self) -> Vec<(usize, Range<usize>)> {
+        self.attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                self.chip_range(attachment).map(|range| (index, range))
+            })
+            .collect()
+    }
+
+    fn expanded_chip_range(&self, mut edit: Range<usize>) -> Range<usize> {
+        for (_, chip) in self.chip_ranges() {
+            if (edit.start < chip.end && edit.end > chip.start)
+                || (edit.is_empty() && edit.start > chip.start && edit.start < chip.end)
+            {
+                edit.start = edit.start.min(chip.start);
+                edit.end = edit.end.max(chip.end);
+            }
+        }
+        edit
+    }
+
+    fn remove_chips_in_range(&mut self, range: &Range<usize>) {
+        let remove: Vec<usize> = self
+            .chip_ranges()
+            .into_iter()
+            .filter_map(|(index, chip)| {
+                (range.start < chip.end && range.end > chip.start).then_some(index)
+            })
+            .collect();
+        for index in remove.into_iter().rev() {
+            self.attachments.remove(index);
+        }
+        self.attachment_preview = None;
     }
 
     pub fn new(
@@ -920,7 +1024,7 @@ impl PromptInput {
             }
         };
         if values[index] != current {
-            self.undo.push(self.content.to_string());
+            self.undo.push(self.edit_snapshot());
             self.redo.clear();
         }
         self.set_content(values[index].clone(), cx);
@@ -1345,7 +1449,7 @@ impl PromptInput {
                     && accepted != content
                     && crate::commands::registered_command(&content).is_none()
                 {
-                    self.undo.push(self.content.to_string());
+                    self.undo.push(self.edit_snapshot());
                     self.redo.clear();
                     self.set_content(accepted, cx);
                     return;
@@ -1386,9 +1490,11 @@ impl PromptInput {
         } else {
             content
         };
-        let images = std::mem::take(&mut self.attachments)
+        let mut attachments = std::mem::take(&mut self.attachments);
+        attachments.sort_by_key(|image| content.find(image.label.as_ref()).unwrap_or(usize::MAX));
+        let images = attachments
             .into_iter()
-            .map(|image| (image.media_type, image.encoded))
+            .map(|image| (image.media_type, image.encoded.to_string()))
             .collect();
         self.attachment_notice = None;
         self.attachment_preview = None;
@@ -1478,24 +1584,46 @@ impl PromptInput {
         image: crate::clipboard_image::ClipboardImage,
         cx: &mut Context<Self>,
     ) {
-        let label = image.label();
         let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
             self.attachment_notice = Some("could not preview pasted image".into());
             cx.notify();
             return;
         };
+        let mut number = 1;
+        let marker = loop {
+            let marker = format!("[#image {number}]");
+            if !self.content.contains(&marker)
+                && !self.attachments.iter().any(|a| a.label.as_ref() == marker)
+            {
+                break marker;
+            }
+            number += 1;
+        };
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        self.remove_chips_in_range(&range);
+        let mut content = self.content.to_string();
+        content.replace_range(range.clone(), &marker);
+        self.content = content.into();
+        let cursor = range.start + marker.len();
+        self.selected_range = cursor..cursor;
         self.attachments.push(Attachment {
             media_type: image.media_type,
-            encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
-            label: label.clone().into(),
+            encoded: base64::engine::general_purpose::STANDARD
+                .encode(image.bytes)
+                .into(),
+            label: marker.into(),
             preview,
             bounds: Default::default(),
         });
-        self.attachment_preview = Some(paste_preview::Preview::new(self.attachments.len() - 1));
-        self.attachment_notice = Some(match self.attachments.len() {
-            1 => format!("image attached ({label})").into(),
-            count => format!("{count} images attached").into(),
-        });
+        self.attachment_preview = None;
+        self.attachment_notice = None;
+        self.marked_range = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
     }
 
@@ -1589,15 +1717,17 @@ impl PromptInput {
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(previous) = self.undo.pop() {
-            self.redo.push(self.content.to_string());
-            self.set_content(previous, cx);
+            self.redo.push(self.edit_snapshot());
+            self.attachments = previous.attachments;
+            self.set_content(previous.content, cx);
         }
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(next) = self.redo.pop() {
-            self.undo.push(self.content.to_string());
-            self.set_content(next, cx);
+            self.undo.push(self.edit_snapshot());
+            self.attachments = next.attachments;
+            self.set_content(next.content, cx);
         }
     }
 
@@ -1644,6 +1774,10 @@ impl PromptInput {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_preview.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.ghost_text().is_some() {
             self.dismiss_ghost();
             cx.notify();
@@ -1662,6 +1796,9 @@ impl PromptInput {
             return;
         }
         if !self.content.is_empty() {
+            self.undo.push(self.edit_snapshot());
+            self.redo.clear();
+            self.attachments.clear();
             self.set_content(String::new(), cx);
         }
     }
@@ -1723,7 +1860,7 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        let range = self.clamp_byte_range(self.selected_range.clone());
+        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
         let mut insert = String::with_capacity(text.len() + 2);
         if self.content[..range.start]
             .chars()
@@ -1742,8 +1879,9 @@ impl PromptInput {
         }
         let caret = range.start + insert.len();
         let edited = self.content[..range.start].to_owned() + &insert + &self.content[range.end..];
-        self.undo.push(self.content.to_string());
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
+        self.remove_chips_in_range(&range);
         self.content = edited.into();
         self.marked_range = None;
         self.history_index = None;
@@ -1773,7 +1911,7 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        self.undo.push(self.content.to_string());
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
         let mut draft = self.content.to_string();
         if !draft.is_empty() && !draft.ends_with('\n') {
@@ -1804,11 +1942,13 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        self.undo.push(self.content.to_string());
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.marked_range = None;
         self.history_index = None;
-        self.set_content(text.to_owned(), cx);
+        let mut content = text.to_owned();
+        ensure_visible_chips(&mut content, &mut self.attachments);
+        self.set_content(content, cx);
         // Dictation completes inside a parent Panel update. Run its callback
         // after that lease ends, just as a later native edit would.
         let input = cx.entity().downgrade();
@@ -1952,13 +2092,15 @@ impl PromptInput {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
-        let draft = self.content.trim_end();
-        let merged = if draft.is_empty() {
-            content.to_string()
-        } else {
-            format!("{draft}\n\n{content}")
-        };
-        for (media_type, encoded) in images {
+        let draft = self.content.trim_end().to_string();
+        let ranges = image_marker_ranges(content);
+        let mut recalled = content.to_string();
+        let mut replacements = Vec::new();
+        let mut used: HashSet<String> = image_marker_ranges(&draft)
+            .into_iter()
+            .map(|range| draft[range].to_string())
+            .collect();
+        for (index, (media_type, encoded)) in images.into_iter().enumerate() {
             let Some(bytes) = base64::engine::general_purpose::STANDARD
                 .decode(&encoded)
                 .ok()
@@ -1968,14 +2110,42 @@ impl PromptInput {
             let Some(preview) = preview_image(&media_type, bytes) else {
                 continue;
             };
+            let original = ranges
+                .get(index)
+                .map(|range| content[range.clone()].to_string());
+            let marker = original
+                .clone()
+                .filter(|marker| !used.contains(marker))
+                .unwrap_or_else(|| {
+                    (1..)
+                        .map(|n| format!("[#image {n}]"))
+                        .find(|marker| !used.contains(marker) && !content.contains(marker))
+                        .unwrap()
+                });
+            used.insert(marker.clone());
+            if let Some(range) = ranges.get(index) {
+                if original.as_deref() != Some(marker.as_str()) {
+                    replacements.push((range.clone(), marker.clone()));
+                }
+            } else {
+                replacements.push((content.len()..content.len(), format!(" {marker}")));
+            }
             self.attachments.push(Attachment {
-                label: format!("image {}", self.attachments.len() + 1).into(),
+                label: marker.into(),
                 media_type,
-                encoded,
+                encoded: encoded.into(),
                 preview,
                 bounds: Default::default(),
             });
         }
+        for (range, marker) in replacements.into_iter().rev() {
+            recalled.replace_range(range, &marker);
+        }
+        let merged = if draft.is_empty() {
+            recalled
+        } else {
+            format!("{draft}\n\n{recalled}")
+        };
         self.set_content(merged, cx);
     }
 
@@ -2003,6 +2173,17 @@ impl PromptInput {
         cx.stop_propagation();
         self.is_selecting = true;
         let offset = self.index_for_mouse_position(event.position, window);
+        if !event.modifiers.shift
+            && let Some((index, _)) = self
+                .chip_ranges()
+                .into_iter()
+                .find(|(_, range)| range.contains(&offset))
+        {
+            self.is_selecting = false;
+            self.attachment_preview = Some(paste_preview::Preview::new(index));
+            cx.notify();
+            return;
+        }
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else if event.click_count == 2 {
@@ -2136,6 +2317,13 @@ impl PromptInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
+        if let Some((_, range)) = self
+            .chip_ranges()
+            .into_iter()
+            .find(|(_, range)| offset > range.start && offset <= range.end)
+        {
+            return range.start;
+        }
         self.content
             .grapheme_indices(true)
             .rev()
@@ -2144,6 +2332,13 @@ impl PromptInput {
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
+        if let Some((_, range)) = self
+            .chip_ranges()
+            .into_iter()
+            .find(|(_, range)| offset >= range.start && offset < range.end)
+        {
+            return range.end;
+        }
         self.content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
@@ -2262,8 +2457,10 @@ impl EntityInputHandler for PromptInput {
             .map(|range| self.clamp_byte_range(range))
             .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
-        self.undo.push(self.content.to_string());
+        let range = self.expanded_chip_range(range);
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
+        self.remove_chips_in_range(&range);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -2294,6 +2491,8 @@ impl EntityInputHandler for PromptInput {
             .map(|range| self.clamp_byte_range(range))
             .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
+        let range = self.expanded_chip_range(range);
+        self.remove_chips_in_range(&range);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -2370,6 +2569,7 @@ struct PrepaintState {
     line: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
+    chips: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
     /// Horizontal gap between the caret and placeholder text, so the caret
     /// never overlaps the first placeholder glyph.
@@ -2387,6 +2587,16 @@ fn selection_quads(
     range: Range<usize>,
     bounds: Bounds<Pixels>,
     line_height: Pixels,
+) -> Vec<PaintQuad> {
+    range_quads(line, range, bounds, line_height, Theme::global().SELECTION)
+}
+
+fn range_quads(
+    line: &PromptLayout,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    color: gpui::Rgba,
 ) -> Vec<PaintQuad> {
     let Some(start) = line.position_for_index(range.start, line_height) else {
         return Vec::new();
@@ -2409,7 +2619,7 @@ fn selection_quads(
                     point(bounds.left() + left, bounds.top() + line_height * row),
                     size((right - left).max(px(0.)), line_height),
                 ),
-                to_hsla(Theme::global().SELECTION),
+                to_hsla(color),
             )
         })
         .collect()
@@ -2660,10 +2870,24 @@ impl Element for TextElement {
                 None,
             )
         };
+        let chips = input
+            .chip_ranges()
+            .into_iter()
+            .flat_map(|(_, range)| {
+                range_quads(
+                    &line,
+                    range,
+                    text_bounds,
+                    line_height,
+                    Theme::global().USER_BG,
+                )
+            })
+            .collect();
         PrepaintState {
             line: Some(line),
             cursor,
             selection,
+            chips,
             text_bounds,
             text_indent,
             visual_line_count,
@@ -2686,6 +2910,9 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        for chip in prepaint.chips.drain(..) {
+            window.paint_quad(chip)
+        }
         for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection)
         }
@@ -2834,65 +3061,7 @@ impl Render for PromptInput {
                 let _ = input.update(cx, |_, cx| cx.notify());
             });
         }
-        let attachment_overlay = self.render_paste_preview(window);
-        let preview_index = attachment_overlay.as_ref().and_then(|_| {
-            self.attachment_preview
-                .as_ref()
-                .map(|preview| preview.index)
-        });
-        let attachments = self.attachments.iter().enumerate().map(|(index, image)| {
-            div()
-                .id(("attachment", index))
-                .max_w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_1()
-                .rounded_md()
-                .p_1()
-                .bg(Theme::global().USER_BG)
-                .text_size(px(11.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .w(px(64.0))
-                        .h(px(52.0))
-                        .child(
-                            img(crate::image_cache::source(image.preview.clone()))
-                                .size_full()
-                                .opacity(if preview_index == Some(index) {
-                                    0.0
-                                } else {
-                                    1.0
-                                })
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .rounded_sm(),
-                        )
-                        .child(paste_preview::bounds_marker(image.bounds.clone())),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .gap_1()
-                        .child(div().truncate().child(image.label.clone()))
-                        .child(
-                            div()
-                                .text_color(Theme::global().TEXT_FAINT)
-                                .child("remove ×"),
-                        ),
-                )
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.remove_attachment(index, cx);
-                    }),
-                )
-        });
+        let attachment_overlay = self.render_paste_preview(window, cx);
         div()
             .debug_selector(|| "prompt-input".into())
             .children(attachment_overlay)
@@ -3058,20 +3227,6 @@ impl Render for PromptInput {
             // 18px radius reads as fully round while multi-line drafts keep
             // straight sides instead of turning into an ellipse.
             .rounded(px(18.0))
-            .when(!self.attachments.is_empty(), |el| {
-                el.child(
-                    div()
-                        .id("prompt-attachments")
-                        .max_h(px(editor_height))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1()
-                        .px_2()
-                        .pt_2()
-                        .children(attachments),
-                )
-            })
             .children(
                 self.attachment_notice
                     .clone()
@@ -3124,6 +3279,21 @@ impl Render for PromptInput {
                             .max_h(px(editor_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.editor_scroll)
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    let delta = event.delta.pixel_delta(window.line_height()).y;
+                                    // GPUI's scroll listener runs first in the bubble phase.
+                                    // Reconstruct the offset before this event, since GPUI
+                                    // clamps overscroll during the next layout.
+                                    let before = this.editor_scroll.offset().y - delta;
+                                    let max = this.editor_scroll.max_offset().y;
+                                    if (delta < px(0.) && before > -max)
+                                        || (delta > px(0.) && before < px(0.))
+                                    {
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .text_color(Theme::global().TEXT)
                             .child(TextElement { input: cx.entity() }),
                     ),
@@ -3164,6 +3334,107 @@ impl Focusable for PromptInput {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, WindowOptions};
+
+    #[gpui::test]
+    fn image_paste_is_an_inline_chip_at_the_cursor_and_backspace_removes_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("before after".into(), cx);
+            input.selected_range = 7..7;
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            assert_eq!(input.content.as_ref(), "before [#image 1]after");
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-attachments").is_none());
+        vcx.simulate_keystrokes("backspace");
+        vcx.run_until_parked();
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "before after");
+            assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn image_chips_preview_undo_and_submit_in_text_order(cx: &mut TestAppContext) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let output = seen.clone();
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *output.lock().unwrap() = Some((text, images));
+            });
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            let image = |byte| crate::clipboard_image::ClipboardImage {
+                media_type: "image/png".into(),
+                bytes: vec![byte],
+                width: 1,
+                height: 1,
+            };
+            input.set_content("AB".into(), cx);
+            input.selected_range = 2..2;
+            input.attach_image(image(1), cx);
+            input.selected_range = 0..0;
+            input.attach_image(image(2), cx);
+        });
+        vcx.run_until_parked();
+        let position = input.read_with(vcx, |input, _| {
+            let bounds = input.last_bounds.unwrap();
+            bounds.origin
+                + input
+                    .last_layout
+                    .as_ref()
+                    .unwrap()
+                    .position_for_index(4, input.last_line_height.unwrap())
+                    .unwrap()
+                + point(px(0.), input.last_line_height.unwrap() / 2.)
+        });
+        vcx.simulate_click(position, Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-content").is_some());
+        let close = vcx
+            .debug_bounds("paste-image-preview-close")
+            .unwrap()
+            .center();
+        vcx.simulate_click(close, Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-content").is_none());
+        input.update(vcx, |input, cx| {
+            let end = input.chip_ranges()[1].1.end;
+            input.selected_range = end..end;
+            cx.notify();
+        });
+        vcx.simulate_keystrokes("backspace");
+        vcx.simulate_keystrokes("cmd-z");
+        input.read_with(vcx, |input, _| assert_eq!(input.attachments.len(), 2));
+        vcx.simulate_keystrokes("enter");
+        let (text, images) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(text, "[#image 2]AB[#image 1]");
+        assert_eq!(
+            images,
+            vec![
+                ("image/png".into(), "Ag==".into()),
+                ("image/png".into(), "AQ==".into())
+            ]
+        );
+    }
 
     #[test]
     fn double_click_word_ranges_are_unicode_safe_and_exclude_adjacent_space() {
@@ -3428,11 +3699,22 @@ mod tests {
                 input.set_content(draft.into(), cx);
                 input.selected_range = caret..caret;
                 input.undo.clear();
-                input.redo = vec!["old redo".into()];
+                input.redo = vec![EditSnapshot {
+                    content: "old redo".into(),
+                    attachments: vec![],
+                }];
                 input.insert_dictation(spoken, cx);
                 assert_eq!(input.content.as_ref(), expected);
                 assert_eq!(input.selected_range, caret_after..caret_after);
-                assert_eq!(input.undo, vec![draft.to_owned()], "one undo step");
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![draft.to_owned()],
+                    "one undo step"
+                );
                 assert!(input.redo.is_empty());
                 assert!(input.marked_range.is_none());
                 assert!(input.history_index.is_none());
@@ -3469,13 +3751,23 @@ mod tests {
             input.update(cx, |input, cx| {
                 input.set_content(before.into(), cx);
                 input.undo.clear();
-                input.redo = vec!["old redo".into()];
+                input.redo = vec![EditSnapshot {
+                    content: "old redo".into(),
+                    attachments: vec![],
+                }];
                 input.selected_range = 0..input.content.len();
                 input.marked_range = Some(0..input.content.len());
                 input.history_index = Some(0);
                 input.append_dictation("  spoken words\n", cx);
                 assert_eq!(input.content.as_ref(), expected);
-                assert_eq!(input.undo, vec![before.to_owned()]);
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![before.to_owned()]
+                );
                 assert!(input.redo.is_empty());
                 assert_eq!(input.selected_range, expected.len()..expected.len());
                 assert!(input.marked_range.is_none());
@@ -3497,10 +3789,21 @@ mod tests {
                 input.marked_range = Some(0..2);
                 input.history_index = Some(0);
                 input.undo.clear();
-                input.redo = vec!["stale redo".into()];
+                input.redo = vec![EditSnapshot {
+                    content: "stale redo".into(),
+                    attachments: vec![],
+                }];
                 input.replace_dictation("  spoken words  ", cx);
                 assert_eq!(input.content.as_ref(), "spoken words");
-                assert_eq!(input.undo, vec![draft.to_owned()], "one undo step");
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![draft.to_owned()],
+                    "one undo step"
+                );
                 assert!(input.redo.is_empty(), "a replacement clears redo");
                 assert_eq!(input.selected_range, 12..12);
                 assert!(input.marked_range.is_none());
@@ -3515,14 +3818,34 @@ mod tests {
         let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         input.update(cx, |input, cx| {
             input.set_content("keep me".into(), cx);
-            input.undo = vec!["previous".into()];
-            input.redo = vec!["next".into()];
+            input.undo = vec![EditSnapshot {
+                content: "previous".into(),
+                attachments: vec![],
+            }];
+            input.redo = vec![EditSnapshot {
+                content: "next".into(),
+                attachments: vec![],
+            }];
             input.selected_range = 0..3;
             input.replace_dictation("   ", cx);
             assert_eq!(input.content.as_ref(), "keep me");
             assert_eq!(input.selected_range, 0..3);
-            assert_eq!(input.undo, vec!["previous"]);
-            assert_eq!(input.redo, vec!["next"]);
+            assert_eq!(
+                input
+                    .undo
+                    .iter()
+                    .map(|s| s.content.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["previous"]
+            );
+            assert_eq!(
+                input
+                    .redo
+                    .iter()
+                    .map(|s| s.content.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["next"]
+            );
         });
     }
 
@@ -3772,7 +4095,7 @@ mod tests {
         window
             .update(cx, |input, _, _| {
                 assert_eq!(input.content.as_ref(), "typed\nfirst line\nsecond line");
-                assert_eq!(input.attachments[0].encoded, "cG5n");
+                assert_eq!(input.attachments[0].encoded.as_ref(), "cG5n");
             })
             .unwrap();
     }
@@ -3803,7 +4126,7 @@ mod tests {
                 input.close_model_menu(cx);
                 assert_eq!(input.content.as_ref(), "unfinished prompt");
                 assert_eq!(input.attachments.len(), 1);
-                assert_eq!(input.attachments[0].encoded, "cG5n");
+                assert_eq!(input.attachments[0].encoded.as_ref(), "cG5n");
             }
         });
     }
@@ -3814,16 +4137,36 @@ mod tests {
         input.update(cx, |input, cx| {
             input.set_content("keep this ".into(), cx);
             input.selected_range = 0..4;
-            input.undo = vec!["previous".into()];
-            input.redo = vec!["next".into()];
+            input.undo = vec![EditSnapshot {
+                content: "previous".into(),
+                attachments: vec![],
+            }];
+            input.redo = vec![EditSnapshot {
+                content: "next".into(),
+                attachments: vec![],
+            }];
             input.append_dictation(" \n\t", cx);
             for preview in [Some(String::new()), Some("partial words".into()), None] {
                 input.set_voice_preview(preview.clone(), cx);
                 assert_eq!(input.voice_preview, preview);
                 assert_eq!(input.content.as_ref(), "keep this ");
                 assert_eq!(input.selected_range, 0..4);
-                assert_eq!(input.undo, vec!["previous"]);
-                assert_eq!(input.redo, vec!["next"]);
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["previous"]
+                );
+                assert_eq!(
+                    input
+                        .redo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["next"]
+                );
             }
         });
     }
@@ -4572,7 +4915,7 @@ mod tests {
                 input.remove_attachment(0, cx);
                 assert_eq!(input.attachments.len(), 1);
                 assert_eq!(input.attachments[0].label.as_ref(), "8×6");
-                assert_eq!(input.attachment_notice.as_deref(), Some("1 image attached"));
+                assert_eq!(input.attachment_notice.as_deref(), None);
             })
             .unwrap();
     }

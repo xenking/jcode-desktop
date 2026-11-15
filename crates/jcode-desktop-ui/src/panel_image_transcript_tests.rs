@@ -1,5 +1,33 @@
 use super::*;
 
+#[gpui::test]
+fn user_image_is_compact_and_opens_full_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "user-image-chip".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![
+            Item::User("Inspect [#image 1]".into()),
+            Item::Image(image_preview::fixture_image()),
+        ];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx
+        .debug_bounds("transcript-user-image-chip")
+        .expect("compact chip");
+    assert!(chip.size.height < px(40.));
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
 fn image(call: &str, data: &str, boundary: Option<usize>) -> jcode_sdk::RenderedImage {
     jcode_sdk::RenderedImage {
         media_type: "image/png".into(),

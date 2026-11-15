@@ -13,6 +13,9 @@ pub struct ResponseStats {
     /// finished, restored: the stored message's record time). Never render time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_ms: Option<i64>,
+    /// Last observed model-usage event, distinct from the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_at_ms: Option<i64>,
 }
 
 impl From<jcode_sdk::ResponseStats> for ResponseStats {
@@ -25,6 +28,7 @@ impl From<jcode_sdk::ResponseStats> for ResponseStats {
             cache_creation_tokens: stats.cache_creation_tokens,
             tool_calls: None,
             at_ms: None,
+            cache_at_ms: None,
         }
     }
 }
@@ -38,6 +42,7 @@ pub(super) fn fixture() -> ResponseStats {
         cache_creation_tokens: None,
         tool_calls: Some(5),
         at_ms: None,
+        cache_at_ms: None,
     }
 }
 
@@ -83,7 +88,9 @@ impl Tracker {
                 ..
             } => {
                 self.active = true;
-                if let Some(tokens) = cache_read_input.or(*cache_creation_input)
+                if let Some(tokens) = cache_read_input
+                    .filter(|tokens| *tokens > 0)
+                    .or(cache_creation_input.filter(|tokens| *tokens > 0))
                     && let Some(at) = now_ms()
                 {
                     self.cache_touch = Some((at, Some(tokens)));
@@ -111,6 +118,7 @@ impl Tracker {
             return None;
         }
         finished.stats.duration_secs = finished.started.map(|at| at.elapsed().as_secs_f64());
+        finished.stats.cache_at_ms = finished.cache_touch.map(|(at, _)| at);
         finished.stats.at_ms = now_ms();
         (!finished.stats.stat_labels().is_empty()).then_some(finished.stats)
     }

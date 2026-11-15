@@ -3,6 +3,58 @@
 use super::*;
 
 impl Panel {
+    pub(super) fn render_user_image_chip(
+        &self,
+        index: usize,
+        image: &TranscriptImage,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let start = self.items[..index]
+            .iter()
+            .rposition(|item| matches!(item, Item::User(_)))
+            .unwrap_or(0);
+        let number = self.items[start..index].iter().filter(|item| {
+            matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
+        }).count() + 1;
+        let label = match self.items.get(start) {
+            Some(Item::User(text)) => text
+                .match_indices("[#image ")
+                .filter_map(|(at, _)| {
+                    let tail = &text[at..];
+                    let end = tail.find(']')?;
+                    let digits = &tail[8..end];
+                    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                        .then(|| tail[..=end].to_string())
+                })
+                .nth(number - 1),
+            _ => None,
+        }
+        .unwrap_or_else(|| format!("[#image {number}]"));
+        let preview = image.clone();
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(("transcript-user-image-chip", index))
+                    .debug_selector(|| "transcript-user-image-chip".into())
+                    .rounded_full()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(11.))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .bg(Theme::global().USER_BG)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(Theme::global().TEXT))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_image_preview(preview.clone(), window, cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn session_image_indices(&self) -> Vec<usize> {
         self.items
             .iter()

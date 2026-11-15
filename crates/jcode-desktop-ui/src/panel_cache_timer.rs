@@ -92,10 +92,13 @@ pub(super) fn tooltip(facts: &CacheFacts) -> String {
         format!("{} retention", span(facts.ttl_secs))
     };
     let state = if facts.is_cold() {
-        format!("expired {} ago", span(facts.written_ago_secs))
+        format!(
+            "expired {} ago",
+            span(facts.written_ago_secs.saturating_sub(facts.ttl_secs))
+        )
     } else {
         format!(
-            "{} left · last write {} ago",
+            "{} left · last cache use {} ago",
             span(facts.remaining_secs),
             span(facts.written_ago_secs)
         )
@@ -142,7 +145,8 @@ impl Panel {
                         || stats.cache_creation_tokens.is_some() =>
                 {
                     stats
-                        .at_ms
+                        .cache_at_ms
+                        .or(stats.at_ms)
                         .map(|at| (at, stats.cache_read_tokens.or(stats.cache_creation_tokens)))
                 }
                 _ => None,
@@ -426,13 +430,13 @@ mod tests {
         let hover = tooltip(&warm);
         assert!(hover.contains("1h retention"), "{hover}");
         assert!(hover.contains("48m left"), "{hover}");
-        assert!(hover.contains("last write 12m ago"), "{hover}");
+        assert!(hover.contains("last cache use 12m ago"), "{hover}");
         assert!(hover.contains("18K cached tokens"), "{hover}");
 
         let cold = facts(300, true, 0, 600_000, None);
         let hover = tooltip(&cold);
         assert!(hover.contains("5m retention (estimate)"), "{hover}");
-        assert!(hover.contains("expired 10m ago"), "{hover}");
+        assert!(hover.contains("expired 5m ago"), "{hover}");
     }
 
     /// The bar shows the countdown for a provider whose retention is known,
