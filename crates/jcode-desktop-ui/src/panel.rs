@@ -549,6 +549,9 @@ pub struct Panel {
     pub input: Entity<PromptInput>,
     /// Coordinator-only: its swarm workers, for the composer indicator.
     swarm_workers: Vec<crate::swarm_view::Worker>,
+    /// Coordinator-only: background swarm awaits still in flight. The daemon
+    /// persists them, so a reload no longer makes the coordinator look idle.
+    pending_awaits: Vec<jcode_sdk::PendingAwait>,
     /// This session's own record, when it is a swarm worker. Headless workers
     /// answer no model probe on attach, so their model and effort come from
     /// here instead of reading as unset.
@@ -1055,6 +1058,7 @@ impl Panel {
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             swarm_workers: Vec::new(),
+            pending_awaits: Vec::new(),
             worker_record: None,
             swarm_list_open: false,
             swarm_marks: Default::default(),

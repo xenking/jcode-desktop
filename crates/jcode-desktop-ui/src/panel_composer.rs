@@ -314,6 +314,7 @@ impl Panel {
             .flex()
             .flex_col()
             .children(self.render_swarm_list(cx))
+            .children(self.render_await_line(cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
             .child(

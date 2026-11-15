@@ -104,14 +104,24 @@ pub(super) fn keep_workers_of(sessions: &[SessionInfo], kept: &mut HashSet<Strin
 /// The outermost coordinator in the catalog wins, so a live grandchild keeps
 /// its whole chain visible. A live worker whose coordinator is no longer in the
 /// catalog stays listed on its own rather than vanishing.
-pub(super) fn live_swarm_roots(sessions: &[SessionInfo]) -> HashSet<String> {
+pub(super) fn live_swarm_roots(
+    sessions: &[SessionInfo],
+    metas: &HashMap<String, jcode_sdk::WorkerMeta>,
+    now_ms: u64,
+) -> HashSet<String> {
     let by_id = sessions
         .iter()
         .map(|session| (session.session_id.as_str(), session))
         .collect::<HashMap<_, _>>();
     let mut roots = HashSet::new();
     for session in sessions {
-        if !crate::swarm_view::worker_state(session).is_live() {
+        if !crate::swarm_view::resolve_worker_state(
+            session,
+            metas.get(&session.session_id),
+            now_ms,
+        )
+        .is_live()
+        {
             continue;
         }
         let Some(parent) = session
@@ -681,7 +691,7 @@ mod tests {
             },
             session("blocked-lead", None),
         ];
-        let roots = live_swarm_roots(&sessions);
+        let roots = live_swarm_roots(&sessions, &HashMap::new(), 0);
         assert!(roots.contains("lead"), "{roots:?}");
         assert!(roots.contains("orphan"), "{roots:?}");
         assert!(roots.contains("blocked-lead"), "{roots:?}");
@@ -696,7 +706,7 @@ mod tests {
         a.swarm_status = Some("running".into());
         let mut b = session("b", Some("a"));
         b.swarm_status = Some("running".into());
-        let roots = live_swarm_roots(&[a, b]);
+        let roots = live_swarm_roots(&[a, b], &HashMap::new(), 0);
         // A parent cycle has no reachable coordinator, so neither member nests;
         // both are live and both stay listed on their own.
         assert_eq!(roots, HashSet::from(["a".to_string(), "b".to_string()]));

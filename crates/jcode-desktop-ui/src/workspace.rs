@@ -2868,6 +2868,15 @@ impl Workspace {
             let record = self.worker_meta.get(&id).cloned();
             slot.panel
                 .update(cx, |panel, cx| panel.set_worker_record(record, cx));
+            // A background await outlives the turn and the daemon reload that
+            // ended it. Read the daemon's durable registration so a parked
+            // coordinator says what it waits for instead of looking idle.
+            let awaits = crate::harness::remote_host(&id)
+                .is_none()
+                .then(|| jcode_sdk::pending_awaits_for_session(&id))
+                .unwrap_or_default();
+            slot.panel
+                .update(cx, |panel, cx| panel.set_pending_awaits(awaits, cx));
         }
         cx.notify();
     }
@@ -5925,7 +5934,10 @@ impl Workspace {
         // The TUI shows a coordinator's workers while nobody has that
         // coordinator open here. A live swarm is live work, not a window's
         // property, so list it wherever it is driven from.
-        let live_swarms = sidebar_swarm::live_swarm_roots(&catalog);
+        // A worker's own record can outrun a terminal swarm snapshot (a daemon
+        // reload rewrites nothing), so liveness reads both.
+        let live_swarms =
+            sidebar_swarm::live_swarm_roots(&catalog, &self.worker_meta, swarm_now_ms());
         kept.extend(live_swarms.iter().cloned());
         // Headless swarm workers are never opened or closed in this window,
         // but they belong under a coordinator that is listed here.

@@ -112,18 +112,56 @@ pub fn format_age(ms: u64) -> String {
     }
 }
 
+/// A terminal snapshot word only describes the moment the snapshot was
+/// written. A worker that has written a message since then is running, however
+/// old the word is: a daemon reload rewrites nothing, so the file still says
+/// `ready` while the worker burns tokens.
+const STALE_TERMINAL_GRACE_MS: u64 = 120_000;
+
 /// The swarm snapshot's status wins. Workers the snapshot no longer lists
 /// fall back to their persisted lifecycle: a closed one finished, a crashed
 /// one failed. An open-ended `active` record proves nothing, so it stays unknown.
 pub fn worker_state(session: &SessionInfo) -> WorkerState {
-    match WorkerState::parse(session.swarm_status.as_deref()) {
+    resolve_worker_state(session, None, 0)
+}
+
+/// [`worker_state`] with the worker's own record: a terminal status recorded
+/// before the worker's newest message is stale, so the live phase wins. This
+/// is what keeps a reloaded daemon's snapshot from painting a running worker
+/// as `ready`.
+pub fn resolve_worker_state(
+    session: &SessionInfo,
+    meta: Option<&WorkerMeta>,
+    now_ms: u64,
+) -> WorkerState {
+    let state = match WorkerState::parse(session.swarm_status.as_deref()) {
         WorkerState::Unknown => match session.status.trim().to_ascii_lowercase().as_str() {
             "closed" => WorkerState::Ready,
             "crashed" | "error" => WorkerState::Failed,
             _ => WorkerState::Unknown,
         },
         state => state,
+    };
+    if state.is_live() {
+        return state;
     }
+    let Some(meta) = meta else {
+        return state;
+    };
+    // Only an actively producing phase contradicts a finished word. A final
+    // assistant message reads as `thinking`, so recency gates it.
+    let producing = matches!(
+        meta.phase,
+        Some(WorkerPhase::Tool | WorkerPhase::Thinking)
+    );
+    let recent = meta.last_activity_ms.is_some_and(|last| {
+        let last = u64::try_from(last).unwrap_or(0);
+        now_ms.saturating_sub(last) <= STALE_TERMINAL_GRACE_MS
+    });
+    if producing && recent {
+        return WorkerState::Running;
+    }
+    state
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,7 +194,7 @@ impl Worker {
                 .map(jcode_core::id::session_icon)
                 .filter(|icon| *icon != "💫"),
             label: session.agent_label.clone(),
-            state: worker_state(session),
+            state: resolve_worker_state(session, Some(&meta), now_ms),
             age_ms: last
                 .filter(|ms| *ms > 0)
                 .map(|ms| now_ms.saturating_sub(ms)),
@@ -666,6 +704,59 @@ mod tests {
         let mut listed = session("session_x_1_a", Some("lead"), Some("running"));
         listed.status = "closed".into();
         assert_eq!(worker_state(&listed), WorkerState::Running);
+    }
+
+    /// The reload sequence from the screenshot: the daemon is restarted, the
+    /// swarm snapshot is not rewritten, and it still says a worker is `ready`
+    /// while that worker's own record shows a tool call in flight.
+    #[test]
+    fn a_terminal_snapshot_word_yields_to_newer_worker_activity() {
+        let mut s = session("session_kangaroo_1_a", Some("lead"), Some("ready"));
+        let now = 1_000_000;
+        let mut meta = WorkerMeta {
+            phase: Some(WorkerPhase::Tool),
+            tool: Some("bash".into()),
+            last_activity_ms: Some((now - 3_000) as i64),
+            ..WorkerMeta::default()
+        };
+        assert_eq!(
+            resolve_worker_state(&s, Some(&meta), now),
+            WorkerState::Running,
+            "a worker that wrote 3s ago is running, whatever the snapshot says"
+        );
+
+        // The same stale word is honest again once the worker has been quiet:
+        // a finished worker's final message must not read as running forever.
+        meta.last_activity_ms = Some((now - STALE_TERMINAL_GRACE_MS - 1) as i64);
+        assert_eq!(resolve_worker_state(&s, Some(&meta), now), WorkerState::Ready);
+
+        // A stopped worker stays stopped even with recent text: its record is
+        // closed, so the phase is idle.
+        s.swarm_status = Some("stopped".into());
+        meta.phase = Some(WorkerPhase::Idle);
+        meta.last_activity_ms = Some((now - 1_000) as i64);
+        assert_eq!(
+            resolve_worker_state(&s, Some(&meta), now),
+            WorkerState::Stopped
+        );
+
+        // No record at all: the snapshot is all there is.
+        assert_eq!(resolve_worker_state(&s, None, now), WorkerState::Stopped);
+    }
+
+    /// A worker the snapshot forgot (`swarm_status: None`) with fresh activity
+    /// reads as running, never as the "unknown" row from the screenshot.
+    #[test]
+    fn an_unlisted_worker_with_fresh_activity_reads_running_not_unknown() {
+        let s = session("session_otter_1_a", Some("lead"), None);
+        let now = 1_000_000;
+        let meta = WorkerMeta {
+            phase: Some(WorkerPhase::Thinking),
+            last_activity_ms: Some((now - 2_000) as i64),
+            ..WorkerMeta::default()
+        };
+        assert_eq!(resolve_worker_state(&s, Some(&meta), now), WorkerState::Running);
+        assert_eq!(worker_state(&s), WorkerState::Unknown);
     }
 
     #[test]

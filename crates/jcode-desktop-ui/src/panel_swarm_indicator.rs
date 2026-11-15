@@ -41,6 +41,56 @@ impl Panel {
         }
     }
 
+    /// The awaits this coordinator is parked on. They outlive the turn that
+    /// registered them, so they are what keeps the agent from reading as idle.
+    pub(crate) fn set_pending_awaits(
+        &mut self,
+        awaits: Vec<jcode_sdk::PendingAwait>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_awaits != awaits {
+            self.pending_awaits = awaits;
+            cx.notify();
+        }
+    }
+
+    /// Ids this coordinator asked to wait for, in request order, deduplicated.
+    pub(crate) fn awaiting_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        for await_ in &self.pending_awaits {
+            for id in &await_.requested_ids {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        ids
+    }
+
+    /// `Waiting for kangaroo, fox · wakes when they report`, or nothing.
+    /// Names come from the live worker list, then the session id.
+    pub(crate) fn await_line(&self) -> Option<String> {
+        let ids = self.awaiting_ids();
+        if ids.is_empty() {
+            return None;
+        }
+        let names = ids
+            .iter()
+            .map(|id| {
+                self.swarm_workers
+                    .iter()
+                    .find(|worker| &worker.session_id == id)
+                    .map(|worker| worker.name.clone())
+                    .or_else(|| crate::swarm_view::friendly_name(id).map(str::to_owned))
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "Waiting for {names} · wakes when they report"
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn test_swarm_indicator_count(&self) -> usize {
         self.swarm_indicator().map_or(0, |i| i.count())
@@ -59,7 +109,12 @@ impl Panel {
         } else {
             Turn::Thinking
         };
-        let live = self.swarm_indicator().map_or(0, |i| i.count());
+        // A pending background await is live work even when every worker row
+        // still carries a stale terminal status.
+        let live = self
+            .swarm_indicator()
+            .map_or(0, |i| i.count())
+            .max(usize::from(!self.awaiting_ids().is_empty()));
         Activity::resolve(turn, live)
     }
 
@@ -297,6 +352,37 @@ impl Panel {
                 .into_any_element(),
         )
     }
+
+    /// `Waiting for kangaroo · wakes when they report`, above the composer.
+    /// This is the line that tells the user a quiet coordinator is parked on
+    /// workers, not finished: it survives a daemon reload because it reads the
+    /// persisted await, not the transcript.
+    pub(super) fn render_await_line(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let line = self.await_line()?;
+        let theme = Theme::global();
+        let pause = self.swarm_marks.element(
+            "awaiting",
+            Mark::glyph(crate::swarm_view::Glyph::Pause, 11.0),
+            cx,
+        );
+        Some(
+            div()
+                .debug_selector(|| "composer-await-line".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .pb(px(2.0))
+                .text_size(px(11.0))
+                .font_family(theme.FONT_MONO)
+                .text_color(theme.TEXT_FAINT)
+                .child(div().flex_none().size(px(11.0)).child(pause))
+                .child(div().min_w_0().truncate().child(line))
+                .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -389,6 +475,46 @@ mod tests {
         panel.update(vcx, |panel, cx| panel.set_swarm_workers(vec![worker("rose", "ready")], cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list").is_none());
+    }
+
+    /// The reload sequence: every worker row still carries the pre-reload word
+    /// (`ready`), so nothing is live by state and the coordinator would read
+    /// idle. The persisted await is what says it is waiting, and for whom.
+    #[gpui::test]
+    fn a_pending_background_await_names_the_workers_and_keeps_the_agent_waiting(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = setup(cx);
+        assert!(vcx.debug_bounds("composer-await-line").is_none(), "no await, no line");
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(
+                vec![worker("kangaroo", "ready"), worker("fox", "ready")],
+                cx,
+            );
+            panel.set_pending_awaits(
+                vec![jcode_sdk::PendingAwait {
+                    requested_ids: vec!["session_kangaroo_1_a".into()],
+                    deadline_unix_ms: u64::MAX,
+                }],
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.await_line()).as_deref(),
+            Some("Waiting for kangaroo · wakes when they report")
+        );
+        assert!(vcx.debug_bounds("composer-await-line").is_some());
+        assert!(
+            vcx.debug_bounds("composer-activity-waiting-on-workers").is_some(),
+            "a parked coordinator is waiting, not idle"
+        );
+
+        // The wake delivered: the line goes away with the registration.
+        panel.update(vcx, |panel, cx| panel.set_pending_awaits(Vec::new(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-await-line").is_none());
+        assert!(vcx.debug_bounds("composer-activity-idle").is_some());
     }
 
     /// The row the user reported as "poodle compact-div… running 23m": the
