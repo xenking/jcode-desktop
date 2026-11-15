@@ -872,7 +872,10 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("first partial".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+        assert!(
+            vcx.debug_bounds("voice-live-transcript").is_some(),
+            "the composer shows the live revision instead of only the pill"
+        );
         panel.update(vcx, |panel, cx| {
             panel.apply_voice_event(
                 NariEvent::Transcript("Revised live words. ".repeat(100)),
@@ -893,12 +896,25 @@ mod tests {
             );
         });
         panel.update(vcx, |panel, cx| {
-            panel.apply_voice_event(NariEvent::Finished(Ok("Final words.".into())), cx)
+            // `insert` (the default): the final words land at the caret and
+            // replace the dim preview. Nothing is sent.
+            panel.finish_voice_with_mode(
+                Ok("Final words.".into()),
+                jcode_base::protocol::TranscriptMode::Insert,
+                cx,
+            )
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-overlay").is_none());
+        assert!(
+            vcx.debug_bounds("voice-live-transcript").is_none(),
+            "the final text replaces the dim preview"
+        );
         panel.read_with(vcx, |panel, cx| {
-            assert_eq!(panel.input.read(cx).content.as_ref(), "Keep my draft");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "Keep my draft Final words."
+            );
         });
     }
 

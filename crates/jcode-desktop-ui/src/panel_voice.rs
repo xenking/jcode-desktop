@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_hold_routes_final_transcription_without_touching_typed_draft(
+    fn voice_hold_send_mode_routes_final_transcription_without_touching_typed_draft(
         cx: &mut gpui::TestAppContext,
     ) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
@@ -1532,8 +1532,12 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("fix the bug".into()), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert!(panel.voice.phase == Phase::Recording);
-            panel.apply_voice_event(NariEvent::Finished(Ok("fix the bug".into())), cx);
-            // Jev routing is off: the utterance is sent straight to the agent.
+            panel.finish_voice_with_mode(
+                Ok("fix the bug".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
+            // Jev routing is off: an explicit `send` still goes straight to the agent.
             assert!(panel.voice.phase == Phase::Idle);
             assert!(!panel.voice.hold_capture);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
@@ -1691,10 +1695,23 @@ mod tests {
             let snapshot = serde_json::to_string(&panel.snapshot(cx)).unwrap();
             assert!(!snapshot.contains("Hello world"));
             assert!(!snapshot.contains("live_transcript"));
+            // The revision is painted in the composer as dim text: never
+            // inserted, never part of the persisted snapshot.
+            panel.input.read_with(cx, |input, _| {
+                assert_eq!(input.voice_preview(), Some("Hello world."));
+            });
             let before = panel.items.len();
-            panel.apply_voice_event(NariEvent::Finished(Ok("Hello world.".into())), cx);
+            // `send` keeps its old contract: exactly one prompt, draft untouched.
+            panel.finish_voice_with_mode(
+                Ok("Hello world.".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert_eq!(panel.items.len(), before + 1, "sent exactly once");
+            panel.input.read_with(cx, |input, _| {
+                assert!(input.voice_preview().is_none(), "final words replace the preview")
+            });
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
         });
@@ -1747,18 +1764,29 @@ mod tests {
         });
     }
 
+    /// Partials are visible while recording as dim composer text, and the
+    /// draft itself stays empty: nothing is inserted until the recording ends.
     #[gpui::test]
-    fn voice_meter_renders_without_streaming_into_composer(cx: &mut gpui::TestAppContext) {
+    fn voice_meter_and_dim_composer_partials_show_while_recording(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.voice.phase = Phase::Recording;
             panel.apply_voice_event(NariEvent::Transcript("Streaming Nari words".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+        assert!(
+            vcx.debug_bounds("voice-live-transcript").is_some(),
+            "the live revision shows in the composer while recording"
+        );
         assert!(vcx.debug_bounds("voice-waveform").is_some());
         panel.read_with(vcx, |panel, cx| {
-            assert!(panel.input.read(cx).content.is_empty())
+            assert!(panel.input.read(cx).content.is_empty());
+            assert_eq!(
+                panel.input.read(cx).voice_preview(),
+                Some("Streaming Nari words")
+            );
         });
     }
 

@@ -1492,6 +1492,12 @@ impl PromptInput {
         }
     }
 
+    /// Test hook: the dim recognition partial currently shown, if any.
+    #[cfg(test)]
+    pub(crate) fn voice_preview(&self) -> Option<&str> {
+        self.voice_preview.as_deref()
+    }
+
     /// One dim line above the partials saying where the words will land.
     pub(crate) fn set_voice_preview_hint(
         &mut self,
