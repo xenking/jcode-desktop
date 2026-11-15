@@ -27,6 +27,7 @@ impl Render for MeterTooltip {
 
 /// Subscription quota shown when hovering the composer's method pill.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)] // hover card of the method pill, which left the composer bar
 pub(crate) enum LimitsSummary {
     Limits(Vec<UsageLimit>),
     Unavailable(String),
@@ -34,6 +35,7 @@ pub(crate) enum LimitsSummary {
 
 /// Hover card for the method pill: the credential name plus one bar per
 /// quota window with its reset time.
+#[allow(dead_code)] // see LimitsSummary
 pub(crate) struct LimitsTooltip {
     pub(crate) method: String,
     pub(crate) summary: LimitsSummary,
@@ -80,6 +82,7 @@ impl Render for LimitsTooltip {
     }
 }
 
+#[allow(dead_code)]
 fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElement {
     let used = limit
         .usage_percent
@@ -633,6 +636,7 @@ impl Panel {
 
     /// Quota for the active subscription credential, for the method pill's
     /// hover card. `None` on per-token routes or when nothing is known.
+    #[allow(dead_code)]
     pub(super) fn limits_summary(&self, cx: &App) -> Option<LimitsSummary> {
         if self.model.is_none() && self.provider.is_none() {
             return None;

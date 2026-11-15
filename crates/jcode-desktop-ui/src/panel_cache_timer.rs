@@ -63,7 +63,7 @@ pub(crate) fn label(remaining_secs: u64) -> String {
 
 /// `1h`, `5m`, `47m`: compact spans for the hover text.
 fn span(secs: u64) -> String {
-    if secs >= 3600 && secs % 3600 == 0 {
+    if secs >= 3600 && secs.is_multiple_of(3600) {
         format!("{}h", secs / 3600)
     } else if secs >= 60 {
         format!("{}m", secs / 60)

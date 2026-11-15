@@ -536,45 +536,6 @@ impl Panel {
     }
 }
 
-/// Logo id for the serving provider, so the method pill can be icon only.
-pub(super) fn account_logo_id(provider: Option<&str>) -> Option<&'static str> {
-    let provider = provider?.trim().to_ascii_lowercase();
-    let id = match provider.as_str() {
-        "claude" | "anthropic" => "claude",
-        "openai" | "chatgpt" | "openai-api" => "openai",
-        other => [
-            "anthropic-api",
-            "jcode",
-            "gemini",
-            "copilot",
-            "openrouter",
-            "opencode",
-            "opencode-go",
-            "cursor",
-            "bedrock",
-            "azure",
-            "xai",
-            "mistral",
-            "deepseek",
-            "groq",
-        ]
-        .into_iter()
-        .find(|id| *id == other)?,
-    };
-    Some(id)
-}
-
-fn account_pill_icon(provider: Option<&str>, color: gpui::Rgba) -> gpui::Svg {
-    let bytes = account_logo_id(provider)
-        .and_then(crate::accounts::logo)
-        .unwrap_or(include_bytes!("../../../assets/icons/account.svg"));
-    gpui::svg()
-        .data(bytes)
-        .size(px(12.))
-        .flex_none()
-        .text_color(color)
-}
-
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div()

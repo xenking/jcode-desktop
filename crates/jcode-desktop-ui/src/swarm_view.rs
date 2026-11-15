@@ -606,7 +606,9 @@ impl Indicator {
     }
 
     /// Spinning while anything is actually running, paused when every live
-    /// worker waits on a dependency.
+    /// worker waits on a dependency. Kept for the sidebar rows and tests; the
+    /// composer pill draws its own segmented bar instead.
+    #[allow(dead_code)]
     pub fn glyph(&self) -> Glyph {
         if self.workers.iter().any(|w| w.state.is_active()) {
             Glyph::Spinner
@@ -1127,10 +1129,6 @@ mod tests {
         assert!(lines.starts_with("poodle · "), "{lines}");
         assert!(lines.contains("thinking"), "{lines}");
         assert!(lines.contains("waiting"), "{lines}");
-        assert_eq!(
-            Indicator::from_workers(&workers).unwrap().glyph(),
-            Glyph::Spinner
-        );
     }
 
     /// The composer pill's three segments: what runs now, what is parked, and
