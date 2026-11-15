@@ -1387,11 +1387,14 @@ impl Workspace {
                     workspace.sessions.push(child);
                 }
             }
-            if let Ok(effort) = std::env::var("JCODE_DESKTOP_SCREENSHOT_BAR")
-                && let Some(slot) = workspace.slots.first()
-            {
-                slot.panel
-                    .update(cx, |panel, cx| panel.apply_bar_fixture(&effort, cx));
+            if let Ok(effort) = std::env::var("JCODE_DESKTOP_SCREENSHOT_BAR") {
+                // Hand the swarm fixture's workers to the bar now; the strips
+                // otherwise sync on the first session-list update.
+                workspace.sync_swarm_strips(cx);
+                if let Some(slot) = workspace.slots.first() {
+                    slot.panel
+                        .update(cx, |panel, cx| panel.apply_bar_fixture(&effort, cx));
+                }
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {
                 workspace.open_publish_fixture(cx);

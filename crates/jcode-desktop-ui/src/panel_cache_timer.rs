@@ -187,6 +187,20 @@ impl Panel {
         // The fixture panel is narrow; the location would push the status
         // marks out of the row, and it is not what this review is about.
         self.working_dir = None;
+        // The coordinator is parked on its running workers, so the swarm
+        // pill shows the wait mark beside the live count.
+        let running: Vec<String> = self
+            .swarm_workers
+            .iter()
+            .filter(|worker| worker.state.is_live())
+            .map(|worker| worker.session_id.clone())
+            .collect();
+        if !running.is_empty() {
+            self.pending_awaits = vec![jcode_sdk::PendingAwait {
+                requested_ids: running,
+                deadline_unix_ms: u64::MAX,
+            }];
+        }
         self.items
             .push(Item::ResponseStats(super::response_stats::ResponseStats {
                 at_ms: Some(now_ms() - 12 * 60_000),
