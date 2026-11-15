@@ -105,6 +105,12 @@ pub enum Update {
     Sessions {
         sessions: Vec<SessionInfo>,
     },
+    /// Facts read from each swarm worker's own record: model, effort, spend
+    /// and live phase. Sent before the catalog that lists those workers, so a
+    /// sidebar row never renders without its model.
+    WorkerFacts {
+        workers: HashMap<String, jcode_sdk::WorkerMeta>,
+    },
     /// A session was created (in reply to `Command::CreateSession`).
     SessionCreated {
         session: SessionInfo,
@@ -1336,10 +1342,11 @@ fn refresh_sessions(
                     started.elapsed().as_secs_f64() * 1_000.0,
                     sessions.len()
                 );
+                send_worker_facts(&updates, &sessions);
                 let _ = updates.send(Update::Sessions { sessions });
             }
             let started = std::time::Instant::now();
-            let api_sessions =
+            let listed =
                 match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
                     Ok(sessions) => sessions,
                     Err(error) => {
@@ -1350,7 +1357,7 @@ fn refresh_sessions(
                         Vec::new()
                     }
                 };
-            let mut sessions = merge_persisted_sessions(api_sessions, home.as_deref());
+            let mut sessions = merge_persisted_sessions(listed, home.as_deref());
             jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
             jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
             eprintln!(
@@ -1358,10 +1365,22 @@ fn refresh_sessions(
                 started.elapsed().as_secs_f64() * 1_000.0,
                 sessions.len()
             );
+            send_worker_facts(&updates, &sessions);
             let _ = updates.send(Update::Sessions { sessions });
             in_flight.store(false, std::sync::atomic::Ordering::Release);
         })
         .expect("spawn session list thread");
+}
+
+/// Publish what each swarm worker's own record says about it, before the
+/// catalog that lists the workers. A worker's model, effort and spend are not
+/// in the catalog entry, and re-reading its transcript in the UI thread would
+/// stall the sidebar.
+fn send_worker_facts(updates: &UpdateSender, sessions: &[SessionInfo]) {
+    let workers = jcode_sdk::local_worker_meta(sessions);
+    if !workers.is_empty() {
+        let _ = updates.send(Update::WorkerFacts { workers });
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -3012,9 +3031,18 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         ApiEvent::Attached { session } | ApiEvent::SessionForked { session } => {
             session.session_id = address.ui_id(&session.session_id);
         }
-        ApiEvent::Sessions { sessions } => {
+        ApiEvent::Sessions { sessions, workers } => {
             for session in sessions {
                 session.session_id = address.ui_id(&session.session_id);
+            }
+            // Facts are keyed by the same session ids, so a remote session's
+            // renamed ids must be rewritten with them.
+            if !workers.is_empty() {
+                let renamed = workers
+                    .iter()
+                    .map(|(id, meta)| (address.ui_id(id), meta.clone()))
+                    .collect::<HashMap<_, _>>();
+                *workers = renamed;
             }
         }
         _ => {}

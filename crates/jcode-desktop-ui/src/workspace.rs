@@ -841,6 +841,10 @@ pub struct Workspace {
     coach_expiry_task: Option<gpui::Task<()>>,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// What each swarm worker's own record says: model, effort, spend and what
+    /// its newest message shows it doing. Keyed by session id; the catalog
+    /// entry itself carries none of this.
+    worker_meta: HashMap<String, jcode_sdk::WorkerMeta>,
     /// Past rows belong to this window only, never the durable session catalog.
     sidebar_closed_sessions: HashSet<String>,
     /// Sessions the shared daemon is running a turn for right now, from its
@@ -1179,6 +1183,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            worker_meta: HashMap::new(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
@@ -1605,6 +1610,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            worker_meta: HashMap::new(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: None,
@@ -2219,6 +2225,11 @@ impl Workspace {
         {
             return false;
         }
+        if let Update::WorkerFacts { workers } = &update
+            && workers == &self.worker_meta
+        {
+            return false;
+        }
 
         match update {
             Update::Status(status) => self.status = status,
@@ -2258,6 +2269,13 @@ impl Workspace {
                 {
                     self.start_default_startup(cx);
                 }
+            }
+            Update::WorkerFacts { workers } => {
+                self.worker_meta = workers;
+                // Rows read the records, so the strip and the sidebar rebuild;
+                // panels take the model their own record names when the
+                // runtime has not sent an identity yet.
+                self.sync_swarm_strips(cx);
             }
             Update::Sessions { sessions } => {
                 if self.pinned_working_dir.is_none()
@@ -2805,12 +2823,19 @@ impl Workspace {
     /// indicator. Non-coordinators get none.
     fn sync_swarm_strips(&mut self, cx: &mut Context<Self>) {
         let now = swarm_now_ms();
-        let workers = crate::swarm_view::workers_by_coordinator(&self.sessions, now);
+        let workers =
+            crate::swarm_view::workers_by_coordinator(&self.sessions, &self.worker_meta, now);
         for slot in &self.slots {
             let id = slot.panel.read(cx).session_id.clone();
             let list = workers.get(&id).cloned().unwrap_or_default();
             slot.panel
                 .update(cx, |panel, cx| panel.set_swarm_workers(list, cx));
+            // A worker's own panel has no runtime identity until it answers a
+            // model probe; its record already names the model and effort, so
+            // the composer footer shows those instead of asking to choose one.
+            let record = self.worker_meta.get(&id).cloned();
+            slot.panel
+                .update(cx, |panel, cx| panel.set_worker_record(record, cx));
         }
         cx.notify();
     }
@@ -2841,6 +2866,16 @@ impl Workspace {
         let home = fixtures.join("microbe_home");
         let mut sessions = harness::merge_persisted_sessions(Vec::new(), Some(&home));
         jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
+        // The rows read each worker's record; the fixture homes already hold
+        // trimmed copies of them, so read those rather than the real home. The
+        // usage fixture keeps full token records for the workers it covers.
+        let ids = jcode_sdk::worker_ids(&sessions);
+        let mut meta = jcode_sdk::worker_meta_for(&home, &ids);
+        meta.extend(jcode_sdk::worker_meta_for(
+            &fixtures.join("usage_home"),
+            &ids,
+        ));
+        self.worker_meta = meta;
         let Some(position) = sessions.iter().position(|s| s.session_id.starts_with("session_microbe_")) else {
             return;
         };
@@ -5886,7 +5921,11 @@ impl Workspace {
                 nested.insert(child.session.session_id.clone());
                 nested_workers.entry(root.clone()).or_default().push((
                     child.depth,
-                    crate::swarm_view::Worker::from_session(&child.session, swarm_now),
+                    crate::swarm_view::Worker::from_session(
+                        &child.session,
+                        self.worker_meta.get(&child.session.session_id),
+                        swarm_now,
+                    ),
                 ));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;

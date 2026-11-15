@@ -394,7 +394,7 @@ mod tests {
             "swarm_status": status, "agent_label": label,
         }))
         .unwrap();
-        Worker::from_session(&session, 0)
+        Worker::from_session(&session, None, 0)
     }
 
     fn usage(model: &str, provider: &str, total: u64) -> WorkerUsage {

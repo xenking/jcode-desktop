@@ -32,6 +32,7 @@ mod performance;
 mod persisted_history;
 mod preview_control;
 pub mod preview_state;
+mod provider_mark;
 mod publish;
 mod restart_spawn;
 mod resume_content_search;

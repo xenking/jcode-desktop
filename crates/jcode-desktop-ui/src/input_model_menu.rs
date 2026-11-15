@@ -412,7 +412,7 @@ pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>)
 }
 
 /// Logo id (see `accounts::logo`) for the service a route goes through.
-fn provider_logo(provider: &str, api_method: &str) -> &'static str {
+pub(crate) fn provider_logo(provider: &str, api_method: &str) -> &'static str {
     let haystack = format!("{provider} {api_method}").to_ascii_lowercase();
     for (needle, logo) in [
         ("openrouter", "openrouter"),

@@ -31,7 +31,7 @@ use layout::PromptLayout;
 #[path = "input_file_drop.rs"]
 pub(crate) mod file_drop;
 #[path = "input_model_menu.rs"]
-mod model_menu;
+pub(crate) mod model_menu;
 #[path = "input_model_picker.rs"]
 mod model_picker;
 #[path = "input_model_search.rs"]

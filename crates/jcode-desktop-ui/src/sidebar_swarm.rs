@@ -109,8 +109,9 @@ pub(super) fn visible(
     crate::swarm_view::visible_workers(workers, |(_, worker)| worker.state)
 }
 
-/// Compact rows nested under a coordinator: status glyph, name, task and age.
-/// Each row opens the worker's chat.
+/// Compact rows nested under a coordinator: status glyph, the worker's animal
+/// (its name is in the tooltip), task, model, spend and live state. Each row
+/// opens the worker's chat.
 pub(super) fn render_workers(
     sidebar_index: usize,
     workers: &[(usize, crate::swarm_view::Worker)],
@@ -150,6 +151,16 @@ pub(super) fn render_workers(
                 .state
                 .glyph()
                 .map(|glyph| format!("{glyph:?}").to_ascii_lowercase());
+            let tooltip = worker.tooltip();
+            let model = worker.model_label();
+            let provider = crate::provider_mark::render(
+                worker.meta.provider.as_deref(),
+                worker.meta.model.as_deref(),
+                10.0,
+                theme.TEXT_FAINT,
+            );
+            // The sidebar is one narrow column: the task, the model and what
+            // the worker is doing win the space. Spend stays one hover away.
             div()
                 .id(gpui::SharedString::from(format!(
                     "sidebar-worker-{sidebar_index}-{index}"
@@ -162,12 +173,15 @@ pub(super) fn render_workers(
                 .flex()
                 .when(expanded, |el| el.items_start().flex_wrap())
                 .when(!expanded, |el| el.items_center())
-                .gap(px(5.0))
+                .gap(px(3.0))
                 .rounded_md()
                 .cursor_pointer()
                 .hover(|el| el.bg(theme.PANEL_BG))
                 .text_size(px(10.5))
                 .text_color(theme.TEXT_DIM)
+                .tooltip(move |_, cx| {
+                    cx.new(|_| crate::panel::usage::MeterTooltip(tooltip.clone())).into()
+                })
                 .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
@@ -189,15 +203,27 @@ pub(super) fn render_workers(
                         })
                         .children(mark),
                 )
-                .child(div().flex_none().child(worker.name.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .children(worker.icon.map(|icon| icon.to_owned())),
+                )
                 .children(worker.label.clone().map(|label| {
                     div()
                         .min_w_0()
+                        // The task is what the row is for; the model, tokens
+                        // and state keep their width, so the label takes the
+                        // rest instead of collapsing to nothing.
+                        .flex_1()
+                        .min_w(px(24.0))
                         .when(!expanded, |el| el.truncate())
                         .when(expanded, |el| el.max_w_full())
                         .text_color(theme.TEXT_FAINT)
                         .child(label)
                 }))
+                // A worker with no task label keeps the trailing cells right.
+                .when(worker.label.is_none(), |el| el.child(div().flex_1()))
                 .when(label_truncated, |el| {
                     let key = toggle_key.clone();
                     el.child(expandable::glyph_toggle(
@@ -210,12 +236,34 @@ pub(super) fn render_workers(
                         }),
                     ))
                 })
-                .child(div().flex_1())
+                .children(model.map(|model| {
+                    div()
+                        .debug_selector(move || {
+                            format!("sidebar-worker-model-{sidebar_index}-{index}")
+                        })
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        // Metadata sits a half step below the task, so the
+                        // task keeps a readable width in this column.
+                        .text_size(px(9.5))
+                        .text_color(theme.TEXT_FAINT)
+                        .child(provider)
+                        .child(model)
+                }))
                 .child(
                     div()
+                        .debug_selector(move || {
+                            format!("sidebar-worker-state-{sidebar_index}-{index}")
+                        })
                         .flex_none()
+                        .text_size(px(9.5))
                         .text_color(theme.TEXT_FAINT)
-                        .child(worker.status_text()),
+                        // The clock that used to read "running 26m" for every
+                        // worker is the composer's; this column is too narrow
+                        // for it and the state word is the part that differs.
+                        .child(worker.state_text()),
                 )
         }))
         .when(folded > 0, |el| {
@@ -237,6 +285,28 @@ pub(super) fn render_workers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offline screenshot fixture is what the rows are reviewed against.
+    /// If its worker records do not resolve, every row silently loses its
+    /// model and spend, which is exactly what the screenshot is meant to show.
+    #[test]
+    fn screenshot_fixture_workers_resolve_their_records() {
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let identity = "session_ant_1794675020922_f6e720f45031cad8".to_string();
+        let meta = jcode_sdk::worker_meta_for(&fixtures.join("microbe_home"), &[identity.clone()]);
+        assert_eq!(
+            meta[&identity].model.as_deref(),
+            Some("claude-opus-5-5"),
+            "the fixture records are read from <home>/sessions"
+        );
+        let spent = "session_rose_1794717290730_574aea8d9f6adcc3".to_string();
+        let usage = jcode_sdk::worker_meta_for(&fixtures.join("usage_home"), &[spent.clone()]);
+        assert!(
+            usage[&spent].input_tokens.unwrap_or(0) > 0,
+            "the usage fixture carries real token counts"
+        );
+    }
     fn session(id: &str, parent: Option<&str>) -> SessionInfo {
         let mut session = super::super::tests::session_info(id, Some(id));
         session.parent_session_id = parent.map(str::to_owned);

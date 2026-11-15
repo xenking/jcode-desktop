@@ -233,7 +233,7 @@ fn composer_worker_row_expands_to_the_whole_label(cx: &mut gpui::TestAppContext)
     .unwrap();
     panel.update(vcx, |panel, cx| {
         panel.set_swarm_workers(
-            vec![crate::swarm_view::Worker::from_session(&session, 0)],
+            vec![crate::swarm_view::Worker::from_session(&session, None, 0)],
             cx,
         );
         panel.swarm_list_open = true;

@@ -17,6 +17,20 @@ impl gpui::EventEmitter<OpenSwarmWorker> for Panel {}
 const MAX_ROWS: usize = 12;
 
 impl Panel {
+    /// This panel's own session record, when the workspace read one for it.
+    /// Only swarm workers have one; an ordinary chat learns its identity from
+    /// the runtime and ignores this.
+    pub(crate) fn set_worker_record(
+        &mut self,
+        record: Option<jcode_sdk::WorkerMeta>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.worker_record != record {
+            self.worker_record = record;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn set_swarm_workers(&mut self, workers: Vec<Worker>, cx: &mut Context<Self>) {
         if self.swarm_workers != workers {
             self.swarm_workers = workers;
@@ -142,6 +156,19 @@ impl Panel {
                         cx,
                     )
                 });
+                // One line carries the identity: the animal stands in for the
+                // name, the row's tooltip spells the name out, then the model,
+                // what it has spent and what it is doing.
+                let tooltip = worker.tooltip();
+                let model = worker.model_label();
+                let provider = crate::provider_mark::render(
+                    worker.meta.provider.as_deref(),
+                    worker.meta.model.as_deref(),
+                    11.0,
+                    theme.TEXT_FAINT,
+                );
+                let tokens = worker.tokens_text();
+                let cost = worker.cost_text();
                 div()
                     .id(("swarm-list-worker", index))
                     .debug_selector(move || format!("swarm-list-worker-{index}"))
@@ -150,12 +177,15 @@ impl Panel {
                     .px_2()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(5.0))
                     .rounded_md()
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.USER_BG))
                     .text_size(px(11.0))
                     .text_color(theme.TEXT_DIM)
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(tooltip.clone())).into()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.swarm_list_open = false;
@@ -163,7 +193,12 @@ impl Panel {
                         cx.notify();
                     }))
                     .child(div().flex_none().size(px(11.0)).children(mark))
-                    .child(div().flex_none().child(worker.name.clone()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.5))
+                            .children(worker.icon.map(|icon| icon.to_owned())),
+                    )
                     .children(worker.label.clone().map(|label| {
                         div()
                             .min_w_0()
@@ -186,8 +221,34 @@ impl Panel {
                         ))
                     })
                     .child(div().flex_1())
+                    .children(model.map(|model| {
+                        div()
+                            .debug_selector(move || format!("swarm-list-model-{index}"))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(3.0))
+                            .text_color(theme.TEXT_FAINT)
+                            .child(provider)
+                            .child(model)
+                    }))
+                    .children(tokens.map(|tokens| {
+                        div()
+                            .debug_selector(move || format!("swarm-list-tokens-{index}"))
+                            .flex_none()
+                            .text_color(theme.TEXT_FAINT)
+                            .child(tokens)
+                    }))
+                    .children(cost.map(|cost| {
+                        div()
+                            .debug_selector(move || format!("swarm-list-cost-{index}"))
+                            .flex_none()
+                            .text_color(theme.TEXT_FAINT)
+                            .child(cost)
+                    }))
                     .child(
                         div()
+                            .debug_selector(move || format!("swarm-list-state-{index}"))
                             .flex_none()
                             .text_color(theme.TEXT_FAINT)
                             .child(worker.status_text()),
@@ -243,7 +304,7 @@ mod tests {
             "parent_session_id": "lead", "swarm_status": status,
         }))
         .unwrap();
-        Worker::from_session(&session, 0)
+        Worker::from_session(&session, None, 0)
     }
 
     fn event(value: serde_json::Value) -> ApiEvent {
@@ -312,5 +373,49 @@ mod tests {
         panel.update(vcx, |panel, cx| panel.set_swarm_workers(vec![worker("rose", "ready")], cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list").is_none());
+    }
+
+    /// The row the user reported as "poodle compact-div… running 23m": the
+    /// animal stands in for the name, then the task, the model, what the
+    /// worker has spent and what it is doing right now.
+    #[gpui::test]
+    fn worker_rows_carry_the_model_spend_and_live_state(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let mut row = worker("poodle", "running");
+        row.label = Some("compact-divider".into());
+        row.meta = jcode_sdk::WorkerMeta {
+            model: Some("deepseek-v4.1-flash".into()),
+            provider: Some("opencode-go".into()),
+            effort: Some("high".into()),
+            input_tokens: Some(12_400),
+            output_tokens: Some(3_100),
+            phase: Some(jcode_sdk::WorkerPhase::Tool),
+            tool: Some("bash".into()),
+            last_activity_ms: Some(0),
+            ..jcode_sdk::WorkerMeta::default()
+        };
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![row], cx);
+            panel.swarm_list_open = true;
+        });
+        vcx.run_until_parked();
+        for selector in [
+            "swarm-list-worker-0",
+            "swarm-list-model-0",
+            "swarm-list-tokens-0",
+            "swarm-list-state-0",
+        ] {
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+        }
+        // The cost cell appears exactly when the route is priced: a machine
+        // with no models.dev cache shows tokens and no dollars, never "$0.00".
+        let priced =
+            jcode_base::model_pricing::lookup("opencode-go", "deepseek-v4.1-flash").is_some();
+        assert_eq!(vcx.debug_bounds("swarm-list-cost-0").is_some(), priced);
+        // The row is one line: the model is to the right of the task label and
+        // the state is the last cell.
+        let label = vcx.debug_bounds("swarm-list-model-0").unwrap();
+        let state = vcx.debug_bounds("swarm-list-state-0").unwrap();
+        assert!(label.right() <= state.left(), "model sits before the state");
     }
 }

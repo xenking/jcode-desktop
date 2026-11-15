@@ -1,9 +1,11 @@
 //! Coordinator view of its swarm: worker lifecycle states, the compact
 //! "workers running" indicator and the agent activity icon. Data comes from
-//! the daemon's durable state (swarm snapshots via `SessionInfo::swarm_status`
-//! and session records), never from guesses based on transcript activity.
+//! the daemon's durable state (swarm snapshots via `SessionInfo::swarm_status`)
+//! plus the worker's own record (`SessionInfo`'s worker table: model, effort,
+//! tokens, and what its newest message says it is doing), never from guesses
+//! based on the coordinator's transcript.
 
-use jcode_sdk::SessionInfo;
+use jcode_sdk::{SessionInfo, WorkerMeta, WorkerPhase};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,36 +126,281 @@ pub fn worker_state(session: &SessionInfo) -> WorkerState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Worker {
     pub session_id: String,
     pub name: String,
     pub label: Option<String>,
     pub state: WorkerState,
-    /// Since last daemon-reported activity, when known.
+    /// Since the newest recorded activity, when known.
     pub age_ms: Option<u64>,
+    /// Animal emoji for the friendly name, so a row needs no room for the
+    /// name itself. The name stays in the tooltip.
+    pub icon: Option<&'static str>,
+    /// The worker's own record: model, effort, tokens and live phase.
+    pub meta: WorkerMeta,
 }
 
 impl Worker {
-    pub fn from_session(session: &SessionInfo, now_ms: u64) -> Self {
-        let last = session.last_active_at_ms.or(session.updated_at_ms);
+    pub fn from_session(session: &SessionInfo, meta: Option<&WorkerMeta>, now_ms: u64) -> Self {
+        let meta = meta.cloned().unwrap_or_default();
+        // A worker's own newest message is fresher than the daemon's
+        // last-active stamp, which only moves when a process starts.
+        let last = meta
+            .last_activity_ms
+            .map(|ms| ms as u64)
+            .or(session.last_active_at_ms.or(session.updated_at_ms).map(|ms| ms as u64));
+        let name = display_name(session);
         Self {
-            session_id: session.session_id.clone(),
-            name: display_name(session),
+            icon: friendly_name(&session.session_id)
+                .map(jcode_core::id::session_icon)
+                .filter(|icon| *icon != "💫"),
             label: session.agent_label.clone(),
             state: worker_state(session),
             age_ms: last
                 .filter(|ms| *ms > 0)
-                .map(|ms| now_ms.saturating_sub(ms as u64)),
+                .map(|ms| now_ms.saturating_sub(ms)),
+            session_id: session.session_id.clone(),
+            name,
+            meta,
         }
     }
 
-    /// `running 4m` or `ready`.
-    pub fn status_text(&self) -> String {
-        match self.age_ms {
-            Some(age) => format!("{} {}", self.state.label(), format_age(age)),
-            None => self.state.label().to_owned(),
+    /// What the worker is doing right now. A finished or paused worker shows
+    /// its lifecycle; a running one shows the tail of its own record, so a
+    /// worker stopped on a tool result no longer reads "running" forever.
+    pub fn state_text(&self) -> String {
+        match self.state {
+            WorkerState::Running => match self.meta.phase {
+                Some(WorkerPhase::Tool) => self
+                    .meta
+                    .tool
+                    .clone()
+                    .filter(|tool| !tool.trim().is_empty())
+                    .unwrap_or_else(|| "tool".to_owned()),
+                Some(WorkerPhase::Thinking) => "thinking".to_owned(),
+                Some(WorkerPhase::Waiting) => "waiting".to_owned(),
+                Some(WorkerPhase::Idle) | None => "running".to_owned(),
+            },
+            WorkerState::Blocked => "waiting".to_owned(),
+            state => state.label().to_owned(),
         }
+    }
+
+    /// `thinking 4m`, `bash 26m`, or just `ready`: a finished worker's clock
+    /// stopped mattering, so it is not shown.
+    pub fn status_text(&self) -> String {
+        match (self.state.is_finished(), self.age_ms) {
+            (false, Some(age)) => format!("{} {}", self.state_text(), format_age(age)),
+            _ => self.state_text(),
+        }
+    }
+
+    /// `ds-4.1f`, `opus 5.5`: the model, short enough for a one-line row.
+    pub fn model_label(&self) -> Option<String> {
+        self.meta
+            .model
+            .as_deref()
+            .map(compact_model)
+            .filter(|model| !model.is_empty())
+    }
+
+    /// `↑12k ↓3k`, or the half that is known.
+    pub fn tokens_text(&self) -> Option<String> {
+        let short = crate::swarm_view::short_tokens;
+        match (self.meta.input_tokens, self.meta.output_tokens) {
+            (Some(input), Some(output)) => Some(format!("↑{} ↓{}", short(input), short(output))),
+            (Some(input), None) => Some(format!("↑{}", short(input))),
+            (None, Some(output)) => Some(format!("↓{}", short(output))),
+            (None, None) => None,
+        }
+    }
+
+    /// `$0.42` on a metered route, nothing on a subscription: an OAuth seat
+    /// has no per-token price, and "$0.00" would read as free.
+    pub fn cost_text(&self) -> Option<String> {
+        let cost = metered_cost(&self.meta)?;
+        Some(format_cost(cost))
+    }
+
+    /// Everything the row had to leave out, for the hover tooltip.
+    pub fn tooltip(&self) -> String {
+        let mut parts = vec![self.name.clone()];
+        if let Some(label) = self.label.as_deref().filter(|label| !label.trim().is_empty()) {
+            parts.push(label.to_owned());
+        }
+        parts.push(self.status_text());
+        let route = [self.meta.provider.as_deref().map(provider_label), self.meta.model.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("/");
+        if !route.is_empty() {
+            parts.push(route);
+        }
+        if let Some(effort) = self
+            .meta
+            .effort
+            .as_deref()
+            .filter(|effort| !effort.trim().is_empty())
+        {
+            parts.push(format!("{effort} effort"));
+        }
+        if let Some(tokens) = self.tokens_text() {
+            parts.push(match self.cost_text() {
+                Some(cost) => format!("{tokens} {cost}"),
+                None => tokens,
+            });
+        }
+        parts.join(" · ")
+    }
+}
+
+/// `opencode-go` -> `opencode`: the auth suffix is noise on a one-line row.
+fn provider_label(key: &str) -> &str {
+    key.strip_suffix("-oauth")
+        .or_else(|| key.strip_suffix("-api"))
+        .unwrap_or(key)
+}
+
+/// Token counts as a row has room for them: `842`, `12k`, `4.5M`.
+fn short_tokens(count: u64) -> String {
+    let short = jcode_desktop_harness::swarm_usage::format_tokens(count);
+    // `3.0k` wastes a character on nothing: the row says `3k`.
+    short
+        .strip_suffix(".0k")
+        .map(|whole| format!("{whole}k"))
+        .or_else(|| short.strip_suffix(".0M").map(|whole| format!("{whole}M")))
+        .unwrap_or(short)
+}
+
+/// Estimated spend for the tokens the worker's record reports, at the price
+/// of the route it runs on. `None` when the route has no per-token price
+/// (subscription seats) or the model is not in any pricing catalog.
+fn metered_cost(meta: &WorkerMeta) -> Option<f64> {
+    let provider = meta.provider.as_deref()?.trim().to_ascii_lowercase();
+    let model = meta.model.as_deref().filter(|model| !model.trim().is_empty())?;
+    // A seat bills a flat subscription: any number here would be invented.
+    if provider.contains("oauth")
+        || ["copilot", "cursor", "jcode", "subscription", "claude-max", "chatgpt"]
+            .iter()
+            .any(|seat| provider.contains(seat))
+    {
+        return None;
+    }
+    let cost = jcode_base::model_pricing::lookup(&provider, model)?;
+    let price = |per_mtok: f64| per_mtok / 1_000_000.0;
+    let read = cost.cache_read_usd_per_mtok.unwrap_or(cost.input_usd_per_mtok);
+    let write = cost
+        .cache_write_usd_per_mtok
+        .unwrap_or(cost.input_usd_per_mtok);
+    let total = meta.input_tokens.unwrap_or(0) as f64 * price(cost.input_usd_per_mtok)
+        + meta.output_tokens.unwrap_or(0) as f64 * price(cost.output_usd_per_mtok)
+        + meta.cache_read_tokens.unwrap_or(0) as f64 * price(read)
+        + meta.cache_creation_tokens.unwrap_or(0) as f64 * price(write);
+    (total > 0.0).then_some(total)
+}
+
+/// `$1.24`, `$0.043`, `<$0.01`: enough precision to see work happening,
+/// never a fake zero.
+fn format_cost(usd: f64) -> String {
+    if usd >= 1.0 {
+        format!("${usd:.2}")
+    } else if usd >= 0.01 {
+        format!("${usd:.3}")
+    } else {
+        "<$0.01".to_owned()
+    }
+}
+
+/// A one-line model name: a long vendor keeps its product name, a short one
+/// abbreviates and glues its variant on.
+///
+/// `deepseek-v4.1-flash` reads `ds-4.1f`, `claude-opus-5-5` reads `opus 5.5`,
+/// `gpt-5.6` reads `gpt 5.6`.
+pub fn compact_model(model: &str) -> String {
+    let model = model
+        .trim()
+        .split_once('/')
+        .map_or_else(|| model.trim(), |(_, bare)| bare.trim())
+        .trim_start_matches("claude-")
+        .to_ascii_lowercase();
+    let mut tokens = model.split('-').filter(|token| !token.is_empty());
+    let Some(family) = tokens.next() else {
+        return String::new();
+    };
+    let (short, abbreviated) = shorten_family(family);
+    let mut version: Vec<&str> = Vec::new();
+    let mut variants: Vec<&str> = Vec::new();
+    for token in tokens {
+        // Digits before any word are the version; anything after a word is a
+        // variant (`flash`, `mini`, `preview`).
+        if variants.is_empty() && is_version(token) {
+            version.push(token);
+        } else {
+            variants.push(token);
+        }
+    }
+    let version = version
+        .iter()
+        .map(|part| part.trim_start_matches('v'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    let variant = variants
+        .iter()
+        .filter_map(|token| variant_letter(token))
+        .collect::<String>();
+    if abbreviated {
+        return format!("{short}-{version}{variant}")
+            .trim_end_matches('-')
+            .to_owned();
+    }
+    // A short, readable variant word stays whole: `gpt 5.6 mini`.
+    let suffix = variants
+        .iter()
+        .find(|token| token.chars().count() <= 5 && variant_letter(token).is_some())
+        .filter(|_| !version.is_empty())
+        .map(|token| format!(" {token}"))
+        .unwrap_or_default();
+    // A family with no version keeps its first word instead: `kimi-k2-0905`
+    // reads `kimi k2`, not `kimi 0905`.
+    let tail = if version.is_empty() {
+        variants
+            .iter()
+            .find(|token| !token.chars().all(|c| c.is_ascii_digit()))
+            .map(|token| *token)
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        version
+    };
+    format!("{short} {tail}{suffix}").trim().to_owned()
+}
+
+/// Families whose full name is too long for a row keep a recognised short
+/// form; everything else reads as itself.
+fn shorten_family(family: &str) -> (&str, bool) {
+    match family {
+        "deepseek" => ("ds", true),
+        "gemini" => ("gem", true),
+        "mistral" => ("mist", true),
+        "llama" => ("llama", false),
+        "moonshotai" | "kimi" => ("kimi", false),
+        other => (other, false),
+    }
+}
+
+fn is_version(token: &str) -> bool {
+    let digits = token.trim_start_matches('v');
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// `flash` -> `f`, `mini` -> `m`, `thinking` -> `t`, `preview` -> nothing.
+fn variant_letter(token: &str) -> Option<char> {
+    match token {
+        "preview" | "latest" | "exp" | "experimental" => None,
+        other => other.chars().next().filter(|c| c.is_ascii_alphabetic()),
     }
 }
 
@@ -161,6 +408,7 @@ impl Worker {
 /// ownership (`parent_session_id`) counts, never transcript forks.
 pub fn workers_by_coordinator(
     sessions: &[SessionInfo],
+    workers: &HashMap<String, WorkerMeta>,
     now_ms: u64,
 ) -> HashMap<String, Vec<Worker>> {
     let mut map: HashMap<String, Vec<Worker>> = HashMap::new();
@@ -175,7 +423,11 @@ pub fn workers_by_coordinator(
         if list.iter().any(|w| w.session_id == session.session_id) {
             continue;
         }
-        list.push(Worker::from_session(session, now_ms));
+        list.push(Worker::from_session(
+            session,
+            workers.get(&session.session_id),
+            now_ms,
+        ));
     }
     map
 }
@@ -216,7 +468,7 @@ pub fn visible_workers<T: Clone>(
 
 /// The composer's compact worker indicator: nothing unless some worker is
 /// still live.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Indicator {
     /// Live workers, running first.
     pub workers: Vec<Worker>,
@@ -314,7 +566,16 @@ mod tests {
 
     fn worker(name: &str, status: Option<&str>) -> Worker {
         let id = format!("session_{name}_1_a");
-        Worker::from_session(&session(&id, Some("lead"), status), 1_000_000)
+        Worker::from_session(&session(&id, Some("lead"), status), None, 1_000_000)
+    }
+
+    fn with_meta(name: &str, status: Option<&str>, meta: WorkerMeta) -> Worker {
+        let id = format!("session_{name}_1_a");
+        Worker::from_session(
+            &session(&id, Some("lead"), status),
+            Some(&meta),
+            1_000_000 + 26 * 60 * 1_000,
+        )
     }
 
     #[test]
@@ -354,7 +615,7 @@ mod tests {
             session("session_tulip_3_c", Some("session_microbe_1_a"), Some("failed")),
             session("loop", Some("loop"), None),
         ];
-        let map = workers_by_coordinator(&sessions, 1_240_000);
+        let map = workers_by_coordinator(&sessions, &HashMap::new(), 1_240_000);
         assert_eq!(map.len(), 1);
         let w = &map["session_microbe_1_a"];
         assert_eq!(w.len(), 2);
@@ -473,5 +734,128 @@ mod tests {
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, ["w0", "w1", "w2", "live"]);
         assert_eq!(hidden, 6);
+    }
+
+    fn record(model: &str, provider: &str, effort: Option<&str>) -> WorkerMeta {
+        WorkerMeta {
+            model: Some(model.into()),
+            provider: Some(provider.into()),
+            effort: effort.map(str::to_owned),
+            input_tokens: Some(12_400),
+            output_tokens: Some(3_100),
+            phase: Some(WorkerPhase::Tool),
+            tool: Some("bash".into()),
+            last_activity_ms: Some(1_000_000),
+            ..WorkerMeta::default()
+        }
+    }
+
+    /// The row has to read at a glance: model, spend and what it is doing,
+    /// with the name moved to the tooltip.
+    #[test]
+    fn a_worker_row_reads_model_tokens_and_live_state() {
+        let worker = with_meta(
+            "poodle",
+            Some("running"),
+            record("deepseek-v4.1-flash", "opencode-go", Some("high")),
+        );
+        assert_eq!(worker.model_label().as_deref(), Some("ds-4.1f"));
+        assert_eq!(worker.tokens_text().as_deref(), Some("↑12k ↓3.1k"));
+        assert_eq!(worker.icon, Some(jcode_core::id::session_icon("poodle")));
+        // A running worker on a tool reads the tool, not "running".
+        assert_eq!(worker.state_text(), "bash");
+        assert_eq!(worker.status_text(), "bash 26m");
+        let tooltip = worker.tooltip();
+        assert!(tooltip.starts_with("poodle · "), "{tooltip}");
+        assert!(tooltip.contains("opencode-go/deepseek-v4.1-flash"), "{tooltip}");
+        assert!(tooltip.contains("high effort"), "{tooltip}");
+        assert!(tooltip.contains("↑12k ↓3.1k"), "{tooltip}");
+    }
+
+    /// The report behind this change: `poodle compact-divider · running 26m`
+    /// showed the same words for a worker that was only waiting.
+    #[test]
+    fn a_worker_waiting_on_the_model_does_not_read_as_running() {
+        let mut meta = record("claude-opus-5-5", "claude-oauth", None);
+        meta.phase = Some(WorkerPhase::Thinking);
+        meta.tool = None;
+        let thinking = with_meta("rose", Some("running"), meta);
+        assert_eq!(thinking.model_label().as_deref(), Some("opus 5.5"));
+        assert_eq!(thinking.status_text(), "thinking 26m");
+
+        let ready = with_meta("rose", Some("ready"), record("claude-opus-5-5", "claude-oauth", None));
+        assert_eq!(ready.status_text(), "ready", "a finished worker has no clock");
+
+        let blocked = with_meta("rose", Some("blocked"), WorkerMeta::default());
+        assert_eq!(blocked.status_text(), "waiting 26m");
+
+        // No record at all: the lifecycle word is all there is to say.
+        assert_eq!(
+            worker("rose", Some("running")).status_text(),
+            "running 0s",
+            "without a record the daemon's own stamp is the only clock"
+        );
+    }
+
+    /// A subscription seat has no per-token price. Showing "$0.00" there
+    /// would claim the work was free.
+    #[test]
+    fn cost_is_shown_only_where_tokens_have_a_price() {
+        let oauth = with_meta("rose", Some("running"), record("claude-opus-5-5", "claude-oauth", None));
+        assert_eq!(oauth.cost_text(), None);
+        let copilot = with_meta("rose", Some("running"), record("gpt-5.6", "copilot", None));
+        assert_eq!(copilot.cost_text(), None);
+        assert_eq!(format_cost(1.234), "$1.23");
+        assert_eq!(format_cost(0.0432), "$0.043");
+        assert_eq!(format_cost(0.0004), "<$0.01");
+    }
+
+    #[test]
+    fn compact_model_names_fit_a_one_line_row() {
+        for (model, want) in [
+            ("deepseek-v4.1-flash", "ds-4.1f"),
+            ("claude-opus-5-5", "opus 5.5"),
+            ("opus-5-5", "opus 5.5"),
+            ("gpt-5.6", "gpt 5.6"),
+            ("gpt-5.6-mini", "gpt 5.6 mini"),
+            ("claude-sonnet-4-5-thinking", "sonnet 4.5"),
+            ("anthropic/claude-haiku-4-5", "haiku 4.5"),
+            ("gemini-2.5-pro", "gem-2.5p"),
+            ("kimi-k2-0905-preview", "kimi k2"),
+            ("", ""),
+        ] {
+            assert_eq!(compact_model(model), want, "{model}");
+        }
+    }
+
+    /// A worker's own newest message is fresher than the daemon's
+    /// last-active stamp, so the row's clock follows the record.
+    #[test]
+    fn the_record_clock_wins_over_the_daemons_last_active_stamp() {
+        let mut meta = WorkerMeta::default();
+        meta.last_activity_ms = Some(1_000_000 + 25 * 60 * 1_000);
+        let worker = with_meta("rose", Some("running"), meta);
+        // `with_meta` ages against 1_000_000 + 26m, so the newer record is 1m.
+        assert_eq!(worker.status_text(), "running 1m");
+    }
+
+    #[test]
+    fn indicator_tooltip_lists_each_worker_with_its_own_state() {
+        let mut meta = record("deepseek-v4.1-flash", "opencode-go", Some("high"));
+        meta.phase = Some(WorkerPhase::Thinking);
+        meta.last_activity_ms = None;
+        let workers = vec![
+            with_meta("poodle", Some("running"), meta),
+            worker("rose", Some("blocked")),
+        ];
+        let indicator = Indicator::from_workers(&workers).unwrap();
+        let lines = indicator.tooltip();
+        assert!(lines.starts_with("poodle · "), "{lines}");
+        assert!(lines.contains("thinking"), "{lines}");
+        assert!(lines.contains("waiting"), "{lines}");
+        assert_eq!(
+            Indicator::from_workers(&workers).unwrap().glyph(),
+            Glyph::Spinner
+        );
     }
 }

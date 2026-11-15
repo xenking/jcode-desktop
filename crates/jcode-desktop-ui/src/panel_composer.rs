@@ -30,6 +30,29 @@ pub(super) const VOICE_TRAILING_SPACE: f32 = 52.;
 pub(super) const VOICE_TRAILING_SPACE: f32 = 128.;
 
 impl Panel {
+    /// The composer's identity pills: the model label and the effort, from the
+    /// runtime when it has answered and from the session record otherwise.
+    ///
+    /// A headless swarm worker's panel is served by its daemon, which answers
+    /// no model probe on attach. The record already names both, so a worker
+    /// reads "DeepSeek V4.1 Flash · high" instead of "Choose model" with no
+    /// effort at all. The runtime always wins once it says anything.
+    pub(super) fn composer_identity(&self) -> (String, Option<String>) {
+        let record = self.worker_record.as_ref();
+        let model = self
+            .model
+            .as_deref()
+            .or_else(|| record.and_then(|record| record.model.as_deref()));
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .or_else(|| record.and_then(|record| record.effort.as_deref()))
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty() && model.is_some())
+            .map(str::to_string);
+        (pretty_model_label(model), effort)
+    }
+
     /// Prompt input with its pill row below. Every composer location
     /// (fresh session, startup layout, docked) uses this so the pills never
     /// drift apart from the input they label.
@@ -50,16 +73,10 @@ impl Panel {
                 self.account_label.as_deref(),
             )
         };
-        let model_label = pretty_model_label(self.model.as_deref());
+        let (model_label, effort) = self.composer_identity();
         let limits = (!screenshot_mode)
             .then(|| self.limits_summary(cx))
             .flatten();
-        let effort = self
-            .reasoning_effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|effort| !effort.is_empty() && self.model.is_some())
-            .map(str::to_string);
         let remote_machine = (!screenshot_mode)
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
@@ -678,6 +695,51 @@ mod tests {
             model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
             "GPT-5.1 Codex Max"
         );
+    }
+
+    /// A headless worker panel has no runtime identity, so its record's model
+    /// and effort fill the footer. Without this the pills read "Choose model"
+    /// and no effort at all, which is what "unset" looked like.
+    #[gpui::test]
+    fn a_worker_panel_takes_its_model_and_effort_from_its_record(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("worker-panel", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+
+        let record = jcode_sdk::WorkerMeta {
+            model: Some("deepseek-v4.1-flash".into()),
+            provider: Some("opencode-go".into()),
+            effort: Some("high".into()),
+            ..jcode_sdk::WorkerMeta::default()
+        };
+        let identity = panel.update(vcx, |panel, cx| {
+            panel.set_worker_record(Some(record.clone()), cx);
+            panel.composer_identity()
+        });
+        assert_ne!(identity.0, "Choose model", "the record names the model");
+        assert!(identity.0.contains("4.1"), "{}", identity.0);
+        assert_eq!(identity.1.as_deref(), Some("high"));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("panel-model-effort").is_some(),
+            "the effort pill exists once a model is known"
+        );
+
+        // The runtime wins once it answers.
+        let identity = panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-opus-5-5".into());
+            panel.reasoning_effort = Some("max".into());
+            panel.set_worker_record(Some(record), cx);
+            panel.composer_identity()
+        });
+        assert!(identity.0.contains("Opus 5.5"), "{}", identity.0);
+        assert_eq!(identity.1.as_deref(), Some("max"));
     }
 
     #[test]
