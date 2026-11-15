@@ -395,9 +395,18 @@ pub fn compact_model(model: &str) -> String {
     let model = model
         .trim()
         .split_once('/')
-        .map_or_else(|| model.trim(), |(_, bare)| bare.trim())
+        .map_or_else(|| model.trim(), |(_, bare)| bare.trim());
+    let model = model
+        .strip_prefix("openai:")
+        .unwrap_or(model)
         .trim_start_matches("claude-")
         .to_ascii_lowercase();
+    if let Some((version, variant)) = model.strip_prefix("gpt-").and_then(|s| s.split_once('-'))
+        && is_version(version)
+        && matches!(variant, "sol" | "luna" | "terra")
+    {
+        return format!("{variant} {version}");
+    }
     let mut tokens = model.split('-').filter(|token| !token.is_empty());
     let Some(family) = tokens.next() else {
         return String::new();
@@ -1120,6 +1129,10 @@ mod tests {
     #[test]
     fn compact_model_names_fit_a_one_line_row() {
         for (model, want) in [
+            ("openai:gpt-6.1-sol", "sol 6.1"),
+            ("openai:gpt-6-luna", "luna 6"),
+            ("openai:gpt-6.1-terra", "terra 6.1"),
+            ("gpt-6.1-sol", "sol 6.1"),
             ("deepseek-v4.1-flash", "ds-4.1f"),
             ("claude-opus-5-5", "opus 5.5"),
             ("opus-5-5", "opus 5.5"),
