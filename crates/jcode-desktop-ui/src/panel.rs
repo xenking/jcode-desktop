@@ -372,6 +372,7 @@ struct TranscriptDerivedKey {
 struct TranscriptRenderRow {
     index: usize,
     source: TranscriptRowSource,
+    #[allow(dead_code)]
     role: Option<&'static str>,
     show_label: bool,
 }
@@ -982,6 +983,17 @@ impl Panel {
             });
         });
         let fixture = screenshot_fixture_for(&session_id);
+        let items: Transcript = demo_items(fixture.as_deref()).into();
+        // `JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in the
+        // fixture, so the capture shows the expanded text rather than only the
+        // collapsed rows.
+        let expanded_regions = if crate::harness::screenshot_mode()
+            && expandable::screenshot_expanded()
+        {
+            expandable::all_regions(&items)
+        } else {
+            HashSet::new()
+        };
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
             && matches!(
@@ -1016,7 +1028,7 @@ impl Panel {
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
-            items: demo_items(fixture.as_deref()).into(),
+            items,
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
             } else {
@@ -1089,7 +1101,7 @@ impl Panel {
             provisional_items: 0,
             provisional_task: None,
             awaiting_persisted: false,
-            expanded_regions: HashSet::new(),
+            expanded_regions,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
@@ -1483,7 +1495,7 @@ impl Panel {
             })
             .cloned()
             .collect::<Vec<_>>();
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.priority));
 
         let mut projects = div().flex().flex_wrap().gap_1().child(
             div()
@@ -2361,10 +2373,7 @@ impl Panel {
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
                 ),
-                _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
-                    "{}",
-                    command_unavailable_message(trimmed)
-                ))),
+                _ if trimmed.starts_with('/') => self.items.push(Item::Error(command_unavailable_message(trimmed).to_string())),
                 _ => return false,
             }
         }
@@ -3364,11 +3373,10 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
-        if let Some(selected) = &mut self.image_pane_selected {
-            if *selected >= insertion {
+        if let Some(selected) = &mut self.image_pane_selected
+            && *selected >= insertion {
                 *selected += 1;
             }
-        }
         self.items.insert(
             insertion,
             Item::Image(TranscriptImage::from_rendered(image)),
@@ -4995,7 +5003,7 @@ impl Render for Panel {
                 let open_session = self.unfinished_session_opener.clone();
                 let mut card = div()
                     .id(("unfinished-session", index))
-                    .debug_selector(move || format!("unfinished-session-{index}").into())
+                    .debug_selector(move || format!("unfinished-session-{index}"))
                     .p_3()
                     .rounded_lg()
                     .border_1()
@@ -5142,11 +5150,10 @@ impl Render for Panel {
                 .startup_layout
                 .as_ref()
                 .is_some_and(|layout| layout.committed);
-        if !fresh_session && !self.items.is_empty() {
-            if let Some(layout) = &mut self.startup_layout {
+        if !fresh_session && !self.items.is_empty()
+            && let Some(layout) = &mut self.startup_layout {
                 layout.committed = true;
             }
-        }
         // The ordinary composer floats over the bottom of the transcript, so
         // earlier history scrolls beneath its translucent veil instead of
         // being cut off at a hard edge. The list pads its end by the dock.
@@ -5217,8 +5224,8 @@ impl Render for Panel {
                     .remeasure_items(row_count - 1..row_count);
             }
         }
-        if row_count > 0 {
-            if let Some((_, y)) = self.pending_history_scroll.take() {
+        if row_count > 0
+            && let Some((_, y)) = self.pending_history_scroll.take() {
                 // Restore relative to the first row, not the scrollbar's
                 // partially measured total. The virtual list measures and
                 // clamps this logical position while laying out the history.
@@ -5229,7 +5236,6 @@ impl Render for Panel {
                 // Scrollbar geometry is available after this layout pass.
                 window.request_animation_frame();
             }
-        }
         let startup_preview = self.startup_prompt_preview();
         // While the welcome viewport still grows with its content, following
         // the tail would scroll a line up for one frame and then snap back
@@ -5362,11 +5368,9 @@ impl Render for Panel {
                                 let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
                                     && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
+                                    || matches!(item, Item::ResponseStats(_))
+                                    || matches!(item, Item::Tool { .. }) && follows_tool
                                 {
-                                    2.0
-                                } else if matches!(item, Item::ResponseStats(_)) {
-                                    2.0
-                                } else if matches!(item, Item::Tool { .. }) && follows_tool {
                                     2.0
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
@@ -5381,7 +5385,7 @@ impl Render for Panel {
                                 );
                                 div()
                                     .debug_selector(move || {
-                                        format!("transcript-row-{row_index}").into()
+                                        format!("transcript-row-{row_index}")
                                     })
                                     .relative()
                                     .px_3()
@@ -5682,7 +5686,7 @@ impl Render for Panel {
                                             return;
                                         }
                                         let precise = event.delta.precise();
-                                        let _ = wheel_panel.update(cx, |panel, cx| {
+                                        wheel_panel.update(cx, |panel, cx| {
                                             if precise {
                                                 panel.glide_transcript_input(-y, true, cx);
                                             } else {
@@ -6115,6 +6119,7 @@ fn context_usage_label_with(
 }
 
 /// Shorten a home-relative path for the footer.
+#[cfg(test)]
 fn compact_dir(path: &str) -> String {
     match crate::platform_dirs::tilde(path) {
         home if home == "~" => "~ (home)".to_string(),
@@ -6208,6 +6213,7 @@ fn format_tokens(count: u64) -> String {
 }
 
 /// Collapse whitespace and clip to a readable length.
+#[cfg(test)]
 fn condense(text: &str, limit: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= limit {
@@ -6219,6 +6225,7 @@ fn condense(text: &str, limit: usize) -> String {
 
 /// Like `condense`, but keeps the end: while reasoning streams, the newest
 /// words are the ones worth reading.
+#[cfg(test)]
 fn condense_tail(text: &str, limit: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let count = flat.chars().count();
@@ -6898,6 +6905,7 @@ fn render_todo_card_with_style(
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
+#[cfg(test)]
 fn tool_summary(input: &str) -> String {
     condense(&tool_summary_full(input), 90)
 }
@@ -7514,7 +7522,7 @@ mod tests {
 
     #[gpui::test]
     fn restored_alternating_history_still_overflows_and_scrolls(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7587,7 +7595,7 @@ mod tests {
 
     #[gpui::test]
     fn large_transcripts_only_paint_the_visible_tail(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7845,7 +7853,7 @@ mod tests {
 
     #[gpui::test]
     fn inline_reasoning_paints_full_markdown_live_and_settled(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8074,7 +8082,7 @@ mod tests {
 
     #[gpui::test]
     fn runtime_catalog_only_populates_picker_with_available_routes(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8134,7 +8142,7 @@ mod tests {
 
     #[gpui::test]
     fn runtime_info_auth_method_overrides_route_guessing(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8337,7 +8345,7 @@ mod tests {
     /// panel yanked the view back down on every streamed event.
     #[gpui::test]
     fn scrolling_up_releases_follow_mode_and_the_chip_restores_it(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8462,7 +8470,7 @@ mod tests {
     /// fence syntax) on the clipboard.
     #[gpui::test]
     fn clicking_copy_on_a_code_block_fills_the_clipboard(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8517,7 +8525,7 @@ mod tests {
     /// Progress reuses a quiet row, then finishes as a compact result card.
     #[gpui::test]
     fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8641,7 +8649,7 @@ mod tests {
 
     #[gpui::test]
     fn tool_token_badge_paints_for_empty_and_single_line_results(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8733,7 +8741,7 @@ mod tests {
 
     #[gpui::test]
     fn only_the_token_button_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8871,7 +8879,7 @@ mod tests {
 
     #[gpui::test]
     fn inline_tool_rows_keep_status_errors_and_edit_previews(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9036,7 +9044,7 @@ mod tests {
 
     #[gpui::test]
     fn consecutive_tool_rows_use_compact_spacing(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9082,7 +9090,7 @@ mod tests {
     /// row and visibly squashes their headers.
     #[gpui::test]
     fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9142,7 +9150,7 @@ mod tests {
     /// panicking, and the signature regions all occupy space.
     #[gpui::test]
     fn the_demo_transcript_paints_every_item_shape(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9202,7 +9210,7 @@ mod tests {
     /// Blockquotes paint as a distinct region in a real assistant message.
     #[gpui::test]
     fn blockquotes_paint_in_a_real_transcript(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9267,7 +9275,7 @@ mod tests {
     fn the_identity_footer_paints_after_runtime_info_and_token_events(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9539,7 +9547,7 @@ mod tests {
     fn keyboard_submission_reaches_the_bridge_and_streamed_text_paints(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9587,7 +9595,7 @@ mod tests {
 
     #[gpui::test]
     fn escape_cancels_an_active_transcript_from_the_focused_prompt(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9628,7 +9636,7 @@ mod tests {
     /// live session can no longer take the desktop down.
     #[gpui::test]
     fn streamed_nested_markdown_paints_without_aborting(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, _commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9669,7 +9677,7 @@ mod tests {
     /// helper alone would not catch a panel that still displayed the fenced source.
     #[gpui::test]
     fn streamed_mermaid_renders_as_a_visible_panel_diagram(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, _commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9702,7 +9710,7 @@ mod tests {
 
     #[gpui::test]
     fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9744,7 +9752,7 @@ mod tests {
     fn update_command_submits_through_the_prompt_and_reports_platform_availability(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let _update_guard = crate::updates::test_lock();
         crate::updates::set(crate::updates::UpdateState::Idle);
         let (bridge, commands) = crate::harness::spawn_recording();
@@ -9822,7 +9830,7 @@ mod tests {
     fn model_command_replaces_suggestions_above_input_and_enter_switches_selection(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =

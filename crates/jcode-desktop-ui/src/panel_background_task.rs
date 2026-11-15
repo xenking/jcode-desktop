@@ -18,6 +18,7 @@ impl Render for TaskTooltip {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render(
     index: usize,
     task_id: &str,
@@ -146,6 +147,7 @@ fn compact_summary(summary: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn completed_card(
     index: usize,
     _task_id: &str,

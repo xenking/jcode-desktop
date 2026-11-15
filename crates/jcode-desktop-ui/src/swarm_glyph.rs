@@ -227,6 +227,7 @@ impl Marks {
         view.into_any_element()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn retain(&mut self, mut live: impl FnMut(&str) -> bool) {
         self.0.retain(|key, _| live(key));
     }

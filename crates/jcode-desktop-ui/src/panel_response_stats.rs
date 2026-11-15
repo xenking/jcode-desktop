@@ -539,8 +539,10 @@ mod tests {
 
     #[test]
     fn response_stats_sum_rounds_and_reset_without_double_counting_cache() {
-        let mut tracker = Tracker::default();
-        tracker.started = Some(Instant::now() - Duration::from_secs(84));
+        let mut tracker = Tracker {
+            started: Some(Instant::now() - Duration::from_secs(84)),
+            ..Tracker::default()
+        };
         tracker.observe(&usage(12_000, 500, Some(8_000)), Some("openai"));
         tracker.observe(&usage(15_000, 900, Some(10_000)), Some("openai"));
         let stats = tracker.finish().unwrap();

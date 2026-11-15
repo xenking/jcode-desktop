@@ -117,7 +117,7 @@ fn format_tokens(tokens: u64) -> String {
     let digits = tokens.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(digit);
@@ -443,6 +443,7 @@ impl Panel {
     }
 }
 
+#[allow(dead_code)]
 const RANKING_MAX_HEIGHT: f32 = 72.;
 
 #[cfg(test)]

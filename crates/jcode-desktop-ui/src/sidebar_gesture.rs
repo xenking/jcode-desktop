@@ -93,10 +93,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self
+        if self
             .sidebar_gesture
-            .as_ref()
-            .is_some_and(|p| p.session.session_id == id)
+            .as_ref().is_none_or(|p| p.session.session_id != id)
         {
             return;
         }

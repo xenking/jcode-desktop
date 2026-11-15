@@ -72,66 +72,6 @@ fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, Str
     }
 }
 
-#[cfg(test)]
-mod openrig_tests {
-    use super::*;
-
-    fn row(id: &str, depth: u8, children: usize, open: bool) -> jcode_desktop_openrig::Row {
-        let mut row = jcode_desktop_openrig::Row::default();
-        row.id = id.into();
-        row.label = id.into();
-        row.depth = depth;
-        row.children_count = children;
-        row.default_open = open;
-        row
-    }
-
-    #[test]
-    fn default_open_groups_show_children_until_toggled() {
-        let mut state = State::fixture();
-        state.snapshot.sections = vec![jcode_desktop_openrig::Section {
-            kind: jcode_desktop_openrig::SectionKind::Usage,
-            title: "Usage".into(),
-            rows: vec![
-                row("provider", 0, 1, true),
-                row("window", 1, 0, false),
-                row("closed", 0, 1, false),
-                row("hidden", 1, 0, false),
-            ],
-        }];
-        state.section = 0;
-        assert_eq!(state.visible(), vec![0, 1, 2]);
-        state.toggled.insert("provider".into());
-        state.toggled.insert("closed".into());
-        assert_eq!(state.visible(), vec![0, 2, 3]);
-    }
-
-    #[test]
-    fn meter_fill_is_clamped_and_unknown_is_empty() {
-        let meter = |percent| Meter {
-            label: String::new(),
-            percent,
-            tone: Tone::Ok,
-        };
-        assert_eq!(meter(Some(150.)).fraction(), Some(1.));
-        assert_eq!(meter(Some(-3.)).fraction(), Some(0.));
-        assert_eq!(meter(Some(f64::NAN)).fraction(), None);
-        assert_eq!(meter(None).fraction(), None);
-    }
-
-    #[test]
-    fn nested_usage_details_keep_window_information() {
-        let mut lines = Vec::new();
-        detail_lines(
-            "windows",
-            &serde_json::json!([{ "window": "weekly", "remainingPercent": 42, "resetsAt": "tomorrow" }]),
-            &mut lines,
-        );
-        assert!(lines.contains(&("windows 1 · remainingPercent".into(), "42".into())));
-        assert!(lines.contains(&("windows 1 · resetsAt".into(), "tomorrow".into())));
-    }
-}
-
 pub(super) struct State {
     snapshot: Snapshot,
     section: usize,
@@ -651,5 +591,66 @@ impl Panel {
                     ))
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod openrig_tests {
+    use super::*;
+
+    fn row(id: &str, depth: u8, children: usize, open: bool) -> jcode_desktop_openrig::Row {
+        jcode_desktop_openrig::Row {
+            id: id.into(),
+            label: id.into(),
+            depth,
+            children_count: children,
+            default_open: open,
+            ..jcode_desktop_openrig::Row::default()
+        }
+    }
+
+    #[test]
+    fn default_open_groups_show_children_until_toggled() {
+        let mut state = State::fixture();
+        state.snapshot.sections = vec![jcode_desktop_openrig::Section {
+            kind: jcode_desktop_openrig::SectionKind::Usage,
+            title: "Usage".into(),
+            rows: vec![
+                row("provider", 0, 1, true),
+                row("window", 1, 0, false),
+                row("closed", 0, 1, false),
+                row("hidden", 1, 0, false),
+            ],
+        }];
+        state.section = 0;
+        assert_eq!(state.visible(), vec![0, 1, 2]);
+        state.toggled.insert("provider".into());
+        state.toggled.insert("closed".into());
+        assert_eq!(state.visible(), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn meter_fill_is_clamped_and_unknown_is_empty() {
+        let meter = |percent| Meter {
+            label: String::new(),
+            percent,
+            tone: Tone::Ok,
+        };
+        assert_eq!(meter(Some(150.)).fraction(), Some(1.));
+        assert_eq!(meter(Some(-3.)).fraction(), Some(0.));
+        assert_eq!(meter(Some(f64::NAN)).fraction(), None);
+        assert_eq!(meter(None).fraction(), None);
+    }
+
+    #[test]
+    fn nested_usage_details_keep_window_information() {
+        let mut lines = Vec::new();
+        detail_lines(
+            "windows",
+            &serde_json::json!([{ "window": "weekly", "remainingPercent": 42, "resetsAt": "tomorrow" }]),
+            &mut lines,
+        );
+        assert!(lines.contains(&("windows 1 · remainingPercent".into(), "42".into())));
+        assert!(lines.contains(&("windows 1 · resetsAt".into(), "tomorrow".into())));
     }
 }

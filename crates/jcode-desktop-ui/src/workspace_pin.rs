@@ -35,7 +35,7 @@ mod tests {
 
     #[gpui::test]
     fn pin_button_saves_history_sessions_and_moves_them_to_the_top(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);

@@ -348,6 +348,7 @@ impl Workspace {
     }
 
     /// Fire a manifest launcher. A running singleton is focused instead.
+    #[allow(dead_code)]
     pub(crate) fn fire_applet_launcher(
         &mut self,
         applet: &str,

@@ -306,7 +306,7 @@ mod tests {
     fn inline_image_panel_hover_gestures_preserve_composer_and_route_scroll(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -471,7 +471,7 @@ mod tests {
 
     #[gpui::test]
     fn image_click_expands_inline_and_preserves_draft(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -517,7 +517,7 @@ mod tests {
 
     #[gpui::test]
     fn image_preview_pinch_wheel_drag_and_click_to_close(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);

@@ -266,7 +266,7 @@ impl Render for CoachDetails {
             .flex_col()
             .gap_2()
             .child(self.0.label)
-            .child(shortcut_keys(&self.0.keys))
+            .child(shortcut_keys(self.0.keys))
             .child(
                 div()
                     .text_color(theme.TEXT_DIM)
@@ -318,7 +318,7 @@ impl Workspace {
         // sentence in place instead of leaving the rest to the tooltip.
         let key = expandable::key::toast(hint.skill_id);
         let expanded = self.expanded_lines.contains(&key);
-        let truncated = expandable::preview(&label, expandable::NOTICE).is_some();
+        let truncated = expandable::preview(label, expandable::NOTICE).is_some();
         let toggle_key = key;
         div()
             .id("coach-toast")

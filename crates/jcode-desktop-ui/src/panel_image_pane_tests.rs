@@ -4,7 +4,7 @@ use super::*;
 const DRAFT: &str = "Keep my unfinished image question";
 
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
-    cx.update(|cx| crate::input::bind_keys(cx));
+    cx.update(crate::input::bind_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =
             crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);

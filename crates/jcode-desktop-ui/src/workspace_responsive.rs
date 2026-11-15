@@ -10,6 +10,7 @@ pub(super) fn is_compact(width: f32) -> bool {
 
 /// Compact windows reserve no sidebar column at all. Sessions get the full
 /// width, and the sidebar opens as an overlay from the tab row's menu button.
+#[allow(dead_code)]
 pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
     if visible && !compact {
         SIDEBAR_WIDTH
@@ -67,8 +68,7 @@ impl Workspace {
                         this.sidebar_custom_width = f32::from(event.position.x).clamp(
                             180.0,
                             (f32::from(window.viewport_size().width) * 0.4)
-                                .min(480.0)
-                                .max(180.0),
+                                .clamp(180.0, 480.0),
                         );
                     } else {
                         this.sidebar_resizing = false;

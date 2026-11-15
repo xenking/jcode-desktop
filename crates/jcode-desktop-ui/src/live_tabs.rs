@@ -1913,7 +1913,7 @@ mod tests {
             vcx.run_until_parked();
             assert_eq!(workspace.read_with(vcx, |w, _| w.active), selected);
             for (i, selector) in selectors.iter().enumerate() {
-                let tab = vcx.debug_bounds(*selector).unwrap();
+                let tab = vcx.debug_bounds(selector).unwrap();
                 assert!((tab.left() - initial[i].left()).abs() <= px(12.01));
                 let panel = vcx
                     .debug_bounds(["panel-0", "panel-1", "panel-2", "panel-3"][i])
@@ -2045,7 +2045,7 @@ mod tests {
             });
             vcx.run_until_parked();
             for (i, selector) in selectors.iter().enumerate() {
-                assert_eq!(vcx.debug_bounds(*selector).unwrap(), initial[i]);
+                assert_eq!(vcx.debug_bounds(selector).unwrap(), initial[i]);
             }
             assert!(
                 (panel_left - vcx.debug_bounds("panel-1").unwrap().left() - px(camera)).abs()

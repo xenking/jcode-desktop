@@ -186,7 +186,7 @@ impl Workspace {
                 .when(practiced, |el| {
                     el.child(
                         div()
-                            .debug_selector(move || format!("tutorial-learned-{skill}").into())
+                            .debug_selector(move || format!("tutorial-learned-{skill}"))
                             .text_size(px(10.0))
                             .text_color(Theme::global().OK)
                             .child("✓"),
@@ -212,7 +212,7 @@ impl Workspace {
                         .children((1..=4).map(|preset| {
                             div()
                                 .id(format!("tutorial-width-{preset}"))
-                                .debug_selector(move || format!("tutorial-width-{preset}").into())
+                                .debug_selector(move || format!("tutorial-width-{preset}"))
                                 .px_1()
                                 .py(px(2.0))
                                 .rounded_sm()

@@ -179,11 +179,10 @@ impl Discovery<'_> {
                     if self.hosts.len() >= MAX_HOSTS {
                         return;
                     }
-                    if let Ok(host) = validate_host(word) {
-                        if !self.hosts.contains(&host) {
+                    if let Ok(host) = validate_host(word)
+                        && !self.hosts.contains(&host) {
                             self.hosts.push(host);
                         }
-                    }
                 }
             } else if key.eq_ignore_ascii_case("include") {
                 for pattern in &words[1..] {

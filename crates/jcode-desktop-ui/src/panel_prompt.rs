@@ -198,7 +198,7 @@ impl Panel {
         let collapsed = preview.is_some() && !expanded;
         let card = div()
             .relative()
-            .debug_selector(move || format!("user-prompt-{index}").into())
+            .debug_selector(move || format!("user-prompt-{index}"))
             .max_w_full()
             .min_w_0()
             .flex_shrink_1()
@@ -209,7 +209,7 @@ impl Panel {
             .text_color(Theme::global().TEXT_USER)
             .child(
                 div()
-                    .debug_selector(move || format!("prompt-content-{index}").into())
+                    .debug_selector(move || format!("prompt-content-{index}"))
                     // Also bound rendered markdown (headings, tables, images)
                     // and wrapping in narrow chat panes, not just source length.
                     // Clamp wrapped text to whole visual lines with an
@@ -249,7 +249,7 @@ impl Panel {
                 let theme = Theme::global();
                 card.child(
                     div()
-                        .debug_selector(move || format!("prompt-transcribed-{index}").into())
+                        .debug_selector(move || format!("prompt-transcribed-{index}"))
                         .mt_1()
                         .flex()
                         .items_center()
@@ -308,7 +308,7 @@ impl Panel {
             .when_some(number, |row, number| {
                 row.gap(px(6.)).child(
                     div()
-                        .debug_selector(move || format!("prompt-number-{index}-{number}").into())
+                        .debug_selector(move || format!("prompt-number-{index}-{number}"))
                         .flex_none()
                         .mt(px(4.))
                         .w(px(number_width))
@@ -328,7 +328,7 @@ impl Panel {
                 // A quiet arrival time beside the card, from the message record.
                 row.child(
                     div()
-                        .debug_selector(move || format!("prompt-time-{index}").into())
+                        .debug_selector(move || format!("prompt-time-{index}"))
                         .flex_none()
                         .ml(px(6.))
                         .mt(px(7.))

@@ -250,11 +250,10 @@ impl Render for ImageView {
                         cx.stop_propagation();
                     }))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
-                        if this.pinch_active || event.modifiers.control || this.zoom > 1.0 {
-                            if let Some(begin) = &this.on_gesture {
+                        if (this.pinch_active || event.modifiers.control || this.zoom > 1.0)
+                            && let Some(begin) = &this.on_gesture {
                                 begin(window, cx);
                             }
-                        }
                         let delta = event.delta.pixel_delta(px(20.0));
                         if this.pinch_active {
                             // Linux forwards native pinch translation as precise
@@ -284,11 +283,10 @@ impl Render for ImageView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            if this.zoom > 1.0 {
-                                if let Some(begin) = &this.on_gesture {
+                            if this.zoom > 1.0
+                                && let Some(begin) = &this.on_gesture {
                                     begin(window, cx);
                                 }
-                            }
                             this.dragged = false;
                             this.drag = Some((event.position, event.position));
                             cx.notify();

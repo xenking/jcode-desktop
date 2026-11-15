@@ -741,6 +741,7 @@ fn demo_rows(kind: SectionKind) -> Option<Vec<Row>> {
     }
 }
 impl Snapshot {
+    #[allow(clippy::possible_missing_else)]
     pub fn fixture() -> Self {
         let kinds = [
             (SectionKind::Topology, "Topology"),

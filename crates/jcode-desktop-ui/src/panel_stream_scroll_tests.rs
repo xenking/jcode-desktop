@@ -393,7 +393,7 @@ fn startup_stream_growth_does_not_flash_scrollbar(cx: &mut gpui::TestAppContext)
                     )
                 });
                 assert!(
-                    !(seen && !present),
+                    !seen || present,
                     "history={history} line {n} frame {frame}: scrollbar disappeared"
                 );
                 assert!(!chip, "history={history} line {n}: jump chip flashed");

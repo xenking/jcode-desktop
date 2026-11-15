@@ -46,6 +46,7 @@ pub(super) struct State {
     held: bool,
     /// Set in a window Shift+Copilot or an unfocused press just opened, until
     /// it adopts that hold. Its own first press must never spawn again.
+    #[allow(dead_code)]
     adopting_spawned_hold: bool,
     pending_target: Option<WeakEntity<Panel>>,
     /// Whether this Jcode window has focus. The chat's own voice pill is the
@@ -454,13 +455,12 @@ impl Workspace {
         self.global_voice.pending_target = None;
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
         self.global_voice.permission_task = None;
-        if let Some(owner) = self.global_voice.owner.as_ref() {
-            if let Some(panel) = owner.panel.upgrade() {
+        if let Some(owner) = self.global_voice.owner.as_ref()
+            && let Some(panel) = owner.panel.upgrade() {
                 panel.update(cx, |panel, cx| {
                     panel.cancel_global_voice(&owner.attempt, reason, cx)
                 });
             }
-        }
         self.global_voice.close_overlay(cx);
     }
 
@@ -501,11 +501,9 @@ impl Workspace {
             .owner
             .as_ref()
             .and_then(|owner| owner.panel.upgrade())
-        {
-            if owner.read(cx).voice_active() {
+            && owner.read(cx).voice_active() {
                 return;
             }
-        }
         self.global_voice.close_overlay(cx);
         let Some(panel) = self
             .global_voice

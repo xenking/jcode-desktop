@@ -1084,7 +1084,7 @@ pub(super) fn expand_home(path: &str) -> String {
         && (rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
         && let Some(home) = crate::platform_dirs::home_dir()
     {
-        return format!("{}{rest}", PathBuf::from(home).display());
+        return format!("{}{rest}", home.display());
     }
     path.to_owned()
 }

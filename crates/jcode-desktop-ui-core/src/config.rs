@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf, sync::OnceLock, time::Durati
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct DesktopConfig {
     pub appearance: AppearanceConfig,
     pub workspace: WorkspaceConfig,
@@ -121,20 +122,6 @@ pub struct TerminalConfig {
     pub scrollback_lines: usize,
 }
 
-impl Default for DesktopConfig {
-    fn default() -> Self {
-        Self {
-            appearance: AppearanceConfig::default(),
-            workspace: WorkspaceConfig::default(),
-            terminal: TerminalConfig::default(),
-            sounds: SoundsConfig::default(),
-            voice: VoiceConfig::default(),
-            display: DisplayConfig::default(),
-            completions: CompletionsConfig::default(),
-            models: ModelsConfig::default(),
-        }
-    }
-}
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
@@ -606,11 +593,10 @@ fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
 fn normalized_remote_hosts(hosts: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     for host in hosts {
-        if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host) {
-            if !result.contains(&host) {
+        if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host)
+            && !result.contains(&host) {
                 result.push(host);
             }
-        }
     }
     result
 }

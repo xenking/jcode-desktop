@@ -131,7 +131,7 @@ impl Panel {
                 block = block.child(
                     div()
                         .id(("ask-option", q * 16 + o))
-                        .debug_selector(move || format!("ask-option-{q}-{o}").into())
+                        .debug_selector(move || format!("ask-option-{q}-{o}"))
                         .flex()
                         .gap_2()
                         .min_w_0()
@@ -168,7 +168,7 @@ impl Panel {
                 block = block.child(
                     div()
                         .id(("ask-other", q))
-                        .debug_selector(move || format!("ask-other-{q}").into())
+                        .debug_selector(move || format!("ask-other-{q}"))
                         .px_2()
                         .py_1()
                         .rounded_sm()
@@ -301,7 +301,7 @@ mod tests {
 
     #[gpui::test]
     fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);

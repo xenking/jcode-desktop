@@ -324,14 +324,13 @@ unsafe extern "C-unwind" fn activate(
         app.on_action(|_: &Quit, cx| {
             // A shared single-panel host owns other people's windows. Quit
             // closes this one; the process exits after its last window.
-            if jcode_desktop_api::WindowLaunches::shared(cx) {
-                if let Some(window) = cx.active_window() {
+            if jcode_desktop_api::WindowLaunches::shared(cx)
+                && let Some(window) = cx.active_window() {
                     cx.defer(move |cx| {
                         let _ = window.update(cx, |_, window, _| window.remove_window());
                     });
                     return;
                 }
-            }
             cx.quit()
         });
         let workspace =
@@ -405,6 +404,12 @@ pub fn plugin_api() -> PluginApi {
     PluginApi::new(activate, snapshot)
 }
 
+/// The exported plugin entry point.
+///
+/// # Safety
+/// Called once by the host through the shared object's symbol table, on the
+/// thread that loaded it. The host must not call it twice for one load, and
+/// must keep the returned [`PluginApi`] alive for the lifetime of the host.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn jcode_desktop_ui_plugin() -> PluginApi {
     plugin_api()

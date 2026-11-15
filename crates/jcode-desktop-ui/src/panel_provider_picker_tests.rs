@@ -2,7 +2,7 @@ use super::*;
 
 #[gpui::test]
 fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
-    cx.update(|cx| crate::input::bind_keys(cx));
+    cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =
@@ -67,7 +67,7 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppContext) {
-    cx.update(|cx| crate::input::bind_keys(cx));
+    cx.update(crate::input::bind_keys);
     let (bridge, _commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =

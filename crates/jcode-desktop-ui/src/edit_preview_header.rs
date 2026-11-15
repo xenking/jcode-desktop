@@ -68,7 +68,7 @@ impl TimedPreview {
         let request = self.header.review.clone();
         let focus = self.header.focus.clone();
         let path = div()
-            .debug_selector(move || format!("diff-file-{index}").into())
+            .debug_selector(move || format!("diff-file-{index}"))
             .min_w_0()
             .flex_1()
             .truncate()
@@ -77,7 +77,7 @@ impl TimedPreview {
             .child(self.header.leaf("path", file.path.clone(), window, cx));
         let counts = super::super::counts(file)
             .id("edit-change-counts")
-            .debug_selector(move || format!("edit-change-counts-{index}").into())
+            .debug_selector(move || format!("edit-change-counts-{index}"))
             .text_size(px(11.))
             .rounded_full()
             .cursor_pointer()
@@ -109,7 +109,7 @@ impl TimedPreview {
             String::new()
         };
         let metadata = div()
-            .debug_selector(move || format!("edit-preview-metadata-{index}").into())
+            .debug_selector(move || format!("edit-preview-metadata-{index}"))
             .flex()
             .items_center()
             .gap_1()
@@ -137,11 +137,11 @@ impl TimedPreview {
                 )
             });
         div()
-            .debug_selector(move || format!("edit-preview-header-{index}").into())
+            .debug_selector(move || format!("edit-preview-header-{index}"))
             .min_w_0()
             .child(crate::tool_icon::animate_running(
                 div()
-                    .debug_selector(move || format!("edit-preview-intent-row-{index}").into())
+                    .debug_selector(move || format!("edit-preview-intent-row-{index}"))
                     // Overflow clipping is rectangular in GPUI. Round the
                     // painted top row itself, not just its outer container.
                     .rounded_t_lg()
@@ -165,7 +165,7 @@ impl TimedPreview {
                     ))
                     .child(
                         div()
-                            .debug_selector(move || format!("edit-preview-intent-{index}").into())
+                            .debug_selector(move || format!("edit-preview-intent-{index}"))
                             .flex_1()
                             .min_w_0()
                             .h(px(20.))

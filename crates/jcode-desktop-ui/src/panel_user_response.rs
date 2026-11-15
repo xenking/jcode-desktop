@@ -127,7 +127,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_short_and_long_cards_use_natural_and_capped_height(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);

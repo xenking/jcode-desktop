@@ -434,12 +434,11 @@ impl Bridge {
         let mut runtime_slot: HashMap<String, usize> = HashMap::new();
         let mut live = 0usize;
         let mut push = |slots: &mut Vec<Option<Update>>, live: &mut usize, update: Update| {
-            if let Some(session) = runtime_info_session(&update) {
-                if let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
+            if let Some(session) = runtime_info_session(&update)
+                && let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
                     slots[previous] = None;
                     *live -= 1;
                 }
-            }
             slots.push(Some(update));
             *live += 1;
         };
@@ -519,6 +518,7 @@ fn update_channel() -> (UpdateSender, UpdateReceiver) {
 }
 
 impl UpdateSender {
+    #[allow(clippy::result_large_err)]
     fn send(&self, update: Update) -> Result<(), async_channel::SendError<Update>> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         if self.wake.is_closed() {
@@ -526,11 +526,10 @@ impl UpdateSender {
         }
         let sequence = queue.sequence;
         queue.sequence = sequence.checked_add(1).expect("update sequence exhausted");
-        if let Some(session) = runtime_info_session(&update) {
-            if let Some(previous) = queue.runtime.insert(session.to_owned(), sequence) {
+        if let Some(session) = runtime_info_session(&update)
+            && let Some(previous) = queue.runtime.insert(session.to_owned(), sequence) {
                 queue.pending.remove(&previous);
             }
-        }
         // Replacements take their new chronological position, not the old
         // snapshot's position ahead of intervening deltas and lifecycle events.
         queue.pending.insert(sequence, update);
@@ -540,6 +539,7 @@ impl UpdateSender {
     }
 
     #[cfg(test)]
+    #[allow(clippy::result_large_err)]
     fn try_send(&self, update: Update) -> Result<(), async_channel::SendError<Update>> {
         self.send(update)
     }
@@ -549,11 +549,10 @@ impl UpdateReceiver {
     fn try_recv(&self) -> Result<Update, async_channel::TryRecvError> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         if let Some((sequence, update)) = queue.pending.pop_first() {
-            if let Some(session) = runtime_info_session(&update) {
-                if queue.runtime.get(session) == Some(&sequence) {
+            if let Some(session) = runtime_info_session(&update)
+                && queue.runtime.get(session) == Some(&sequence) {
                     queue.runtime.remove(session);
                 }
-            }
             let more = !queue.pending.is_empty();
             drop(queue);
             if more && let Some(notify) = self.notify.upgrade() {
@@ -2000,6 +1999,7 @@ fn send_to_session_worker<F>(
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum WorkerCommand {
     Command(SessionCommand),
     Idle,
@@ -2847,15 +2847,14 @@ fn session_worker_with_connector(
                     jcode_sdk::RetryDecision::Cancelled => {
                         send_retry_phase(&updates, &session_id, String::new());
                     }
-                    _ if closes_turn => {
-                        if turn_retry.pending().is_some() {
+                    _ if closes_turn
+                        && turn_retry.pending().is_some() => {
                             let phase =
                                 retry_countdown_phase(&turn_retry, std::time::Instant::now())
                                     .expect("pending retry has a countdown");
                             retry_countdown = Some(phase.clone());
                             send_retry_phase(&updates, &session_id, phase);
                         }
-                    }
                     _ => {}
                 }
             } else if client.is_closed() {

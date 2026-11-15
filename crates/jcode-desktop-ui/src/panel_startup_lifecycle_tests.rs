@@ -80,7 +80,7 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
                 "manual scrolling must detach first-prompt preview"
             );
             assert!(
-                offset >= 30. && offset <= 45.,
+                (30. ..=45.).contains(&offset),
                 "40px scroll became {offset}px (discrete={discrete})"
             );
             assert!(

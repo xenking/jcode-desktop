@@ -268,8 +268,8 @@ fn restore_window(
     current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    if let Some(window) = *current_window.borrow() {
-        if window
+    if let Some(window) = *current_window.borrow()
+        && window
             .update(cx, |_, window, cx| {
                 window.activate_window();
                 cx.activate(true);
@@ -278,7 +278,6 @@ fn restore_window(
         {
             return Ok(());
         }
-    }
 
     let bounds = initial_window_bounds(
         LaunchMode::from_args(env::args_os()).initial_window_size(),
@@ -403,11 +402,10 @@ fn dispatch_instance_command(
     if command != InstanceCommand::VoiceRelease {
         restore_window(manager, current_window, cx)?;
     }
-    if let Some(action) = voice_action(command.clone()) {
-        if let Some(window) = *current_window.borrow() {
+    if let Some(action) = voice_action(command.clone())
+        && let Some(window) = *current_window.borrow() {
             dispatch_ui_action(window, action, cx)?;
         }
-    }
     Ok(())
 }
 
@@ -631,17 +629,17 @@ fn main() {
     // does through the instance socket. GPUI only fires this when no window is
     // visible, which also covers a window hidden by the yellow minimize button.
     type ReopenState = Rc<RefCell<Option<gpui::AnyWindowHandle>>>;
+    #[allow(clippy::type_complexity)]
     let reopen_state: Rc<RefCell<Option<(Rc<RefCell<ReloadManager>>, ReopenState)>>> =
         Rc::new(RefCell::new(None));
     app.on_reopen({
         let reopen_state = reopen_state.clone();
         move |cx| {
             let state = reopen_state.borrow().clone();
-            if let Some((manager, current_window)) = state {
-                if let Err(error) = restore_window(&manager, &current_window, cx) {
+            if let Some((manager, current_window)) = state
+                && let Err(error) = restore_window(&manager, &current_window, cx) {
                     eprintln!("failed to reopen desktop window from the Dock: {error:#}");
                 }
-            }
         }
     });
     app.run(move |cx: &mut App| {
@@ -708,8 +706,8 @@ fn main() {
         // Only the main desktop owns the global shortcut. Auxiliary workspace
         // instances must not steal it or report a spurious registration conflict.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if instance_name.is_none() {
-            if let Err(error) = host::global_shortcut::install(cx, {
+        if instance_name.is_none()
+            && let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |event, cx| {
@@ -738,7 +736,6 @@ fn main() {
             }) {
                 eprintln!("could not register global desktop shortcuts: {error:#}");
             }
-        }
         // A shared single-panel host closes windows outright, like separate
         // processes did. Suspending would keep an invisible chat alive.
         if !shared_single_panel {

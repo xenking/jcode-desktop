@@ -87,20 +87,18 @@ impl Panel {
         };
         let mut changed = false;
         match event {
-            ApiEvent::TextDelta { text, .. } => {
-                if card.is_working() {
+            ApiEvent::TextDelta { text, .. }
+                if card.is_working() => {
                     card.answer.push_str(text);
                     changed = true;
                 }
-            }
-            ApiEvent::ReasoningDelta { text, .. } => {
-                if card.is_working() {
+            ApiEvent::ReasoningDelta { text, .. }
+                if card.is_working() => {
                     card.reasoning.push_str(text);
                     changed = true;
                 }
-            }
-            ApiEvent::TurnStopped { message, .. } => {
-                if card.is_working() {
+            ApiEvent::TurnStopped { message, .. }
+                if card.is_working() => {
                     if !message.trim().is_empty() {
                         if !card.answer.trim().is_empty() {
                             card.answer.push_str("\n\n");
@@ -110,9 +108,8 @@ impl Panel {
                     card.status = SideQuestionStatus::Failed;
                     changed = true;
                 }
-            }
-            ApiEvent::Error { message, .. } => {
-                if card.is_working() {
+            ApiEvent::Error { message, .. }
+                if card.is_working() => {
                     if !card.answer.trim().is_empty() {
                         card.answer.push_str("\n\n");
                     }
@@ -120,13 +117,11 @@ impl Panel {
                     card.status = SideQuestionStatus::Failed;
                     changed = true;
                 }
-            }
-            ApiEvent::TurnDone { .. } => {
-                if card.is_working() {
+            ApiEvent::TurnDone { .. }
+                if card.is_working() => {
                     card.status = SideQuestionStatus::Done;
                     changed = true;
                 }
-            }
             _ => {}
         }
         if changed {

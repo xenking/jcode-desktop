@@ -149,13 +149,12 @@ impl PanelWindow {
                 let Some(source) = source else {
                     return;
                 };
-                if accounts && source.read(cx).can_refresh_account_runtime() {
-                    if let Some(workspace) = workspace {
+                if accounts && source.read(cx).can_refresh_account_runtime()
+                    && let Some(workspace) = workspace {
                         workspace.read(cx).bridge.send(Command::RefreshRuntime {
                             session_id: source.read(cx).session_id.clone(),
                         });
                     }
-                }
                 if choose_model {
                     window.dispatch_action(
                         Box::new(OpenModelPicker {

@@ -10,6 +10,7 @@ use jcode_base::usage::{PendingAnthropicLimitReset, PendingOpenAiUsageReset};
 
 /// A prepared redemption. Holds credentials, so it never leaves this module.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Pending {
     OpenAi(PendingOpenAiUsageReset),
     Claude(PendingAnthropicLimitReset),
@@ -57,6 +58,7 @@ pub(super) struct Dialog {
     _task: Option<gpui::Task<()>>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PrepareResult {
     Ready(Pending),
     Nothing(String),

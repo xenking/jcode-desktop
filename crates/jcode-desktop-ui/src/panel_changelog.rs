@@ -50,7 +50,7 @@ fn theme_block(number: usize, text: String, shot: Option<update_notes::Shot>) ->
         .gap_3()
         .child(
             div()
-                .debug_selector(move || format!("update-theme-number-{number}").into())
+                .debug_selector(move || format!("update-theme-number-{number}"))
                 .flex_shrink_0()
                 .w(px(22.))
                 .text_size(px(15.))

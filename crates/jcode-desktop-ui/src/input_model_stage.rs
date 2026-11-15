@@ -50,6 +50,7 @@ pub(super) enum StageStep {
 
 impl ModelStage {
     /// Enter on a model row. `efforts` are the levels that model supports.
+    #[allow(dead_code)]
     pub(super) fn pick_model(&self, spec: &str, efforts: &[&str]) -> StageStep {
         match self {
             Self::Models if !efforts.is_empty() => StageStep::Goto(Self::Efforts {

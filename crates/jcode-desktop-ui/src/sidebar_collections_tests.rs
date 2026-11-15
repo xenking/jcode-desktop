@@ -123,6 +123,9 @@ fn collections_lead_the_sidebar_and_take_members_out_of_projects(cx: &mut gpui::
     let writes = workspace.update(vcx, |w, _| w.collection_writes());
     for write in writes {
         vcx.background_executor.run_until_parked();
+        // The write future is dropped on purpose: the store's own ordering is
+        // asserted below by reading what reached disk.
+        #[allow(clippy::let_underscore_future)]
         let _ = write;
     }
     vcx.run_until_parked();

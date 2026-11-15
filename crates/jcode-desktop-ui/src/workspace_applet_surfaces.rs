@@ -3,7 +3,7 @@
 //! capability consent prompt, applet toasts, and the applet settings list.
 use super::applets::SHOWCASE_ID;
 use super::*;
-use gpui::{ElementId, FontWeight};
+use gpui::FontWeight;
 use jcode_applet_types::{
     Capability, Placement,
     placement::{Corner, Scope},

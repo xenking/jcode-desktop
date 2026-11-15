@@ -79,7 +79,7 @@ impl Panel {
             .text_size(px(11.))
             .occlude()
             .when_some(full_status, |el, full| {
-                el.tooltip(move |_, cx| cx.new(|_| VoiceTooltip(full.clone().into())).into())
+                el.tooltip(move |_, cx| cx.new(|_| VoiceTooltip(full.clone())).into())
             })
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -702,7 +702,8 @@ mod tests {
                     cx.notify();
                 });
                 vcx.run_until_parked();
-                for expanded in [true] {
+                {
+                    let expanded = true;
                     panel.read_with(vcx, |panel, _| {
                         assert_eq!(panel.voice.trace_expanded, expanded)
                     });

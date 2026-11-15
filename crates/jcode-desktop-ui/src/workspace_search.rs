@@ -75,6 +75,7 @@ impl Workspace {
     }
 
     /// Gate for the keybinding: the screen owns Esc/Enter/arrows while open.
+    #[allow(dead_code)]
     pub(super) fn search_screen_open(&self) -> bool {
         self.search_screen.is_some()
     }

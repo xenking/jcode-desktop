@@ -375,7 +375,7 @@ impl Render for Spinner {
                                         if dot.a >= 0.02 {
                                             window.paint_path(
                                                 dot_path(dot, r_min, bounds.origin),
-                                                ink_color(dot.white, dot.a, &theme),
+                                                ink_color(dot.white, dot.a, theme),
                                             );
                                         }
                                     }

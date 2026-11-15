@@ -49,6 +49,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn clones_share_ids_outside_both_legacy_namespaces() {
         let ids = ImageIds::default();
         let worker = ids.clone();

@@ -54,7 +54,7 @@ impl Render for LimitsTooltip {
             LimitsSummary::Limits(limits) => limits
                 .iter()
                 .enumerate()
-                .map(|(index, limit)| limit_row(index, limit, &theme))
+                .map(|(index, limit)| limit_row(index, limit, theme))
                 .collect(),
         };
         div()
@@ -258,7 +258,7 @@ impl Panel {
                     let selector = id.clone();
                     let tip = chip.tooltip();
                     let color = if chip.percent >= 70. {
-                        usage_color(chip.percent, &theme)
+                        usage_color(chip.percent, theme)
                     } else {
                         theme.TEXT_DIM
                     };
@@ -382,7 +382,7 @@ fn context_ring(used: Option<f32>) -> gpui::AnyElement {
                     if let Some(used) = used
                         && let Some(arc) = ring_path(center, outer, inner, used / 100.)
                     {
-                        window.paint_path(arc, usage_color(used, &theme));
+                        window.paint_path(arc, usage_color(used, theme));
                     }
                 },
             )

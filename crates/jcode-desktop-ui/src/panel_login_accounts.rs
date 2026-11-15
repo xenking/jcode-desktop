@@ -1188,6 +1188,7 @@ impl Panel {
         element.into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_account_group(
         &self,
         id: &'static str,

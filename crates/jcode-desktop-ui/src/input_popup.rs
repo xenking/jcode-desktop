@@ -82,6 +82,7 @@ impl Element for Popup {
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
     }
+    #[allow(clippy::field_reassign_with_default)]
     fn request_layout(
         &mut self,
         _: Option<&GlobalElementId>,

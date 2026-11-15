@@ -160,7 +160,10 @@ mod tests {
             }
             // Verify the fill leaves exactly three pixels on either side of
             // the shaped glyphs, while keeping the existing vertical geometry.
-            let padded = backgrounds(&view.layout, &[0..6], TextAlign::Left);
+            // One range of six glyphs, not the six indices.
+            #[allow(clippy::single_range_in_vec_init)]
+            let whole = [0..6];
+            let padded = backgrounds(&view.layout, &whole, TextAlign::Left);
             assert_eq!(padded.len(), 1);
             let lines = view.layout.line_layouts();
             let line = &lines[0].unwrapped_layout;
@@ -171,7 +174,9 @@ mod tests {
             );
             assert_eq!(padded[0].top(), text.top());
             assert!(backgrounds(&view.layout, &[], TextAlign::Left).is_empty());
-            assert!(backgrounds(&view.layout, &[7..7], TextAlign::Left).is_empty());
+            #[allow(clippy::single_range_in_vec_init)]
+            let empty = [7..7];
+            assert!(backgrounds(&view.layout, &empty, TextAlign::Left).is_empty());
         });
     }
 }

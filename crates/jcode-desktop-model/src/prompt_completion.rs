@@ -30,18 +30,14 @@ impl GhostCompletion {
     pub fn on_edit(&mut self, draft: &str, cursor_at_end: bool) -> Option<u64> {
         self.generation += 1;
         self.pending = None;
-        if let Some((base, suffix)) = self.shown.take() {
-            if cursor_at_end {
-                if let Some(typed) = draft.strip_prefix(base.as_str()) {
-                    if !typed.is_empty() && suffix.len() > typed.len() {
-                        if let Some(rest) = suffix.strip_prefix(typed) {
+        if let Some((base, suffix)) = self.shown.take()
+            && cursor_at_end
+                && let Some(typed) = draft.strip_prefix(base.as_str())
+                    && !typed.is_empty() && suffix.len() > typed.len()
+                        && let Some(rest) = suffix.strip_prefix(typed) {
                             self.shown = Some((draft.to_owned(), rest.to_owned()));
                             return None;
                         }
-                    }
-                }
-            }
-        }
         if !cursor_at_end || !should_request(draft) {
             return None;
         }

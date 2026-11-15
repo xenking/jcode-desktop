@@ -119,12 +119,10 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
                 body.push_str(math_line.trim());
             }
             blocks.push(Block::Math(body));
-        } else if trimmed.starts_with("$$") && trimmed.ends_with("$$") && trimmed.len() > 4 {
-            flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Math(
-                trimmed[2..trimmed.len() - 2].trim().to_string(),
-            ));
-        } else if trimmed.starts_with("\\[") && trimmed.ends_with("\\]") && trimmed.len() > 4 {
+        } else if (trimmed.starts_with("$$") && trimmed.ends_with("$$")
+            || trimmed.starts_with("\\[") && trimmed.ends_with("\\]"))
+            && trimmed.len() > 4
+        {
             flush(&mut paragraph, &mut blocks);
             blocks.push(Block::Math(
                 trimmed[2..trimmed.len() - 2].trim().to_string(),
@@ -372,8 +370,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         }
         // Inline math delimiters \( ... \) come before the generic escape
         // rule, which would otherwise eat the opening parenthesis.
-        if source[i..].starts_with("\\(") {
-            if let Some(end) = source[i + 2..].find("\\)") {
+        if source[i..].starts_with("\\(")
+            && let Some(end) = source[i + 2..].find("\\)") {
                 let content = latex_to_text(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&content);
@@ -387,7 +385,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 4;
                 continue;
             }
-        }
         // Escapes: \* keeps the literal character.
         if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_punctuation() {
             plain.push(bytes[i + 1] as char);
@@ -407,8 +404,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 continue;
             }
         }
-        if bytes[i] == b'$' && !bytes[i..].starts_with(b"$$") {
-            if let Some(end) = source[i + 1..].find('$') {
+        if bytes[i] == b'$' && !bytes[i..].starts_with(b"$$")
+            && let Some(end) = source[i + 1..].find('$') {
                 let content = latex_to_text(&source[i + 1..i + 1 + end]);
                 let start = plain.len();
                 plain.push_str(&content);
@@ -422,10 +419,9 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 2;
                 continue;
             }
-        }
         // Links: [label](url) and bare <url>.
-        if bytes[i] == b'[' {
-            if let Some(close) = source[i..].find("](") {
+        if bytes[i] == b'['
+            && let Some(close) = source[i..].find("](") {
                 let label_end = i + close;
                 if let Some(paren) = source[label_end + 2..].find(')') {
                     let label = &source[i + 1..label_end];
@@ -449,9 +445,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     continue;
                 }
             }
-        }
-        if bytes[i] == b'<' {
-            if let Some(close) = source[i..].find('>') {
+        if bytes[i] == b'<'
+            && let Some(close) = source[i..].find('>') {
                 let inner = &source[i + 1..i + close];
                 if inner.starts_with("http://") || inner.starts_with("https://") {
                     let start = plain.len();
@@ -463,7 +458,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     continue;
                 }
             }
-        }
         if source[i..].starts_with("http://") || source[i..].starts_with("https://") {
             let end = source[i..]
                 .find(|c: char| c.is_whitespace())
@@ -477,8 +471,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
             i += url.len();
             continue;
         }
-        if bytes[i..].starts_with(b"~~") {
-            if let Some(end) = source[i + 2..].find("~~") {
+        if bytes[i..].starts_with(b"~~")
+            && let Some(end) = source[i + 2..].find("~~") {
                 let nested = inline_spans_impl::<BULK_TEXT>(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&nested.plain);
@@ -508,7 +502,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 4;
                 continue;
             }
-        }
         let strong_markers: [(&str, HighlightStyle); 3] = [
             (
                 "***",
@@ -578,8 +571,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_alphanumeric());
-            if boundary_ok {
-                if let Some(end) = source[i + 1..].find(marker) {
+            if boundary_ok
+                && let Some(end) = source[i + 1..].find(marker) {
                     let inner = &source[i + 1..i + 1 + end];
                     if !inner.is_empty() && !inner.starts_with(' ') {
                         let nested = inline_spans_impl::<BULK_TEXT>(inner);
@@ -608,7 +601,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                         continue;
                     }
                 }
-            }
         }
         // Advance one full UTF-8 character.
         let ch_len = source[i..].chars().next().map_or(1, char::len_utf8);
@@ -1241,11 +1233,10 @@ fn code_block_with_selection(
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::global().CODE_TEXT);
     let mut highlights = highlights;
-    if let Some((model, key, cx)) = &selection {
-        if let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
+    if let Some((model, key, cx)) = &selection
+        && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
             highlights.push(highlight);
         }
-    }
     let styled = StyledText::new(plain.clone())
         .with_default_highlights(&style, flatten_highlights(&highlights));
     let code = if let Some((model, key, cx)) = selection {
@@ -1686,6 +1677,7 @@ pub fn render(
 }
 
 /// Render user prose with preserved newlines and a rounded, line-fitting fill.
+#[allow(dead_code, reason = "kept for callers that render prompts by hand")]
 pub(crate) fn render_prompt(
     source: &str,
     row: usize,
@@ -1709,6 +1701,7 @@ pub(crate) fn render_prompt(
 
 /// Render a duplicate prompt in its own selection namespace. Pinned overlays
 /// must not reuse the transcript's logical row keys or replace its text leaves.
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_prompt_with_prefix(
     source: &str,
     row: usize,
@@ -1748,6 +1741,7 @@ pub(crate) fn render_interactive(
     )
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_interactive_with_avatar(
     source: &str,
     row: usize,
@@ -1793,6 +1787,7 @@ fn render_with_style(
     )
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document(
     source: &str,
     row: usize,
@@ -1821,6 +1816,7 @@ fn reasoning_section_title(text: &str) -> Option<&str> {
         .then_some(title)
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document_with_prompt_background(
     source: &str,
     row: usize,
@@ -2101,8 +2097,10 @@ fn render_document_with_prompt_background(
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn list_row(
     depth: usize,
+    #[allow(clippy::too_many_arguments)]
     marker: String,
     marker_color: gpui::Rgba,
     text: &str,

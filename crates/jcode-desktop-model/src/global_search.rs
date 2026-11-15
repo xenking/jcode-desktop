@@ -78,8 +78,10 @@ impl Results {
 
 /// What the screen is currently doing, for the status line and empty states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Status {
     /// No query typed yet.
+    #[default]
     Idle,
     /// Typed, waiting for the debounce to expire.
     Waiting,
@@ -138,11 +140,6 @@ pub struct Screen {
     error: Option<String>,
 }
 
-impl Default for Status {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// What a query change obliges the caller to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

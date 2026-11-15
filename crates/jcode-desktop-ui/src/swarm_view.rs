@@ -47,6 +47,7 @@ impl WorkerState {
     }
 
     /// Ready, completed, stopped or failed: no longer worth waiting on.
+    #[allow(dead_code)]
     pub fn is_finished(self) -> bool {
         matches!(self, Self::Ready | Self::Failed | Self::Stopped)
     }

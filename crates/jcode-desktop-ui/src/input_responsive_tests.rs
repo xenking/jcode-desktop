@@ -13,7 +13,7 @@ fn long_drafts_scroll_and_reveal_keyboard_caret_in_short_windows(cx: &mut gpui::
         vcx.simulate_window_resize(handle, size(px(width), px(height)));
         input.update(vcx, |input, cx| {
             input.set_content(
-                "a long prompt with many wrapped lines ".repeat(100).into(),
+                "a long prompt with many wrapped lines ".repeat(100),
                 cx,
             )
         });

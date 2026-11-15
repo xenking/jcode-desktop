@@ -478,7 +478,7 @@ impl Panel {
         }
         // A failed attempt can always restart from a fresh link, except when
         // the only problem was an empty field the user can fix in place.
-        if state.error.is_some() && !(kind == StepKind::EnterKey && !state.busy) {
+        if state.error.is_some() && (kind != StepKind::EnterKey || state.busy) {
             body.push(
                 login_button("login-retry", "Start a new sign-in")
                     .on_click(

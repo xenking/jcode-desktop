@@ -67,6 +67,7 @@ pub(super) struct Machines {
     startup_requested: bool,
     pub(super) input: Option<Entity<PromptInput>>,
     notice: Option<String>,
+    #[allow(dead_code)]
     discovery: Option<gpui::Task<()>>,
     cloud: cloud_alpha::Lifecycle,
     connected_cloud_sessions: std::collections::HashSet<String>,
@@ -78,11 +79,10 @@ impl Machines {
     pub fn from_config() -> Self {
         let config = &crate::config::get().workspace;
         let mut hosts = config.remote_hosts.clone();
-        if let Some(host) = &config.default_remote_host {
-            if !hosts.contains(host) {
+        if let Some(host) = &config.default_remote_host
+            && !hosts.contains(host) {
                 hosts.push(host.clone());
             }
-        }
         Self {
             default_host: config
                 .default_remote_host
@@ -1089,7 +1089,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(("machine-connect", index))
-                            .debug_selector(move || format!("machine-connect-{index}").into())
+                            .debug_selector(move || format!("machine-connect-{index}"))
                             .px_2()
                             .py_1()
                             .rounded_sm()
@@ -1115,7 +1115,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(("machine-default", index))
-                            .debug_selector(move || format!("machine-default-{index}").into())
+                            .debug_selector(move || format!("machine-default-{index}"))
                             .px_2()
                             .py_1()
                             .rounded_sm()

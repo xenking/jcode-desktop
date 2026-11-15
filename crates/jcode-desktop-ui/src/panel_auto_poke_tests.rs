@@ -117,7 +117,7 @@ fn completed_work_runs_quality_gates_then_final_response_once(cx: &mut gpui::Tes
     });
     let mut followups = Vec::new();
     for state in [weak, strong.clone(), strong] {
-        panel.update(cx, |p, cx| turn_done(p, cx));
+        panel.update(cx, turn_done);
         cx.run_until_parked();
         drain(&commands);
         panel.update(cx, |p, cx| p.todo_state_received(snapshot(vec![state]), cx));

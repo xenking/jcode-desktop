@@ -228,6 +228,7 @@ actions!(
 
 /// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
 /// across the available frames instead of concentrating it at the start.
+#[allow(dead_code)]
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
 /// The bundled applet behind Super+Shift+G and the sidebar inbox entry.
 const GMAIL_APPLET: &str = "gmail";
@@ -2347,7 +2348,7 @@ impl Workspace {
                                     .iter()
                                     .filter_map(|id| Some((id.clone(), usage.get(id)?.clone())))
                                     .collect();
-                                let _ = panel.update(cx, |panel, cx| panel.set_swarm_usage(own, cx));
+                                panel.update(cx, |panel, cx| panel.set_swarm_usage(own, cx));
                             }
                         })
                         .detach();
@@ -3140,11 +3141,10 @@ impl Workspace {
         } else {
             self.coach_expiry_task = None;
         }
-        if self.coach.take_dirty() {
-            if let Some(persistence) = &self.learning_persistence {
+        if self.coach.take_dirty()
+            && let Some(persistence) = &self.learning_persistence {
                 persistence.save(&self.coach);
             }
-        }
         cx.notify();
     }
 
@@ -3450,10 +3450,9 @@ impl Workspace {
         if !(0..STRIP_COUNT as isize).contains(&target) {
             return;
         }
-        if !self
+        if self
             .slots
-            .get(self.active)
-            .is_some_and(|slot| slot.row == self.active_row)
+            .get(self.active).is_none_or(|slot| slot.row != self.active_row)
         {
             return;
         }
@@ -5130,6 +5129,7 @@ impl Workspace {
     /// Route one scroll event over the strip through the sticky axis lock.
     /// Returns true when the strip consumed the event and the transcripts
     /// underneath must not also scroll.
+    #[allow(clippy::too_many_arguments)]
     fn route_strip_scroll(
         &mut self,
         row: usize,
@@ -5276,6 +5276,7 @@ impl Workspace {
     /// camera. Without the focus follow, a swipe only moved the pixels: the
     /// old off-screen panel remained active and the next keyboard action
     /// snapped back to it.
+    #[allow(clippy::too_many_arguments)]
     fn pan_strip(
         &mut self,
         row: usize,
@@ -5523,7 +5524,7 @@ impl Workspace {
                         "file-tree-row:{}",
                         path.display()
                     )))
-                    .debug_selector(move || format!("file-tree-{label}").into())
+                    .debug_selector(move || format!("file-tree-{label}"))
                     .pl(px(10.0 + depth as f32 * 14.0))
                     .pr_2()
                     .py_1()
@@ -6388,7 +6389,7 @@ impl Workspace {
                                     }))
                                     .group("sidebar-session-row")
                                     .debug_selector(move || {
-                                        format!("sidebar-session-{sidebar_index}").into()
+                                        format!("sidebar-session-{sidebar_index}")
                                     })
                                     .ml_2()
                                     .when(under_checkout, |el| el.ml(px(18.0)))
@@ -6467,7 +6468,6 @@ impl Workspace {
                                                         format!(
                                                             "sidebar-session-title-{sidebar_index}"
                                                         )
-                                                        .into()
                                                     })
                                                     .text_size(px(12.0))
                                                     .line_height(relative(1.5))
@@ -6593,7 +6593,7 @@ impl Workspace {
                                                 row.child(
                                                     div()
                                                         .debug_selector(move || {
-                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
+                                                            format!("sidebar-session-spinner-{sidebar_index}")
                                                         })
                                                         .flex_none()
                                                         .child(spinner),
@@ -8457,7 +8457,7 @@ impl Workspace {
             list = list.child(
                 div()
                     .id(("folder-picker-entry", index))
-                    .debug_selector(move || format!("folder-picker-entry-{index}").into())
+                    .debug_selector(move || format!("folder-picker-entry-{index}"))
                     .px_4()
                     .py_2()
                     .cursor_pointer()
@@ -8517,11 +8517,10 @@ impl Workspace {
                 cx.listener(|this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    if this.folder_picker_sets_default {
-                        if let Some(index) = this.default_directory_panel_index(cx) {
+                    if this.folder_picker_sets_default
+                        && let Some(index) = this.default_directory_panel_index(cx) {
                             this.set_active(index, cx);
                         }
-                    }
                     if let Some(search) = &this.folder_search {
                         this.focus_pending = false;
                         window.focus(&search.read(cx).focus_handle.clone(), cx);
@@ -10018,7 +10017,7 @@ mod tests {
         const WARMUP: usize = 50;
         const SAMPLES: usize = 500;
 
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for row in 0..STRIP_COUNT {
@@ -10150,7 +10149,7 @@ mod tests {
     fn empty_strip_navigation_is_captured_but_boundary_noops_are_not(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let directory = tempfile::tempdir().unwrap();
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
@@ -10185,7 +10184,7 @@ mod tests {
         const WARMUP: usize = 10;
         const SAMPLES: usize = 100;
 
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for row in 0..STRIP_COUNT {
@@ -10456,7 +10455,7 @@ mod tests {
     fn session_catalog_refresh_keeps_a_restored_open_session_in_the_sidebar(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -10911,7 +10910,7 @@ mod tests {
 
     #[gpui::test]
     fn persisted_session_record_paints_as_a_sidebar_row(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-sidebar-ui-{}-{}",
             std::process::id(),
@@ -11001,7 +11000,7 @@ mod tests {
     #[gpui::test]
     #[ignore = "manual sidebar hover profiler"]
     fn sidebar_hover_frame_profile(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         for count in [10, 100, 500] {
@@ -11151,7 +11150,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_divides_saved_sessions_from_other_sessions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11181,7 +11180,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_separates_open_panels_from_other_sessions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11341,7 +11340,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_session_history_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11566,7 +11565,7 @@ mod tests {
 
     #[gpui::test]
     fn open_sidebar_sessions_follow_strips_top_to_bottom(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11624,7 +11623,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_todos_button_spawns_a_persistent_movable_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11814,7 +11813,7 @@ mod tests {
 
     #[gpui::test]
     fn clicking_a_file_opens_it_in_a_new_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let project = std::env::temp_dir().join(format!(
             "jcode-desktop-files-{}-{}",
             std::process::id(),
@@ -11865,7 +11864,7 @@ mod tests {
     /// real painted element, not merely paint a row that looks clickable.
     #[gpui::test]
     fn clicking_a_sidebar_row_activates_that_session(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11912,7 +11911,7 @@ mod tests {
     fn clicking_scrolled_history_rows_reliably_activates_the_displayed_session(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -12395,7 +12394,7 @@ mod tests {
     /// credentials.
     #[gpui::test]
     fn connected_accounts_paint_in_the_sidebar(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (_workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.sidebar_view = SidebarView::Accounts;
@@ -12517,7 +12516,7 @@ mod tests {
 
     #[gpui::test]
     fn ctrl_o_uses_the_in_app_picker_and_creates_a_session(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -12616,7 +12615,7 @@ mod tests {
 
     #[gpui::test]
     fn folder_picker_dismissal_restores_navigation_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["left", "middle", "right"] {
@@ -12716,7 +12715,7 @@ mod tests {
 
     #[gpui::test]
     fn ctrl_o_focuses_search_and_enter_opens_the_matching_folder(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -13189,7 +13188,7 @@ mod tests {
     /// a workspace or leak the blocked pull into the panel transcript.
     #[gpui::test]
     fn a_committed_pan_cannot_move_down_a_workspace(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two"] {
@@ -13286,7 +13285,7 @@ mod tests {
     fn vertical_scroll_over_an_empty_panel_cannot_move_down_a_workspace(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("empty", cx);
@@ -13378,7 +13377,7 @@ mod tests {
     /// visually quiet.
     #[gpui::test]
     fn a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -13492,7 +13491,7 @@ mod tests {
     fn transcript_scrolls_and_minimap_swipes_do_not_light_the_indicators(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -13676,7 +13675,7 @@ mod tests {
         ];
 
         for (skill_id, keys) in cases {
-            cx.update(|cx| crate::bind_workspace_keys(cx));
+            cx.update(crate::bind_workspace_keys);
             let (workspace, vcx) = cx.add_window_view(|window, cx| {
                 let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
                 // Enough panels that no shortcut is a no-op, and a second strip
@@ -13728,7 +13727,7 @@ mod tests {
     /// never teach a keystroke the app does not listen for.
     #[gpui::test]
     fn advertised_keys_match_the_real_keymap(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -13830,7 +13829,7 @@ mod tests {
     fn clicking_a_neighbouring_panel_is_recorded_as_a_missed_shortcut(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two", "three"] {
@@ -13881,7 +13880,7 @@ mod tests {
     /// activation must still happen when the corresponding mouse-up bubbles.
     #[gpui::test]
     fn clicking_selectable_text_in_a_restored_panel_activates_it(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13915,7 +13914,7 @@ mod tests {
     /// in a shortcut they have never pressed.
     #[gpui::test]
     fn clicking_the_new_session_button_is_not_keyboard_credit(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14043,7 +14042,7 @@ mod tests {
 
     #[gpui::test]
     fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14066,7 +14065,7 @@ mod tests {
 
     #[gpui::test]
     fn tab_plus_replaces_the_right_edge_new_session_target(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14092,7 +14091,7 @@ mod tests {
     /// keypress would have done anything, so it must not be held against them.
     #[gpui::test]
     fn clicking_the_focused_panel_is_not_a_missed_shortcut(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two"] {
@@ -14126,7 +14125,7 @@ mod tests {
     /// The hint lives in spare header space without changing panel geometry.
     #[gpui::test]
     fn the_hint_chip_uses_only_spare_tab_space(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14199,7 +14198,7 @@ mod tests {
     fn the_update_chip_paints_only_while_the_updater_has_something_to_say(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14283,7 +14282,7 @@ mod tests {
     /// The coach view must paint too, and only while it is open.
     #[gpui::test]
     fn the_coach_view_paints_only_when_opened(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("only", cx);
@@ -14378,7 +14377,7 @@ mod tests {
     fn pressing_into_empty_strips_clears_the_lesson_without_teaching(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("only", cx);
@@ -14423,7 +14422,7 @@ mod tests {
 
     #[gpui::test]
     fn overview_navigation_keeps_root_focus_and_restores_composer(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["left", "middle", "right"] {
@@ -14476,7 +14475,7 @@ mod tests {
 
     #[gpui::test]
     fn overview_restore_and_new_panel_keep_mounted_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("left", cx);
@@ -14622,7 +14621,7 @@ mod tests {
     /// must restore that strip's own last-focused panel.
     #[gpui::test]
     fn vertical_keys_animate_and_restore_each_strips_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("top-left", cx);
@@ -14694,7 +14693,7 @@ mod tests {
 
     #[gpui::test]
     fn vertical_keys_cover_both_animation_directions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("top-left", cx);
@@ -14764,7 +14763,7 @@ mod tests {
 
     #[gpui::test]
     fn horizontal_panel_moves_animate_both_swapped_panels(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("left", cx);
@@ -14807,7 +14806,7 @@ mod tests {
     fn moving_a_panel_between_strips_animates_and_stops_at_boundaries(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("moving", cx);
@@ -15106,7 +15105,7 @@ mod tests {
     /// a real rendered frame and asserts focus moved there.
     #[gpui::test]
     fn clicking_a_minimap_panel_jumps_focus_there(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -15178,7 +15177,7 @@ mod tests {
     /// workspace bar.
     #[gpui::test]
     fn clicking_a_minimap_track_switches_strips(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -15216,7 +15215,7 @@ mod tests {
     fn focused_workspace(
         cx: &mut gpui::TestAppContext,
     ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         cx.update(|window, cx| {
@@ -15642,7 +15641,7 @@ mod tests {
 
     #[gpui::test]
     fn super_t_opens_and_paints_a_plain_terminal_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -15699,7 +15698,7 @@ mod tests {
 
     #[gpui::test]
     fn super_shift_g_opens_and_paints_the_gmail_applet_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -15747,7 +15746,7 @@ mod tests {
     #[gpui::test]
     fn theme_tab_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
         let _theme = crate::theme::test_theme_lock();
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let original = Theme::active_preset();
         Theme::select(ThemePreset::WarmNeutral);
         let (workspace, vcx) =

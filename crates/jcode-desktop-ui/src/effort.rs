@@ -98,6 +98,7 @@ impl EffortKeys {
     }
 
     /// Display label such as `Alt+Left / Alt+Right`, or `None` when unbound.
+    #[allow(dead_code)]
     pub(crate) fn label(&self) -> Option<String> {
         let decrease = self.decrease.first()?;
         let increase = self.increase.first()?;

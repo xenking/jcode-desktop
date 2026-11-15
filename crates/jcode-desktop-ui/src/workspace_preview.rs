@@ -97,6 +97,7 @@ impl Workspace {
     }
 
     /// Reusable UI entry point. Opening adds a column, never replaces a real session.
+    #[allow(dead_code)]
     pub fn open_preview(&mut self, state: PreviewState, cx: &mut Context<Self>) -> Option<usize> {
         preview_control::enabled().then(|| self.open_preview_unchecked(state, cx))
     }

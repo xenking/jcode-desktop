@@ -314,6 +314,7 @@ fn report_active() {
 
 /// Forget the cached release result so the next render checks again.
 /// An in-flight check is left alone.
+#[allow(dead_code)]
 pub fn recheck_release() {
     let mut state = release_state()
         .lock()
@@ -395,6 +396,7 @@ pub fn set(next: UpdateState) {
 
 /// Numeric mirror of [`UpdateState`], shared with `updater_bootstrap.m`.
 /// Keep these values in sync with the `JcodeUpdate*` constants there.
+#[allow(dead_code)]
 pub const STATE_IDLE: u32 = 0;
 pub const STATE_CHECKING: u32 = 1;
 pub const STATE_AVAILABLE: u32 = 2;

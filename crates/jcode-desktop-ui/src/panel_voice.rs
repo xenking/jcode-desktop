@@ -24,7 +24,6 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 mod overlay;
 pub(crate) use jcode_desktop_voice::tag;
 // The button's keycap, tooltip, labels and crossfade hold no panel state.
-pub(crate) use jcode_desktop_voice::chrome::short_voice_status;
 use jcode_desktop_voice::chrome::*;
 
 #[cfg(test)]
@@ -701,6 +700,7 @@ impl Panel {
 
     /// Put finished words in the draft for editing, per `[dictation] mode`.
     /// Nothing is submitted and the composer keeps keyboard focus.
+    #[allow(dead_code)]
     fn keep_voice_in_draft(&mut self, text: &str, cx: &mut Context<Self>) {
         let mode = dictation_mode();
         self.keep_voice_in_draft_with(text, mode, cx);
@@ -859,11 +859,10 @@ impl Panel {
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
         }
-        if self.voice.global_capture {
-            if let Some(error) = &self.voice.error {
+        if self.voice.global_capture
+            && let Some(error) = &self.voice.error {
                 eprintln!("global voice: finished without text: {error}");
             }
-        }
         cx.notify();
     }
 
@@ -1237,7 +1236,7 @@ impl Panel {
             .child(
                 div()
                     .invisible()
-                    .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
+                    .child(voice_shortcut_keycap(keycap_color.into(), theme)),
             )
             .child(faces);
         div()
@@ -1942,7 +1941,7 @@ mod tests {
 
     #[gpui::test]
     fn voice_insertion_is_undoable(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel

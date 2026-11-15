@@ -22,6 +22,7 @@ pub(super) struct RemoteTransports {
     // Provisioning is serialized independently of ordinary SSH selection.
     cloud: Arc<Mutex<CloudTransport<WeakSharedSshTransport, JcodeClient>>>,
     #[cfg(test)]
+    #[allow(clippy::type_complexity)]
     connector: Option<Arc<dyn Fn(&str) -> jcode_sdk::Result<JcodeClient> + Send + Sync>>,
 }
 
@@ -502,13 +503,12 @@ fn fingerprint_with_environment(
     }
     // The managed proxy reads this JSON at runtime, so ssh -G alone cannot
     // observe instance/account retargeting behind an unchanged ProxyCommand.
-    if host.rsplit('@').next() == Some("jcode-cloud-alpha") {
-        if let Some(home) = &home {
+    if host.rsplit('@').next() == Some("jcode-cloud-alpha")
+        && let Some(home) = &home {
             let home = std::path::Path::new(home);
             hash_file(&home.join(".config/jcode/cloud-alpha.json"), &mut hash);
             hash_file(&home.join(".local/bin/jcode-cloud-alpha"), &mut hash);
         }
-    }
     for line in config.lines() {
         let Some((name, value)) = line.split_once(' ') else {
             continue;

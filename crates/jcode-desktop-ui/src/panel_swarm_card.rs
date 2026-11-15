@@ -167,6 +167,7 @@ impl Panel {
         ids
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_swarm_card(
         &self,
         index: usize,

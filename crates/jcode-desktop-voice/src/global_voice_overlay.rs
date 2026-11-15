@@ -308,6 +308,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn rms_meter_matches_panel_and_handles_invalid_samples() {
         assert_eq!(meter_height(0.), 2.);
         assert_eq!(meter_height(-1.), 2.);

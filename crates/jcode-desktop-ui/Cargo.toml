@@ -93,3 +93,8 @@ gpui.workspace = true
 # Same features as gpui's (`profiler`) dependency, so tests reuse the build's
 # hdrhistogram and therefore its GPUI.
 hdrhistogram = { version = "7.6", default-features = false }
+
+[features]
+# Declared so `cfg(feature = "test-support")` is a valid, checkable condition.
+# Test builds set it themselves; nothing else enables it.
+test-support = []

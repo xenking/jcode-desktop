@@ -33,7 +33,7 @@ const LESSONS: &[&str] = &[
 
 fn assert_all_lessons(vcx: &mut gpui::VisualTestContext) {
     for id in LESSONS {
-        assert!(vcx.debug_bounds(*id).is_some(), "missing lesson {id}");
+        assert!(vcx.debug_bounds(id).is_some(), "missing lesson {id}");
     }
     for id in ["tutorial-next", "tutorial-back", "tutorial-stage"] {
         assert!(

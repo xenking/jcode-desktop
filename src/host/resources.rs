@@ -322,11 +322,10 @@ unsafe extern "C-unwind" fn terminal_release(context: *mut c_void, id: u64) {
         resource.attachments = resource.attachments.saturating_sub(1);
         resource.attachments == 0
     });
-    if remove {
-        if let Some(mut resource) = terminals.resources.remove(&id) {
+    if remove
+        && let Some(mut resource) = terminals.resources.remove(&id) {
             let _ = resource.killer.kill();
         }
-    }
 }
 
 fn default_shell() -> String {

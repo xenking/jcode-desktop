@@ -3,7 +3,7 @@ use super::*;
 
 #[path = "panel_auto_poke.rs"]
 mod auto_poke;
-pub(in crate::panel) use auto_poke::{PokeCommand, auto_poke_notice_text, parse_poke_command};
+pub(in crate::panel) use auto_poke::{auto_poke_notice_text, parse_poke_command};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptQueue {
@@ -365,7 +365,7 @@ impl Panel {
                 .children(steered.iter().take(SHOWN).enumerate().map(|(index, prompt)| {
                     let preview = steered_preview(&prompt.content, prompt.images.len());
                     div()
-                        .debug_selector(move || format!("steered-prompt-{index}").into())
+                        .debug_selector(move || format!("steered-prompt-{index}"))
                         .flex()
                         .flex_none()
                         .min_w_0()
@@ -441,7 +441,7 @@ impl Panel {
                                     format!("{} · {} image(s)", prompt.content, prompt.images.len())
                                 };
                                 div()
-                                    .debug_selector(move || format!("queued-prompt-{index}").into())
+                                    .debug_selector(move || format!("queued-prompt-{index}"))
                                     .flex()
                                     .flex_none()
                                     .min_w_0()
@@ -516,7 +516,7 @@ fn queue_action(
     let theme = Theme::global();
     div()
         .id((id, index))
-        .debug_selector(move || format!("{id}-{index}").into())
+        .debug_selector(move || format!("{id}-{index}"))
         .flex_none()
         .flex()
         .items_center()

@@ -237,6 +237,7 @@ impl State {
         self.email && !self.connected && !matches!(self.stage, Stage::Complete { .. })
     }
 
+    #[allow(dead_code)]
     fn primary_label(&self) -> &'static str {
         match self.stage {
             Stage::Welcome => "Sign in with email",

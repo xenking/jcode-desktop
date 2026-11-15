@@ -204,8 +204,11 @@ pub struct PromptInput {
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
     preview_panel_bounds: paste_preview::MeasuredBounds,
+    #[allow(clippy::type_complexity)]
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App)>,
+    #[allow(clippy::type_complexity)]
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
+    #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
     command_completion: bool,
@@ -324,6 +327,7 @@ struct CommandSuggestion {
     action: Option<model_stage::StageStep>,
 }
 
+#[allow(dead_code)]
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
     command_suggestions_with_efforts(input, models, EffortMenu::default())
 }
@@ -985,8 +989,7 @@ impl PromptInput {
         if let Some(model) = selected
             .as_ref()
             .and_then(|row| row.value.strip_prefix("/model "))
-        {
-            if !self
+            && !self
                 .command_suggestions()
                 .iter()
                 .any(|row| row.value == format!("/model {model}"))
@@ -999,7 +1002,6 @@ impl PromptInput {
                     .insert(model_menu::group_key(model, &self.model_details));
                 self.suggestions_revision += 1;
             }
-        }
         // A background usage update must not move Enter onto a different model.
         if let Some(index) = selected.and_then(|selected| {
             self.command_suggestions().iter().position(|row| {
@@ -1494,11 +1496,10 @@ impl PromptInput {
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
-        if let Some(cancel) = &self.on_overlay_cancel {
-            if cancel(cx) {
+        if let Some(cancel) = &self.on_overlay_cancel
+            && cancel(cx) {
                 return;
             }
-        }
         if !self.content.is_empty() {
             self.set_content(String::new(), cx);
         }
@@ -2313,11 +2314,10 @@ impl Element for TextElement {
             // Only an active window animates. Background windows show the
             // whole example rather than freezing mid-word.
             placeholder_live = live && window.is_window_active();
-            if live && !placeholder_live {
-                if let Some(full) = &full {
+            if live && !placeholder_live
+                && let Some(full) = &full {
                     text = full.clone();
                 }
-            }
             (text, to_hsla(Theme::global().TEXT_DIM))
         } else {
             (content, style.color)
@@ -3058,7 +3058,7 @@ mod tests {
     }
 
     fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}))
@@ -3209,7 +3209,11 @@ mod tests {
                 assert_eq!(input.content.as_ref(), "zh");
                 input.replace_text_in_range(Some(1..1000), "中", window, cx);
                 assert_eq!(input.content.as_ref(), "z中");
-                input.replace_text_in_range(Some(5..2), "文", window, cx);
+                // Deliberately inverted: the handler must clamp the range
+                // instead of slicing blindly, which is the case under test.
+                #[allow(clippy::reversed_empty_ranges)]
+                let inverted = 5..2;
+                input.replace_text_in_range(Some(inverted), "文", window, cx);
                 assert_eq!(input.content.as_ref(), "z中文");
                 let mut actual = None;
                 assert_eq!(
@@ -3889,7 +3893,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         window
-            .update(cx, |input, window, _| {
+            .update(cx, |input, _window, _| {
                 let height =
                     input.last_bounds.unwrap().size.height / input.visual_line_count as f32;
                 let caret = input
@@ -3931,7 +3935,7 @@ mod tests {
     #[gpui::test]
     fn ctrl_b_moves_by_word_in_the_prompt_despite_the_sidebar_shortcut(cx: &mut TestAppContext) {
         let window = input_window(cx);
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         cx.simulate_input(*window, "one two three");
         cx.run_until_parked();
 
@@ -4040,7 +4044,7 @@ mod tests {
     fn history_and_escape_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {
@@ -4194,7 +4198,7 @@ mod tests {
     fn image_only_prompt_submits_the_attachment_and_clears_the_composer(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {

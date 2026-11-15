@@ -90,6 +90,7 @@ impl TabRing {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn working(&self) -> bool {
         self.mode == TabMode::Working
     }

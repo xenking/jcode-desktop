@@ -17,10 +17,10 @@ fn irreversible_error() -> String {
     text
 }
 
-fn panel_with<'a>(
-    cx: &'a mut gpui::TestAppContext,
+fn panel_with(
+    cx: &mut gpui::TestAppContext,
     items: Vec<Item>,
-) -> (Entity<Panel>, &'a mut gpui::VisualTestContext) {
+) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(

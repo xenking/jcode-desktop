@@ -167,8 +167,7 @@ impl Panel {
                 .trim()
                 .strip_prefix("/model ")
                 .map(crate::input::parse_model_pick)
-            {
-                if self
+                && self
                     .available_models
                     .iter()
                     .any(|available| available == model)
@@ -179,7 +178,6 @@ impl Panel {
                     )));
                     self.close_model_picker(cx);
                 }
-            }
         }
         cx.notify();
         true

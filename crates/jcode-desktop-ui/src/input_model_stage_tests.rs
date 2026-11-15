@@ -27,7 +27,7 @@ fn window(
     gpui::WindowHandle<PromptInput>,
     std::rc::Rc<RefCell<Vec<String>>>,
 ) {
-    cx.update(|cx| bind_keys(cx));
+    cx.update(bind_keys);
     let submitted = std::rc::Rc::new(RefCell::new(Vec::new()));
     let sink = submitted.clone();
     let window = cx.update(|cx| {

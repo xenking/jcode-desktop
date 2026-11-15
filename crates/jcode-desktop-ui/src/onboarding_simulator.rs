@@ -56,7 +56,6 @@ impl Workspace {
         {
             self.onboarding_launch.requests.push(script);
             let _ = cx;
-            return;
         }
         #[cfg(not(test))]
         {

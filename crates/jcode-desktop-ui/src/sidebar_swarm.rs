@@ -831,7 +831,10 @@ mod tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "session_tulip_2_b");
         });
-        assert!(vcx.debug_bounds("swarm-list").is_none() || true);
+        assert!(
+            vcx.debug_bounds("swarm-list").is_none(),
+            "opening a worker closes the composer list"
+        );
         // Sidebar: click the first worker row.
         let center = vcx.debug_bounds("sidebar-worker-0-0").unwrap().center();
         vcx.simulate_click(center, gpui::Modifiers::default());

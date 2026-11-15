@@ -141,6 +141,36 @@ pub(crate) mod key {
     }
 }
 
+/// Every disclosure key the given rows can paint. A screenshot run uses it to
+/// start with all of them open, so the capture shows what an expansion looks
+/// like without replaying a click.
+pub(crate) fn all_regions(items: &[Item]) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Item::Tool { call_id, .. } => {
+                keys.insert(call_id.clone());
+            }
+            Item::Error(_) => {
+                keys.insert(key::details(index));
+            }
+            Item::Stopped(_) | Item::CacheMiss(_) => {
+                keys.insert(key::notice(index));
+            }
+            Item::BackgroundTask { task_id, .. } => {
+                keys.insert(key::task(task_id));
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+/// Screenshot runs may ask for the expanded state up front.
+pub(crate) fn screenshot_expanded() -> bool {
+    std::env::var("JCODE_DESKTOP_SCREENSHOT_EXPANDED").as_deref() == Ok("1")
+}
+
 /// Flip one region open or closed and report the new state.
 pub(crate) fn flip(regions: &mut HashSet<String>, key: &str) -> bool {
     if regions.remove(key) {
@@ -284,6 +314,34 @@ mod tests {
             key::toast("3"),
         ];
         assert_eq!(keys.iter().collect::<HashSet<_>>().len(), keys.len());
+    }
+
+    #[test]
+    fn every_row_class_offers_its_region_for_a_screenshot_run() {
+        let items = vec![
+            Item::Tool {
+                call_id: "call".into(),
+                name: "bash".into(),
+                input: "{}".into(),
+                output: String::new(),
+                done: true,
+                error: None,
+            },
+            Item::Error("boom".into()),
+            Item::BackgroundTask {
+                task_id: "task".into(),
+                label: "Label".into(),
+                summary: "Summary".into(),
+                percent: None,
+                done: true,
+            },
+            Item::Assistant("not expandable".into()),
+        ];
+        let keys = all_regions(&items);
+        assert!(keys.contains("call"));
+        assert!(keys.contains(&key::details(1)));
+        assert!(keys.contains(&key::task("task")));
+        assert_eq!(keys.len(), 3);
     }
 
     #[test]

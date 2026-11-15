@@ -195,7 +195,7 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
 #[gpui::test]
 fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
-    let (panel, vcx) = cx.add_window_view(|_, cx| {
+    let (_panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
             "todo-selection".into(),
             None,

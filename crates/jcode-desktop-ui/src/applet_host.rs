@@ -184,6 +184,7 @@ impl AppletHost {
     }
 
     /// Every launcher across registered applets: `(applet, index, launcher)`.
+    #[allow(dead_code)]
     pub fn launchers(&self) -> Vec<(String, usize, Launcher)> {
         self.manifests
             .values()

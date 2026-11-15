@@ -134,7 +134,7 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
-                    input.set_content("long draft ".repeat(300).into(), cx)
+                    input.set_content("long draft ".repeat(300), cx)
                 });
             });
             vcx.run_until_parked();

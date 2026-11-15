@@ -677,7 +677,7 @@ impl Panel {
         if state.busy || state.complete {
             return;
         }
-        let Some(provider) = state.provider.clone() else {
+        let Some(provider) = state.provider else {
             return;
         };
         // Enter while the browser is expected to return must not fail the step.
@@ -724,7 +724,7 @@ impl Panel {
         let (Some(flow), Some(prompt)) = (state.flow.clone(), state.prompt.as_ref()) else {
             return;
         };
-        let kind = prompt.input_kind.clone();
+        let kind = prompt.input_kind;
         if kind != AuthInputKind::DeviceCode && secret.trim().is_empty() {
             state.error = Some("Paste the code or callback URL from your browser first.".into());
             cx.notify();
@@ -775,10 +775,8 @@ impl Panel {
                 .provider
                 .as_ref()
                 .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
+                || manual_input_visible(state)
             {
-                let focus = state.input.read(cx).focus_handle.clone();
-                focus.focus(window, cx);
-            } else if manual_input_visible(state) {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
             } else {

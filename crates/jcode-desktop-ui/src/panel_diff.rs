@@ -362,6 +362,7 @@ pub(super) fn edit_preview_intent(input: &str) -> String {
 }
 
 impl Panel {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_edit_metadata(
         &self,
         call_id: &str,
@@ -414,7 +415,7 @@ impl Panel {
             );
             card = card.child(
                 div()
-                    .debug_selector(move || format!("edit-preview-card-{index}").into())
+                    .debug_selector(move || format!("edit-preview-card-{index}"))
                     .min_w_0()
                     .rounded_lg()
                     .overflow_hidden()
@@ -514,14 +515,14 @@ impl Panel {
         let file = &review.files[review.selected];
         let theme = Theme::global();
         let (root_label, rows) = tree_rows(&review.files, &review.collapsed);
-        let mono = theme.FONT_MONO.clone();
+        let mono = theme.FONT_MONO;
         let mut tree = div()
             .id("diff-tree-scroll")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .py_1()
-            .font_family(mono.clone())
+            .font_family(mono)
             .text_size(px(12.))
             .line_height(px(22.));
         let base = usize::from(!root_label.is_empty());
@@ -542,7 +543,7 @@ impl Panel {
                 tree = tree.child(
                     div()
                         .id(SharedString::from(format!("diff-dir-{path}")))
-                        .debug_selector(move || selector.clone().into())
+                        .debug_selector(move || selector.clone())
                         .mx_1()
                         .pl(indent)
                         .pr_2()
@@ -568,11 +569,10 @@ impl Panel {
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
-                                if let Some(review) = &mut this.diff_review {
-                                    if !review.collapsed.remove(&path) {
+                                if let Some(review) = &mut this.diff_review
+                                    && !review.collapsed.remove(&path) {
                                         review.collapsed.insert(path.clone());
                                     }
-                                }
                                 cx.stop_propagation();
                                 cx.notify();
                             }),
@@ -587,7 +587,7 @@ impl Panel {
             tree = tree.child(
                 div()
                     .id(("diff-tree-file", index))
-                    .debug_selector(move || format!("diff-tree-file-{index}").into())
+                    .debug_selector(move || format!("diff-tree-file-{index}"))
                     .mx_1()
                     .pl(indent)
                     .pr_2()
