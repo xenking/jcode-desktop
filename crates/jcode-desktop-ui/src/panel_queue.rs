@@ -100,16 +100,23 @@ impl Panel {
 
     /// Screenshot fixture: `JCODE_DESKTOP_SCREENSHOT_QUEUED=N` seeds N messages
     /// the runtime has not delivered yet, so the queued rows can be looked at
-    /// offline in the real app.
-    pub(crate) fn seed_screenshot_queued(&mut self, count: usize) {
+    /// offline in the real app. `round` labels later seeds, because the demo
+    /// turn delivers an earlier round into the transcript and identical text in
+    /// both places would read as a duplication bug.
+    pub(crate) fn seed_screenshot_queued(&mut self, count: usize, round: usize) {
         const SAMPLES: [&str; 3] = [
             "also update the changelog before you finish",
             "and re-run the desktop tests after that",
             "ping me when the build is green",
         ];
         for index in 0..count {
+            let sample = SAMPLES[index % SAMPLES.len()];
             self.prompt_queue.steered.push(QueuedPrompt {
-                content: SAMPLES[index % SAMPLES.len()].to_string(),
+                content: if round == 0 {
+                    sample.to_string()
+                } else {
+                    format!("{sample} (round {})", round + 1)
+                },
                 images: Vec::new(),
             });
         }

@@ -1401,18 +1401,24 @@ impl Workspace {
                 // rows for a frame and then hand them to the transcript.
                 workspace.queued_fixture = Some(cx.spawn(async move |this, cx| {
                     let executor = cx.background_executor().clone();
+                    let mut round = 0usize;
                     loop {
+                        let mut seeded = false;
                         this.update(cx, |workspace, cx| {
                             if let Some(slot) = workspace.slots.first() {
                                 slot.panel.update(cx, |panel, cx| {
                                     if panel.steered_prompt_count() == 0 {
-                                        panel.seed_screenshot_queued(count);
+                                        panel.seed_screenshot_queued(count, round);
+                                        seeded = true;
                                         cx.notify();
                                     }
                                 });
                             }
                         })
                         .ok();
+                        if seeded {
+                            round += 1;
+                        }
                         executor.timer(Duration::from_millis(1500)).await;
                     }
                 }));

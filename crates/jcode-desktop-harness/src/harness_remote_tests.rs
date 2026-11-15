@@ -158,11 +158,18 @@ impl Server {
         .unwrap();
     }
     fn disconnect(&self) {
-        self.writer
+        // A worker that stopped on a fatal protocol error closes its side first,
+        // so the server's own shutdown then reports NotConnected. That is the
+        // state these tests assert, not a fixture failure; anything else is.
+        if let Err(error) = self
+            .writer
             .lock()
             .unwrap()
             .shutdown(std::net::Shutdown::Both)
-            .unwrap();
+            && error.kind() != std::io::ErrorKind::NotConnected
+        {
+            panic!("server disconnect failed: {error}");
+        }
     }
 }
 

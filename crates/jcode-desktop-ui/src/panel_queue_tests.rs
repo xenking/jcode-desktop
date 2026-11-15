@@ -665,6 +665,76 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
 }
 
 #[gpui::test]
+fn two_steered_messages_are_queued_or_in_the_transcript_never_both(
+    cx: &mut gpui::TestAppContext,
+) {
+    fn user_texts(panel: &Panel) -> Vec<&str> {
+        panel
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+    let (panel, vcx, commands) = steered_panel(cx, "steer-both");
+    panel.update(vcx, |p, cx| {
+        p.submit_or_queue("first steer".into(), vec![], false, cx);
+        p.submit_or_queue("second steer".into(), vec![], false, cx);
+    });
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::Send { .. })));
+    assert!(matches!(commands.try_recv(), Ok(Command::Send { .. })));
+
+    // Before the runtime injects, the text lives only in the queued rows.
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 2);
+        assert_eq!(user_texts(p), ["First request"], "queued text is not a message yet");
+    });
+    assert!(vcx.debug_bounds("steered-prompt-0").is_some());
+    assert!(vcx.debug_bounds("steered-prompt-1").is_some());
+    assert!(vcx.debug_bounds("steered-count").is_some());
+
+    // Delivered: the rows go away and each message enters the transcript once.
+    panel.update(vcx, |p, cx| {
+        p.apply(
+            &event(json!({"ev":"soft_interrupt_injected", "client_ids":[], "point":"D"})),
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-prompt-0").is_none());
+    assert!(vcx.debug_bounds("steered-count").is_none());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.steered_prompt_count(), 0);
+        assert_eq!(
+            user_texts(p),
+            ["First request", "first steer", "second steer"]
+        );
+    });
+
+    // Nothing that follows can add a second copy: a repeated injection finds an
+    // empty queue, and the turn ending has nothing left to release.
+    panel.update(vcx, |p, cx| {
+        p.apply(
+            &event(json!({"ev":"soft_interrupt_injected", "client_ids":[], "point":"B"})),
+            cx,
+        );
+        p.apply(&event(json!({"ev":"turn_done"})), cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-prompt-0").is_none());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(
+            user_texts(p),
+            ["First request", "first steer", "second steer"],
+            "a delivered message must never reappear as queued or duplicated"
+        );
+    });
+}
+
+#[gpui::test]
 fn acceptance_ack_does_not_drop_a_steered_row(cx: &mut gpui::TestAppContext) {
     let (panel, vcx, _commands) = steered_panel(cx, "steer-ack");
     panel.update(vcx, |p, cx| {
