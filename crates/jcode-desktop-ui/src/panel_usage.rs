@@ -803,7 +803,7 @@ mod tests {
             );
             cx.set_global(StatusAccounts(accounts));
         });
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let (_workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
             workspace.push_test_panel("opencode-go-session", cx);

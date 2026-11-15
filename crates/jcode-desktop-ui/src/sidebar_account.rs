@@ -117,6 +117,8 @@ impl Workspace {
             theme.TEXT_DIM
         };
         let menu_open = signed_in && self.account_menu.open;
+        // The block spells out whom it belongs to only on hover now.
+        let account_tooltip = format!("{} · {}", account.title(show_email), account.detail());
 
         div()
             .id("sidebar-account-area")
@@ -131,7 +133,6 @@ impl Workspace {
                 el.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_account_menu(cx)))
                     .child(self.render_account_menu(cx))
             })
-            .children(self.render_sidebar_quota(cx))
             .child(
                 div()
                     .id("sidebar-account")
@@ -247,44 +248,29 @@ impl Workspace {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-account-name".into())
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .line_height(px(14.0))
-                                    .text_color(ink)
-                                    .child(account.title(show_email)),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-account-detail".into())
-                                    .truncate()
-                                    .text_size(px(9.0))
-                                    .line_height(px(12.0))
-                                    .text_color(theme.TEXT_DIM)
-                                    .child(account.detail()),
-                            ),
-                    ),
+                    // The avatar plus one icon and figure per provider. The
+                    // account and its plan live in the hover, so the block is
+                    // usage at a glance instead of repeated identity.
+                    .children(self.render_sidebar_quota(cx))
+                    .child(div().flex_1())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::panel::usage::MeterTooltip(account_tooltip.clone()))
+                            .into()
+                    }),
             )
             .into_any_element()
     }
 
-    /// Provider quota row for the sidebar's bottom block: one icon plus figure
-    /// per configured credential, red at exhaustion, each with the same hover
-    /// card it had in the composer bar. The bar itself now carries only
-    /// identity and session state (model, effort, context, cache, swarm).
-    fn render_sidebar_quota(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let accounts = cx.try_global::<crate::panel::usage::StatusAccounts>()?;
+    /// Provider quota icons for the account block: one icon plus figure per
+    /// configured credential, red at exhaustion, each with the same hover card
+    /// it had in the composer bar. Clicking one opens the account picker.
+    fn render_sidebar_quota(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let Some(accounts) = cx.try_global::<crate::panel::usage::StatusAccounts>() else {
+            return Vec::new();
+        };
         let chips = crate::panel::usage::quota_chips(&accounts.0);
         if chips.is_empty() {
-            return None;
+            return Vec::new();
         }
         let theme = Theme::global();
         let source = self
@@ -292,16 +278,8 @@ impl Workspace {
             .get(self.active)
             .filter(|slot| !slot.closing)
             .map(|slot| slot.panel.entity_id());
-        Some(
-            div()
-                .id("sidebar-quota")
-                .debug_selector(|| "sidebar-quota".into())
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(2.0))
-                .px(px(4.0))
-                .children(chips.into_iter().map(|chip| {
+        {
+            chips.into_iter().map(|chip| {
                     let id = format!("sidebar-quota-{}", chip.logo);
                     let selector = id.clone();
                     let tooltip = chip.tooltip();
@@ -357,9 +335,10 @@ impl Workspace {
                         }))
                         .children(logo)
                         .child(chip.label())
-                }))
-                .into_any_element(),
-        )
+                        .into_any_element()
+                })
+                .collect()
+        }
     }
 
     /// Settings row: reveal the account email in the sidebar. Off by default.
@@ -407,6 +386,57 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::JcodeAccount;
+
+    /// The user's layout: one block at the bottom of the sidebar with the
+    /// avatar on the left and the provider figures to its right. The account
+    /// name and plan are hover text now, so the block never repeats identity
+    /// over the usage it exists to show.
+    #[gpui::test]
+    fn the_quota_icons_sit_inside_the_account_block(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[],"error":null}]}"#,
+            );
+            cx.set_global(crate::panel::usage::StatusAccounts(accounts));
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)
+        });
+        let _ = &workspace;
+        vcx.run_until_parked();
+        let block = vcx
+            .debug_bounds("sidebar-account")
+            .expect("the account block paints");
+        let chip = vcx
+            .debug_bounds("sidebar-quota-claude")
+            .expect("Claude's figure sits in the block");
+        assert!(
+            chip.left() >= block.left()
+                && chip.right() <= block.right()
+                && chip.top() >= block.top()
+                && chip.bottom() <= block.bottom(),
+            "the quota icon lives inside the account pill: {chip:?} {block:?}"
+        );
+        let avatar = vcx.debug_bounds("sidebar-account-avatar").unwrap();
+        assert!(
+            avatar.right() <= chip.left(),
+            "the avatar leads, then the provider figures: {avatar:?} {chip:?}"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-account-name").is_none(),
+            "the block no longer spells the account name inline"
+        );
+        assert!(vcx.debug_bounds("sidebar-account-detail").is_none());
+        assert!(
+            vcx.debug_bounds("sidebar-quota").is_none(),
+            "no separate quota row above the block"
+        );
+    }
 
     #[test]
     fn signed_in_account_names_email_and_plan() {
