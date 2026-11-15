@@ -1,0 +1,17 @@
+{
+  "observedAt": "2026-10-13T18:00:00.000Z", "home": "/h/.openrig", "pid": 4242,
+  "settingsSource": "/h/.openrig/config.json",
+  "settings": [{"key": "host.name", "value": "studio", "source": "file"}, {"key": "workspace.root", "value": null, "source": "default"}],
+  "configSource": {"state": "readable", "path": "/h/.openrig/slack.json"},
+  "configuration": {"enabled": true, "channel": "#ops", "inboundDestination": "orch@r", "outboundDestinations": ["#ops"], "postLevel": "info", "interruptLevel": "critical",
+    "botToken": "present", "appToken": "missing", "channelMap": [{"match": "rig-a", "channel": "#rig-a"}, {"match": null, "channel": null}]},
+  "running": {"state": "running", "activatedAt": "2026-10-13T09:00:00Z", "outboundReady": true, "inboundReady": true, "inboundState": "connected", "applied": "changed",
+    "inboundDelivery": "events-missing", "inboundEventsMissingSince": "2026-10-13T17:00:00Z"},
+  "state": "degraded", "nextAction": "rig slack verify",
+  "registry": {"state": "available", "path": "/h/.openrig/humans.json"},
+  "humans": [
+    {"entityId": "h-1", "address": "human-ada@host", "displayName": "Ada", "deliveryClass": "interactive", "availability": "available", "excluded": false,
+     "bindings": [{"kind": "slack", "ref": "U123", "role": "primary", "handle": "@ada"}, {"kind": "email", "ref": null, "role": "secondary", "handle": null}]},
+    {"entityId": "h-2", "address": "human-bo@host", "displayName": null, "deliveryClass": "digest", "availability": "away", "excluded": null, "bindings": []}
+  ]
+}

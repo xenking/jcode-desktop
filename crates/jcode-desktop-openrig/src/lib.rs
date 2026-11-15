@@ -1,6 +1,11 @@
+pub mod connections;
+pub mod cost;
+pub mod sections;
+pub mod usage;
+pub mod util;
+
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     io::{BufRead, BufReader},
     time::Duration,
 };
@@ -100,22 +105,110 @@ pub enum SectionKind {
     UsageHosts,
     Cost,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+
+/// Semantic color of a status or meter. The UI maps it onto the theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    #[default]
+    Neutral,
+    Ok,
+    Warn,
+    Error,
+    Dim,
+}
+
+/// A progress pill: `percent` is the share to fill (0 to 100), `None` when the daemon did not serve one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Meter {
+    pub label: String,
+    pub percent: Option<f64>,
+    pub tone: Tone,
+}
+impl Meter {
+    /// Fill fraction in `0.0..=1.0`, `None` for an unknown or non-finite percentage.
+    pub fn fraction(&self) -> Option<f32> {
+        self.percent
+            .filter(|p| p.is_finite())
+            .map(|p| (p.clamp(0., 100.) / 100.) as f32)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Row {
     pub id: String,
     pub depth: u8,
     pub label: String,
     pub status: Option<String>,
+    pub tone: Tone,
     pub detail: Vec<(String, String)>,
     pub children_count: usize,
+    /// Show the row's children before the user toggles it.
+    pub default_open: bool,
+    pub meter: Option<Meter>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Row {
+    pub(crate) fn new(id: impl Into<String>, depth: u8, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            depth,
+            label: label.into(),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn status(mut self, status: impl Into<String>, tone: Tone) -> Self {
+        self.status = Some(status.into());
+        self.tone = tone;
+        self
+    }
+    pub(crate) fn open(mut self) -> Self {
+        self.default_open = true;
+        self
+    }
+    pub(crate) fn meter(
+        mut self,
+        label: impl Into<String>,
+        percent: Option<f64>,
+        tone: Tone,
+    ) -> Self {
+        self.meter = Some(Meter {
+            label: label.into(),
+            percent,
+            tone,
+        });
+        self
+    }
+    pub(crate) fn put(&mut self, key: &str, value: impl Into<String>) {
+        self.detail.push((key.into(), value.into()));
+    }
+    pub(crate) fn with(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.put(key, value);
+        self
+    }
+    pub(crate) fn with_opt(mut self, key: &str, value: Option<impl Into<String>>) -> Self {
+        if let Some(value) = value {
+            self.put(key, value);
+        }
+        self
+    }
+}
+/// Push `row`, let `build` append its descendants, then record how many direct children it got.
+pub(crate) fn push_group(out: &mut Vec<Row>, row: Row, build: impl FnOnce(&mut Vec<Row>)) {
+    let at = out.len();
+    let child_depth = row.depth.saturating_add(1);
+    out.push(row);
+    build(out);
+    out[at].children_count = out[at + 1..]
+        .iter()
+        .filter(|r| r.depth == child_depth)
+        .count();
+}
+#[derive(Clone, Debug, PartialEq)]
 pub struct Section {
     pub kind: SectionKind,
     pub title: String,
     pub rows: Vec<Row>,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub sections: Vec<Section>,
     pub error: Option<String>,
@@ -148,13 +241,26 @@ fn token(operator: bool) -> Option<String> {
             .filter(|s| !s.is_empty())
     })
 }
-fn request(
+/// A failed read: the HTTP status when the daemon answered (`None`: no answer), and its own words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadFailure {
+    pub status: Option<u16>,
+    pub error: String,
+    /// The daemon's own `message` (409 on usage across hosts: usage windows off here).
+    pub message: Option<String>,
+}
+impl std::fmt::Display for ReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)
+    }
+}
+fn request_typed(
     base: &str,
     route: &str,
     body: Option<Value>,
     operator: bool,
     timeout: u64,
-) -> Result<Value, String> {
+) -> Result<Value, ReadFailure> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(timeout))
         .build();
@@ -171,33 +277,60 @@ fn request(
         Some(value) => req.send_json(value),
         None => req.call(),
     };
+    let fail = |status, error: String| ReadFailure {
+        status,
+        error,
+        message: None,
+    };
     match response {
         Ok(response) => response
             .into_json()
-            .map_err(|_| format!("{route}: invalid JSON response")),
+            .map_err(|_| fail(None, format!("{route}: invalid JSON response"))),
         Err(ureq::Error::Status(code, response)) => {
-            let detail = response.into_json::<Value>().ok().and_then(|v| {
-                v.get("error")
-                    .or_else(|| v.get("message"))
+            let body = response.into_json::<Value>().ok();
+            let text = |key: &str| {
+                body.as_ref()
+                    .and_then(|v| v.get(key))
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-            });
-            Err(format!(
-                "{route}: HTTP {code}{}",
-                detail.map(|s| format!(" ({s})")).unwrap_or_default()
-            ))
+            };
+            let message = text("message");
+            let detail = text("error").or_else(|| message.clone());
+            Err(ReadFailure {
+                status: Some(code),
+                error: format!(
+                    "{route}: HTTP {code}{}",
+                    detail.map(|s| format!(" ({s})")).unwrap_or_default()
+                ),
+                message,
+            })
         }
-        Err(_) => Err(format!("{route}: connection failed or timed out")),
+        Err(_) => Err(fail(
+            None,
+            format!("{route}: connection failed or timed out"),
+        )),
     }
 }
-fn get(base: &str, route: &str) -> Result<Value, String> {
-    request(
+fn request(
+    base: &str,
+    route: &str,
+    body: Option<Value>,
+    operator: bool,
+    timeout: u64,
+) -> Result<Value, String> {
+    request_typed(base, route, body, operator, timeout).map_err(|f| f.error)
+}
+fn get_typed(base: &str, route: &str) -> Result<Value, ReadFailure> {
+    request_typed(
         base,
         route,
         None,
         false,
         if route.contains("usage/hosts") { 20 } else { 5 },
     )
+}
+fn get(base: &str, route: &str) -> Result<Value, String> {
+    get_typed(base, route).map_err(|f| f.error)
 }
 fn encode(s: &str) -> String {
     s.bytes()
@@ -301,14 +434,10 @@ fn row(v: &Value, depth: u8, fallback: &str) -> Row {
                 .collect()
         })
         .unwrap_or_default();
-    Row {
-        id,
-        depth,
-        label,
-        status: field(v, &["status", "state", "lifecycleState", "visibility"]),
-        detail,
-        children_count: 0,
-    }
+    let mut row = Row::new(id, depth, label);
+    row.status = field(v, &["status", "state", "lifecycleState", "visibility"]);
+    row.detail = detail;
+    row
 }
 fn array<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key)
@@ -328,68 +457,18 @@ fn generic_rows(v: &Value, keys: &[&str]) -> Vec<Row> {
     }
 }
 
-// Preserve nested projections in details, and expose their collections as navigable rows.
-fn rich_rows(v: &Value, groups: &[&str]) -> Vec<Row> {
-    fn append(value: &Value, depth: u8, prefix: &str, out: &mut Vec<Row>) {
-        let mut r = row(value, depth, prefix);
-        r.id = format!("{prefix}/{}", r.id);
-        if let Some(object) = value.as_object() {
-            for (key, value) in object {
-                if value.is_object() || value.is_array() {
-                    r.detail.push((key.clone(), value.to_string()));
-                }
-            }
-            let children: Vec<_> = object
-                .iter()
-                .filter_map(|(key, value)| value.as_array().map(|a| (key, a)))
-                .collect();
-            r.children_count = children.iter().map(|(_, a)| a.len()).sum();
-            let id = r.id.clone();
-            out.push(r);
-            for (key, values) in children {
-                for (index, child) in values.iter().enumerate() {
-                    append(
-                        child,
-                        depth.saturating_add(1),
-                        &format!("{id}/{key}/{index}"),
-                        out,
-                    );
-                }
-            }
-        } else {
-            out.push(r);
-        }
-    }
-    let mut rows = Vec::new();
-    if let Some(values) = v.as_array() {
-        for (i, value) in values.iter().enumerate() {
-            append(value, 0, &i.to_string(), &mut rows);
-        }
-    } else {
-        let mut overview = row(v, 0, "Overview");
-        overview.id = "overview".into();
-        if let Some(object) = v.as_object() {
-            for (key, value) in object {
-                if !groups.contains(&key.as_str()) && (value.is_object() || value.is_array()) {
-                    overview.detail.push((key.clone(), value.to_string()));
-                }
-            }
-        }
-        overview.children_count = groups.iter().map(|key| array(v, key).len()).sum();
-        rows.push(overview);
-        for key in groups {
-            for (i, value) in array(v, key).iter().enumerate() {
-                append(value, 1, &format!("{key}/{i}"), &mut rows);
-            }
-        }
-    }
-    rows
-}
 fn make_section(kind: SectionKind, title: &str, rows: Vec<Row>) -> Section {
     Section {
         kind,
         title: title.into(),
         rows,
+    }
+}
+fn reachability_tone(status: &str) -> Tone {
+    match status {
+        "reachable" | "ok" => Tone::Ok,
+        "unreachable" => Tone::Error,
+        _ => Tone::Warn,
     }
 }
 fn topology(
@@ -399,63 +478,67 @@ fn topology(
     rigs: Option<&Value>,
     errors: &mut Vec<String>,
 ) -> Vec<Row> {
-    let host_id = health
-        .and_then(|v| field(v, &["selfHostId"]))
+    let control_plane: connections::ControlPlane = health
+        .and_then(|h| serde_json::from_value(h.clone()).ok())
+        .unwrap_or_default();
+    let host_id = control_plane
+        .self_host_id
+        .get()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "local".into());
-    let summaries = rigs
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
+    let summaries: util::Items<sections::RigSummary> = rigs
+        .and_then(|r| serde_json::from_value(r.clone()).ok())
+        .unwrap_or_default();
     let mut result = if health.is_none() && hosts.is_none() && rigs.is_none() {
         Vec::new()
     } else {
-        vec![Row {
-            id: host_id.clone(),
-            depth: 0,
-            label: hosts
+        let mut host = Row::new(
+            host_id.clone(),
+            0,
+            hosts
                 .and_then(|v| field(v, &["ownName"]))
                 .unwrap_or_else(|| host_id.clone()),
-            status: None,
-            detail: vec![],
-            children_count: summaries.len(),
-        }]
+        )
+        .status("this host", Tone::Ok)
+        .with("host id", host_id.clone())
+        .with_opt("host id source", control_plane.self_host_id_source.get())
+        .with_opt("daemon", control_plane.status.get())
+        .with_opt("version", control_plane.semver.get())
+        .with_opt("commit", control_plane.commit.get())
+        .with_opt("built", control_plane.built_at.get());
+        if control_plane.dirty.truthy() {
+            host.put("build", "dirty");
+        }
+        host.children_count = summaries.len();
+        vec![host]
     };
-    for rig in summaries {
-        let mut rr = row(rig, 1, "rig");
-        let rig_id = rr.id.clone();
+    for rig in &summaries {
+        let rig_id = rig.id.or(&rig.name.unknown());
+        let mut rr = sections::rig_row(rig, 1, &rig_id);
         match get(base, &format!("/api/rigs/{}/nodes", encode(&rig_id))) {
             Ok(nodes) => {
-                let mut pods: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
-                for node in nodes
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|n| n["nodeKind"] == "agent")
-                {
-                    pods.entry(field(node, &["podNamespace"]).unwrap_or_else(|| "(no pod)".into()))
-                        .or_default()
-                        .push(node);
-                }
+                let nodes: util::Items<sections::Node> =
+                    serde_json::from_value(nodes).unwrap_or_default();
+                let pods = sections::group_pods(nodes.as_slice());
+                let seats: usize = pods.iter().map(|(_, a)| a.len()).sum();
+                rr.put("seats", seats.to_string());
                 rr.children_count = pods.len();
                 result.push(rr);
                 for (name, agents) in pods {
-                    result.push(Row {
-                        id: format!("{rig_id}/{name}"),
-                        depth: 2,
-                        label: name,
-                        status: None,
-                        detail: vec![],
-                        children_count: agents.len(),
-                    });
+                    let mut pod = Row::new(format!("{rig_id}/{name}"), 2, name)
+                        .with("seats", agents.len().to_string());
+                    pod.children_count = agents.len();
+                    result.push(pod);
                     for agent in agents {
-                        let mut r = row(agent, 3, "agent");
-                        r.id = format!("{rig_id}/{}", r.id);
-                        result.push(r);
+                        let id = agent.node_id.or(&agent.logical_id.unknown());
+                        result.push(sections::seat_row(agent, 3, &format!("{rig_id}/{id}")));
                     }
                 }
             }
             Err(e) => {
                 errors.push(e);
+                rr.put("seat inventory", "unavailable");
                 result.push(rr);
             }
         }
@@ -466,15 +549,18 @@ fn topology(
             && id != host_id
         {
             let mut host_row = row(host, 0, "host");
+            if let Some(status) = host_row.status.clone() {
+                host_row.tone = reachability_tone(&status);
+            }
             match get(base, &format!("/api/rigs/summary?host={}", encode(&id))) {
                 Ok(remote) => {
-                    let remote_rigs = remote.as_array().map(Vec::as_slice).unwrap_or(&[]);
-                    host_row.children_count = remote_rigs.len();
+                    let remote: util::Items<sections::RigSummary> =
+                        serde_json::from_value(remote).unwrap_or_default();
+                    host_row.children_count = remote.len();
                     result.push(host_row);
-                    for rig in remote_rigs {
-                        let mut remote_row = row(rig, 1, "rig");
-                        remote_row.id = format!("{id}/{}", remote_row.id);
-                        result.push(remote_row);
+                    for rig in &remote {
+                        let rig_id = rig.id.or(&rig.name.unknown());
+                        result.push(sections::rig_row(rig, 1, &format!("{id}/{rig_id}")));
                     }
                 }
                 Err(e) => {
@@ -485,6 +571,19 @@ fn topology(
         }
     }
     result
+}
+
+/// The daemon address without credentials or query, as the TUI shows its target.
+fn daemon_target(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    match base.split_once("://") {
+        Some((scheme, rest)) => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            let host = host.rsplit('@').next().unwrap_or(host);
+            format!("{scheme}://{host}")
+        }
+        None => "unreported".into(),
+    }
 }
 
 pub fn fetch_snapshot(base_url: &str) -> Snapshot {
@@ -506,18 +605,23 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
     let results: Vec<_> = std::thread::scope(|scope| {
         routes
             .iter()
-            .map(|route| scope.spawn(move || get(base_url, route)))
+            .map(|route| scope.spawn(move || get_typed(base_url, route)))
             .collect::<Vec<_>>()
             .into_iter()
             .map(|h| {
-                h.join()
-                    .unwrap_or_else(|_| Err("read worker failed".into()))
+                h.join().unwrap_or_else(|_| {
+                    Err(ReadFailure {
+                        status: None,
+                        error: "read worker failed".into(),
+                        message: None,
+                    })
+                })
             })
             .collect()
     });
     let mut errors: Vec<String> = results
         .iter()
-        .filter_map(|r| r.as_ref().err().cloned())
+        .filter_map(|r| r.as_ref().err().map(|f| f.error.clone()))
         .collect();
     let val = |i: usize| results[i].as_ref().ok();
     let mut sections = vec![make_section(
@@ -537,7 +641,23 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         (SectionKind::Cost, "Cost", 12, vec!["seats"]),
     ] {
         let mut rows = Vec::new();
-        if let Some(v) = val(index) {
+        if kind == SectionKind::Usage {
+            let setting = match &results[10] {
+                Ok(model) if model["usage"].is_array() => usage::SwitchSetting::Absent,
+                _ => usage::switch_setting(val(8)),
+            };
+            rows = usage::usage_rows(&results[10], &setting);
+        } else if kind == SectionKind::UsageHosts {
+            rows = usage::usage_hosts_rows(&results[11]);
+        } else if kind == SectionKind::Cost {
+            rows = cost::cost_rows(&results[12]);
+        } else if kind == SectionKind::Connections {
+            rows = connections::connections_rows(
+                results[9].as_ref().map_err(|f| f.error.as_str()),
+                val(0),
+                &daemon_target(base_url),
+            );
+        } else if let Some(v) = val(index) {
             if kind == SectionKind::Config
                 && !(v["readOnly"] == true
                     && v["entries"].is_array()
@@ -545,31 +665,22 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                     && v["exclusions"].is_array())
             {
                 errors.push("Config: invalid browser contract".into());
+            } else if kind == SectionKind::Config {
+                rows = sections::config_rows(v);
             } else if kind == SectionKind::Needs {
-                rows = generic_rows(&v["needsYou"]["items"], &[]);
+                let items: util::Items<sections::NeedsItem> =
+                    serde_json::from_value(v["needsYou"]["items"].clone()).unwrap_or_default();
+                rows = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| sections::needs_row(item, i))
+                    .collect();
             } else if kind == SectionKind::Scopes {
-                for mission in array(v, "missions") {
-                    let slices = array(mission, "slices");
-                    let mut r = row(mission, 0, "mission");
-                    r.children_count = slices.len();
-                    rows.push(r);
-                    rows.extend(slices.iter().map(|s| row(s, 1, "slice")));
-                }
-            } else if matches!(
-                kind,
-                SectionKind::Usage
-                    | SectionKind::UsageHosts
-                    | SectionKind::Cost
-                    | SectionKind::Connections
-            ) {
-                let groups: &[&str] = match kind {
-                    SectionKind::Usage => &["usage", "seatAccounts"],
-                    SectionKind::UsageHosts => &["hosts", "items", "skipped", "seatAccounts"],
-                    SectionKind::Cost => &["seats"],
-                    SectionKind::Connections => &["humans"],
-                    _ => &[],
-                };
-                rows = rich_rows(v, groups);
+                rows = sections::scopes_rows(v);
+            } else if kind == SectionKind::Specs {
+                rows = sections::specs_rows(v);
+            } else if kind == SectionKind::System {
+                rows = sections::health_rows(v);
             } else {
                 rows = generic_rows(v, &keys);
             }
@@ -599,6 +710,28 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         error: (!errors.is_empty()).then(|| errors.join("\n")),
     }
 }
+/// Offline demo rows for the sections whose shape matters most visually.
+fn demo_rows(kind: SectionKind) -> Option<Vec<Row>> {
+    let parse = |text: &str| serde_json::from_str::<Value>(text).ok();
+    match kind {
+        SectionKind::Usage => Some(usage::usage_rows(
+            &Ok(parse(include_str!("../tests/fixtures/usage.json"))?),
+            &usage::SwitchSetting::Absent,
+        )),
+        SectionKind::UsageHosts => Some(usage::usage_hosts_rows(&Ok(parse(include_str!(
+            "../tests/fixtures/usage_hosts.json"
+        ))?))),
+        SectionKind::Cost => Some(cost::cost_rows(&Ok(parse(include_str!(
+            "../tests/fixtures/cost.json"
+        ))?))),
+        SectionKind::Connections => Some(connections::connections_rows(
+            Ok(&parse(include_str!("../tests/fixtures/connections.json"))?),
+            parse(include_str!("../tests/fixtures/healthz.json")).as_ref(),
+            "http://127.0.0.1:7433",
+        )),
+        _ => None,
+    }
+}
 impl Snapshot {
     pub fn fixture() -> Self {
         let kinds = [
@@ -614,27 +747,12 @@ impl Snapshot {
             (SectionKind::UsageHosts, "Usage hosts"),
             (SectionKind::Cost, "Cost"),
         ];
-        Self { sections: kinds.into_iter().map(|(kind,title)| { let mut rows = vec![row(&json!({"id":format!("demo-{title}"),"name":format!("Demo {title}"),"status":"ready","source":"Demo data"}),0,"demo")]; if kind == SectionKind::Topology { rows[0].label="local host".into(); rows[0].children_count=1; for (depth,name) in [(1,"demo rig"),(2,"engineering"),(3,"builder"),(3,"reviewer")] { let mut r=row(&json!({"id":name,"name":name,"status":"running","runtime":"jcode"}),depth,name); r.children_count=usize::from(depth<3); rows.push(r); } } make_section(kind,title,rows) }).collect(), error: None }
+        Self { sections: kinds.into_iter().map(|(kind,title)| { let mut rows = vec![row(&json!({"id":format!("demo-{title}"),"name":format!("Demo {title}"),"status":"ready","source":"Demo data"}),0,"demo")]; if kind == SectionKind::Topology { rows[0].label="local host".into(); rows[0].children_count=1; for (depth,name) in [(1,"demo rig"),(2,"engineering"),(3,"builder"),(3,"reviewer")] { let mut r=row(&json!({"id":name,"name":name,"status":"running","runtime":"jcode"}),depth,name); r.children_count=usize::from(depth<3); rows.push(r); } } if let Some(real) = demo_rows(kind) { rows = real; } make_section(kind,title,rows) }).collect(), error: None }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn nested_usage_and_seats_remain_visible() {
-        let data = json!({"usage":[{"provider":"codex","identity":{"accountId":"a"},"windows":[{"window":"weekly","remainingPercent":42}]}],"seatAccounts":[{"seatSession":"seat-a","configured":{"source":"registry"}}]});
-        let rows = rich_rows(&data, &["usage", "seatAccounts"]);
-        assert!(rows.iter().any(|r| {
-            r.depth == 2
-                && r.detail
-                    .iter()
-                    .any(|(k, v)| k == "remainingPercent" && v == "42")
-        }));
-        assert!(
-            rows.iter()
-                .any(|r| r.label == "seat-a" && r.detail.iter().any(|(k, _)| k == "configured"))
-        );
-    }
     #[test]
     fn parses_activity_notification() {
         let e = live_event(&json!({"type":"seat_changed","seatNodeId":"node-1","seq":3})).unwrap();

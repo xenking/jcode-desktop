@@ -3,7 +3,8 @@ use super::Panel;
 use crate::theme::Theme;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
-    LiveEvent, Snapshot, default_base_url, fetch_snapshot, fetch_stream_tail, subscribe_events,
+    LiveEvent, Meter, Snapshot, Tone, default_base_url, fetch_snapshot, fetch_stream_tail,
+    subscribe_events,
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -11,6 +12,48 @@ use std::{
 };
 
 pub(crate) const SESSION_ID: &str = "openrig://mission-control";
+
+fn tone_color(theme: &Theme, tone: Tone) -> gpui::Rgba {
+    match tone {
+        Tone::Ok => theme.OK,
+        Tone::Warn => theme.WARN,
+        Tone::Error => theme.ERROR,
+        Tone::Dim => theme.TEXT_FAINT,
+        Tone::Neutral => theme.TEXT_DIM,
+    }
+}
+
+/// A progress pill: a fully rounded track filled to the served percentage, with the served
+/// words beside it. An unknown percentage draws an empty track, never a guessed fill.
+fn meter_pill(theme: &Theme, meter: &Meter, width: f32) -> gpui::Div {
+    let color = tone_color(theme, meter.tone);
+    let fill = meter.fraction().unwrap_or(0.);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(width))
+                .h(px(8.))
+                .rounded_full()
+                .bg(theme.PANEL_BG)
+                .child(
+                    div()
+                        .w(gpui::relative(fill))
+                        .h_full()
+                        .rounded_full()
+                        .bg(color),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(color)
+                .child(meter.label.clone()),
+        )
+}
 
 fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, String)>) {
     match value {
@@ -33,6 +76,49 @@ fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, Str
 mod openrig_tests {
     use super::*;
 
+    fn row(id: &str, depth: u8, children: usize, open: bool) -> jcode_desktop_openrig::Row {
+        let mut row = jcode_desktop_openrig::Row::default();
+        row.id = id.into();
+        row.label = id.into();
+        row.depth = depth;
+        row.children_count = children;
+        row.default_open = open;
+        row
+    }
+
+    #[test]
+    fn default_open_groups_show_children_until_toggled() {
+        let mut state = State::fixture();
+        state.snapshot.sections = vec![jcode_desktop_openrig::Section {
+            kind: jcode_desktop_openrig::SectionKind::Usage,
+            title: "Usage".into(),
+            rows: vec![
+                row("provider", 0, 1, true),
+                row("window", 1, 0, false),
+                row("closed", 0, 1, false),
+                row("hidden", 1, 0, false),
+            ],
+        }];
+        state.section = 0;
+        assert_eq!(state.visible(), vec![0, 1, 2]);
+        state.toggled.insert("provider".into());
+        state.toggled.insert("closed".into());
+        assert_eq!(state.visible(), vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn meter_fill_is_clamped_and_unknown_is_empty() {
+        let meter = |percent| Meter {
+            label: String::new(),
+            percent,
+            tone: Tone::Ok,
+        };
+        assert_eq!(meter(Some(150.)).fraction(), Some(1.));
+        assert_eq!(meter(Some(-3.)).fraction(), Some(0.));
+        assert_eq!(meter(Some(f64::NAN)).fraction(), None);
+        assert_eq!(meter(None).fraction(), None);
+    }
+
     #[test]
     fn nested_usage_details_keep_window_information() {
         let mut lines = Vec::new();
@@ -53,7 +139,8 @@ pub(super) struct State {
     filter: String,
     command: Option<String>,
     explorer: bool,
-    expanded: HashSet<String>,
+    /// Rows the user toggled away from their default (open or closed).
+    toggled: HashSet<String>,
     scroll: ScrollHandle,
     events: VecDeque<LiveEvent>,
     event_lifetime: std::sync::Arc<()>,
@@ -69,7 +156,7 @@ impl State {
             filter: String::new(),
             command: None,
             explorer: true,
-            expanded: HashSet::new(),
+            toggled: HashSet::new(),
             scroll: ScrollHandle::new(),
             events: [LiveEvent {
                 ts: "12:04".into(),
@@ -82,6 +169,9 @@ impl State {
             _poll: None,
             _events: None,
         }
+    }
+    fn is_open(&self, row: &jcode_desktop_openrig::Row) -> bool {
+        row.default_open != self.toggled.contains(&row.id)
     }
     fn visible(&self) -> Vec<usize> {
         let Some(section) = self.snapshot.sections.get(self.section) else {
@@ -96,8 +186,7 @@ impl State {
                 }
                 hidden_depth = None;
             }
-            if row.children_count > 0 && !self.expanded.contains(&row.id) && self.filter.is_empty()
-            {
+            if row.children_count > 0 && !self.is_open(row) && self.filter.is_empty() {
                 hidden_depth = Some(row.depth);
             }
             if self.filter.is_empty()
@@ -177,12 +266,11 @@ impl State {
                         .sections
                         .get(self.section)
                         .and_then(|s| s.rows.get(*i))
-                }) {
-                    if row.children_count > 0 {
-                        let id = row.id.clone();
-                        if !self.expanded.remove(&id) {
-                            self.expanded.insert(id);
-                        }
+                }) && row.children_count > 0
+                {
+                    let id = row.id.clone();
+                    if !self.toggled.remove(&id) {
+                        self.toggled.insert(id);
                     }
                 }
             }
@@ -355,55 +443,65 @@ impl Panel {
         if let Some(section) = section {
             for (position, index) in visible.iter().copied().enumerate() {
                 let row = &section.rows[index];
-                let label = format!(
-                    "{}{}{}{}",
-                    "  ".repeat(row.depth as usize),
-                    if row.children_count > 0 {
-                        if state.expanded.contains(&row.id) {
-                            "▾ "
-                        } else {
-                            "▸ "
-                        }
+                let marker = if row.children_count > 0 {
+                    if state.is_open(row) { "▾ " } else { "▸ " }
+                } else {
+                    ""
+                };
+                let mut line = div()
+                    .id(("openrig-row", position))
+                    .rounded_full()
+                    .pl(px(12. + 14. * f32::from(row.depth)))
+                    .pr_3()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_size(px(12.))
+                    .cursor_pointer()
+                    .bg(if position == state.selected {
+                        theme.ACCENT_DIM
                     } else {
-                        ""
-                    },
-                    row.label,
-                    row.status
-                        .as_ref()
-                        .map(|s| format!("  {s}"))
-                        .unwrap_or_default()
-                );
-                list = list.child(
-                    div()
-                        .id(("openrig-row", position))
-                        .rounded_full()
-                        .px_3()
-                        .py_1()
-                        .text_size(px(12.))
-                        .cursor_pointer()
-                        .bg(if position == state.selected {
-                            theme.ACCENT_DIM
-                        } else {
-                            theme.HEADER_BG
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                if let Some(state) = this.openrig.as_mut() {
-                                    state.selected = position;
-                                    state.explorer = false;
-                                }
-                                window.focus(&this.focus_handle, cx);
-                                cx.notify();
-                            }),
-                        )
-                        .child(label),
-                );
+                        theme.HEADER_BG
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            if let Some(state) = this.openrig.as_mut() {
+                                state.selected = position;
+                                state.explorer = false;
+                            }
+                            window.focus(&this.focus_handle, cx);
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(format!("{marker}{}", row.label)),
+                    );
+                if let Some(status) = &row.status {
+                    line = line.child(
+                        div()
+                            .flex_none()
+                            .max_w(px(220.))
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(tone_color(theme, row.tone))
+                            .child(status.clone()),
+                    );
+                }
+                if let Some(meter) = &row.meter {
+                    line = line.child(meter_pill(theme, meter, 64.));
+                }
+                list = list.child(line);
             }
         }
         let mut detail = div()
             .id("openrig-detail")
-            .w(px(220.))
+            .w(px(320.))
             .flex_none()
             .overflow_y_scroll()
             .p_3()
@@ -421,21 +519,23 @@ impl Panel {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(row.label.clone()),
             );
+            if let Some(meter) = &row.meter {
+                detail = detail.child(meter_pill(theme, meter, 160.));
+            }
             for (key, value) in &row.detail {
                 let mut lines = Vec::new();
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+                let structured = value.starts_with(['{', '[']);
+                if let Some(json) = structured
+                    .then(|| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .flatten()
+                {
                     detail_lines(key, &json, &mut lines);
                 } else {
                     lines.push((key.clone(), value.clone()));
                 }
                 for (label, text) in lines {
-                    let percentage = if label.to_lowercase().contains("percent") {
-                        text.parse::<f32>().ok().filter(|n| n.is_finite())
-                    } else {
-                        None
-                    };
-                    let mut item = div()
-                        .rounded_full()
+                    let item = div()
+                        .rounded_xl()
                         .bg(theme.HEADER_BG)
                         .px_3()
                         .py_1()
@@ -443,22 +543,6 @@ impl Panel {
                         .flex_col()
                         .child(div().text_color(theme.TEXT_FAINT).child(label))
                         .child(div().text_color(theme.TEXT).child(text));
-                    if let Some(percent) = percentage {
-                        item = item.child(
-                            div()
-                                .w_full()
-                                .h(px(4.))
-                                .rounded_full()
-                                .bg(theme.PANEL_BG)
-                                .child(
-                                    div()
-                                        .w(gpui::relative(percent.clamp(0., 100.) / 100.))
-                                        .h_full()
-                                        .rounded_full()
-                                        .bg(theme.ACCENT_DIM),
-                                ),
-                        );
-                    }
                     detail = detail.child(item);
                 }
             }
@@ -467,7 +551,7 @@ impl Panel {
             .snapshot
             .error
             .as_ref()
-            .map(|e| format!("{e}"))
+            .cloned()
             .unwrap_or_else(|| "Live · polling every 2s".into());
         let command = state.command.clone().unwrap_or_else(|| {
             if state.filter.is_empty() {
