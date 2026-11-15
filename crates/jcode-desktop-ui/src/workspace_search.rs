@@ -74,6 +74,26 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The query field is the only focusable thing on this screen, so the
+    /// screen owns the keyboard for as long as it is open.
+    ///
+    /// Every focus call in the workspace (`focus_active` after a shortcut, a
+    /// panel finishing a turn, a reload restoring focus) can land here after
+    /// the screen opened; the field then keeps a stale caret while keystrokes
+    /// go to a panel that is not on screen. Re-asserting the field makes the
+    /// screen survive that instead of going silently dead.
+    fn focus_search_input(&self, window: &mut Window, cx: &mut App) {
+        if let Some(state) = &self.search_screen {
+            window.focus(&state.input.focus_handle(cx), cx);
+        }
+    }
+
+    fn search_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search_screen
+            .as_ref()
+            .is_some_and(|state| state.input.focus_handle(cx).is_focused(window))
+    }
+
     /// Gate for the keybinding: the screen owns Esc/Enter/arrows while open.
     #[allow(dead_code)]
     pub(super) fn search_screen_open(&self) -> bool {
@@ -260,11 +280,21 @@ impl Workspace {
         cx.stop_propagation();
     }
 
-    pub(super) fn render_search_screen(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn render_search_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let theme = Theme::global();
         let Some(state) = self.search_screen.as_ref() else {
             return div();
         };
+        // A screen that replaces the canvas owns the keyboard: a panel that
+        // cannot be seen must not be able to hold focus. When it does, the
+        // caret here is a leftover and every keystroke is lost.
+        if !self.search_input_focused(window, cx) {
+            self.focus_search_input(window, cx);
+        }
         let input = state.input.clone();
         let scroll = state.scroll.clone();
         let status_line = state.screen.status_line();
@@ -399,6 +429,12 @@ impl Workspace {
             .font_family(theme.FONT_UI)
             .text_size(px(14.0))
             .track_focus(&self.focus_handle)
+            // Clicking the chrome (padding, counts, list background) must keep
+            // typing alive instead of handing focus back to the workspace.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_search_input(window, cx)),
+            )
             .capture_key_down(cx.listener(Self::search_key_down))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 this.close_search_screen(window, cx);

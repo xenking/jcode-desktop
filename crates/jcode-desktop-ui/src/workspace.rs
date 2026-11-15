@@ -4611,6 +4611,12 @@ impl Workspace {
             window.focus(&self.focus_handle, cx);
             return;
         }
+        // The search screen replaces every panel, so "the active panel" is not
+        // on screen while it is open. Focus belongs to its query field.
+        if let Some(state) = &self.search_screen {
+            window.focus(&state.input.focus_handle(cx), cx);
+            return;
+        }
         // Overview cards contain copied content, not mounted panel views. Keep
         // shortcuts on the workspace until the exit animation remounts them.
         if self.overview || self.overview_progress.is_animating() {
@@ -8831,7 +8837,7 @@ impl Render for Workspace {
         }
         if self.search_screen.is_some() {
             self.dump_state(window, cx);
-            let root = self.render_search_screen(cx);
+            let root = self.render_search_screen(window, cx);
             return crate::window_caption::wrap(root, window, true);
         }
         if self.resume.is_some() {
