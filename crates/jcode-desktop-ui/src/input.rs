@@ -237,6 +237,9 @@ pub struct PromptInput {
     motion: std::rc::Rc<std::cell::RefCell<MotionState>>,
     /// Inline autocomplete. `None` for composers that never suggest.
     ghost: Option<GhostState>,
+    /// Slash rows captured on the first Tab and the index shown, so repeated
+    /// Tab cycles them like the TUI does.
+    tab_cycle: Option<(Vec<String>, usize)>,
 }
 
 /// Recent transcript turns for the completion request.
@@ -599,6 +602,7 @@ impl PromptInput {
             working_dir: None,
             motion: Default::default(),
             ghost: None,
+            tab_cycle: None,
         }
     }
 
@@ -720,8 +724,51 @@ impl PromptInput {
             .and_then(|ghost| ghost.machine.accept(&self.content, at_end));
         match accepted {
             Some(suffix) => self.replace_text_in_range(None, &suffix, window, cx),
+            None if self.complete_slash_command(cx) => {}
             None => cx.propagate(),
         }
+    }
+
+    /// Tab on a visible slash popup: fill the highlighted row, then cycle.
+    fn complete_slash_command(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.command_completion || !self.attachments.is_empty() {
+            return false;
+        }
+        let current = self.content.trim().to_string();
+        let (values, index) = match self.tab_cycle.take() {
+            Some((values, index)) if values.get(index) == Some(&current) && values.len() > 1 => {
+                let next = (index + 1) % values.len();
+                (values, next)
+            }
+            _ => {
+                let suggestions = self.command_suggestions();
+                let values: Vec<String> = suggestions
+                    .iter()
+                    .filter(|row| row.toggle.is_none())
+                    .map(|row| row.value.clone())
+                    .collect();
+                if values.is_empty() {
+                    return false;
+                }
+                let selected = suggestions
+                    .get(self.command_selection)
+                    .and_then(|row| values.iter().position(|v| v == &row.value))
+                    .unwrap_or(0);
+                let index = if values[selected] == current && values.len() > 1 {
+                    (selected + 1) % values.len()
+                } else {
+                    selected
+                };
+                (values, index)
+            }
+        };
+        if values[index] != current {
+            self.undo.push(self.content.to_string());
+            self.redo.clear();
+        }
+        self.set_content(values[index].clone(), cx);
+        self.tab_cycle = Some((values, index));
+        true
     }
 
     /// Chat composers show animated example prompts while empty.
@@ -1114,6 +1161,17 @@ impl PromptInput {
             if let Some(accepted) =
                 accepted_command_submission(&suggestions, self.command_selection)
             {
+                // `/eff` + Enter completes to `/effort` like the TUI. Exact
+                // commands and argument searches still send.
+                if !content.contains(char::is_whitespace)
+                    && accepted != content
+                    && crate::commands::registered_command(&content).is_none()
+                {
+                    self.undo.push(self.content.to_string());
+                    self.redo.clear();
+                    self.set_content(accepted, cx);
+                    return;
+                }
                 content = accepted;
             }
         }
@@ -3040,6 +3098,70 @@ mod tests {
         cx.simulate_keystrokes(*window, "left");
         window
             .update(cx, |input, _, _| assert_eq!(input.ghost_text(), None))
+            .unwrap();
+    }
+
+    /// User report: `/eff` + Tab did nothing, Enter sent at once.
+    #[gpui::test]
+    fn tab_completes_slash_command_and_cycles(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/eff");
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/effort")
+            })
+            .unwrap();
+
+        window
+            .update(cx, |input, _, cx| input.set_content(String::new(), cx))
+            .unwrap();
+        cx.simulate_input(*window, "/re");
+        let expected: Vec<String> = window
+            .update(cx, |input, _, _| {
+                input
+                    .command_suggestions()
+                    .iter()
+                    .take(2)
+                    .map(|row| row.value.clone())
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(expected.len(), 2);
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), expected[0])
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), expected[1])
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn enter_on_partial_slash_command_completes_instead_of_sending(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/eff");
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/effort");
+                assert!(input.history.is_empty());
+            })
+            .unwrap();
+        window
+            .update(cx, |input, _, cx| input.set_content("/models".into(), cx))
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.history.last().map(String::as_str), Some("/models"));
+                assert!(input.content.is_empty());
+            })
             .unwrap();
     }
 

@@ -54,6 +54,11 @@ impl WorkerState {
         }
     }
 
+    /// Ready, completed, stopped or failed: no longer worth waiting on.
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Ready | Self::Failed | Self::Stopped)
+    }
+
     pub fn is_active(self) -> bool {
         matches!(self, Self::Running | Self::Queued)
     }
@@ -283,15 +288,21 @@ pub fn strip(workers: &[Worker], awaits: Option<&AwaitState>, now_ms: u64) -> Op
     if workers.is_empty() && awaits.is_none_or(|a| a.waiting_on.is_empty()) {
         return None;
     }
-    let waiting = awaits.filter(|a| !a.waiting_on.is_empty()).map(|a| {
-        let parts = a
-            .waiting_on
-            .iter()
-            .map(|id| match workers.iter().find(|w| &w.session_id == id) {
-                Some(w) => format!("{} ({})", w.name, w.status_text()),
-                None => friendly_name(id).unwrap_or(id).to_owned(),
-            })
-            .collect::<Vec<_>>();
+    // Members whose live swarm status is terminal already reported. The
+    // await file still lists them until every requested member is done.
+    let parts = awaits
+        .map(|a| {
+            a.waiting_on
+                .iter()
+                .filter_map(|id| match workers.iter().find(|w| &w.session_id == id) {
+                    Some(w) if w.state.is_finished() => None,
+                    Some(w) => Some(format!("{} ({})", w.name, w.status_text())),
+                    None => Some(friendly_name(id).unwrap_or(id).to_owned()),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let waiting = (!parts.is_empty()).then(|| {
         let n = parts.len();
         format!(
             "Waiting for {n} worker{}: {} · wakes when they report",
@@ -429,6 +440,37 @@ mod tests {
             s.report.as_deref(),
             Some("otter reported 2m ago · coordinator woke")
         );
+    }
+
+    /// User report: strip listed fish, fox, hamster, pig, rooster although
+    /// most had already finished. Only members still running count.
+    #[test]
+    fn waiting_strip_omits_finished_members() {
+        let state = AwaitState {
+            waiting_on: ["fish", "fox", "hamster", "pig", "rooster"]
+                .iter()
+                .map(|n| format!("session_{n}_1_a"))
+                .collect(),
+            ..Default::default()
+        };
+        let sessions = vec![
+            session("session_fish_1_a", Some("c"), Some("ready")),
+            session("session_fox_1_a", Some("c"), Some("completed")),
+            session("session_hamster_1_a", Some("c"), Some("stopped")),
+            session("session_pig_1_a", Some("c"), Some("failed")),
+            session("session_rooster_1_a", Some("c"), Some("running")),
+        ];
+        let workers = workers_by_coordinator(&sessions, 1_000_000)
+            .remove("c")
+            .unwrap();
+        let s = strip(&workers, Some(&state), 1_000_000).unwrap();
+        assert_eq!(
+            s.waiting.as_deref(),
+            Some("Waiting for 1 worker: rooster (running 0s) · wakes when they report")
+        );
+        let mut done = workers.clone();
+        done.iter_mut().for_each(|w| w.state = WorkerState::Stopped);
+        assert!(strip(&done, Some(&state), 0).unwrap().waiting.is_none());
     }
 
     #[test]
