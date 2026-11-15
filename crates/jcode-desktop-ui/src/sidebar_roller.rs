@@ -1,7 +1,7 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
 
-const COUNT: usize = 12;
+const COUNT: usize = 13;
 const STEP: f32 = 48.0;
 const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("sidebar-sessions-tab", "chat", Some(SidebarView::Sessions)),
@@ -22,6 +22,7 @@ const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("sidebar-unfinished-work", "todos", None),
     ("open-todoist", "todoist", None),
     ("open-gmail", "email", None),
+    ("sidebar-openrig", "OpenRig", None),
     ("sidebar-open-folder", "folder", None),
     ("sidebar-new-session", "+", None),
 ];
@@ -123,8 +124,9 @@ impl Workspace {
                 7 => self.new_unfinished_work(&NewUnfinishedWork, window, cx),
                 8 => self.open_todoist(&OpenTodoist, window, cx),
                 9 => self.open_gmail(&OpenGmail, window, cx),
-                10 => self.open_folder(&OpenFolder, window, cx),
-                11 => {
+                10 => self.open_openrig(&OpenOpenrig, window, cx),
+                11 => self.open_folder(&OpenFolder, window, cx),
+                12 => {
                     self.missed("new_panel", cx);
                     self.open_new_session(cx);
                 }

@@ -16,6 +16,7 @@ jcode-desktop-accounts-ui.workspace = true
 jcode-desktop-api.workspace = true
 jcode-desktop-harness.workspace = true
 jcode-desktop-model.workspace = true
+jcode-desktop-openrig.workspace = true
 jcode-desktop-motion.workspace = true
 jcode-desktop-ui-core.workspace = true
 jcode-desktop-updater.workspace = true

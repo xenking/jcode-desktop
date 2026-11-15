@@ -140,6 +140,8 @@ mod gmail_draft_card;
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
 mod mcp_list_card;
+#[path = "panel_openrig.rs"]
+pub(crate) mod openrig;
 #[path = "panel_orchestration.rs"]
 pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
@@ -634,6 +636,7 @@ pub struct Panel {
     todoist: Option<TodoistPanelState>,
     /// Live sessions, their run state and todos. Never shows chat content.
     orchestration: Option<orchestration::State>,
+    openrig: Option<openrig::State>,
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
@@ -829,6 +832,7 @@ impl Panel {
             || self.applet.is_some()
             || self.todoist.is_some()
             || self.orchestration.is_some()
+            || self.openrig.is_some()
             || self.terminal.is_some()
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
@@ -1079,6 +1083,8 @@ impl Panel {
             applet: None,
             todoist: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos"))
                 .then(|| TodoistPanelState::fixture(80)),
+            openrig: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("openrig"))
+                .then(openrig::State::fixture),
             orchestration: (crate::harness::screenshot_mode()
                 && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
@@ -1270,7 +1276,10 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork() && self.todoist.is_none() && self.orchestration.is_none()
+        self.can_fork()
+            && self.todoist.is_none()
+            && self.orchestration.is_none()
+            && self.openrig.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
@@ -1723,6 +1732,7 @@ impl Panel {
             && !self.is_side_document()
             && self.session_id != "unfinished-work"
             && self.orchestration.is_none()
+            && self.openrig.is_none()
             && !self.is_pending_session()
     }
 
@@ -4413,6 +4423,7 @@ impl Panel {
             terminal.read(cx).focus_handle(cx)
         } else if self.unfinished_work.is_some()
             || self.orchestration.is_some()
+            || self.openrig.is_some()
             || self.is_changelog()
             || self.code_file.is_some()
             || self.is_side_document()
@@ -4676,6 +4687,9 @@ impl Render for Panel {
         }
         if self.todoist.is_some() {
             return self.render_todoist(window, cx);
+        }
+        if self.openrig.is_some() {
+            return self.render_openrig(window, cx);
         }
         if self.orchestration.is_some() {
             return self.render_orchestration(window, cx);

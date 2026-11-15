@@ -195,6 +195,7 @@ actions!(
         OpenGmail,
         OpenTodoist,
         OpenOrchestration,
+        OpenOpenrig,
         NewUnfinishedWork,
         OpenFolder,
         ToggleOverview,
@@ -1838,6 +1839,8 @@ impl Workspace {
                 cx.new(|cx| Panel::new_applet(instance.to_owned(), self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
                 cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
+            } else if panel_state.session_id == crate::panel::openrig::SESSION_ID {
+                cx.new(|cx| Panel::new_openrig(self.bridge.clone(), cx))
             } else if panel_state.session_id == crate::panel::orchestration::SESSION_ID {
                 let opener = self.orchestration_opener(cx);
                 cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx))
@@ -3761,6 +3764,20 @@ impl Workspace {
         }
         let opener = self.orchestration_opener(cx);
         let panel = cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx));
+        self.insert_spawned_panel(panel, window, cx);
+    }
+
+    fn open_openrig(&mut self, _: &OpenOpenrig, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID)
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let panel = cx.new(|cx| Panel::new_openrig(self.bridge.clone(), cx));
         self.insert_spawned_panel(panel, window, cx);
     }
 
@@ -6709,6 +6726,24 @@ impl Workspace {
                                         ))
                                         .child(
                                             div()
+                                                .id("sidebar-openrig")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_full()
+                                                .cursor_pointer()
+                                                .text_size(px(11.))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        this.open_openrig(&OpenOpenrig, window, cx)
+                                                    }),
+                                                )
+                                                .child("OpenRig"),
+                                        )
+                                        .child(
+                                            div()
                                                 .id("sidebar-orchestration")
                                                 .debug_selector(|| "sidebar-orchestration".into())
                                                 .flex_none()
@@ -8855,6 +8890,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
+            .on_action(cx.listener(Self::open_openrig))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))

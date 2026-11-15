@@ -86,9 +86,7 @@ mod tests {
     /// Leaving the left panel of a lower row for an upper row that is scrolled
     /// to its right end must pan straight up. Neither strip moves sideways.
     #[gpui::test]
-    fn row_change_pans_vertically_with_each_strip_at_its_own_scroll(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn row_change_pans_vertically_with_each_strip_at_its_own_scroll(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["top-0", "top-1", "top-2", "top-3"] {
@@ -113,7 +111,10 @@ mod tests {
             w.camera_target[0]
         });
         vcx.run_until_parked();
-        assert!(top_camera > 100.0, "the top row must overflow: {top_camera}");
+        assert!(
+            top_camera > 100.0,
+            "the top row must overflow: {top_camera}"
+        );
         let bottom_rest = vcx.debug_bounds("panel-4").unwrap();
 
         workspace.update(vcx, |w, cx| {

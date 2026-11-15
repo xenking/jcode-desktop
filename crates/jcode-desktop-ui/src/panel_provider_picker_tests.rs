@@ -101,7 +101,8 @@ fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppC
         touch_phase: gpui::TouchPhase::Started,
     });
     for _ in 0..120 {
-        vcx.executor().advance_clock(std::time::Duration::from_millis(16));
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
         vcx.update(|window, cx| window.simulate_next_frame(cx));
     }
     vcx.run_until_parked();
@@ -128,15 +129,21 @@ fn wheel_over_provider_picker_does_not_scroll_transcript(cx: &mut gpui::TestAppC
         });
         vcx.run_until_parked();
         for _ in 0..120 {
-            vcx.executor().advance_clock(std::time::Duration::from_millis(16));
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
             vcx.update(|window, cx| window.simulate_next_frame(cx));
         }
         vcx.run_until_parked();
     }
     let after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
-    assert_eq!(before, after, "wheel over the picker must not scroll the transcript");
+    assert_eq!(
+        before, after,
+        "wheel over the picker must not scroll the transcript"
+    );
     // The search row holds the Close button; no separate title row.
     let close = vcx.debug_bounds("provider-picker-close").expect("close");
-    let search = vcx.debug_bounds("provider-picker-search").expect("search row");
+    let search = vcx
+        .debug_bounds("provider-picker-search")
+        .expect("search row");
     assert!(close.top() >= search.top() && close.bottom() <= search.bottom());
 }
