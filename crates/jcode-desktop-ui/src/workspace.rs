@@ -2914,7 +2914,8 @@ impl Workspace {
     /// `jcode-desktop-harness/src/fixtures`), so a screenshot shows real data
     /// shapes, not invented ones.
     fn load_real_swarm_fixture(&mut self, cx: &mut Context<Self>) {
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
         let home = fixtures.join("microbe_home");
         let mut sessions = harness::merge_persisted_sessions(Vec::new(), Some(&home));
         jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
@@ -2928,7 +2929,10 @@ impl Workspace {
             &ids,
         ));
         self.worker_meta = meta;
-        let Some(position) = sessions.iter().position(|s| s.session_id.starts_with("session_microbe_")) else {
+        let Some(position) = sessions
+            .iter()
+            .position(|s| s.session_id.starts_with("session_microbe_"))
+        else {
             return;
         };
         let coordinator = sessions.remove(position);
@@ -2936,8 +2940,12 @@ impl Workspace {
         self.sessions = sessions;
         self.slots.clear();
         self.active = self.open_session(coordinator, cx);
-        let ids = self.slots[self.active].panel.read(cx).swarm_card_worker_ids();
-        let usage = jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
+        let ids = self.slots[self.active]
+            .panel
+            .read(cx)
+            .swarm_card_worker_ids();
+        let usage =
+            jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
         self.slots[self.active]
             .panel
             .update(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
@@ -3235,9 +3243,10 @@ impl Workspace {
             self.coach_expiry_task = None;
         }
         if self.coach.take_dirty()
-            && let Some(persistence) = &self.learning_persistence {
-                persistence.save(&self.coach);
-            }
+            && let Some(persistence) = &self.learning_persistence
+        {
+            persistence.save(&self.coach);
+        }
         cx.notify();
     }
 
@@ -3545,7 +3554,8 @@ impl Workspace {
         }
         if self
             .slots
-            .get(self.active).is_none_or(|slot| slot.row != self.active_row)
+            .get(self.active)
+            .is_none_or(|slot| slot.row != self.active_row)
         {
             return;
         }
@@ -3712,6 +3722,16 @@ impl Workspace {
             return;
         };
         let source = self.slots[source_index].panel.clone();
+        if source.read(cx).is_accounts_panel() {
+            if let Some(command) = &request.login_command {
+                source.update(cx, |panel, cx| panel.login_command(command, cx));
+            }
+            self.set_active(source_index, cx);
+            self.retarget_camera();
+            self.focus_active(window, cx);
+            cx.notify();
+            return;
+        }
         let source_session = source.read(cx).session_id.clone();
         if self.single_panel {
             let preview = source.read(cx).preview_state;
@@ -6271,7 +6291,15 @@ impl Workspace {
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
-                        .map(|workers| sidebar_swarm::layout_key(workers, folded_workers.get(&session.session_id).copied().unwrap_or(0)))
+                        .map(|workers| {
+                            sidebar_swarm::layout_key(
+                                workers,
+                                folded_workers
+                                    .get(&session.session_id)
+                                    .copied()
+                                    .unwrap_or(0),
+                            )
+                        })
                         .unwrap_or_default(),
                 }
             })
@@ -8634,9 +8662,10 @@ impl Workspace {
                     window.prevent_default();
                     cx.stop_propagation();
                     if this.folder_picker_sets_default
-                        && let Some(index) = this.default_directory_panel_index(cx) {
-                            this.set_active(index, cx);
-                        }
+                        && let Some(index) = this.default_directory_panel_index(cx)
+                    {
+                        this.set_active(index, cx);
+                    }
                     if let Some(search) = &this.folder_search {
                         this.focus_pending = false;
                         window.focus(&search.read(cx).focus_handle.clone(), cx);
@@ -16127,6 +16156,41 @@ mod login_tests;
 #[cfg(test)]
 mod accounts_panel_tests {
     use super::*;
+
+    #[gpui::test]
+    fn opening_accounts_from_the_active_accounts_panel_reuses_it(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("source", cx);
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.entity_id());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source,
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source: accounts.entity_id(),
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.iter().filter(|s| !s.closing).count(), 2);
+            assert_eq!(w.slots[w.active].panel, accounts);
+        });
+    }
 
     #[gpui::test]
     fn accounts_panel_preview_and_pending_sources_never_contact_runtime(
