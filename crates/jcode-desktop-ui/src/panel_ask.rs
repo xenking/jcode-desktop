@@ -387,14 +387,19 @@ impl Panel {
                     .inset_0()
                     .when(active, |el| {
                         el.debug_selector(move || {
-                            format!("ask-voice-recording-indicator-{q}-{}", option.map_or(0, |o| o + 1))
+                            format!(
+                                "ask-voice-recording-indicator-{q}-{}",
+                                option.map_or(0, |o| o + 1)
+                            )
                         })
                     })
-                    .child(jcode_desktop_voice::chrome::voice_microphone_face(if active {
-                        theme.BG.into()
-                    } else {
-                        theme.TEXT_DIM.into()
-                    }));
+                    .child(jcode_desktop_voice::chrome::voice_microphone_face(
+                        if active {
+                            theme.BG.into()
+                        } else {
+                            theme.TEXT_DIM.into()
+                        },
+                    ));
                 if active {
                     gpui::AnimationExt::with_animation(
                         icon,
@@ -403,7 +408,8 @@ impl Panel {
                             .repeat()
                             .with_easing(gpui::pulsating_between(0.5, 1.0)),
                         |el, opacity| el.opacity(opacity),
-                    ).into_any_element()
+                    )
+                    .into_any_element()
                 } else {
                     icon.into_any_element()
                 }
@@ -449,7 +455,14 @@ impl Panel {
         if editing && key != "tab" && !(key == "enter" && !event.keystroke.modifiers.shift) {
             return false;
         }
-        if !editing && !self.focus_handle.is_focused(window) {
+        if !editing
+            && !self.focus_handle.is_focused(window)
+            && !self
+                .transcript_selection
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+        {
             return false;
         }
         let modifiers = event.keystroke.modifiers;
@@ -1495,6 +1508,41 @@ mod tests {
     }
 
     #[gpui::test]
+    fn space_selects_ask_when_transcript_has_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+            panel.apply(&event, cx);
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let focus = panel
+                .read(cx)
+                .transcript_selection
+                .read(cx)
+                .focus_handle()
+                .clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], vec![0]);
+            assert!(panel.input.read(cx).snapshot().content.is_empty());
+        });
+    }
+
+    #[gpui::test]
     fn keyboard_navigates_multiple_groups_and_submits(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
@@ -1720,7 +1768,9 @@ mod tests {
         });
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { name, output, .. } if name == "ask" && output.contains("reason")))));
-        let row = vcx.debug_bounds("decision-header").expect("compact decision row");
+        let row = vcx
+            .debug_bounds("decision-header")
+            .expect("compact decision row");
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(
