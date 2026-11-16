@@ -4,6 +4,30 @@
 use super::*;
 
 #[gpui::test]
+fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "bash-status".into(), name: "bash".into(), input: r#"{"command":"false"}"#.into(),
+        output: "failed\n\n--- Command finished with exit code: 1 ---\n".into(), done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-detail-exit-code").is_some());
+    assert!(document_text(&panel, vcx).contains("command: false"));
+}
+
+#[gpui::test]
+fn read_and_diff_use_selectable_syntax_rendering(cx: &mut gpui::TestAppContext) {
+    for (name, input, output, selector) in [
+        ("read", r#"{"file_path":"lib.rs"}"#, "fn main() {}\n", "tool-detail-syntax-read"),
+        ("edit", "{}", "@@ -1 +1 @@\n-old\n+new\n", "tool-detail-syntax-diff"),
+    ] {
+        let (_, vcx) = panel_with(cx, vec![Item::Tool { call_id: name.into(), name: name.into(), input: input.into(), output: output.into(), done: true, error: None }]);
+        click(vcx, "tool-header");
+        assert!(vcx.debug_bounds(selector).is_some(), "{name}");
+        assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
+    }
+}
+
+#[gpui::test]
 fn background_completion_opens_output_preview(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![]);
     panel.update(vcx, |panel, cx| panel.apply(&ApiEvent::BackgroundProgress {

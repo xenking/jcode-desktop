@@ -72,6 +72,9 @@ pub use snapshot::TranscriptSnapshot;
 #[path = "panel_background_task.rs"]
 mod background_task;
 
+#[path = "panel_tool_output.rs"]
+mod tool_output;
+
 #[path = "panel_compaction.rs"]
 pub(crate) mod compaction;
 
@@ -4855,6 +4858,9 @@ impl Panel {
                                                     let color = if status.eq_ignore_ascii_case("completed") { Theme::global().OK } else if status.eq_ignore_ascii_case("failed") { Theme::global().ERROR } else { Theme::global().WARN };
                                                     el.child(div().debug_selector(|| "tool-detail-status".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(color).child(status))
                                                 })
+                                                .when_some(tool_output::bash_exit_code(name, output), |el, code| {
+                                                    el.child(div().debug_selector(|| "tool-detail-exit-code".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
+                                                })
                                                 .when(!*done && error.is_none() && self.has_running_tool(), |el| {
                                                 el.child(
                                                     div()
@@ -4878,13 +4884,11 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(text_selection::plain(
-                                                    self.transcript_selection.clone(),
+                                                .child(div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
+                                                    name, input, output, detail,
                                                     format!("tool-detail-{index}"),
-                                                    detail,
-                                                    window,
-                                                    cx,
-                                                ))
+                                                    self.transcript_selection.clone(), window, cx,
+                                                )))
                                                 .child(
                                                     div()
                                                         .debug_selector(|| "tool-detail-end".into())
