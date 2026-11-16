@@ -25,6 +25,22 @@ fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
+fn clicking_end_of_transcript_image_chip_opens_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("image-click-edge".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User("Look [#image 1] after".into()), Item::Image(image_preview::fixture_image())];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("transcript-image-chip").unwrap();
+    vcx.simulate_click(gpui::point(chip.right() - px(1.), chip.center().y), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
 async fn transcript_thumbnail_paints_decoded_image_in_the_marker(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new("inline-image-painted".into(), None, None, crate::harness::spawn_inert(), cx)
