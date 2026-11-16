@@ -318,6 +318,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     });
 
     commands.send(SessionCommand::Cancel).unwrap();
+    assert!(matches!(server.next(), ApiRequest::Cancel { session_id } if session_id == "same-id"));
     commands
         .send(SessionCommand::SetModel("model".into()))
         .unwrap();
@@ -346,7 +347,6 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     commands.send(SessionCommand::Fork).unwrap();
     commands.send(SessionCommand::Transfer).unwrap();
     for expected in [
-        "cancel",
         "set_model",
         "clear",
         "compact",

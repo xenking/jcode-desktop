@@ -26,12 +26,18 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
                 );
                 assert!(!panel.activity_active());
             }
-            _ => assert!(
-                panel
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, Item::Error(_)))
-            ),
+            state => {
+                let detail = match state {
+                    PreviewState::LoginError => "401 Unauthorized: account authentication failed. Log in again.",
+                    PreviewState::ModelAccessError => "Model access denied: this model is not available for your account.",
+                    PreviewState::RateLimit => "429 rate limit exceeded. Please try again later.",
+                    PreviewState::Disconnected => "Connection closed. The server is disconnected.",
+                    _ => unreachable!("unsupported preview fixture"),
+                };
+                assert!(panel.items.iter().any(|item| {
+                    matches!(item, Item::RuntimeError { code: jcode_sdk::api::ErrorCode::Internal, message } if message == detail)
+                }));
+            }
         }
         if state == PreviewState::Disconnected {
             assert_eq!(panel.status, "disconnected");

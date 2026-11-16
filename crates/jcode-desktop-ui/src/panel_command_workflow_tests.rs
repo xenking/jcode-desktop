@@ -3,8 +3,9 @@ use super::*;
 #[gpui::test]
 fn workflow_stop_cancels_immediately_and_status_is_read_only(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
-    let panel = cx.new(|cx| Panel::new("workflow-control".into(), None, None, bridge, cx));
     for name in ["/improve", "/refactor"] {
+        let panel =
+            cx.new(|cx| Panel::new("workflow-control".into(), None, None, bridge.clone(), cx));
         panel.update(cx, |panel, cx| {
             assert!(panel.handle_slash_command(&format!("{name} stop"), cx));
             assert!(panel.prompt_queue.paused);

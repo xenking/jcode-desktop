@@ -197,7 +197,7 @@ mod tests {
 
     #[gpui::test]
     fn multi_file_headers_and_click_actions_share_tool_payload(cx: &mut gpui::TestAppContext) {
-        let panel = cx.new(|cx| {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
             crate::panel::Panel::new(
                 "shared-preview-payload".into(),
                 None,
@@ -214,7 +214,7 @@ mod tests {
         // Exercise the actual per-file construction on every status transition,
         // including failure, which must retain the original review payload.
         for (done, error) in [(false, None), (true, None), (true, Some("Edit failed"))] {
-            panel.update(cx, |panel, cx| {
+            panel.update(vcx, |panel, cx| {
                 assert!(
                     panel
                         .render_edit_metadata(
@@ -249,6 +249,7 @@ mod tests {
                 assert!(Arc::ptr_eq(&first.output, &dispatched.output));
                 assert_eq!(dispatched.selected, 1);
             });
+            vcx.run_until_parked();
         }
     }
 
