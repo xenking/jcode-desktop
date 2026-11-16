@@ -9,9 +9,21 @@ impl Panel {
         shown: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        self.render_ask_answer_part(call_id, shown, 0, true, cx)
+    }
+
+    pub(super) fn render_ask_answer_part(
+        &self,
+        call_id: &str,
+        shown: String,
+        image_offset: usize,
+        show_extras: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let images: Vec<_> = self
             .ask_result_images(call_id)
             .into_iter()
+            .skip(image_offset)
             .map(|(_, image)| image.clone())
             .collect();
         let ranges = crate::input::image_marker_ranges(&shown);
@@ -54,6 +66,7 @@ impl Panel {
             .into_iter()
             .enumerate()
             .skip(ranges.len())
+            .filter(|_| show_extras)
             .map(|(index, image)| {
                 crate::image_chip::chip(
                     image.preview.clone(),

@@ -1720,11 +1720,11 @@ mod tests {
         });
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { name, output, .. } if name == "ask" && output.contains("reason")))));
-        let row = vcx.debug_bounds("tool-header").expect("compact ask row");
+        let row = vcx.debug_bounds("decision-header").expect("compact decision row");
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(
-            vcx.debug_bounds("ask-result").is_some(),
+            vcx.debug_bounds("decision-detail").is_some(),
             "reopened history must render ask result"
         );
         panel.read_with(vcx, |panel, _| {

@@ -95,6 +95,11 @@ use scroll_motion::WheelGlide;
 mod ask;
 #[path = "panel_ask_images.rs"]
 mod ask_images;
+#[path = "panel_decision.rs"]
+mod decision;
+#[path = "panel_decision_tests.rs"]
+#[cfg(test)]
+mod decision_tests;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -2838,6 +2843,9 @@ impl Panel {
                     if let Some(tool) = message.tool.filter(|tool| {
                         tool.name == "ask" || tool.name.trim_start_matches("functions.") == "swarm"
                     }) {
+                        if tool.name == "ask" && let Some(at) = message.timestamp_ms {
+                            user_times.insert(items.len(), at);
+                        }
                         items.push(Item::Tool {
                             call_id: tool.id,
                             name: tool.name,
@@ -4492,6 +4500,9 @@ impl Panel {
                 done,
                 error,
             } => {
+                if name == "ask" && *done {
+                    return self.render_decision(index, call_id, input, output, error.as_deref(), cx);
+                }
                 let (offset, opacity, animating) = self
                     .arriving_tools
                     .get(call_id)
@@ -6358,6 +6369,7 @@ fn short_id(session_id: &str) -> String {
 fn role_of(item: &Item) -> Option<&'static str> {
     match item {
         Item::User(_) => Some("you"),
+        Item::Tool { name, done: true, .. } if name == "ask" => Some("you"),
         Item::Assistant(_) => Some("jcode"),
         Item::Image(_)
         | Item::ResponseStats(_)
