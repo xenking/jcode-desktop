@@ -103,7 +103,7 @@ pub(super) fn tooltip(facts: &CacheFacts) -> String {
         )
     };
     format!(
-        "Prompt cache: {retention} · {state}{} · timing estimated from reported usage; actual expiry may be earlier",
+        "Prompt cache: {retention} · {state}{} · Estimated expiry",
         tokens_text(facts.cached_tokens)
     )
 }

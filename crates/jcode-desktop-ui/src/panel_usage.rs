@@ -853,14 +853,10 @@ impl Panel {
         // Subscription quota lives in the method pill's hover card. Only
         // per-token spend stays inline.
         if let Some((cost, turns)) = self.session_api_cost() {
-            let detail = format!(
-                "{}: estimated API spend for this session, priced from {turns} reported response{} at list rates. Not a bill.",
-                serving_account_label(
-                    self.provider.as_deref(),
-                    self.auth_method.as_deref(),
-                    self.account_label.as_deref()
-                ),
-                if turns == 1 { "" } else { "s" },
+            let account = serving_account_label(
+                self.provider.as_deref(),
+                self.auth_method.as_deref(),
+                self.account_label.as_deref(),
             );
             row = row.child(
                 div()
@@ -871,7 +867,10 @@ impl Panel {
                     .flex()
                     .items_center()
                     .text_color(theme.TEXT_DIM)
-                    .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
+                    .tooltip(move |_, cx| cx.new(|_| RowsTooltip {
+                        title: "API estimate · not a bill".into(),
+                        rows: vec![account.clone(), format!("Responses: {turns}"), "Pricing: list rates".into()],
+                    }).into())
                     .child(format_cost(cost)),
             );
         }

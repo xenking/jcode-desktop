@@ -1208,7 +1208,7 @@ impl Panel {
                     .tooltip(|_, cx| {
                         cx.new(|_| {
                             super::usage::MeterTooltip(
-                                "Send one small live request through this account to confirm it works. Uses a little quota or credit.".into(),
+                                "Test account · Uses quota or credit".into(),
                             )
                         })
                         .into()

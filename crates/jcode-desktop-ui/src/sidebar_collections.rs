@@ -711,7 +711,7 @@ impl Workspace {
                         .tooltip(|_, cx| {
                             cx.new(|_| {
                                 remotes::HeaderTooltip(
-                                    "Empty collection. Click to start a chat in it, or use a chat's ⋯ menu to move one here."
+                                    "Empty collection · Click to start a chat"
                                         .into(),
                                 )
                             })

@@ -225,10 +225,10 @@ impl Workspace {
                 format!("SSH · {host} · ~ (remote home)"),
             ),
         };
-        let tooltip = format!(
-            "New session destination: {description}\nClick to choose a machine and directory. {} opens a new session.",
-            spawn_shortcut()
-        );
+        let tooltip = crate::panel::usage::RowsTooltip {
+            title: "New session destination".into(),
+            rows: vec![description, format!("New session: {}", spawn_shortcut())],
+        };
         div()
             .id("machines-picker-button")
             .debug_selector(|| "machines-picker-button".into())
@@ -245,8 +245,10 @@ impl Workspace {
             .occlude()
             .hover(|el| el.bg(Theme::global().ACCENT_DIM))
             .tooltip(move |_, cx| {
-                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                    .into()
+                cx.new(|_| crate::panel::usage::RowsTooltip {
+                    title: tooltip.title.clone(),
+                    rows: tooltip.rows.clone(),
+                }).into()
             })
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();

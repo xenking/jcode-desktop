@@ -267,11 +267,6 @@ impl Render for CoachDetails {
             .gap_2()
             .child(self.0.label)
             .child(shortcut_keys(self.0.keys))
-            .child(
-                div()
-                    .text_color(theme.TEXT_DIM)
-                    .child(self.0.because.clone()),
-            )
     }
 }
 

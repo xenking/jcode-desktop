@@ -7823,8 +7823,7 @@ impl Workspace {
             }
 
             if account.shows_oauth_history() {
-                // One short line per login. The full token counts, pricing
-                // caveats and estimate note live in the hover tooltip.
+                // One short line per login; estimated amounts are detailed on hover.
                 let mut history = div()
                     .debug_selector(|| format!("account-{}-history", account.id))
                     .mt(px(3.0))
@@ -7843,21 +7842,15 @@ impl Workspace {
                 }
                 let many = account.usage_reports.len() > 1;
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
-                    let mut tooltip = report.title();
-                    for period in ["Today", "Lifetime"] {
-                        let value = report.period_detail(period).unwrap_or("unavailable");
-                        tooltip.push_str(&format!("\n{period}: {value}"));
-                    }
-                    // Retain backend coverage, estimate and pricing caveats verbatim.
-                    for (key, value) in &report.extra_info {
-                        if !matches!(key.as_str(), "Today" | "Lifetime") {
-                            tooltip.push_str(&format!("\n{key}: {value}"));
-                        }
-                    }
-                    tooltip.push_str(&format!("\n\n{}", accounts::USAGE_ESTIMATE_NOTE));
                     let amount =
                         |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
-                    // Estimates: the tooltip carries the caveat, not the row.
+                    let tooltip = crate::panel::usage::RowsTooltip {
+                        title: format!("{} · API estimate, not a bill", report.title()),
+                        rows: ["Today", "Lifetime"]
+                            .into_iter()
+                            .map(|period| format!("{period}: {}", amount(period)))
+                            .collect(),
+                    };
                     let summary =
                         format!("today {} · total {}", amount("Today"), amount("Lifetime"));
                     let label = report.account_label.clone().filter(|_| many);
@@ -7871,8 +7864,10 @@ impl Workspace {
                             .gap_1()
                             .min_w_0()
                             .tooltip(move |_, cx| {
-                                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                                    .into()
+                                cx.new(|_| crate::panel::usage::RowsTooltip {
+                                    title: tooltip.title.clone(),
+                                    rows: tooltip.rows.clone(),
+                                }).into()
                             })
                             .when_some(label, |el, label| {
                                 el.child(

@@ -203,8 +203,7 @@ impl Panel {
         let tooltip = lines
             .iter()
             .map(|(label, detail, cost)| format!("{label}: {detail} {cost}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
         div().child(
             div()
                 .id("voice-costs")
@@ -214,7 +213,10 @@ impl Panel {
                 .font_family(theme.FONT_MONO)
                 .text_size(px(10.))
                 .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
+                .tooltip(move |_, cx| cx.new(|_| super::usage::RowsTooltip {
+                    title: "Voice cost estimate".into(),
+                    rows: tooltip.clone(),
+                }).into())
                 .child(cost_summary(trace, waiting)),
         )
     }
@@ -245,11 +247,7 @@ impl Panel {
                 index + 1,
                 pill.label,
                 pill.score,
-                match (&decision, pill.winner) {
-                    (Some(decision), true) => format!("\n{decision}"),
-                    (None, true) => " · Selected route".into(),
-                    _ => String::new(),
-                }
+                if pill.winner { " · Selected route" } else { "" }
             );
             let winner = pill.winner;
             div()
