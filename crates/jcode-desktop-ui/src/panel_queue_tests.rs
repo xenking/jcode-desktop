@@ -30,6 +30,32 @@ fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::Te
 use serde_json::json;
 
 #[gpui::test]
+fn queued_skill_is_preserved_per_prompt_in_daemon_queue(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queued-skills".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.prompt_queue.remote_supported = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.active_skill = Some("poteto-mode".into());
+        panel.submit_or_queue("first".into(), vec![], true, cx);
+        panel.active_skill = Some("selfdev".into());
+        panel.submit_or_queue("second".into(), vec![], true, cx);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. })
+        if prompt.content == "first" && prompt.active_skill.as_deref() == Some("poteto-mode"))
+    );
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. })
+        if prompt.content == "second" && prompt.active_skill.as_deref() == Some("selfdev"))
+    );
+}
+
+#[gpui::test]
 fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let source = cx.new(|cx| {
@@ -39,6 +65,7 @@ fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAp
             .pending_remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "restore-id".into(),
+                active_skill: None,
                 content: "keep me".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
@@ -69,6 +96,7 @@ fn pending_remote_steer_does_not_offer_retry_before_failure(cx: &mut gpui::TestA
             .pending_remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "pending-id".into(),
+                active_skill: None,
                 content: "pending".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
@@ -289,7 +317,7 @@ fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppConte
     });
     panel.update(cx, |panel, cx| {
         panel.prompt_queue.pending_remote.push(jcode_sdk::api::QueuedPrompt {
-            client_id: "known".into(), content: "local".into(), images: vec![],
+            client_id: "known".into(), active_skill: None, content: "local".into(), images: vec![],
             mode: jcode_sdk::api::QueuedPromptMode::Steer,
         });
         panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"local\n\nexternal", "point":"D", "client_ids":["known", "foreign"]})), cx);
@@ -330,6 +358,7 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
         let image = super::image_preview::fixture_image();
         panel.prompt_queue.prompts.push(QueuedPrompt {
             content: "Look [#image 1] here".into(),
+            active_skill: None,
             images: vec![(image.media_type, image.data)],
             after_yield: true,
         });
@@ -364,6 +393,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
             .remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "remote-image".into(),
+                active_skill: None,
                 content: "Look [#image 1]".into(),
                 images: vec![(image.media_type, image.data)],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
@@ -381,6 +411,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
         panel.image_preview = None;
         panel.prompt_queue.steered.push(QueuedPrompt {
             content: remote.content,
+            active_skill: None,
             images: remote.images,
             after_yield: false,
         });
@@ -475,11 +506,13 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
         panel.prompt_queue.prompts = vec![
             QueuedPrompt {
                 content: "one".into(),
+                active_skill: None,
                 images: vec![],
                 after_yield: true,
             },
             QueuedPrompt {
                 content: "two".into(),
+                active_skill: None,
                 images: vec![],
                 after_yield: true,
             },
@@ -554,6 +587,7 @@ fn retry_after_reload_does_not_duplicate_delivered_history(cx: &mut gpui::TestAp
             .pending_remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "lost-ack".into(),
+                active_skill: None,
                 content: "already delivered".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
@@ -579,6 +613,7 @@ fn retry_keeps_a_new_prompt_identical_to_older_history(cx: &mut gpui::TestAppCon
             .pending_remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "new-repeat".into(),
+                active_skill: None,
                 content: "repeat".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,

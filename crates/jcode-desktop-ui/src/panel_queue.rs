@@ -62,6 +62,8 @@ pub struct PromptQueue {
 struct QueuedPrompt {
     content: String,
     images: Vec<(String, String)>,
+    #[serde(default)]
+    active_skill: Option<String>,
     #[serde(default = "default_follow_up")]
     after_yield: bool,
 }
@@ -94,6 +96,7 @@ impl Panel {
                     .remote
                     .retain(|p| p.client_id != prompt.client_id);
                 if edit {
+                    self.active_skill = prompt.active_skill.clone();
                     self.input.update(cx, |input, cx| {
                         input.recall_prompt(&prompt.content, prompt.images, cx)
                     });
@@ -104,6 +107,7 @@ impl Panel {
             ))),
             Err(reason) => {
                 if edit {
+                    self.active_skill = prompt.active_skill.clone();
                     self.input.update(cx, |input, cx| {
                         input.recall_prompt(&prompt.content, prompt.images, cx)
                     });
@@ -284,6 +288,7 @@ impl Panel {
         for index in 0..count {
             let sample = SAMPLES[index % SAMPLES.len()];
             self.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
+                active_skill: None,
                 client_id: format!("screenshot-{round}-{index}"),
                 content: if round == 0 {
                     sample.to_string()
@@ -314,7 +319,7 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.active_skill.is_some() {
+        if self.active_skill.is_some() && !self.prompt_queue.remote_supported {
             if !self.is_pending_session()
                 && self.history_loaded
                 && !self.activity_active()
@@ -327,6 +332,7 @@ impl Panel {
                 self.prompt_queue.prompts.push(QueuedPrompt {
                     content,
                     images,
+                    active_skill: self.active_skill.clone(),
                     after_yield: true,
                 });
                 self.prompt_queue.paused = false;
@@ -341,11 +347,12 @@ impl Panel {
                     && !self.is_pending_session()
                     && !self.prompt_queue.waiting_for_connection
                 {
-                    self.send_remote_prompt(content, images, true, cx);
+                    self.send_remote_prompt(content, images, true, self.active_skill.clone(), cx);
                 } else {
                     self.prompt_queue.prompts.push(QueuedPrompt {
                         content,
                         images,
+                        active_skill: self.active_skill.clone(),
                         after_yield: true,
                     });
                 }
@@ -361,6 +368,7 @@ impl Panel {
                 content,
                 images,
                 queued || self.prompt_queue.default_after_yield,
+                self.active_skill.clone(),
                 cx,
             );
             return;
@@ -376,6 +384,7 @@ impl Panel {
             self.prompt_queue.prompts.push(QueuedPrompt {
                 content,
                 images,
+                active_skill: self.active_skill.clone(),
                 after_yield: queued || self.prompt_queue.default_after_yield,
             });
             self.prompt_queue.paused = false;
@@ -442,6 +451,7 @@ impl Panel {
         content: String,
         images: Vec<(String, String)>,
         after_yield: bool,
+        active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if !self.activity_active() {
@@ -461,6 +471,7 @@ impl Panel {
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
         let prompt = jcode_sdk::api::QueuedPrompt {
+            active_skill,
             client_id: id,
             content,
             images,
@@ -504,13 +515,23 @@ impl Panel {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
+        self.send_prompt_with_skill(content, images, self.active_skill.clone(), cx);
+    }
+
+    fn send_prompt_with_skill(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        active_skill: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let steering = self.send_is_steering();
-        if let Some(skill) = &self.active_skill {
+        if let Some(skill) = active_skill {
             self.bridge.send(Command::SendSkill {
                 session_id: self.session_id.clone(),
                 content: content.clone(),
                 images: images.clone(),
-                skill: skill.clone(),
+                skill,
             });
         } else {
             self.bridge.send(Command::Send {
@@ -526,6 +547,7 @@ impl Panel {
             self.prompt_queue.steered.push(QueuedPrompt {
                 content,
                 images,
+                active_skill: None,
                 after_yield: false,
             });
             crate::sounds::play(crate::sounds::Cue::Sent, cx);
@@ -783,7 +805,13 @@ impl Panel {
         if self.prompt_queue.paused || self.is_pending_session() || !self.history_loaded {
             return;
         }
-        if self.active_skill.is_some() {
+        if !self.prompt_queue.remote_supported
+            && self
+                .prompt_queue
+                .prompts
+                .iter()
+                .any(|prompt| prompt.active_skill.is_some())
+        {
             if self.activity_active()
                 || !self.pending_users.is_empty()
                 || !(self.status == "idle" || self.status == "connected")
@@ -792,7 +820,9 @@ impl Panel {
             }
             let prompt = self.prompt_queue.prompts.remove(0);
             self.prompt_queue.waiting_for_connection = false;
-            self.send_composer_prompt(prompt.content, prompt.images, cx);
+            self.prompt_queue.paused = false;
+            self.prompt_queue.auto_poke.start(self.items.len());
+            self.send_prompt_with_skill(prompt.content, prompt.images, prompt.active_skill, cx);
             cx.notify();
             return;
         }
@@ -810,7 +840,13 @@ impl Panel {
             // Preserve independent follow-up turns when the daemon owns the
             // queue, including prompts typed before the session attached.
             for prompt in prompts {
-                self.send_remote_prompt(prompt.content, prompt.images, prompt.after_yield, cx);
+                self.send_remote_prompt(
+                    prompt.content,
+                    prompt.images,
+                    prompt.after_yield,
+                    prompt.active_skill,
+                    cx,
+                );
             }
             cx.notify();
             return;
@@ -823,14 +859,22 @@ impl Panel {
             .collect::<Vec<_>>()
             .join("\n\n");
         let images = prompts.into_iter().flat_map(|p| p.images).collect();
-        self.send_composer_prompt(content, images, cx);
+        self.prompt_queue.paused = false;
+        self.prompt_queue.auto_poke.start(self.items.len());
+        self.send_prompt_with_skill(content, images, None, cx);
         cx.notify();
     }
 
     /// Send one queued prompt immediately. During an active turn the harness
     /// delivers it as an urgent steer rather than waiting for the turn to end.
     pub(super) fn send_queued_prompt_now(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.active_skill.is_some() && self.activity_active() {
+        if self
+            .prompt_queue
+            .prompts
+            .get(index)
+            .is_some_and(|prompt| prompt.active_skill.is_some())
+            && self.activity_active()
+        {
             self.items.push(Item::Error(
                 "Skill prompts wait until the current turn finishes.".into(),
             ));
@@ -844,7 +888,7 @@ impl Panel {
             return;
         }
         let prompt = self.prompt_queue.prompts.remove(index);
-        self.send_prompt(prompt.content, prompt.images, cx);
+        self.send_prompt_with_skill(prompt.content, prompt.images, prompt.active_skill, cx);
         cx.notify();
     }
 
@@ -859,6 +903,7 @@ impl Panel {
             return;
         }
         let prompt = self.prompt_queue.prompts.remove(index);
+        self.active_skill = prompt.active_skill;
         self.input.update(cx, |input, cx| {
             input.recall_prompt(&prompt.content, prompt.images, cx)
         });

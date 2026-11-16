@@ -249,6 +249,7 @@ mod socket_tests {
         worker
             .commands
             .send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
+                active_skill: None,
                 client_id: "failed-id".into(),
                 content: "keep me".into(),
                 images: vec![],
