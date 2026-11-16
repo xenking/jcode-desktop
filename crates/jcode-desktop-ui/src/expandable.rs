@@ -91,7 +91,8 @@ impl Open {
         index: usize,
         prompt: bool,
     ) -> Self {
-        let details = regions.contains(&key::details(index));
+        let details = regions.contains(&key::details(index))
+            || matches!(item, Item::BackgroundTask { task_id, .. } if regions.contains(&key::task(task_id)));
         Self {
             prompt,
             card: match item {
@@ -332,6 +333,7 @@ mod tests {
                 task_id: "task".into(),
                 label: "Label".into(),
                 summary: "Summary".into(),
+                detail: None,
                 percent: None,
                 done: true,
             },

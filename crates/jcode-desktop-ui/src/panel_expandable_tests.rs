@@ -4,6 +4,21 @@
 use super::*;
 
 #[gpui::test]
+fn background_completion_opens_output_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![]);
+    panel.update(vcx, |panel, cx| panel.apply(&ApiEvent::BackgroundProgress {
+        session_id: "expandable".into(), task_id: "task-1".into(), label: "Build".into(),
+        summary: "✓ completed · 2.0s · exit 0".into(),
+        detail: Some("**Background task** `task-1` · `Build` · ✓ completed · 2.0s · exit 0\n\n```text\nactual output tail\n```".into()),
+        percent: None, done: true,
+    }, cx));
+    vcx.run_until_parked();
+    click(vcx, "background-task-expand");
+    assert!(vcx.debug_bounds("background-task-output").is_some());
+    assert!(document_text(&panel, vcx).contains("actual output tail"));
+}
+
+#[gpui::test]
 fn bg_result_shows_structured_details(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::Tool {
         call_id: "bg-result".into(), name: "bg".into(),
@@ -371,6 +386,7 @@ fn background_task_disclosure_stays_in_header_at_narrow_and_wide_widths(
             task_id: "task-1".into(),
             label: "Rollout outcome + snail push".into(),
             summary: "completed · 0.6s · exit 0".into(),
+            detail: None,
             percent: None,
             done,
         }];
@@ -380,11 +396,7 @@ fn background_task_disclosure_stays_in_header_at_narrow_and_wide_widths(
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.)));
             vcx.run_until_parked();
             let header = vcx
-                .debug_bounds(if done {
-                    "background-task-completed"
-                } else {
-                    "background-task-card"
-                })
+                .debug_bounds("background-task-expand")
                 .expect("header");
             let chevron = vcx
                 .debug_bounds("background-task-chevron-0")
@@ -394,8 +406,8 @@ fn background_task_disclosure_stays_in_header_at_narrow_and_wide_widths(
                 "width {width}: {header:?} {chevron:?}"
             );
             assert!(
-                chevron.right() <= header.left(),
-                "chevron must precede the header: {header:?} {chevron:?}"
+                chevron.left() > header.left(),
+                "chevron must follow the header: {header:?} {chevron:?}"
             );
         }
         click(vcx, "background-task-chevron-0");
@@ -410,6 +422,7 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
         task_id: "task-1".into(),
         label: "Rebuild the search index across every collection".into(),
         summary,
+        detail: None,
         percent: None,
         done: true,
     }];

@@ -342,6 +342,8 @@ pub enum Item {
         task_id: String,
         label: String,
         summary: String,
+        #[serde(default)]
+        detail: Option<String>,
         percent: Option<f32>,
         done: bool,
     },
@@ -3367,6 +3369,7 @@ impl Panel {
                     task_id: "context-compaction".into(),
                     label: "Context compaction".into(),
                     summary: message.clone(),
+                    detail: None,
                     percent: None,
                     done: false,
                 });
@@ -3397,6 +3400,7 @@ impl Panel {
                 task_id,
                 label,
                 summary,
+                detail,
                 percent,
                 done,
                 ..
@@ -3404,6 +3408,7 @@ impl Panel {
                 if let Some(Item::BackgroundTask {
                     label: current_label,
                     summary: current_summary,
+                    detail: current_detail,
                     percent: current_percent,
                     done: current_done,
                     ..
@@ -3412,6 +3417,9 @@ impl Panel {
                 }) {
                     *current_label = label.clone();
                     *current_summary = summary.clone();
+                    if detail.is_some() {
+                        *current_detail = detail.clone();
+                    }
                     *current_percent = *percent;
                     *current_done = *done;
                 } else {
@@ -3419,6 +3427,7 @@ impl Panel {
                         task_id: task_id.clone(),
                         label: label.clone(),
                         summary: summary.clone(),
+                        detail: detail.clone(),
                         percent: *percent,
                         done: *done,
                     });
@@ -4445,6 +4454,7 @@ impl Panel {
                 task_id,
                 label,
                 summary,
+                detail,
                 percent,
                 done,
             } => {
@@ -4454,22 +4464,27 @@ impl Panel {
                 let expanded = self.expanded_regions.contains(&key);
                 let toggle_key = key.clone();
                 div()
+                    .flex().flex_col().flex_none().min_w_0()
+                    .debug_selector(|| "background-task-card".into())
+                    .child(div()
                     .id(("background-task-toggle", index))
                     .debug_selector(|| "background-task-expand".into())
                     .flex()
-                    .when(expanded, |el| el.items_start())
-                    .when(!expanded, |el| el.items_center())
-                    .gap_1()
+                    .items_center()
+                    .gap_2()
                     .flex_none()
                     .min_w_0()
+                    .px_1().py(px(2.0))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         cx.stop_propagation();
                         this.toggle_line(&toggle_key, cx);
                     }))
-                    // The label is selectable text, so the row also carries an
-                    // explicit chevron: a click on the text still toggles, and
-                    // so does a click on the control.
+                    .child(crate::tool_icon::render_badge("bg", *done, summary.to_lowercase().contains("failed")))
+                    .child(div().flex_1().min_w_0().truncate().text_color(Theme::global().TOOL_TEXT).child(label.clone()))
+                    .child(div().max_w(relative(0.3)).min_w_0().truncate().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(summary.clone()))
+                    .when_some(percent.filter(|value| value.is_finite()), |el, percent| el.child(div().flex_none().w(px(40.0)).h(px(2.0)).rounded_full().bg(Theme::global().TOOL_BORDER).child(div().h_full().w(relative((percent / 100.0).clamp(0.0, 1.0))).rounded_full().bg(Theme::global().ACCENT))))
+                    .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
                     .child({
                         let key = key.clone();
                         expandable::glyph_toggle(
@@ -4481,18 +4496,14 @@ impl Panel {
                             }),
                         )
                     })
-                    .child(div().flex_1().min_w_0().child(background_task::render(
-                        index,
-                        task_id,
-                        label,
-                        summary,
-                        *percent,
-                        *done,
-                        expanded,
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    )))
+                    )
+                    .when(expanded, |el| el.child(div()
+                        .id(("background-task-output-scroll", index))
+                        .debug_selector(|| "background-task-output".into())
+                        .ml(px(24.0)).mt_1().p_3().rounded_lg().max_h(px(expandable::MAX_HEIGHT)).overflow_y_scroll()
+                        .bg(Theme::global().CODE_BG).font_family(Theme::global().FONT_MONO)
+                        .text_size(px(11.5)).text_color(Theme::global().CODE_TEXT)
+                        .child(text_selection::plain(self.transcript_selection.clone(), format!("background-detail-{index}"), background_task::detail_text(task_id, summary, detail.as_deref()), window, cx))))
                     .into_any_element()
             }
             Item::Tool {
@@ -9028,7 +9039,7 @@ mod tests {
             .unwrap();
         panel.update(vcx, |panel, cx| {
             panel.apply(&ApiEvent::Compacted { session_id: "session-a".into(), message: "Compacting".into() }, cx);
-            panel.apply(&ApiEvent::BackgroundProgress { session_id: "session-a".into(), task_id: "context-compaction".into(), label: "Context compaction".into(), percent: Some(100.0), summary: "10000 → 4000 tokens".into(), done: true }, cx);
+            panel.apply(&ApiEvent::BackgroundProgress { session_id: "session-a".into(), task_id: "context-compaction".into(), label: "Context compaction".into(), percent: Some(100.0), summary: "10000 → 4000 tokens".into(), detail: None, done: true }, cx);
             let cards: Vec<_> = panel.items.iter().filter(|item| matches!(item, Item::BackgroundTask { task_id, .. } if task_id == "context-compaction")).collect();
             assert_eq!(cards.len(), 1);
             assert!(matches!(cards[0], Item::BackgroundTask { summary, done: true, .. } if summary.contains("10000") && summary.contains("4000")));
@@ -9067,6 +9078,7 @@ mod tests {
                         label: "Workspace tests".into(),
                         percent,
                         summary: summary.into(),
+                        detail: None,
                         done,
                     },
                     cx,
@@ -9077,13 +9089,11 @@ mod tests {
                 .debug_bounds("background-task-card")
                 .expect("task row paints");
             if done {
-                assert!(vcx.debug_bounds("background-task-completed").is_some());
                 assert!(
                     row.size.height > px(0.0) && row.size.height <= px(40.0),
                     "finished tasks render as one compact row: {row:?}"
                 );
             } else {
-                assert!(vcx.debug_bounds("background-task-completed").is_none());
                 assert!(
                     row.size.height <= px(28.0),
                     "running tasks stay one compact row: {row:?}"
@@ -10632,6 +10642,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 task_id: "running".into(),
                 label: "Workspace tests".into(),
                 summary: "35% · Running integration tests".into(),
+                detail: None,
                 percent: Some(35.0),
                 done: false,
             },
@@ -10639,6 +10650,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 task_id: "waiting".into(),
                 label: "Release build".into(),
                 summary: "Compiling dependencies and waiting for the linker to finish".into(),
+                detail: None,
                 percent: None,
                 done: false,
             },
@@ -10646,6 +10658,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 task_id: "done".into(),
                 label: "Formatting".into(),
                 summary: "✓ completed · 8.2s · exit 0".into(),
+                detail: None,
                 percent: None,
                 done: true,
             },

@@ -111,9 +111,10 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
             output.hash(&mut state);
             error.hash(&mut state);
         }
-        Item::BackgroundTask { label, summary, .. } => {
+        Item::BackgroundTask { label, summary, detail, .. } => {
             label.hash(&mut state);
             summary.hash(&mut state);
+            detail.hash(&mut state);
         }
         Item::Stopped(notice) => {
             notice.detail.hash(&mut state);
@@ -243,9 +244,12 @@ pub(super) fn segments_with_display(
                 push(format!("{index}-stop-reason"), notice.plain_detail());
             }
         }
-        Item::BackgroundTask { label, summary, .. } => {
+        Item::BackgroundTask { task_id, label, summary, detail, .. } => {
             push(format!("background-label-{index}"), label.clone());
             push(format!("background-summary-{index}"), summary.clone());
+            if open.details {
+                push(format!("background-detail-{index}"), background_task::detail_text(task_id, summary, detail.as_deref()));
+            }
         }
         Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
         Item::Compaction(row) => {

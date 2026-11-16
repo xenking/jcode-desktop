@@ -816,6 +816,7 @@ mod tests {
             task_id: "task-42".into(),
             label: "Workspace tests".into(),
             summary: "Running tests".into(),
+            detail: None,
             percent: Some(35.),
             done: false,
         }));
@@ -842,6 +843,7 @@ mod tests {
             task_id: "task".into(),
             label: "Tests".into(),
             summary: "Running".into(),
+            detail: None,
             percent: None,
             done: false,
         });

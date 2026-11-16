@@ -252,7 +252,7 @@ fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppContext) {
+fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
@@ -266,17 +266,14 @@ fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppCont
             task_id: "task".into(),
             label: "Run tests".into(),
             summary: "All tests passed".into(),
+            detail: None,
             percent: Some(100.),
             done: true,
         }];
+        panel.expanded_regions.insert(expandable::key::task("task"));
         panel
     });
-    // Label and summary share one row, so a drag past the label reaches the summary.
-    assert!(drag_copy(vcx, "selectable-text-background-label-0").starts_with("Run tests"));
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-background-summary-0"),
-        "All tests passed"
-    );
+    assert_eq!(drag_copy(vcx, "selectable-text-background-detail-0"), "Task: task\nAll tests passed");
 }
 
 #[gpui::test]

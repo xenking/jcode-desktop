@@ -360,6 +360,7 @@ fn stop_settles_only_current_turn_tools_and_preserves_detached_background_work(
             task_id: "detached-job".into(),
             label: "Build".into(),
             summary: "Still running independently".into(),
+            detail: None,
             percent: Some(25.0),
             done: false,
         });
