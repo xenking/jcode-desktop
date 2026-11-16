@@ -95,6 +95,30 @@ fn click_tool_and_enter_use_targeted_semantic_actions(cx: &mut gpui::TestAppCont
             ),
             DesktopResponse::Ok { .. }
         ));
+        assert!(
+            w.slots[0].panel.read(cx).control_state(window, cx)["expanded_regions"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("call-1"))
+        );
+        assert!(matches!(
+            w.handle_desktop_request(
+                req(DesktopAction::Click {
+                    target: target.clone(),
+                    selector: "tool:call-1".into(),
+                    allow_user_window: false
+                }),
+                window,
+                cx
+            ),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(
+            !w.slots[0].panel.read(cx).control_state(window, cx)["expanded_regions"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("call-1"))
+        );
         assert!(matches!(
             w.handle_desktop_request(
                 req(DesktopAction::SetComposer {

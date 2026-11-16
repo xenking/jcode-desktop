@@ -166,11 +166,21 @@ impl Workspace {
                         allow_user_window,
                     }
                 } else if let Some(call_id) = selector.strip_prefix("tool:") {
-                    DesktopAction::ExpandTool {
-                        target,
-                        selector: call_id.to_owned(),
-                        allow_user_window,
-                    }
+                    let index = match self.control_target(&target, window, cx) {
+                        Ok(index) => index,
+                        Err(error) => return error,
+                    };
+                    return if self.slots[index]
+                        .panel
+                        .update(cx, |panel, cx| panel.control_toggle_tool(call_id, cx))
+                    {
+                        ok(json!({"selector": selector}))
+                    } else {
+                        error(
+                            "selector_not_found",
+                            "tool selector is missing or ambiguous",
+                        )
+                    };
                 } else {
                     return error(
                         "selector_not_found",

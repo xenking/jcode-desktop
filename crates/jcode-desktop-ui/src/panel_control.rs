@@ -57,6 +57,20 @@ impl Panel {
             error: None,
         }];
     }
+    pub(crate) fn control_toggle_tool(&mut self, call_id: &str, cx: &mut Context<Self>) -> bool {
+        if self
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::Tool { call_id: id, .. } if id == call_id))
+            .count()
+            != 1
+        {
+            return false;
+        }
+        self.toggle_region(call_id, cx);
+        true
+    }
+
     pub(crate) fn control_expand_tool(&mut self, call_id: &str, cx: &mut Context<Self>) -> bool {
         let Some(name) = self.items.iter().find_map(|item| match item {
             Item::Tool {
