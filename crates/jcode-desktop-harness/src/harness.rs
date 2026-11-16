@@ -911,14 +911,16 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
 }
 
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
-    let attempt = || {
-        JcodeClient::connect(ConnectOptions {
+    let attempt = || -> jcode_sdk::Result<JcodeClient> {
+        let client = JcodeClient::connect(ConnectOptions {
             client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
             // Temporarily disabled until inline tool responses have broader testing.
             supports_user_response: false,
             ..Default::default()
-        })
+        })?;
+        crate::runtime_generation::verify_local_bridge(client.runtime_identity.as_ref())?;
+        Ok(client)
     };
     match attempt() {
         Err(error) if error.kind == jcode_sdk::ErrorKind::ConnectFailed => {
@@ -948,7 +950,7 @@ const RUNTIME_REVIVE_INTERVAL: Duration = Duration::from_secs(2);
 /// daemon socket away for a moment, and spawning a competing `jcode serve`
 /// from every reconnecting panel would fight the handoff.
 fn revive_local_runtime() -> bool {
-    if !crate::platform::socket_live(&jcode_sdk::api::legacy_socket_path()) {
+    if !crate::runtime_generation::daemon_allows_bridge_revive() {
         return false;
     }
     static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);

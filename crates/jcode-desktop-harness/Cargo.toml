@@ -22,6 +22,7 @@ test-support = []
 [dependencies]
 jcode-desktop-model.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
+jcode-build-support = { path = "../../../jcode/crates/jcode-build-support" }
 jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
 async-channel = "2"
 base64 = "0.22"

@@ -68,6 +68,7 @@ impl Server {
             while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                 let event = match &frame.request {
                     ApiRequest::Hello { .. } => ApiEvent::HelloOk {
+                        runtime_identity: None,
                         version: jcode_sdk::api::API_VERSION_MAJOR,
                         server: "remote-test".into(),
                         capabilities: vec!["runtime_commands".into()],

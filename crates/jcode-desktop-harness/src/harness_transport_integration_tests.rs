@@ -63,6 +63,7 @@ impl Fixture {
                 while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                     let event = match &frame.request {
                         ApiRequest::Hello { .. } => ApiEvent::HelloOk {
+                            runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "pool-integration-test".into(),
                             capabilities: if queue {

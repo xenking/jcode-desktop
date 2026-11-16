@@ -4085,6 +4085,22 @@ name = "jcode-build-meta"
 version = "0.1.0"
 
 [[package]]
+name = "jcode-build-support"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "jcode-core",
+ "jcode-selfdev-types",
+ "jcode-storage",
+ "jcode-transport",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "jcode-compaction-core"
 version = "0.1.0"
 dependencies = [
@@ -4166,6 +4182,7 @@ dependencies = [
  "base64",
  "jcode-applet-types",
  "jcode-base",
+ "jcode-build-support",
  "jcode-desktop-model",
  "jcode-sdk",
  "libc",
@@ -4321,6 +4338,7 @@ name = "jcode-harness-api"
 version = "0.1.0"
 dependencies = [
  "jcode-applet-types",
+ "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
  "jcode-todo-policy",
@@ -4554,6 +4572,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jcode-applet-types",
+ "jcode-build-support",
  "jcode-harness-api",
  "jcode-provider-metadata",
  "jcode-todo-policy",
