@@ -76,7 +76,7 @@ mod tests {
     fn target() -> ImmutableTarget {
         ImmutableTarget {
             binary_path: PathBuf::from("/fixture/Jcode-new.app/Contents/MacOS/jcode"),
-            git_hash: Some("new-hash".into()),
+            git_hash: Some("abcdef123".into()),
             version_label: None,
             file_identity: None,
             payload_identity: None,
@@ -87,7 +87,7 @@ mod tests {
         ServingIdentity {
             pid: 42,
             binary_path: target().binary_path,
-            git_hash: "new-hash".into(),
+            git_hash: "abcdef123".into(),
             version_label: None,
             reload_id: None,
             generation: 1,
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn same_path_with_previous_bundle_hash_is_rejected() {
         let mut old = bridge();
-        old.git_hash = "old-hash".into();
+        old.git_hash = "987654321".into();
         assert!(verify_bridge_target(&target(), Some(&old)).is_err());
         assert!(verify_bridge_target(&target(), Some(&bridge())).is_ok());
     }
@@ -115,5 +115,14 @@ mod tests {
     fn legacy_bridge_has_explicit_unknown_reason_not_ready() {
         let error = verify_bridge_target(&target(), None).unwrap_err();
         assert!(error.message.contains("did not report serving identity"));
+    }
+
+    #[test]
+    fn matching_bundle_with_malformed_self_report_is_not_ready() {
+        let mut malformed = bridge();
+        malformed.pid = 0;
+        let error = verify_bridge_target(&target(), Some(&malformed)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::HandshakeFailed);
+        assert!(error.message.contains("malformed serving identity"));
     }
 }
