@@ -3283,6 +3283,13 @@ impl Panel {
                 self.apply_special_command_artifacts(&output, cx);
                 self.stick_to_bottom = true;
             }
+            ApiEvent::PeerUserMessage { content, .. } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.stamp_user(self.items.len());
+                self.items.push(Item::User(content.clone()));
+                self.stick_to_bottom = true;
+            }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
                     &mut self.pending_users,
@@ -10220,6 +10227,47 @@ mod tests {
                 panel.items.as_slice(),
                 [Item::User(_), Item::Image(_)]
             ));
+        });
+    }
+
+    #[gpui::test]
+    fn peer_prompt_is_visible_live_after_compaction(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        panel.unwrap().update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel
+                .items
+                .push(Item::Compaction(compaction::CompactionRow::complete(
+                    "compacted · snapcompact",
+                )));
+            panel.apply(
+                &ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "external prompt".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    message_id: None,
+                    text: "answer".into(),
+                },
+                cx,
+            );
+            assert!(
+                matches!(panel.items.last(), Some(Item::User(text)) if text == "external prompt")
+            );
+            assert_eq!(panel.streaming_text, "answer");
         });
     }
 

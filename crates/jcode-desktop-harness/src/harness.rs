@@ -3556,6 +3556,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
@@ -3598,6 +3599,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
