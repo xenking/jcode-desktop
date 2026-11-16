@@ -626,6 +626,10 @@ fn main() {
             Instance::Secondary => return,
         };
     let instance_socket = Rc::new(instance_socket);
+    // Isolated acceptance instances must never activate or expose a window on
+    // the user's desktop. Only the offline fixture may request this mode.
+    let control_fixture = env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
+        && env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1");
     let plugin_path = host::reload_config::plugin_path();
     let app = application().with_quit_mode(launch_quit_mode(
         launch_mode,
@@ -669,6 +673,8 @@ fn main() {
         let window = cx
             .open_window(
                 WindowOptions {
+                    focus: !control_fixture,
+                    show: !control_fixture,
                     app_id: Some(jcode_desktop_ui::APP_ID.into()),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(titlebar_options()),
@@ -714,7 +720,7 @@ fn main() {
         // Only the main desktop owns the global shortcut. Auxiliary workspace
         // instances must not steal it or report a spurious registration conflict.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if instance_name.is_none()
+        if instance_name.is_none() && !control_fixture
             && let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
@@ -865,7 +871,9 @@ fn main() {
                 );
             }
         }
-        cx.activate(true);
+        if !control_fixture {
+            cx.activate(true);
+        }
     });
 }
 

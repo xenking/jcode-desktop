@@ -114,8 +114,11 @@ mod unix {
         tx: &async_channel::Sender<Pending>,
         stop: &AtomicBool,
     ) -> io::Result<()> {
+        // Accepted sockets can inherit the listener's nonblocking mode on macOS.
+        // A large semantic state must not be truncated after its first buffer.
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-        stream.set_write_timeout(Some(Duration::from_millis(100)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut bytes = Vec::new();
         loop {
