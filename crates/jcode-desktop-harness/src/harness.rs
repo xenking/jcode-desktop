@@ -1090,10 +1090,34 @@ fn run_with_transports(
 ) {
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    let edit_home = jcode_home();
+    let mut edit_stamp = edit_home.as_deref().and_then(crate::edit_stats_watch::stamp);
+    let mut next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
 
-    while let Ok(command) = commands.recv() {
+    loop {
+        if std::time::Instant::now() >= next_edit_check {
+            next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+            if let Some(current) = edit_home.as_deref().and_then(crate::edit_stats_watch::stamp) {
+                if edit_stamp.as_ref().is_some_and(|previous| *previous != current) {
+                    // If another refresh is running, keep the old stamp and retry.
+                    if !session_refresh_in_flight.load(std::sync::atomic::Ordering::Acquire) {
+                        refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone());
+                        edit_stamp = Some(current);
+                    }
+                } else {
+                    edit_stamp = Some(current);
+                }
+            }
+        }
+        let timeout = next_edit_check.saturating_duration_since(std::time::Instant::now());
+        let command = match commands.recv_timeout(timeout) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             Command::Shutdown => break,
             Command::RefreshSessions => {

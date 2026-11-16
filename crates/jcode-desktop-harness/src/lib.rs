@@ -6,6 +6,7 @@
 use std::sync::OnceLock;
 
 pub mod accounts;
+mod edit_stats_watch;
 pub mod harness;
 pub mod managed_cloud;
 pub mod managed_cloud_parity;
