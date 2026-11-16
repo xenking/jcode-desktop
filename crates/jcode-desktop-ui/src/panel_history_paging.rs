@@ -443,6 +443,17 @@ mod tests {
         );
         let second = client.get_history_page(id, Some(cursor)).unwrap();
         assert!(second.before.is_some());
+        let old_image = second
+            .images
+            .iter()
+            .find(|image| image.data.starts_with("jcode-lazy:"))
+            .expect("older page image must remain lazy");
+        assert!(
+            client
+                .get_history_image(id, old_image.data.strip_prefix("jcode-lazy:").unwrap())
+                .unwrap()
+                .starts_with("iVBORw0KGgo")
+        );
         panel.update(cx, |panel, cx| {
             panel.load_bounded_history_page(Ok(second), cx);
             assert!(panel.items.iter().any(
