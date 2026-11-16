@@ -153,7 +153,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
         panel
     });
     panel.update(cx, |panel, cx| {
-        for content in ["plain external prompt", "/poteto-mode давай делать"] {
+        for content in ["plain external prompt", "давай делать"] {
             panel.apply(
                 &event(json!({"ev":"peer_user_message", "content":content})),
                 cx,
@@ -169,7 +169,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
             .collect();
         assert_eq!(
             users,
-            ["plain external prompt", "/poteto-mode давай делать"]
+            ["plain external prompt", "давай делать"]
         );
     });
     let restored = cx.new(|cx| {
@@ -186,7 +186,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
             {"role":"user", "content":"plain external prompt"},
             {"role":"assistant", "content":"answer"},
             {"role":"system", "content":"skill instructions"},
-            {"role":"user", "content":"/poteto-mode давай делать"}
+            {"role":"user", "content":"давай делать"}
         ]))
         .unwrap();
         panel.load_history(messages, vec![], cx);
@@ -200,7 +200,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
             .collect();
         assert_eq!(
             users,
-            ["plain external prompt", "/poteto-mode давай делать"]
+            ["plain external prompt", "давай делать"]
         );
         assert!(
             !panel.items.iter().any(
@@ -701,17 +701,11 @@ fn unconfirmed_batch_escalates_and_shows_reason(cx: &mut gpui::TestAppContext) {
         panel
     });
     panel.update(cx, |p, cx| p.interrupt_all_queued_prompts(cx));
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::InterruptQueuedPrompts { .. })
-    ));
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(3));
+    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { .. })));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
     cx.run_until_parked();
     assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
-    panel.read_with(cx, |p, _| {
-        assert!(p.prompt_queue.remote_failures["a"].contains("blocked"))
-    });
+    panel.read_with(cx, |p, _| assert!(p.prompt_queue.remote_failures["a"].contains("blocked")));
 }
 
 #[gpui::test]

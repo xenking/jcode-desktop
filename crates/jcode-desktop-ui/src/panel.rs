@@ -3779,10 +3779,7 @@ impl Panel {
         let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
-            || matches!(
-                self.items.last(),
-                Some(Item::Error(_) | Item::RuntimeError { .. })
-            )
+            || matches!(self.items.last(), Some(Item::Error(_) | Item::RuntimeError { .. }))
         {
             MinimapSessionState::Error
         } else if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
@@ -4361,23 +4358,16 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let display = crate::config::display();
-        if display.screenshot_mode
-            && matches!(
-                item,
-                Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }
-            )
-        {
+        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }) {
             return div()
                 .px_1()
                 .text_size(px(11.))
                 .text_color(Theme::global().TEXT_DIM)
-                .child(
-                    if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
-                        "Error details hidden"
-                    } else {
-                        "Background task"
-                    },
-                )
+                .child(if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
+                    "Error details hidden"
+                } else {
+                    "Background task"
+                })
                 .into_any_element();
         }
         let notice_title = match item {
@@ -5141,9 +5131,7 @@ impl Panel {
                     .into_any_element()
             }
             Item::Error(message) => self.render_recovery_error(index, message, false, window, cx),
-            Item::RuntimeError { message, .. } => {
-                self.render_recovery_error(index, message, true, window, cx)
-            }
+            Item::RuntimeError { message, .. } => self.render_recovery_error(index, message, true, window, cx),
         }
     }
 
