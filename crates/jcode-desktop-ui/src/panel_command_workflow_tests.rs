@@ -147,6 +147,40 @@ fn composer_runs_compact_as_a_session_operation(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn composer_dispatches_embedded_command_even_when_prompts_are_queued(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("queued-commands", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.seed_screenshot_queued(1, 0);
+    });
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("please /skills now");
+    vcx.simulate_keystrokes("enter");
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::RuntimeCommand {
+            command: jcode_sdk::api::RuntimeCommand::Skills,
+            args,
+            ..
+        }) if args == ["please", "now"]
+    ));
+}
+
+#[gpui::test]
 fn composer_unknown_slash_is_an_inline_error(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();

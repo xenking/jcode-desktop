@@ -2047,6 +2047,16 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        if images.is_empty()
+                            && let Some(panel) = weak.upgrade()
+                            && !panel.read(app).is_pending_session()
+                            && panel.read(app).preview_state.is_none()
+                            && !(panel.read(app).prompt_queue.waiting_for_connection
+                                && !panel.read(app).history_loaded)
+                            && panel.update(app, |this, cx| this.handle_embedded_commands(&content, cx))
+                        {
+                            return;
+                        }
                         if !queued
                             && jcode_base::skill::SkillRegistry::parse_invocation(&content).is_none()
                             && let Some(panel) = weak.upgrade()
@@ -2172,9 +2182,6 @@ impl Panel {
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
                                     this.handle_preview_command(&content, cx);
-                                    return;
-                                }
-                                if images.is_empty() && this.handle_embedded_commands(&content, cx) {
                                     return;
                                 }
                                 if !images.is_empty() && this.handle_skill_invocation_with_images(&content, images.clone(), queued, cx) {
