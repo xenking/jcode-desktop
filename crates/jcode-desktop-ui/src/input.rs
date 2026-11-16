@@ -179,6 +179,7 @@ pub struct PromptInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    chip_positions: Vec<(usize, gpui::Point<Pixels>)>,
     /// Row height the layout was shaped and painted with. Event handlers run
     /// outside the element's text style, where `Window::line_height` differs.
     last_line_height: Option<Pixels>,
@@ -765,6 +766,7 @@ impl PromptInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            chip_positions: Vec::new(),
             last_line_height: None,
             voice_preview: None,
             voice_preview_hint: None,
@@ -2785,6 +2787,34 @@ impl Element for TextElement {
             vec![run]
         };
         let mut runs: Vec<TextRun> = runs;
+        // Keep source byte offsets intact for editing, selection and submission,
+        // while reserving the opening brackets for the thumbnail.
+        if !input.content.is_empty() {
+            let hidden: Vec<_> = input.chip_ranges().into_iter().flat_map(|(_, range)| {
+                [range.start..(range.start + 2).min(range.end), range.end.saturating_sub(1)..range.end]
+            }).collect();
+            let mut offset = 0;
+            runs = runs.into_iter().flat_map(|run| {
+                let start = offset;
+                let end = start + run.len;
+                offset = end;
+                let mut cuts = vec![start, end];
+                for range in &hidden {
+                    if range.start > start && range.start < end { cuts.push(range.start); }
+                    if range.end > start && range.end < end { cuts.push(range.end); }
+                }
+                cuts.sort_unstable();
+                cuts.dedup();
+                cuts.windows(2).map(|pair| {
+                    let mut part = run.clone();
+                    part.len = pair[1] - pair[0];
+                    if hidden.iter().any(|range| range.start <= pair[0] && pair[1] <= range.end) {
+                        part.color.a = 0.;
+                    }
+                    part
+                }).collect::<Vec<_>>()
+            }).collect();
+        }
         if let Some(ghost) = &ghost {
             runs.push(TextRun {
                 len: ghost.len(),
@@ -2962,6 +2992,14 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            let positions: Vec<_> = input.chip_ranges().into_iter().filter_map(|(index, range)| {
+                line.position_for_index(range.start, window.line_height()).map(|position| (index, position))
+            }).collect();
+            if input.chip_positions != positions {
+                input.chip_positions = positions;
+                let entity = _cx.entity();
+                _cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
             // Reveal edits and keyboard navigation, but do not undo wheel scrolling
             // on every paint. Include viewport size so resizing reveals the caret.
             let viewport = input.editor_scroll.bounds();
@@ -3325,7 +3363,16 @@ impl Render for PromptInput {
                                 },
                             ))
                             .text_color(Theme::global().TEXT)
-                            .child(TextElement { input: cx.entity() }),
+                            .child(
+                                div().relative().child(TextElement { input: cx.entity() })
+                                    .children(self.chip_positions.iter().filter_map(|(index, position)| {
+                                        let image = self.attachments.get(*index)?.preview.clone();
+                                        Some(img(crate::image_cache::source(image))
+                                            .debug_selector(|| "composer-image-thumbnail".into())
+                                            .absolute().left(position.x).top(position.y + px(1.))
+                                            .size(px(14.)).rounded_sm().object_fit(gpui::ObjectFit::Cover))
+                                    }))
+                            ),
                     ),
             )
             .children(self.voice_preview.as_ref().map(|preview| {
@@ -3391,6 +3438,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("prompt-attachments").is_none());
+        assert!(vcx.debug_bounds("composer-image-thumbnail").is_some());
         vcx.simulate_keystrokes("backspace");
         vcx.run_until_parked();
         input.read_with(vcx, |input, _| {

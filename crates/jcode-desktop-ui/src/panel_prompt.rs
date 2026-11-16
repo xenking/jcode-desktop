@@ -228,6 +228,10 @@ impl Panel {
         let panel = cx.entity().downgrade();
         let prompt_images = markdown::PromptImages {
             labels,
+            previews: indices.iter().map(|index| match self.items.get(*index) {
+                Some(Item::Image(image)) => image.preview.clone(),
+                _ => None,
+            }).collect(),
             on_click: std::rc::Rc::new(move |index, window, cx| {
                 if let Some(index) = indices.get(index) {
                     let _ = panel.update(cx, |panel, cx| {

@@ -1012,6 +1012,7 @@ thread_local! {
 #[derive(Clone)]
 pub(crate) struct PromptImages {
     pub labels: Vec<String>,
+    pub previews: Vec<Option<Arc<gpui::Image>>>,
     pub on_click: std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>,
 }
 
@@ -1113,6 +1114,7 @@ fn styled_line_layout(
         Image(usize),
     }
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+    let mut thumbnails = Vec::new();
     let mut targets: Vec<_> = inline.links.drain(..)
         .map(|(range, url)| (range, Target::Url(url)))
         .collect();
@@ -1124,7 +1126,14 @@ fn styled_line_layout(
                 {
                     continue;
                 }
-                inline.highlights.push((range.clone(), link_style()));
+                let chip = HighlightStyle { background_color: Some(to_hsla(Theme::global().USER_BG)), ..Default::default() };
+                inline.highlights.push((range.clone(), chip));
+                let invisible = HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() };
+                inline.highlights.push((range.start..range.start + 2, invisible.clone()));
+                inline.highlights.push((range.end - 1..range.end, invisible));
+                if let Some(Some(image)) = images.previews.get(index) {
+                    thumbnails.push((range.start, image.clone()));
+                }
                 targets.push((range, Target::Image(index)));
             }
         }
@@ -1203,7 +1212,25 @@ fn styled_line_layout(
     // Only an avatar needs another one for its absolutely positioned overlay.
     // Ordinary paragraphs, list items and table cells avoid a redundant div's
     // style refinement, layout node, prepaint and paint on every frame.
-    let element = if avatar {
+    let element = if !thumbnails.is_empty() {
+        let layout = layout.clone();
+        let prefix_len = prefix.len();
+        div().relative().child(selectable)
+            .child(div().absolute().top_0().left_0().size_full()
+                .debug_selector(|| "transcript-image-thumbnail".into())
+                .child(gpui::canvas(|_, _, _| (), move |_, _, window, cx| {
+                    for (start, image) in thumbnails {
+                        let Some(position) = layout.position_for_index(start + prefix_len) else { continue };
+                        let gpui::ImageSource::Custom(load) = crate::image_cache::source(image) else { continue };
+                        if let Some(Ok(image)) = load(window, cx) {
+                            let bounds = gpui::Bounds::new(position + gpui::point(px(0.), px(1.)), gpui::size(px(14.), px(14.)));
+                            let _ = window.paint_image(bounds, bounds, gpui::Corners::all(px(3.)), image, 0, false);
+                        }
+                    }
+                }).absolute().top_0().left_0().size_full()))
+            .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
+            .into_any_element()
+    } else if avatar {
         div()
             .relative()
             .child(selectable)

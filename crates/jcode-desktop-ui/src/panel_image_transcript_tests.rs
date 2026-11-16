@@ -13,7 +13,7 @@ fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) 
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("transcript-user-image-chip").is_none());
+    assert!(vcx.debug_bounds("transcript-image-thumbnail").is_some());
     let marker = vcx.debug_bounds("prompt-content-0").expect("inline marker");
     vcx.simulate_click(marker.center(), Default::default());
     vcx.run_until_parked();
