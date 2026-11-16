@@ -289,11 +289,14 @@ impl Panel {
             .iter()
             .chain(card.comment_inputs.iter().flatten())
             .any(|input| input.read(cx).focus_handle.is_focused(window));
-        if editing && event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
-            if let Some(response) = card.complete().then(|| card.response()) {
-                self.answer_ask(response, cx);
+        if editing {
+            if event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
+                if let Some(response) = card.complete().then(|| card.response()) {
+                    self.answer_ask(response, cx);
+                }
+                return true;
             }
-            return true;
+            return false;
         }
         if !self.focus_handle.is_focused(window) {
             return false;
@@ -698,52 +701,6 @@ impl Panel {
                         .px_2()
                         .rounded_sm()
                         .when(own_selected, |el| el.bg(theme.ACCENT_DIM))
-                        .child(
-                            div()
-                                .id(("ask-other-label", q))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(
-                                    div()
-                                        .size(px(18.))
-                                        .border_1()
-                                        .border_color(if own_selected {
-                                            theme.ACCENT
-                                        } else {
-                                            theme.TEXT_DIM
-                                        })
-                                        .when(question.multi_select, |el| el.rounded_sm())
-                                        .when(!question.multi_select, |el| el.rounded_full())
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .when(own_selected, |el| {
-                                            el.child(
-                                                div().size(px(9.)).bg(theme.ACCENT).rounded_full(),
-                                            )
-                                        }),
-                                )
-                                .child(div().text_color(theme.TEXT_DIM).child("Your own answer"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let Some(input) = this
-                                        .ask_card
-                                        .as_ref()
-                                        .and_then(|card| card.other_inputs.get(q))
-                                        .cloned()
-                                    else {
-                                        return;
-                                    };
-                                    let text = input.read(cx).snapshot().content;
-                                    let focus = input.read(cx).focus_handle.clone();
-                                    if let Some(card) = this.ask_card.as_mut() {
-                                        card.set_other(q, &text);
-                                    }
-                                    window.focus(&focus, cx);
-                                    cx.notify();
-                                })),
-                        )
                         .child(
                             div()
                                 .debug_selector(move || format!("ask-other-editor-{q}"))
@@ -1326,6 +1283,72 @@ mod tests {
             assert!(panel.ask_card.is_none(), "completed tool must close its card");
             let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
             assert!(result_text(input, output, error.as_deref()).contains("Which database"));
+        });
+    }
+
+    #[gpui::test]
+    fn ask_editor_receives_space_and_printable_shortcuts(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        vcx.run_until_parked();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0]
+                .read(cx)
+                .focus_handle
+                .clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_input("a");
+        vcx.simulate_keystrokes("space");
+        vcx.simulate_input("b");
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.other_inputs[0].read(cx).snapshot().content, "a b");
+            assert!(card.chosen[0].is_empty());
+        });
+        vcx.simulate_keystrokes("n 1 j k shift-space shift-enter");
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(
+                card.other_inputs[0].read(cx).snapshot().content,
+                "a bn1jk \n"
+            );
+            assert!(card.chosen[0].is_empty());
+            assert!(!card.submitting);
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_keystrokes("space n");
+        vcx.simulate_input("a");
+        vcx.simulate_keystrokes("space");
+        vcx.simulate_input("bn1jk");
+        vcx.simulate_keystrokes("shift-enter");
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.chosen[0], vec![0]);
+            assert_eq!(
+                card.comment_inputs[0][0].read(cx).snapshot().content,
+                "a bn1jk\n"
+            );
+            assert!(!card.submitting);
+        });
+        vcx.simulate_keystrokes("enter");
+        panel.read_with(vcx, |panel, _| {
+            assert!(panel.ask_card.as_ref().unwrap().submitting)
         });
     }
 

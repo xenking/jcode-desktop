@@ -50,7 +50,7 @@ impl Panel {
     }
 
     pub(super) fn jump_to_latest_if_empty(&mut self, cx: &mut Context<Self>) {
-        if self.input.read(cx).content.is_empty() {
+        if self.ask_card.is_none() && self.input.read(cx).content.is_empty() {
             self.jump_to_latest(cx);
         } else {
             cx.propagate();
