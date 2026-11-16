@@ -4102,6 +4102,19 @@ impl Panel {
                 _ => None,
             })
             .collect();
+        // A completion notice is redundant only when a completed bg call
+        // already contains the same task, status and actual output preview.
+        // Keep nonmatching previews and ongoing tasks: they carry distinct data.
+        let completed_bg: Vec<(String, String, String)> = self.items.iter().filter_map(|item| {
+            let Item::Tool { name, input, output, done: true, error: None, .. } = item else { return None; };
+            let result = tool_output::background_output(name, output)?;
+            let task = serde_json::from_str::<serde_json::Value>(input).ok()?.get("task_id")?.as_str()?.to_owned();
+            if !result.fields.iter().any(|line| line == &format!("Task: {task}")) { return None; }
+            let status = result.fields.iter().find_map(|line| line.strip_prefix("Status: "))?.trim().to_owned();
+            let preview = result.preview?;
+            if status.is_empty() || preview.trim().is_empty() { return None; }
+            Some((task, status, preview))
+        }).collect();
         let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
@@ -4127,6 +4140,13 @@ impl Panel {
                     .collect();
             }
             if inline_images.contains(&index) {
+                continue;
+            }
+            if let Item::BackgroundTask { task_id, summary, detail: Some(detail), done: true, .. } = item
+                && let Some((_, rest)) = detail.split_once("```text\n")
+                && let Some((preview, _)) = rest.rsplit_once("\n```")
+                && completed_bg.iter().any(|(id, status, output)| id == task_id && summary.contains(status) && preview.trim_end() == output.trim_end())
+            {
                 continue;
             }
             // Ask-result attachments render inside their answer card. Keep

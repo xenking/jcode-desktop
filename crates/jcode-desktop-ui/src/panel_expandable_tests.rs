@@ -4,6 +4,24 @@
 use super::*;
 
 #[gpui::test]
+fn duplicate_background_completion_keeps_only_matching_full_result(cx: &mut gpui::TestAppContext) {
+    let notice = |id: &str, preview: &str| Item::BackgroundTask {
+        task_id: id.into(), label: "Build".into(), summary: "completed · 2s · exit 0".into(),
+        detail: Some(format!("**Background task** `{id}`\n\n```text\n{preview}\n```")), percent: None, done: true,
+    };
+    let bg = Item::Tool {
+        call_id: "bg-call".into(), name: "bg".into(), input: r#"{"action":"wait","task_id":"abc"}"#.into(),
+        output: "Background task finished.\n\nTask: abc\nStatus: completed\nDuration: 2s\nExit code: 0\n\nOutput preview:\n```text\nhello\n```".into(), done: true, error: None,
+    };
+    let (panel, vcx) = panel_with(cx, vec![notice("abc", "hello"), notice("other", "different"), notice("abc", "new output"), bg]);
+    let rows = panel.read_with(vcx, |panel, _| panel.transcript_render_rows());
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(1))));
+    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(2))));
+    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(3))));
+}
+
+#[gpui::test]
 fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::Tool {
         call_id: "edit-arguments".into(), name: "edit".into(), input: r#"{"file_path":"src/lib.rs","old_string":"before","new_string":"after"}"#.into(),
