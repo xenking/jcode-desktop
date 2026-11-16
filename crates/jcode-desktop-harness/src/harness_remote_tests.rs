@@ -1,6 +1,7 @@
 //! Real SDK socket-pair tests for the native SSH address routing boundary.
 use super::*;
 include!("harness_recovery_reconnect_tests.rs");
+include!("harness_recovery_acceptance_tests.rs");
 include!("harness_history_recovery_tests.rs");
 include!("harness_protocol_recovery_tests.rs");
 include!("harness_turn_retry_tests.rs");

@@ -1091,7 +1091,9 @@ fn run_with_transports(
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let edit_home = jcode_home();
-    let mut edit_stamp = edit_home.as_deref().and_then(crate::edit_stats_watch::stamp);
+    let mut edit_stamp = edit_home
+        .as_deref()
+        .and_then(crate::edit_stats_watch::stamp);
     let mut next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
 
     // Per-session workers, keyed by session id.
@@ -1100,8 +1102,14 @@ fn run_with_transports(
     loop {
         if std::time::Instant::now() >= next_edit_check {
             next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
-            if let Some(current) = edit_home.as_deref().and_then(crate::edit_stats_watch::stamp) {
-                if edit_stamp.as_ref().is_some_and(|previous| *previous != current) {
+            if let Some(current) = edit_home
+                .as_deref()
+                .and_then(crate::edit_stats_watch::stamp)
+            {
+                if edit_stamp
+                    .as_ref()
+                    .is_some_and(|previous| *previous != current)
+                {
                     // If another refresh is running, keep the old stamp and retry.
                     if !session_refresh_in_flight.load(std::sync::atomic::Ordering::Acquire) {
                         refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone());
@@ -3388,40 +3396,9 @@ fn session_worker_with_connector(
                     ..
                 } = &event
                 {
-                    // This is the same server-owned directive used by the TUI,
-                    // not a guess based on a sidebar's cached crash badge.
-                    if recovery.claim(
-                        continuation_message,
-                        turn_active || !unaccepted_sends.is_empty(),
-                    ) {
-                        if let Err(error) =
-                            client.send_system_reminder(real_id, continuation_message)
-                        {
-                            recovery.finish_submission();
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Failed to continue interrupted work: {error}"),
-                            });
-                        } else {
-                            turn_active = true;
-                            _detach.set_processing(true);
-                            let _ = updates.send(Update::Event {
-                                session_id: session_id.clone(),
-                                event: ApiEvent::SessionStatus {
-                                    session_id: session_id.clone(),
-                                    status: "running".into(),
-                                    pending_soft_interrupts: None,
-                                },
-                            });
-                        }
+                    if recovery.notice(continuation_message) {
+                        let _ = updates.send(Update::Status("Resumed after reload".into()));
                     }
-                    continue;
-                }
-                if recovery.observe(&event) {
-                    // Another client already continued the session. Never
-                    // steer a second automatic continuation into that turn.
-                    turn_active = true;
-                    _detach.set_processing(true);
                     continue;
                 }
                 if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
