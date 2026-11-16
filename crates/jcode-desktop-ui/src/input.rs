@@ -179,7 +179,7 @@ pub struct PromptInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
-    chip_positions: Vec<(usize, gpui::Point<Pixels>)>,
+    chip_positions: Vec<(usize, Bounds<Pixels>)>,
     /// Row height the layout was shaped and painted with. Event handlers run
     /// outside the element's text style, where `Window::line_height` differs.
     last_line_height: Option<Pixels>,
@@ -525,7 +525,7 @@ fn ensure_visible_chips(content: &mut String, attachments: &mut [Attachment]) {
     }
 }
 
-fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
+pub(crate) fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
     content
         .match_indices("[#image ")
         .filter_map(|(start, _)| {
@@ -2205,11 +2205,13 @@ impl PromptInput {
         cx.stop_propagation();
         self.is_selecting = true;
         let offset = self.index_for_mouse_position(event.position, window);
+        let clicked_chip = self.last_bounds.as_ref().and_then(|text_bounds| {
+            let relative = event.position - text_bounds.origin;
+            self.chip_positions.iter().find_map(|(index, bounds)| bounds.contains(&relative).then_some(*index))
+        });
         if !event.modifiers.shift
-            && let Some((index, _)) = self
-                .chip_ranges()
-                .into_iter()
-                .find(|(_, range)| range.contains(&offset))
+            && let Some(index) = clicked_chip.or_else(|| self.chip_ranges().into_iter()
+                .find_map(|(index, range)| range.contains(&offset).then_some(index)))
         {
             self.is_selecting = false;
             self.attachment_preview = Some(paste_preview::Preview::new(index));
@@ -2601,7 +2603,6 @@ struct PrepaintState {
     line: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
-    chips: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
     /// Horizontal gap between the caret and placeholder text, so the caret
     /// never overlaps the first placeholder glyph.
@@ -2787,18 +2788,13 @@ impl Element for TextElement {
             vec![run]
         };
         let mut runs: Vec<TextRun> = runs;
-        // Keep source byte offsets intact for editing, selection and submission,
-        // while reserving the opening brackets for the thumbnail.
+        // Preserve source byte offsets for editing and submission, but never
+        // paint marker glyphs. The positioned pill paints the whole marker.
         if !input.content.is_empty() {
             let hidden: Vec<_> = input
                 .chip_ranges()
                 .into_iter()
-                .flat_map(|(_, range)| {
-                    [
-                        range.start..(range.start + 2).min(range.end),
-                        range.end.saturating_sub(1)..range.end,
-                    ]
-                })
+                .map(|(_, range)| range)
                 .collect();
             let mut offset = 0;
             runs = runs
@@ -2842,11 +2838,19 @@ impl Element for TextElement {
             });
         }
 
+        // Shape a same-length word in place of each ASCII marker. GPUI's
+        // wrapper breaks on punctuation and even non-breaking spaces, but not
+        // inside this word. Byte offsets stay identical to the stored text.
+        let shaped = crate::image_chip::mask_markers(
+            &display_text,
+            input.chip_ranges().into_iter().map(|(_, range)| range),
+        );
+
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = PromptLayout::new(
             window
                 .text_system()
-                .shape_text(display_text, font_size, &runs, Some(wrap_width), None)
+                .shape_text(shaped.into(), font_size, &runs, Some(wrap_width), None)
                 .expect("prompt text should shape"),
         );
         let line_height = window.line_height();
@@ -2949,24 +2953,10 @@ impl Element for TextElement {
                 None,
             )
         };
-        let chips = input
-            .chip_ranges()
-            .into_iter()
-            .flat_map(|(_, range)| {
-                range_quads(
-                    &line,
-                    range,
-                    text_bounds,
-                    line_height,
-                    Theme::global().USER_BG,
-                )
-            })
-            .collect();
         PrepaintState {
             line: Some(line),
             cursor,
             selection,
-            chips,
             text_bounds,
             text_indent,
             visual_line_count,
@@ -2989,9 +2979,6 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        for chip in prepaint.chips.drain(..) {
-            window.paint_quad(chip)
-        }
         for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection)
         }
@@ -3015,8 +3002,15 @@ impl Element for TextElement {
                 .chip_ranges()
                 .into_iter()
                 .filter_map(|(index, range)| {
-                    line.position_for_index(range.start, window.line_height())
-                        .map(|position| (index, position))
+                    let mut start = line.position_for_index(range.start, window.line_height())?;
+                    let end = line.position_for_index(range.end, window.line_height())?;
+                    // GPUI assigns a boundary index to the preceding row even
+                    // when its first glyph is on the next visual row.
+                    if start.y != end.y {
+                        let next = line.position_for_index(range.start + 1, window.line_height())?;
+                        if next.y == end.y { start = point(px(0.), next.y); }
+                    }
+                    (start.y == end.y).then_some((index, Bounds::new(start, size(end.x - start.x, window.line_height()))))
                 })
                 .collect();
             if input.chip_positions != positions {
@@ -3390,20 +3384,16 @@ impl Render for PromptInput {
                                     .relative()
                                     .child(TextElement { input: cx.entity() })
                                     .children(self.chip_positions.iter().filter_map(
-                                        |(index, position)| {
-                                            let image =
-                                                self.attachments.get(*index)?.preview.clone();
+                                        |(index, bounds)| {
+                                            let attachment = self.attachments.get(*index)?;
                                             Some(
-                                                img(crate::image_cache::source(image))
-                                                    .debug_selector(|| {
-                                                        "composer-image-thumbnail".into()
-                                                    })
+                                                crate::image_chip::chip(Some(attachment.preview.clone()), &attachment.label,
+                                                    "composer-image-chip", "composer-image-thumbnail", "composer-image-label")
                                                     .absolute()
-                                                    .left(position.x)
-                                                    .top(position.y + px(1.))
-                                                    .size(px(14.))
-                                                    .rounded_sm()
-                                                    .object_fit(gpui::ObjectFit::Cover),
+                                                    .left(bounds.origin.x)
+                                                    .top(bounds.origin.y)
+                                                    .w(bounds.size.width)
+                                                    .h(bounds.size.height),
                                             )
                                         },
                                     )),
@@ -3450,7 +3440,11 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("prompt-attachments").is_none());
-        assert!(vcx.debug_bounds("composer-image-thumbnail").is_some());
+        let chip = vcx.debug_bounds("composer-image-chip").expect("chip");
+        let label = vcx.debug_bounds("composer-image-label").expect("label");
+        let thumb = vcx.debug_bounds("composer-image-thumbnail").expect("thumbnail");
+        assert!(thumb.right() < label.left(), "thumbnail and label have a gap");
+        assert!(label.right() <= chip.right(), "label must fit inside chip: {label:?} {chip:?}");
         vcx.simulate_keystrokes("backspace");
         vcx.run_until_parked();
         input.read_with(vcx, |input, _| {
@@ -3482,6 +3476,41 @@ mod tests {
         vcx.run_until_parked();
         assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_some()));
         assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn clicking_end_of_composer_chip_opens_preview(cx: &mut TestAppContext) {
+        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(vcx, |input, cx| input.attach_image(crate::clipboard_image::ClipboardImage {
+            media_type: "image/png".into(),
+            bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+            width: 640, height: 480,
+        }, cx));
+        vcx.run_until_parked();
+        let chip = vcx.debug_bounds("composer-image-chip").unwrap();
+        vcx.simulate_click(point(chip.right() - px(1.), chip.center().y), Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn composer_image_chip_never_disappears_at_wrap_boundary(cx: &mut TestAppContext) {
+        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(240.), px(400.)));
+        for n in 1..45 {
+            input.update(vcx, |input, cx| {
+                input.attachments.clear();
+                input.set_content(format!("{} ", "x".repeat(n)), cx);
+                input.attach_image(crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640, height: 480,
+                }, cx);
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("composer-image-chip").is_some(), "prefix length {n}");
+        }
     }
 
     #[gpui::test]

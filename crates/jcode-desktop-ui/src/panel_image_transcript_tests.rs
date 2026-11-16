@@ -13,7 +13,11 @@ fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) 
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("transcript-image-thumbnail").is_some());
+    let thumbnail = vcx.debug_bounds("transcript-image-thumbnail").expect("thumbnail");
+    let chip = vcx.debug_bounds("transcript-image-chip").expect("chip");
+    let label = vcx.debug_bounds("transcript-image-label").expect("label");
+    assert!(thumbnail.right() < label.left());
+    assert!(label.right() <= chip.right(), "label must fit: {label:?} {chip:?}");
     let marker = vcx.debug_bounds("prompt-content-0").expect("inline marker");
     vcx.simulate_click(marker.center(), Default::default());
     vcx.run_until_parked();

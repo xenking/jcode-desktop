@@ -1019,13 +1019,8 @@ pub(crate) struct PromptImages {
 type PromptImageClick = std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>;
 
 #[cfg(test)]
-thread_local! {
-    static PAINTED_PROMPT_THUMBNAILS: std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(test)]
 pub(crate) fn take_painted_prompt_thumbnails() -> Vec<gpui::Bounds<gpui::Pixels>> {
-    PAINTED_PROMPT_THUMBNAILS.with(|painted| std::mem::take(&mut *painted.borrow_mut()))
+    crate::image_chip::take_painted_thumbnails()
 }
 
 /// Scope marker callbacks to this synchronous document render, restoring even
@@ -1126,7 +1121,7 @@ fn styled_line_layout(
         Image(usize),
     }
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
-    let mut thumbnails = Vec::new();
+    let mut chips = Vec::new();
     let mut targets: Vec<_> = inline.links.drain(..)
         .map(|(range, url)| (range, Target::Url(url)))
         .collect();
@@ -1138,14 +1133,7 @@ fn styled_line_layout(
                 {
                     continue;
                 }
-                let chip = HighlightStyle { background_color: Some(to_hsla(Theme::global().USER_BG)), ..Default::default() };
-                inline.highlights.push((range.clone(), chip));
-                let invisible = HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() };
-                inline.highlights.push((range.start..range.start + 2, invisible));
-                inline.highlights.push((range.end - 1..range.end, invisible));
-                if let Some(Some(image)) = images.previews.get(index) {
-                    thumbnails.push((range.start, image.clone()));
-                }
+                chips.push((range.clone(), label.clone(), images.previews.get(index).cloned().flatten()));
                 targets.push((range, Target::Image(index)));
             }
         }
@@ -1155,10 +1143,12 @@ fn styled_line_layout(
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
+    highlights.extend(chips.iter().map(|(range, _, _)| (range.clone(), HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() })));
     let prefix = if avatar { AVATAR_PREFIX } else { "" };
     let shift =
         |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
-    let display: SharedString = format!("{prefix}{}", inline.plain).into();
+    let display = crate::image_chip::mask_markers(&format!("{prefix}{}", inline.plain), chips.iter().map(|(range, _, _)| shift(range.clone())));
+    let display: SharedString = display.into();
     // Resolve the base style during layout, inside the surrounding element.
     // Capturing window.text_style() here bypasses the dimmed reasoning color
     // (and heading weight), since the parent has not been laid out yet.
@@ -1224,28 +1214,10 @@ fn styled_line_layout(
     // Only an avatar needs another one for its absolutely positioned overlay.
     // Ordinary paragraphs, list items and table cells avoid a redundant div's
     // style refinement, layout node, prepaint and paint on every frame.
-    let element = if !thumbnails.is_empty() {
-        let layout = layout.clone();
-        let prefix_len = prefix.len();
+    let element = if !chips.is_empty() {
+        let chips = chips.into_iter().map(|(range, label, preview)| (shift(range), label, preview)).collect();
         div().relative().child(selectable)
-            .child(div().absolute().top_0().left_0().size_full()
-                .debug_selector(|| "transcript-image-thumbnail".into())
-                .child(gpui::canvas(|_, _, _| (), move |_, _, window, cx| {
-                    for (start, image) in thumbnails {
-                        let Some(position) = layout.position_for_index(start + prefix_len) else { continue };
-                        let gpui::ImageSource::Custom(load) = crate::image_cache::source(image) else { continue };
-                        if let Some(Ok(image)) = load(window, cx) {
-                            let bounds = gpui::Bounds::new(position + gpui::point(px(0.), px(1.)), gpui::size(px(14.), px(14.)));
-                            let result = window.paint_image(bounds, bounds, gpui::Corners::all(px(3.)), image, 0, false);
-                            #[cfg(test)]
-                            if result.is_ok() {
-                                PAINTED_PROMPT_THUMBNAILS.with(|painted| painted.borrow_mut().push(bounds));
-                            }
-                            #[cfg(not(test))]
-                            let _ = result;
-                        }
-                    }
-                }).absolute().top_0().left_0().size_full()))
+            .child(crate::image_chip::PositionedChips::new(layout.clone(), chips))
             .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
             .into_any_element()
     } else if avatar {
@@ -1411,14 +1383,16 @@ fn code_block_with_selection(
                 .map(move |(start, _)| (start..start + label.len(), index))
         })
     }).collect();
-    for (range, _) in &markers {
-        highlights.push((range.clone(), link_style()));
-    }
     if let Some((model, key, cx)) = &selection
         && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
             highlights.push(highlight);
         }
-    let styled = StyledText::new(plain.clone())
+    highlights.extend(markers.iter().map(|(range, _)| (range.clone(), HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() })));
+    let display = crate::image_chip::mask_markers(&plain, markers.iter().map(|(range, _)| range.clone()));
+    let positioned = images.as_ref().map(|images| markers.iter().map(|(range, index)| {
+        (range.clone(), plain[range.clone()].to_string(), images.previews.get(*index).cloned().flatten())
+    }).collect::<Vec<_>>()).unwrap_or_default();
+    let styled = StyledText::new(display)
         .with_default_highlights(&style, flatten_highlights(&highlights));
     let layout = styled.layout().clone();
     let has_markers = !markers.is_empty();
@@ -1435,9 +1409,12 @@ fn code_block_with_selection(
         styled.into_any_element()
     };
     let code = if let Some((model, key, cx)) = selection {
-        text_selection::selectable(model.clone(), key, plain, layout, child, cx)
+        text_selection::selectable(model.clone(), key, plain, layout.clone(), child, cx)
     } else {
         child
+    };
+    let code = if positioned.is_empty() { code } else {
+        div().relative().child(code).child(crate::image_chip::PositionedChips::new(layout, positioned)).into_any_element()
     };
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.
