@@ -151,14 +151,8 @@ impl Panel {
                 self.flush_streaming();
                 self.deliver_steered_prompts();
             }
-            // Nothing is left that could still deliver them: the turn ended
-            // with no interrupt waiting, or stopped. Keep the text, in order.
-            ApiEvent::TurnDone {
-                pending_soft_interrupts: None | Some(0),
-                ..
-            }
-            | ApiEvent::TurnStopped { .. }
-            | ApiEvent::Error { .. } => self.deliver_steered_prompts(),
+            // An ended or failed turn is not a delivery receipt. Keep the
+            // unconfirmed text visible and persisted for an explicit resend.
             _ => {}
         }
     }
@@ -868,6 +862,23 @@ impl Panel {
                                 .gap_2()
                                 .child(div().flex_none().child("queued ⏎"))
                                 .child(div().flex_1().min_w_0().truncate().child(preview))
+                                .when(!self.activity_active(), |row| {
+                                    row.child(
+                                        div()
+                                            .id(("resend-steered", index))
+                                            .debug_selector(move || format!("resend-steered-{index}"))
+                                            .rounded_full()
+                                            .px_2()
+                                            .cursor_pointer()
+                                            .child("Send again")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if index < this.prompt_queue.steered.len() {
+                                                    let prompt = this.prompt_queue.steered.remove(index);
+                                                    this.submit_or_queue(prompt.content, prompt.images, false, cx);
+                                                }
+                                            })),
+                                    )
+                                })
                                 .when(index == 0 && count > 1, |row| {
                                     row.child(
                                         div()

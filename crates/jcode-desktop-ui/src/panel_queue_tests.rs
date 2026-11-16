@@ -1309,7 +1309,7 @@ fn steered_row_does_not_appear_when_idle_and_survives_no_turn_end(cx: &mut gpui:
 
 #[gpui::test]
 fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx, _commands) = steered_panel(cx, "steer-end");
+    let (panel, vcx, commands) = steered_panel(cx, "steer-end");
     panel.update(vcx, |p, cx| {
         p.submit_or_queue("late note".into(), vec![], false, cx)
     });
@@ -1317,11 +1317,22 @@ fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestApp
         p.apply(&event(json!({"ev":"turn_done"})), cx);
     });
     panel.read_with(vcx, |p, _| {
-        assert_eq!(p.steered_prompt_count(), 0);
+        assert_eq!(p.steered_prompt_count(), 1);
         assert!(
-            p.items
+            !p.items
                 .iter()
-                .any(|item| matches!(item, Item::User(t) if t == "late note"))
+                .any(|item| matches!(item, Item::User(t) if t == "late note")),
+            "an ended turn is not a delivery confirmation"
         );
     });
+    let _ = commands.try_recv();
+    panel.update(vcx, |p, cx| {
+        p.apply(&event(json!({"ev":"session_status", "status":"idle"})), cx);
+    });
+    vcx.run_until_parked();
+    let button = vcx.debug_bounds("resend-steered-0").expect("unconfirmed steer can be resent explicitly");
+    vcx.simulate_click(button.center(), Default::default());
+    vcx.run_until_parked();
+    let sent: Vec<_> = commands.try_iter().collect();
+    assert!(sent.iter().any(|command| matches!(command, Command::Send { content, .. } if content == "late note")), "received {} commands", sent.len());
 }
