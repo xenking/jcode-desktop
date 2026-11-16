@@ -129,6 +129,13 @@ mod socket_tests {
                             request_tx.send(frame.request.clone()).unwrap();
                             ApiEvent::Ok
                         }
+                        ApiRequest::QueuePrompt { .. } => {
+                            request_tx.send(frame.request.clone()).unwrap();
+                            on_send(&frame.request)
+                                .into_iter()
+                                .next()
+                                .unwrap_or(ApiEvent::Ok)
+                        }
                         _ => ApiEvent::Ok,
                     };
                     if write_frame(
@@ -224,6 +231,36 @@ mod socket_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn queued_prompt_rejection_identifies_input_and_reason_over_socket() {
+        let worker = Worker::new(|request| {
+            if matches!(request, ApiRequest::QueuePrompt { .. }) {
+                vec![ApiEvent::Error {
+                    code: ErrorCode::Internal,
+                    message: "queue storage unavailable".into(),
+                }]
+            } else {
+                vec![]
+            }
+        });
+        worker
+            .commands
+            .send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
+                client_id: "failed-id".into(),
+                content: "keep me".into(),
+                images: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            }))
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::QueuePrompt { client_id, .. } if client_id == "failed-id")
+        );
+        worker.wait_for(|update| {
+            matches!(update, Update::QueuePromptFailed { client_id, reason, .. }
+            if client_id == "failed-id" && reason.contains("queue storage unavailable"))
+        });
     }
 
     impl Drop for Worker {

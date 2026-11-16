@@ -98,17 +98,17 @@ use scroll_motion::WheelGlide;
 mod ask;
 #[path = "panel_ask_images.rs"]
 mod ask_images;
-#[path = "panel_decision.rs"]
-mod decision;
-#[path = "panel_decision_tests.rs"]
-#[cfg(test)]
-mod decision_tests;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
 pub(crate) mod cache_timer;
 #[path = "panel_composer.rs"]
 mod composer;
+#[path = "panel_decision.rs"]
+mod decision;
+#[path = "panel_decision_tests.rs"]
+#[cfg(test)]
+mod decision_tests;
 #[path = "panel_fork_prompt.rs"]
 mod fork_prompt;
 #[path = "panel_side_question.rs"]
@@ -1996,6 +1996,7 @@ impl Panel {
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
+        self.prompt_queue.replay_pending_on_connect = true;
         self.pending_ask_draft = snapshot.ask_draft;
         if let (Some(draft), Some(card)) = (&self.pending_ask_draft, &self.ask_card)
             && draft.matches_questions(&card.questions)
@@ -2853,7 +2854,9 @@ impl Panel {
                     if let Some(tool) = message.tool.filter(|tool| {
                         tool.name == "ask" || tool.name.trim_start_matches("functions.") == "swarm"
                     }) {
-                        if tool.name == "ask" && let Some(at) = message.timestamp_ms {
+                        if tool.name == "ask"
+                            && let Some(at) = message.timestamp_ms
+                        {
                             user_times.insert(items.len(), at);
                         }
                         items.push(Item::Tool {
@@ -4105,16 +4108,47 @@ impl Panel {
         // A completion notice is redundant only when a completed bg call
         // already contains the same task, status and actual output preview.
         // Keep nonmatching previews and ongoing tasks: they carry distinct data.
-        let completed_bg: Vec<(String, String, String)> = self.items.iter().filter_map(|item| {
-            let Item::Tool { name, input, output, done: true, error: None, .. } = item else { return None; };
-            let result = tool_output::background_output(name, output)?;
-            let task = serde_json::from_str::<serde_json::Value>(input).ok()?.get("task_id")?.as_str()?.to_owned();
-            if !result.fields.iter().any(|line| line == &format!("Task: {task}")) { return None; }
-            let status = result.fields.iter().find_map(|line| line.strip_prefix("Status: "))?.trim().to_owned();
-            let preview = result.preview?;
-            if status.is_empty() || preview.trim().is_empty() { return None; }
-            Some((task, status, preview))
-        }).collect();
+        let completed_bg: Vec<(String, String, String)> = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Tool {
+                    name,
+                    input,
+                    output,
+                    done: true,
+                    error: None,
+                    ..
+                } = item
+                else {
+                    return None;
+                };
+                let result = tool_output::background_output(name, output)?;
+                let task = serde_json::from_str::<serde_json::Value>(input)
+                    .ok()?
+                    .get("task_id")?
+                    .as_str()?
+                    .to_owned();
+                if !result
+                    .fields
+                    .iter()
+                    .any(|line| line == &format!("Task: {task}"))
+                {
+                    return None;
+                }
+                let status = result
+                    .fields
+                    .iter()
+                    .find_map(|line| line.strip_prefix("Status: "))?
+                    .trim()
+                    .to_owned();
+                let preview = result.preview?;
+                if status.is_empty() || preview.trim().is_empty() {
+                    return None;
+                }
+                Some((task, status, preview))
+            })
+            .collect();
         let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
@@ -4142,10 +4176,20 @@ impl Panel {
             if inline_images.contains(&index) {
                 continue;
             }
-            if let Item::BackgroundTask { task_id, summary, detail: Some(detail), done: true, .. } = item
+            if let Item::BackgroundTask {
+                task_id,
+                summary,
+                detail: Some(detail),
+                done: true,
+                ..
+            } = item
                 && let Some((_, rest)) = detail.split_once("```text\n")
                 && let Some((preview, _)) = rest.rsplit_once("\n```")
-                && completed_bg.iter().any(|(id, status, output)| id == task_id && summary.contains(status) && preview.trim_end() == output.trim_end())
+                && completed_bg.iter().any(|(id, status, output)| {
+                    id == task_id
+                        && summary.contains(status)
+                        && preview.trim_end() == output.trim_end()
+                })
             {
                 continue;
             }
@@ -4491,46 +4535,107 @@ impl Panel {
                 let expanded = self.expanded_regions.contains(&key);
                 let toggle_key = key.clone();
                 div()
-                    .flex().flex_col().flex_none().min_w_0()
-                    .debug_selector(|| "background-task-card".into())
-                    .child(div()
-                    .id(("background-task-toggle", index))
-                    .debug_selector(|| "background-task-expand".into())
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
                     .flex_none()
                     .min_w_0()
-                    .px_1().py(px(2.0))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        cx.stop_propagation();
-                        this.toggle_line(&toggle_key, cx);
-                    }))
-                    .child(crate::tool_icon::render_badge("bg", *done, summary.to_lowercase().contains("failed")))
-                    .child(div().flex_1().min_w_0().truncate().text_color(Theme::global().TOOL_TEXT).child(label.clone()))
-                    .child(div().max_w(relative(0.3)).min_w_0().truncate().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(summary.clone()))
-                    .when_some(percent.filter(|value| value.is_finite()), |el, percent| el.child(div().flex_none().w(px(40.0)).h(px(2.0)).rounded_full().bg(Theme::global().TOOL_BORDER).child(div().h_full().w(relative((percent / 100.0).clamp(0.0, 1.0))).rounded_full().bg(Theme::global().ACCENT))))
-                    .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
-                    .child({
-                        let key = key.clone();
-                        expandable::glyph_toggle(
-                            format!("background-task-chevron-{index}").into(),
-                            expanded,
-                            cx.listener(move |this, _event, _window, cx| {
+                    .debug_selector(|| "background-task-card".into())
+                    .child(
+                        div()
+                            .id(("background-task-toggle", index))
+                            .debug_selector(|| "background-task-expand".into())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_none()
+                            .min_w_0()
+                            .px_1()
+                            .py(px(2.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
                                 cx.stop_propagation();
-                                this.toggle_line(&key, cx);
+                                this.toggle_line(&toggle_key, cx);
+                            }))
+                            .child(crate::tool_icon::render_badge(
+                                "bg",
+                                *done,
+                                summary.to_lowercase().contains("failed"),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(Theme::global().TOOL_TEXT)
+                                    .child(label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .max_w(relative(0.3))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(summary.clone()),
+                            )
+                            .when_some(percent.filter(|value| value.is_finite()), |el, percent| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(40.0))
+                                        .h(px(2.0))
+                                        .rounded_full()
+                                        .bg(Theme::global().TOOL_BORDER)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(relative((percent / 100.0).clamp(0.0, 1.0)))
+                                                .rounded_full()
+                                                .bg(Theme::global().ACCENT),
+                                        ),
+                                )
+                            })
+                            .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
+                            .child({
+                                let key = key.clone();
+                                expandable::glyph_toggle(
+                                    format!("background-task-chevron-{index}").into(),
+                                    expanded,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_line(&key, cx);
+                                    }),
+                                )
                             }),
+                    )
+                    .when(expanded, |el| {
+                        el.child(
+                            div()
+                                .id(("background-task-output-scroll", index))
+                                .debug_selector(|| "background-task-output".into())
+                                .ml(px(24.0))
+                                .mt_1()
+                                .p_3()
+                                .rounded_lg()
+                                .max_h(px(expandable::MAX_HEIGHT))
+                                .overflow_y_scroll()
+                                .bg(Theme::global().CODE_BG)
+                                .font_family(Theme::global().FONT_MONO)
+                                .text_size(px(11.5))
+                                .text_color(Theme::global().CODE_TEXT)
+                                .child(text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    format!("background-detail-{index}"),
+                                    background_task::detail_text(
+                                        task_id,
+                                        summary,
+                                        detail.as_deref(),
+                                    ),
+                                    window,
+                                    cx,
+                                )),
                         )
                     })
-                    )
-                    .when(expanded, |el| el.child(div()
-                        .id(("background-task-output-scroll", index))
-                        .debug_selector(|| "background-task-output".into())
-                        .ml(px(24.0)).mt_1().p_3().rounded_lg().max_h(px(expandable::MAX_HEIGHT)).overflow_y_scroll()
-                        .bg(Theme::global().CODE_BG).font_family(Theme::global().FONT_MONO)
-                        .text_size(px(11.5)).text_color(Theme::global().CODE_TEXT)
-                        .child(text_selection::plain(self.transcript_selection.clone(), format!("background-detail-{index}"), background_task::detail_text(task_id, summary, detail.as_deref()), window, cx))))
                     .into_any_element()
             }
             Item::Tool {
@@ -4542,7 +4647,14 @@ impl Panel {
                 error,
             } => {
                 if name == "ask" && *done {
-                    return self.render_decision(index, call_id, input, output, error.as_deref(), cx);
+                    return self.render_decision(
+                        index,
+                        call_id,
+                        input,
+                        output,
+                        error.as_deref(),
+                        cx,
+                    );
                 }
                 let (offset, opacity, animating) = self
                     .arriving_tools
@@ -6464,7 +6576,9 @@ fn short_id(session_id: &str) -> String {
 fn role_of(item: &Item) -> Option<&'static str> {
     match item {
         Item::User(_) => Some("you"),
-        Item::Tool { name, done: true, .. } if name == "ask" => Some("you"),
+        Item::Tool {
+            name, done: true, ..
+        } if name == "ask" => Some("you"),
         Item::Assistant(_) => Some("jcode"),
         Item::Image(_)
         | Item::ResponseStats(_)
@@ -7173,7 +7287,10 @@ fn render_todo_card_with_style(
         let group = if status_view {
             Some(todo.status.as_str())
         } else {
-            todo.group.as_deref().map(str::trim).filter(|g| !g.is_empty())
+            todo.group
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
         };
         let stage = if status_view { None } else { todo.stage };
         if let Some((_, _, items)) = groups
@@ -7237,7 +7354,9 @@ fn render_todo_card_with_style(
                 let status_selector = format!("pinned-todo-status-{}", group.unwrap_or("other"));
                 section = section.child(
                     div()
-                        .when(status_view, |el| el.debug_selector(move || status_selector.clone()))
+                        .when(status_view, |el| {
+                            el.debug_selector(move || status_selector.clone())
+                        })
                         .flex()
                         .items_center()
                         .justify_between()
@@ -7284,7 +7403,13 @@ fn render_todo_card_with_style(
                         ))
                         .child(
                             div()
-                                .debug_selector(move || if status_view { item_selector.clone() } else { "todo-row-content".into() })
+                                .debug_selector(move || {
+                                    if status_view {
+                                        item_selector.clone()
+                                    } else {
+                                        "todo-row-content".into()
+                                    }
+                                })
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()

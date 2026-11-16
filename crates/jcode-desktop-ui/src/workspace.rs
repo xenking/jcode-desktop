@@ -2780,6 +2780,20 @@ impl Workspace {
                     }
                 }
             }
+            Update::QueuePromptFailed {
+                session_id,
+                client_id,
+                reason,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queue_prompt_failed(&client_id, reason.clone(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::CommandFailed { session_id, reason } => {
                 if session_id == Panel::STARTUP_SESSION_ID {
                     self.remotes.startup_failed = true;
@@ -6103,7 +6117,10 @@ impl Workspace {
                 if !separate_checkout {
                     nested.insert(child.session.session_id.clone());
                 }
-                nested_workers.entry(root.clone()).or_default().push((child.depth, worker));
+                nested_workers
+                    .entry(root.clone())
+                    .or_default()
+                    .push((child.depth, worker));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
                 if crate::swarm_view::worker_state(&child.session).is_active() {
@@ -8118,22 +8135,43 @@ impl Workspace {
                 ("settings-send-after-yield", "After yield", true),
             ] {
                 choices = choices.child(
-                    div().id(id).debug_selector(move || id.into())
-                        .px_2().py_1().rounded_sm().cursor_pointer()
-                        .text_color(if after_yield == value { Theme::global().ACCENT } else { Theme::global().TEXT_DIM })
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.into())
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_color(if after_yield == value {
+                            Theme::global().ACCENT
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
                         .when(after_yield == value, |el| el.bg(Theme::global().ACCENT_DIM))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                            if let Some(slot) = this.slots.get(this.active) {
-                                slot.panel.update(cx, |panel, cx| panel.set_default_send_after_yield(value, cx));
-                            }
-                            cx.notify();
-                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(slot) = this.slots.get(this.active) {
+                                    slot.panel.update(cx, |panel, cx| {
+                                        panel.set_default_send_after_yield(value, cx)
+                                    });
+                                }
+                                cx.notify();
+                            }),
+                        )
                         .child(label),
                 );
             }
             send_mode_setting = Some(
-                div().flex_none().px_2().py_2().rounded_sm().bg(Theme::global().PANEL_BG)
-                    .flex().flex_col().gap_1()
+                div()
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .bg(Theme::global().PANEL_BG)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     .child("Default send mode (current session)")
                     .child(choices),
             );
@@ -16318,12 +16356,21 @@ mod tests {
             touch_phase: gpui::TouchPhase::Moved,
         });
         vcx.run_until_parked();
-        let after = vcx.debug_bounds("settings-send-after-yield").expect("settings choice");
+        let after = vcx
+            .debug_bounds("settings-send-after-yield")
+            .expect("settings choice");
         vcx.simulate_click(after.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).default_send_after_yield()));
-        let input = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
-        workspace.update(vcx, |w, cx| w.slots[w.active].panel.update(cx, |p, _| p.status = "running".into()));
+        assert!(workspace.read_with(vcx, |w, cx| {
+            w.slots[w.active].panel.read(cx).default_send_after_yield()
+        }));
+        let input =
+            workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
+        workspace.update(vcx, |w, cx| {
+            w.slots[w.active]
+                .panel
+                .update(cx, |p, _| p.status = "running".into())
+        });
         vcx.update(|window, cx| {
             let focus = input.read(cx).focus_handle.clone();
             window.focus(&focus, cx);
@@ -16331,14 +16378,21 @@ mod tests {
         vcx.simulate_input("settings decides this prompt");
         vcx.simulate_keystrokes("enter");
         workspace.read_with(vcx, |w, cx| {
-            let queue = serde_json::to_value(w.slots[w.active].panel.read(cx).snapshot(cx).prompt_queue).unwrap();
-            assert_eq!(queue["prompts"][0]["content"], "settings decides this prompt");
+            let queue =
+                serde_json::to_value(w.slots[w.active].panel.read(cx).snapshot(cx).prompt_queue)
+                    .unwrap();
+            assert_eq!(
+                queue["prompts"][0]["content"],
+                "settings decides this prompt"
+            );
             assert_eq!(queue["prompts"][0]["after_yield"], true);
         });
         let steer = vcx.debug_bounds("settings-send-steer").unwrap();
         vcx.simulate_click(steer.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(!workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).default_send_after_yield()));
+        assert!(!workspace.read_with(vcx, |w, cx| {
+            w.slots[w.active].panel.read(cx).default_send_after_yield()
+        }));
     }
 
     #[gpui::test]

@@ -182,6 +182,11 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    QueuePromptFailed {
+        session_id: String,
+        client_id: String,
+        reason: String,
+    },
     /// A reasoning effort request finished. `error` is the provider's refusal.
     EffortSettled {
         session_id: String,
@@ -2702,12 +2707,14 @@ fn session_worker_with_connector(
                             send_retry_phase(&updates, &session_id, String::new());
                         }
                         let reminder = collection_reminder(&session_id);
+                        let client_id = prompt.client_id.clone();
                         if let Err(error) =
                             client.queue_prompt_with_reminder(real_id, prompt, reminder.as_deref())
                         {
-                            let _ = updates.send(Update::CommandFailed {
+                            let _ = updates.send(Update::QueuePromptFailed {
                                 session_id: session_id.clone(),
-                                reason: format!("Queued prompt not confirmed: {error}"),
+                                client_id,
+                                reason: error.to_string(),
                             });
                         }
                     }

@@ -2,9 +2,88 @@ use super::*;
 use serde_json::json;
 
 #[gpui::test]
+fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let source = cx.new(|cx| {
+        let mut panel = Panel::new("queue-restore".into(), None, None, bridge, cx);
+        panel
+            .prompt_queue
+            .pending_remote
+            .push(jcode_sdk::api::QueuedPrompt {
+                client_id: "restore-id".into(),
+                content: "keep me".into(),
+                images: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            });
+        panel
+    });
+    let bytes = source.read_with(cx, |panel, cx| {
+        serde_json::to_vec(&panel.snapshot(cx)).unwrap()
+    });
+    let snapshot: PanelSnapshot = serde_json::from_slice(&bytes).unwrap();
+    source.update(cx, |panel, cx| {
+        panel.restore_snapshot(snapshot, cx);
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.client_id == "restore-id" && prompt.content == "keep me")
+    );
+}
+
+#[gpui::test]
+fn pending_remote_steer_does_not_offer_retry_before_failure(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-pending".into(), None, None, bridge, cx);
+        panel.prompt_queue.remote_supported = true;
+        panel
+            .prompt_queue
+            .pending_remote
+            .push(jcode_sdk::api::QueuedPrompt {
+                client_id: "pending-id".into(),
+                content: "pending".into(),
+                images: vec![],
+                mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            });
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("daemon-prompt-queue").is_some());
+    assert!(
+        vcx.debug_bounds("queue-send-control").is_none(),
+        "in-flight send is not a failure"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.queue_prompt_failed("pending-id", "connection lost".into(), cx)
+    });
+    vcx.run_until_parked();
+    let retry = vcx
+        .debug_bounds("queue-send-control")
+        .expect("real failure offers Retry");
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(
+            panel.prompt_queue.remote_failures["pending-id"],
+            "connection lost"
+        )
+    });
+    vcx.simulate_click(retry.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.client_id == "pending-id")
+    );
+    assert!(vcx.debug_bounds("queue-send-control").is_none());
+}
+
+#[gpui::test]
 fn unconfirmed_steer_survives_serialized_panel_snapshot(cx: &mut gpui::TestAppContext) {
     let panel = cx.new(|cx| {
-        let mut panel = Panel::new("queue-persist".into(), None, None, crate::harness::spawn_inert(), cx);
+        let mut panel = Panel::new(
+            "queue-persist".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
         panel.history_loaded = true;
         panel.status = "running".into();
         panel
@@ -14,10 +93,22 @@ fn unconfirmed_steer_survives_serialized_panel_snapshot(cx: &mut gpui::TestAppCo
         serde_json::to_vec(&panel.snapshot(cx)).unwrap()
     });
     let restored: PanelSnapshot = serde_json::from_slice(&snapshot).unwrap();
-    let other = cx.new(|cx| Panel::new("queue-persist".into(), None, None, crate::harness::spawn_inert(), cx));
+    let other = cx.new(|cx| {
+        Panel::new(
+            "queue-persist".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
     other.update(cx, |panel, cx| {
         panel.restore_snapshot(restored, cx);
-        assert_eq!(panel.steered_prompt_count(), 1, "unconfirmed steering must survive quit and relaunch");
+        assert_eq!(
+            panel.steered_prompt_count(),
+            1,
+            "unconfirmed steering must survive quit and relaunch"
+        );
     });
 }
 
@@ -110,7 +201,13 @@ fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppConte
 #[gpui::test]
 fn active_empty_queue_has_no_default_mode_label(cx: &mut gpui::TestAppContext) {
     let (_panel, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("empty-queue".into(), None, None, crate::harness::spawn_inert(), cx);
+        let mut panel = Panel::new(
+            "empty-queue".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
         panel.status = "running".into();
         panel.prompt_queue.remote_supported = true;
         panel
@@ -123,7 +220,13 @@ fn active_empty_queue_has_no_default_mode_label(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("queue-image".into(), None, None, crate::harness::spawn_inert(), cx);
+        let mut panel = Panel::new(
+            "queue-image".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
         panel.prompt_queue.waiting_for_connection = true;
         let image = super::image_preview::fixture_image();
         panel.prompt_queue.prompts.push(QueuedPrompt {
@@ -134,7 +237,9 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
         panel
     });
     vcx.run_until_parked();
-    let chip = vcx.debug_bounds("queue-image-chip").expect("image is a chip, not marker text");
+    let chip = vcx
+        .debug_bounds("queue-image-chip")
+        .expect("image is a chip, not marker text");
     assert!(vcx.debug_bounds("queue-image-thumbnail").is_some());
     assert!(vcx.debug_bounds("queue-image-label").is_some());
     vcx.simulate_click(chip.center(), Default::default());
@@ -145,16 +250,25 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("queue-image-paths".into(), None, None, crate::harness::spawn_inert(), cx);
+        let mut panel = Panel::new(
+            "queue-image-paths".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
         panel.status = "running".into();
         panel.prompt_queue.remote_supported = true;
         let image = super::image_preview::fixture_image();
-        panel.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
-            client_id: "remote-image".into(),
-            content: "Look [#image 1]".into(),
-            images: vec![(image.media_type, image.data)],
-            mode: jcode_sdk::api::QueuedPromptMode::Steer,
-        });
+        panel
+            .prompt_queue
+            .remote
+            .push(jcode_sdk::api::QueuedPrompt {
+                client_id: "remote-image".into(),
+                content: "Look [#image 1]".into(),
+                images: vec![(image.media_type, image.data)],
+                mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            });
         panel
     });
     vcx.run_until_parked();
@@ -166,7 +280,11 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
     panel.update(vcx, |panel, cx| {
         let remote = panel.prompt_queue.remote.pop().unwrap();
         panel.image_preview = None;
-        panel.prompt_queue.steered.push(QueuedPrompt { content: remote.content, images: remote.images, after_yield: false });
+        panel.prompt_queue.steered.push(QueuedPrompt {
+            content: remote.content,
+            images: remote.images,
+            after_yield: false,
+        });
         cx.notify();
     });
     vcx.run_until_parked();

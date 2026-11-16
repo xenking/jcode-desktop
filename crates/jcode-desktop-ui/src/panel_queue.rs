@@ -33,9 +33,13 @@ pub struct PromptQueue {
     remote_supported: bool,
     #[serde(default)]
     pending_remote: Vec<jcode_sdk::api::QueuedPrompt>,
+    #[serde(skip)]
+    pub(super) replay_pending_on_connect: bool,
     /// Count matching history rows at submission, for lost-ack reconciliation.
     #[serde(default)]
     pending_remote_history_counts: std::collections::HashMap<String, usize>,
+    #[serde(default)]
+    remote_failures: std::collections::HashMap<String, String>,
     #[serde(default)]
     default_after_yield: bool,
 }
@@ -53,11 +57,33 @@ fn default_follow_up() -> bool {
 }
 
 impl Panel {
+    pub(crate) fn queue_prompt_failed(
+        &mut self,
+        client_id: &str,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .prompt_queue
+            .pending_remote
+            .iter()
+            .any(|prompt| prompt.client_id == client_id)
+        {
+            self.prompt_queue
+                .remote_failures
+                .insert(client_id.to_owned(), reason);
+            cx.notify();
+        }
+    }
     pub(crate) fn default_send_after_yield(&self) -> bool {
         self.prompt_queue.default_after_yield
     }
 
-    pub(crate) fn set_default_send_after_yield(&mut self, after_yield: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_default_send_after_yield(
+        &mut self,
+        after_yield: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.prompt_queue.default_after_yield = after_yield;
         cx.notify();
     }
@@ -359,6 +385,9 @@ impl Panel {
             ApiEvent::QueuedPrompts { prompts, .. } => {
                 self.prompt_queue.remote_supported = true;
                 self.prompt_queue
+                    .remote_failures
+                    .retain(|id, _| !prompts.iter().any(|p| &p.client_id == id));
+                self.prompt_queue
                     .pending_remote
                     .retain(|pending| !prompts.iter().any(|p| p.client_id == pending.client_id));
                 self.prompt_queue
@@ -370,6 +399,15 @@ impl Panel {
                             .any(|prompt| &prompt.client_id == id)
                     });
                 self.prompt_queue.remote = prompts.clone();
+                if std::mem::take(&mut self.prompt_queue.replay_pending_on_connect) {
+                    for prompt in self.prompt_queue.pending_remote.clone() {
+                        self.prompt_queue.remote_failures.remove(&prompt.client_id);
+                        self.bridge.send(Command::QueuePrompt {
+                            session_id: self.session_id.clone(),
+                            prompt,
+                        });
+                    }
+                }
             }
             ApiEvent::SoftInterruptInjected {
                 client_ids,
@@ -401,6 +439,7 @@ impl Panel {
                     self.flush_streaming();
                 }
                 for prompt in delivered {
+                    self.prompt_queue.remote_failures.remove(&prompt.client_id);
                     // A retry after a lost acknowledgement can report a receipt
                     // already present in history restored before this event.
                     // The daemon has committed this exact input, so avoid a
@@ -615,18 +654,40 @@ impl Panel {
         )
     }
 
-    fn render_queued_content(&self, content: &str, images: &[(String, String)], cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_queued_content(
+        &self,
+        content: &str,
+        images: &[(String, String)],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
         let ranges = crate::input::image_marker_ranges(&flat);
-        let mut row = div().flex().items_center().gap(px(2.)).min_w_0().overflow_hidden();
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .min_w_0()
+            .overflow_hidden();
         let mut offset = 0;
         for (index, range) in ranges.iter().enumerate() {
             row = row.child(flat[offset..range.start].to_owned());
-            let image = images.get(index).map(|(media, data)| TranscriptImage::new(media.clone(), data.clone(), None));
-            let mut chip = crate::image_chip::chip(image.as_ref().and_then(|image| image.preview.clone()), &flat[range.clone()], "queue-image-chip", "queue-image-thumbnail", "queue-image-label")
-                .id(("queue-image-chip", index)).flex_none().cursor_pointer();
+            let image = images
+                .get(index)
+                .map(|(media, data)| TranscriptImage::new(media.clone(), data.clone(), None));
+            let mut chip = crate::image_chip::chip(
+                image.as_ref().and_then(|image| image.preview.clone()),
+                &flat[range.clone()],
+                "queue-image-chip",
+                "queue-image-thumbnail",
+                "queue-image-label",
+            )
+            .id(("queue-image-chip", index))
+            .flex_none()
+            .cursor_pointer();
             if let Some(image) = image {
-                chip = chip.on_click(cx.listener(move |this, _, window, cx| this.open_image_preview(image.clone(), window, cx)));
+                chip = chip.on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_image_preview(image.clone(), window, cx)
+                }));
             }
             row = row.child(chip);
             offset = range.end;
@@ -634,9 +695,21 @@ impl Panel {
         row = row.child(flat[offset..].to_owned());
         for (index, (media, data)) in images.iter().enumerate().skip(ranges.len()) {
             let image = TranscriptImage::new(media.clone(), data.clone(), None);
-            row = row.child(crate::image_chip::chip(image.preview.clone(), &format!("[#image {}]", index + 1), "queue-image-chip", "queue-image-thumbnail", "queue-image-label")
-                .id(("queue-image-chip", index)).flex_none().cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| this.open_image_preview(image.clone(), window, cx))));
+            row = row.child(
+                crate::image_chip::chip(
+                    image.preview.clone(),
+                    &format!("[#image {}]", index + 1),
+                    "queue-image-chip",
+                    "queue-image-thumbnail",
+                    "queue-image-label",
+                )
+                .id(("queue-image-chip", index))
+                .flex_none()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_image_preview(image.clone(), window, cx)
+                })),
+            );
         }
         row.into_any_element()
     }
@@ -678,6 +751,11 @@ impl Panel {
                     let id = prompt.client_id.clone();
                     let id2 = id.clone();
                     let retry = prompt.clone();
+                    let failure = self
+                        .prompt_queue
+                        .remote_failures
+                        .get(&prompt.client_id)
+                        .cloned();
                     let mode = prompt.mode;
                     let label = match mode {
                         jcode_sdk::api::QueuedPromptMode::Steer => "Steer",
@@ -711,32 +789,36 @@ impl Panel {
                                     }
                                 })),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(preview),
-                        )
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("queue-interrupt-{id2}")))
-                                .cursor_pointer()
-                                .child(if pending { "Retry" } else { "Interrupt ↵" })
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    if pending {
-                                        this.bridge.send(Command::QueuePrompt {
-                                            session_id: this.session_id.clone(),
-                                            prompt: retry.clone(),
-                                        });
-                                    } else {
-                                        this.bridge.send(Command::InterruptQueuedPrompt {
-                                            session_id: this.session_id.clone(),
-                                            client_id: id2.clone(),
-                                        });
-                                    }
-                                })),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(preview))
+                        .when(!pending || failure.is_some(), |row| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!("queue-interrupt-{id2}")))
+                                    .debug_selector(|| "queue-send-control".into())
+                                    .cursor_pointer()
+                                    .child(if pending { "Retry" } else { "Interrupt ↵" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if pending {
+                                            this.prompt_queue
+                                                .remote_failures
+                                                .remove(&retry.client_id);
+                                            this.bridge.send(Command::QueuePrompt {
+                                                session_id: this.session_id.clone(),
+                                                prompt: retry.clone(),
+                                            });
+                                        } else {
+                                            this.bridge.send(Command::InterruptQueuedPrompt {
+                                                session_id: this.session_id.clone(),
+                                                client_id: id2.clone(),
+                                            });
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .when_some(failure, |row, reason| {
+                            row.child(div().text_color(theme.TEXT_DIM).child(reason))
+                        })
                 }))
                 .into_any_element(),
         )
@@ -774,7 +856,8 @@ impl Panel {
                         .take(SHOWN)
                         .enumerate()
                         .map(|(index, prompt)| {
-                            let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
+                            let preview =
+                                self.render_queued_content(&prompt.content, &prompt.images, cx);
                             div()
                                 .id(("steered-prompt", index))
                                 .debug_selector(move || format!("steered-prompt-{index}"))
@@ -848,7 +931,8 @@ impl Panel {
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .children(self.prompt_queue.prompts.iter().enumerate().map(
                             |(index, prompt)| {
-                                let label = self.render_queued_content(&prompt.content, &prompt.images, cx);
+                                let label =
+                                    self.render_queued_content(&prompt.content, &prompt.images, cx);
                                 div()
                                     .id(("queued-prompt", index))
                                     .debug_selector(move || format!("queued-prompt-{index}"))
