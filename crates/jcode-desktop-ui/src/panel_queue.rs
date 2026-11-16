@@ -618,7 +618,7 @@ impl Panel {
     fn render_queued_content(&self, content: &str, images: &[(String, String)], cx: &mut Context<Self>) -> gpui::AnyElement {
         let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
         let ranges = crate::input::image_marker_ranges(&flat);
-        let mut row = div().flex().items_center().min_w_0().overflow_hidden();
+        let mut row = div().flex().items_center().gap(px(2.)).min_w_0().overflow_hidden();
         let mut offset = 0;
         for (index, range) in ranges.iter().enumerate() {
             row = row.child(flat[offset..range.start].to_owned());

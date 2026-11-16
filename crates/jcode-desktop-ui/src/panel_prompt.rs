@@ -20,7 +20,10 @@ pub(super) fn compact_prompt(text: &str) -> Option<&str> {
     let mut lines = 1;
     for (characters, (byte, ch)) in text.char_indices().enumerate() {
         if characters == 600 || (ch == '\n' && lines == 6) {
-            return Some(&text[..byte]);
+            let end = crate::input::image_marker_ranges(text).into_iter()
+                .find(|range| range.start < byte && byte < range.end)
+                .map_or(byte, |range| range.start);
+            return Some(&text[..end]);
         }
         if ch == '\n' {
             lines += 1;
@@ -227,9 +230,18 @@ impl Panel {
         // Reserve room inside the cap for the disclosure header and card padding.
         let body_height = (f32::from(viewport_height) * 0.6 - if transcribed { 56. } else { 32. })
             .clamp(1., super::expandable::MAX_HEIGHT);
-        let image_markers = self.user_image_markers(index);
-        let labels = image_markers.iter().map(|(_, label)| label.clone()).collect();
-        let indices: Vec<_> = image_markers.into_iter().map(|(index, _)| index).collect();
+        // Markers are part of the message even when its image payload has not
+        // arrived (or is absent from an older history). Never gate rendering
+        // the chip on the presence of a corresponding image item.
+        let labels = crate::input::image_marker_ranges(text)
+            .into_iter().map(|range| text[range].to_owned()).collect();
+        let indices: Vec<_> = self.user_image_markers(index)
+            .into_iter().map(|(index, _)| index).collect();
+        for image_index in &indices {
+            if let Some(Item::Image(image)) = self.items.get(*image_index) {
+                self.request_history_thumbnail(image, false);
+            }
+        }
         let panel = cx.entity().downgrade();
         let prompt_images = markdown::PromptImages {
             labels,

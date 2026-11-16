@@ -16,6 +16,15 @@ pub(crate) fn mask_markers(text: &str, ranges: impl IntoIterator<Item = Range<us
     display
 }
 
+pub(crate) fn mask_transcript_markers(text: &str, ranges: impl IntoIterator<Item = Range<usize>>) -> String {
+    let mut display = text.to_owned();
+    for range in ranges {
+        let spacer = format!(" {} ", "n".repeat(range.len().saturating_sub(2)));
+        display.replace_range(range, &spacer);
+    }
+    display
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -47,6 +56,7 @@ pub(crate) fn chip(
     image_selector: &'static str,
     label_selector: &'static str,
 ) -> gpui::Div {
+    let missing = image.is_none();
     div()
         .debug_selector(move || chip_selector.into())
         .rounded_full()
@@ -64,6 +74,11 @@ pub(crate) fn chip(
                 .rounded_sm()
                 .object_fit(gpui::ObjectFit::Cover)
         }))
+        .when(missing, |chip| chip.child(
+            div().debug_selector(|| "image-chip-placeholder".into())
+                .flex_none().size(px(14.)).text_size(px(12.))
+                .text_color(Theme::global().TEXT_DIM).child("▧"),
+        ))
         .child(
             div()
                 .debug_selector(move || label_selector.into())
@@ -175,10 +190,22 @@ impl Element for PositionedChips {
             {
                 start = gpui::point(next.x - (end.x - next.x) / (range.len() - 1) as f32, next.y);
             }
+            if start.y != end.y
+                && let (Some(next), Some(after)) = (
+                    self.layout.position_for_index(range.start + 2),
+                    self.layout.position_for_index(range.start + 3),
+                )
+                && next.y == end.y && after.y == end.y
+            {
+                start = gpui::point(next.x - (after.x - next.x), next.y);
+            }
             if start.y != end.y {
                 continue;
             }
-            let width = (end.x - start.x).max(px(1.));
+            // Leave a little breathing room even when the marker touches text
+            // or another marker in the stored message.
+            let width = (end.x - start.x - px(2.)).max(px(1.));
+            start.x += px(1.);
             let mut element = chip(
                 image.clone(),
                 marker,

@@ -12,6 +12,18 @@ pub(super) fn fixture_image() -> TranscriptImage {
 }
 
 impl Panel {
+    pub(super) fn request_history_thumbnail(&self, image: &TranscriptImage, retry: bool) {
+        let Some(key) = image.data.strip_prefix("jcode-lazy:") else { return };
+        let mut requests = self.history_image_requests.borrow_mut();
+        if requests.get(key).is_some_and(|in_flight| *in_flight || !retry) {
+            return;
+        }
+        requests.insert(key.to_owned(), true);
+        self.bridge.send(Command::GetHistoryImage {
+            session_id: self.session_id.clone(), key: key.to_owned(),
+        });
+    }
+
     pub(super) fn media_preview_handler(
         &self,
         cx: &Context<Self>,
@@ -48,17 +60,13 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         if image.preview.is_none() {
-            if let Some(key) = image.data.strip_prefix("jcode-lazy:")
-                && self.pending_history_image.as_deref() != Some(key)
-            {
+            if let Some(key) = image.data.strip_prefix("jcode-lazy:") {
                 self.pending_history_image = Some(key.to_string());
-                self.bridge.send(Command::GetHistoryImage {
-                    session_id: self.session_id.clone(),
-                    key: key.to_string(),
-                });
+                self.request_history_thumbnail(&image, true);
             }
             return;
         }
+        self.pending_history_image = None;
         self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
         self.image_preview = Some(image);
         self.image_preview_zoom = 1.0;
@@ -74,17 +82,20 @@ impl Panel {
         result: Result<String, String>,
         cx: &mut Context<Self>,
     ) {
-        if self.pending_history_image.as_deref() != Some(key.as_str()) {
+        if self.history_image_requests.borrow().get(&key) != Some(&true) {
             return;
         }
-        self.pending_history_image = None;
+        let open = self.pending_history_image.as_deref() == Some(key.as_str());
+        if open { self.pending_history_image = None; }
         let data = match result {
             Ok(data) => data,
             Err(error) => {
+                self.history_image_requests.borrow_mut().insert(key, false);
                 eprintln!("jcode desktop: image load failed: {error}");
                 return;
             }
         };
+        self.history_image_requests.borrow_mut().remove(&key);
         let marker = format!("jcode-lazy:{key}");
         let mut selected = None;
         for item in self.items.iter_mut() {
@@ -103,7 +114,7 @@ impl Panel {
                 }
             }
         }
-        if let Some(image) = selected.filter(|image| image.preview.is_some()) {
+        if let Some(image) = selected.filter(|image| open && image.preview.is_some()) {
             self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
             self.image_preview = Some(image);
             self.image_preview_zoom = 1.0;
@@ -114,6 +125,7 @@ impl Panel {
     }
 
     pub(super) fn close_image_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_history_image = None;
         self.image_preview = None;
         self.image_preview_drag = None;
         self.focus_input(window, cx);

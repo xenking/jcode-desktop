@@ -1,5 +1,157 @@
 use super::*;
 
+fn image_marker_history_message() -> jcode_sdk::HistoryMessage {
+    jcode_sdk::HistoryMessage {
+        role: "user".into(), content: "text[#image 1]more".into(),
+        tool: None, timestamp_ms: None, response_stats: None,
+    }
+}
+
+fn assert_marker_masked_in_rendered_prompt() {
+    let rendered = crate::markdown::take_rendered_prompt_text();
+    let line = rendered.iter().find(|line| line.starts_with("text") && line.ends_with("more"))
+        .expect("the user message was rendered");
+    assert!(!line.contains("[#image"), "marker leaked into rendered text: {line}");
+}
+
+#[gpui::test]
+fn missing_image_marker_in_loaded_history_is_a_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-history".into(), None, None, crate::harness::spawn_inert(), cx));
+    panel.update(vcx, |panel, cx| panel.load_history(vec![image_marker_history_message()], vec![], cx));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-image-chip").is_some(), "history marker must render as a chip");
+    assert!(vcx.debug_bounds("image-chip-placeholder").is_some());
+    let chip = vcx.debug_bounds("transcript-image-chip").unwrap();
+    let label = vcx.debug_bounds("transcript-image-label").unwrap();
+    assert!(label.right() <= chip.right(), "placeholder label must fit");
+    assert_marker_masked_in_rendered_prompt();
+}
+
+#[gpui::test]
+fn missing_image_marker_in_live_steer_is_a_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-live".into(), None, None, crate::harness::spawn_inert(), cx));
+    panel.update(vcx, |panel, cx| {
+        panel.history_loaded = true;
+        let event = serde_json::from_value(serde_json::json!({"ev":"soft_interrupt_injected", "session_id":"image-live", "content":"text[#image 1]more", "point":"D", "client_ids":[]})).unwrap();
+        panel.apply(&event, cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-image-chip").is_some(), "live marker must render as a chip");
+    assert_marker_masked_in_rendered_prompt();
+}
+
+#[gpui::test]
+fn missing_image_marker_in_local_send_echo_is_a_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-echo".into(), None, None, crate::harness::spawn_inert(), cx));
+    panel.update(vcx, |panel, cx| {
+        panel.history_loaded = true;
+        panel.submit_or_queue("text[#image 1]more".into(), vec![], false, cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-image-chip").is_some());
+    assert_marker_masked_in_rendered_prompt();
+}
+
+#[gpui::test]
+fn missing_image_marker_in_paged_history_is_a_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-paged".into(), None, None, crate::harness::spawn_inert(), cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_bounded_history(crate::harness::BoundedHistoryPage { messages: vec![], images: vec![], before: Some("older".into()) }, cx);
+        panel.load_bounded_history_page(Ok(crate::harness::BoundedHistoryPage { messages: vec![image_marker_history_message()], images: vec![], before: None }), cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-image-chip").is_some(), "paged marker must render as a chip");
+    assert_marker_masked_in_rendered_prompt();
+}
+
+#[gpui::test]
+fn visible_lazy_history_image_fetches_thumbnail_and_opens_on_click(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("lazy-chip".into(), None, None, bridge, cx));
+    let image = jcode_sdk::RenderedImage {
+        media_type: "image/png".into(), data: "jcode-lazy:abc".into(), label: None,
+        source: jcode_sdk::RenderedImageSource::UserInput,
+        anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        history_message_index: None,
+    };
+    panel.update(vcx, |panel, cx| panel.load_history(vec![image_marker_history_message()], vec![image], cx));
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryImage { key, .. }) if key == "abc"));
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+    let chip = vcx.debug_bounds("transcript-image-chip").unwrap();
+    vcx.simulate_click(chip.center(), Default::default());
+    assert!(commands.try_recv().is_err(), "click must reuse the in-flight request");
+    panel.update(vcx, |panel, cx| panel.load_history_image("abc".into(), Ok(image_preview::fixture_image().data), cx));
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+    assert!(vcx.debug_bounds("transcript-image-thumbnail").is_some());
+}
+
+#[gpui::test]
+fn lazy_thumbnail_finishes_without_opening_preview(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("lazy-background".into(), None, None, bridge, cx));
+    let image = jcode_sdk::RenderedImage {
+        media_type: "image/png".into(), data: "jcode-lazy:background".into(), label: None,
+        source: jcode_sdk::RenderedImageSource::UserInput,
+        anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        history_message_index: None,
+    };
+    panel.update(vcx, |panel, cx| panel.load_history(vec![image_marker_history_message()], vec![image], cx));
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryImage { key, .. }) if key == "background"));
+    panel.update(vcx, |panel, cx| panel.load_history_image("background".into(), Ok(image_preview::fixture_image().data), cx));
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+    assert!(vcx.debug_bounds("transcript-image-thumbnail").is_some());
+}
+
+#[gpui::test]
+fn adjacent_missing_markers_are_masked(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("adjacent-images".into(), None, None, crate::harness::spawn_inert(), cx));
+    let _ = crate::markdown::take_rendered_prompt_text();
+    panel.update(vcx, |panel, cx| {
+        let mut message = image_marker_history_message();
+        message.content = "text[#image 1][#image 2]more".into();
+        panel.load_history(vec![message], vec![], cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-image-chip").is_some());
+    assert_marker_masked_in_rendered_prompt();
+}
+
+#[gpui::test]
+fn transcript_chip_survives_wrap_boundaries(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("wrapped-image".into(), None, None, crate::harness::spawn_inert(), cx));
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(350.), px(600.)));
+    for n in 1..50 {
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![Item::User(format!("{}[#image 1]more", "x".repeat(n)))];
+            panel.transcript_measurements.dirty = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-image-chip").is_some(), "prefix length {n}");
+    }
+}
+
+#[gpui::test]
+fn wrapped_transcript_chip_opens_image(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("wrapped-image-click".into(), None, None, crate::harness::spawn_inert(), cx));
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(350.), px(600.)));
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User(format!("{}[#image 1]more", "x".repeat(26))), Item::Image(image_preview::fixture_image())];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("transcript-image-chip").unwrap();
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+}
+
 #[gpui::test]
 fn completed_ask_replaces_inline_marker_with_image_chip(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {

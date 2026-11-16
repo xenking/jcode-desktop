@@ -628,6 +628,8 @@ pub struct Panel {
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
     pending_history_image: Option<String>,
+    // true while in flight, false after failure (do not retry every frame).
+    history_image_requests: std::cell::RefCell<HashMap<String, bool>>,
     image_preview_dimensions: Option<(u32, u32)>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
@@ -1170,6 +1172,7 @@ impl Panel {
             image_pane_stacked: false,
             image_preview: None,
             pending_history_image: None,
+            history_image_requests: std::cell::RefCell::new(HashMap::new()),
             image_preview_dimensions: None,
             diff_review: None,
             edit_previews: diff_review::EditPreviews::default(),

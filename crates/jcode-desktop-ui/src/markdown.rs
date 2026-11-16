@@ -1007,6 +1007,13 @@ thread_local! {
         const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
     static PROMPT_IMAGES: std::cell::RefCell<Option<PromptImages>> =
         const { std::cell::RefCell::new(None) };
+    #[cfg(test)]
+    static PAINTED_PROMPT_TEXT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_rendered_prompt_text() -> Vec<String> {
+    PAINTED_PROMPT_TEXT.with(|text| std::mem::take(&mut *text.borrow_mut()))
 }
 
 #[derive(Clone)]
@@ -1147,7 +1154,11 @@ fn styled_line_layout(
     let prefix = if avatar { AVATAR_PREFIX } else { "" };
     let shift =
         |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
-    let display = crate::image_chip::mask_markers(&format!("{prefix}{}", inline.plain), chips.iter().map(|(range, _, _)| shift(range.clone())));
+    let display = crate::image_chip::mask_transcript_markers(&format!("{prefix}{}", inline.plain), chips.iter().map(|(range, _, _)| shift(range.clone())));
+    #[cfg(test)]
+    if images.is_some() {
+        PAINTED_PROMPT_TEXT.with(|text| text.borrow_mut().push(display.clone()));
+    }
     let display: SharedString = display.into();
     // Resolve the base style during layout, inside the surrounding element.
     // Capturing window.text_style() here bypasses the dimmed reasoning color
