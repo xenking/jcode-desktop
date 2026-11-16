@@ -864,7 +864,7 @@ impl PromptInput {
 
     /// Suggested remainder to paint after the caret.
     pub(crate) fn ghost_text(&self) -> Option<&str> {
-        if self.marked_range.is_some() {
+        if self.marked_range.is_some() || self.content.trim_start().starts_with('/') {
             return None;
         }
         self.ghost
@@ -1077,8 +1077,9 @@ impl PromptInput {
                 && picked.working_dir == self.working_dir
         });
         if !fresh {
-            let personal = crate::example_prompts::for_dir(cx, self.working_dir.as_deref());
-            let prompts = motion::pick_prompts(&personal, state.seed).map(SharedString::from);
+            // A shared project is not a session boundary: another session's
+            // unfinished todos must never become this composer's examples.
+            let prompts = motion::pick_prompts(&[] as &[SharedString], state.seed).map(SharedString::from);
             if state
                 .prompts
                 .as_ref()
@@ -4249,6 +4250,21 @@ mod tests {
     }
 
     #[gpui::test]
+    fn slash_draft_hides_existing_ghost_and_does_not_request_completion(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "previous draft");
+        window.update(cx, |input, _, _| show_ghost(input, " old suggestion")).unwrap();
+        window.update(cx, |input, _, cx| input.set_content(String::new(), cx)).unwrap();
+        cx.simulate_input(*window, "/effort high");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        window.update(cx, |input, _, _| {
+            assert_eq!(input.ghost_text(), None);
+            assert!(input.ghost.as_ref().unwrap().task.is_none());
+        }).unwrap();
+    }
+
+    #[gpui::test]
     fn ghost_completion_tab_accepts_escape_dismisses(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "исправь баг");
@@ -4964,7 +4980,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closed_session_todos_become_the_rendered_example_prompts(cx: &mut TestAppContext) {
+    fn other_sessions_todos_never_become_composer_examples(cx: &mut TestAppContext) {
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-example-prompts-{}-{}",
             std::process::id(),
@@ -5021,13 +5037,8 @@ mod tests {
             })
         };
         let (first, second) = picked(vcx);
-        let mut shown = [first.as_str(), second.as_str()];
-        shown.sort();
-        assert_eq!(
-            shown,
-            ["Fix the parser crash", "Ship the onboarding flow"],
-            "closed-session todos replace the generic examples, without running or done work"
-        );
+        assert!(motion::FALLBACK_PROMPTS.contains(&first.as_str()));
+        assert!(motion::FALLBACK_PROMPTS.contains(&second.as_str()));
 
         // A composer in another project falls back to the generic catalog.
         input.update(vcx, |input, cx| {

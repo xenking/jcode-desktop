@@ -1,4 +1,29 @@
 use super::*;
+
+#[gpui::test]
+fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("active-session".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.provider = Some("openai".into());
+        panel.model = Some("gpt-6.1-sol".into());
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("/effort high");
+    vcx.simulate_keystrokes("enter");
+    assert!(matches!(commands.try_recv(), Ok(Command::SessionOperation {
+        operation: SessionOperation::SetEffort(level), ..
+    }) if level == "high"));
+    assert!(commands.try_recv().is_err());
+}
 use serde_json::json;
 
 #[gpui::test]
