@@ -130,7 +130,6 @@ pub struct TerminalConfig {
     pub scrollback_lines: usize,
 }
 
-
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
@@ -602,9 +601,10 @@ fn normalized_remote_hosts(hosts: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     for host in hosts {
         if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host)
-            && !result.contains(&host) {
-                result.push(host);
-            }
+            && !result.contains(&host)
+        {
+            result.push(host);
+        }
     }
     result
 }
@@ -774,9 +774,19 @@ fn persist_value_with_header(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let temporary = path.with_extension("toml.tmp");
-    fs::write(&temporary, text)?;
-    fs::rename(temporary, path)
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
+    }
+    std::io::Write::write_all(&mut temporary, text.as_bytes())?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -1335,6 +1345,54 @@ mod tests {
         let text = fs::read_to_string(path).unwrap();
         assert_eq!(text.matches("theme =").count(), 1);
         assert_eq!(parse(&text, false).unwrap().appearance.theme, "warm-studio");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisting_preferences_preserves_private_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "model = 'keep'\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        persist_theme_at(&path, false, "neutral-light").unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            parse(&fs::read_to_string(&path).unwrap(), false)
+                .unwrap()
+                .appearance
+                .theme,
+            "neutral-light"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisting_preferences_does_not_follow_a_stale_temporary_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let unrelated = dir.path().join("unrelated");
+        fs::write(&path, "model = 'keep'\n").unwrap();
+        fs::write(&unrelated, "untouched").unwrap();
+        symlink(&unrelated, path.with_extension("toml.tmp")).unwrap();
+
+        persist_theme_at(&path, false, "neutral-light").unwrap();
+
+        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "untouched");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

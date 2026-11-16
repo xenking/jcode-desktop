@@ -28,7 +28,5 @@ jcode-desktop-motion.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-unicode-segmentation = "1"
-
-[dev-dependencies]
 tempfile = "3"
+unicode-segmentation = "1"
