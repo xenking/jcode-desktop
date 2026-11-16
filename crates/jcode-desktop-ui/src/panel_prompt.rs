@@ -197,7 +197,11 @@ impl Panel {
         if animating {
             window.request_animation_frame();
         }
-        let number = prompt_number(&self.items, index);
+        let prompt_offset = match &self.history_paging {
+            Some(paging) => paging.prompt_offset(),
+            None => Some(0),
+        };
+        let number = prompt_number(&self.items, index).zip(prompt_offset).map(|(number, offset)| number + offset);
         // Keep the number outside the card in a compact circular badge. Wider
         // turn numbers grow into a pill without taking space from card padding.
         let number_width = number.map_or(0., |number| {

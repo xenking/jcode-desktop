@@ -13,6 +13,8 @@ pub(super) struct HistoryPaging {
     bounded: bool,
     #[serde(default)]
     cursor: Option<String>,
+    #[serde(default)]
+    prompt_offset: Option<usize>,
     #[serde(skip)]
     pub(super) in_flight: bool,
 }
@@ -36,12 +38,22 @@ impl HistoryPaging {
             anchor: Vec::new(),
             bounded: false,
             cursor: None,
+            prompt_offset: marker.content.split("Hidden user prompts: ").nth(1)
+                .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|s| s.parse().ok()),
             in_flight: false,
         })
     }
 
     pub(super) fn set_anchor(&mut self, items: &[Item]) {
         self.anchor = items.iter().take(3).cloned().collect();
+    }
+
+    pub(super) fn prompt_offset(&self) -> Option<usize> {
+        self.prompt_offset.or_else(|| {
+            ((self.bounded && self.cursor.is_none()) || (!self.bounded && self.remaining == 0))
+                .then_some(0)
+        })
     }
 
     fn prefix_len(&self, items: &[Item]) -> Option<usize> {
@@ -140,6 +152,14 @@ impl Panel {
             return;
         }
         expanded.truncate(prefix_len);
+        if let Some(offset) = paging.prompt_offset.as_mut() {
+            *offset = offset.saturating_sub(
+                expanded.iter().filter(|item| super::prompt::is_pinnable_prompt(item)).count(),
+            );
+        }
+        if paging.remaining == 0 {
+            paging.prompt_offset = Some(0);
+        }
         paging.set_anchor(&expanded);
         self.prepend_history_items(expanded, new_times, cx);
     }
@@ -149,13 +169,24 @@ impl Panel {
         page: crate::harness::BoundedHistoryPage,
         cx: &mut Context<Self>,
     ) {
+        // A reconnect supplies only the newest tail. Already loaded older rows
+        // remain in the transcript, so their cursor and offset still describe
+        // the beginning of the visible history, not this newer tail.
+        let previous = self.history_loaded.then(|| self.history_paging.clone()).flatten();
+        let prompt_offset = page.prompt_offset.or_else(|| page.before.is_none().then_some(0));
         self.load_history(page.messages, page.images, cx);
+        if let Some(mut previous) = previous.filter(|paging| paging.bounded) {
+            previous.in_flight = false;
+            self.history_paging = Some(previous);
+            return;
+        }
         self.history_paging = Some(HistoryPaging {
             visible: 0,
             remaining: 0,
             anchor: Vec::new(),
             bounded: true,
             cursor: page.before,
+            prompt_offset,
             in_flight: false,
         });
     }
@@ -181,6 +212,7 @@ impl Panel {
                 return;
             }
         };
+        paging.prompt_offset = page.prompt_offset.or_else(|| page.before.is_none().then_some(0));
         paging.cursor = page.before;
         let (items, times) = Self::history_items(page.messages, page.images);
         if items.is_empty() {
@@ -280,6 +312,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn paged_history_numbers_use_absolute_prompt_offset(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, crate::harness::spawn_inert(), cx));
+        panel.update(vcx, |panel, cx| panel.load_history(rows(&[("system", marker()), ("user", "new")]), vec![], cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-146").is_some(), "initial tail has its absolute number");
+        let page: jcode_sdk::ApiEvent = serde_json::from_value(json!({"ev":"compacted_history", "session_id":"paging", "compacted_total":2373, "compacted_visible":192, "compacted_remaining":2304, "messages":[{"role":"user","content":"old"},{"role":"user","content":"new"}]})).unwrap();
+        panel.update(vcx, |panel, cx| panel.load_older_history(Ok(page), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-145").is_some());
+        assert!(vcx.debug_bounds("prompt-number-1-146").is_some());
+    }
+
+    #[gpui::test]
+    fn bounded_prompt_numbers_survive_prepend_and_reload(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, crate::harness::spawn_inert(), cx));
+        panel.update(vcx, |panel, cx| panel.load_bounded_history(crate::harness::BoundedHistoryPage {
+            messages: rows(&[("user", "third")]), images: vec![], before: Some("cursor".into()), prompt_offset: Some(2),
+        }, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-3").is_some());
+        panel.update(vcx, |panel, cx| panel.load_bounded_history_page(Ok(crate::harness::BoundedHistoryPage {
+            messages: rows(&[("user", "second")]), images: vec![], before: Some("earlier".into()), prompt_offset: Some(1),
+        }), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-2").is_some());
+        assert!(vcx.debug_bounds("prompt-number-1-3").is_some());
+        panel.update(vcx, |panel, _| { let snapshot = panel.transcript_snapshot(); panel.restore_transcript(snapshot); });
+        panel.update(vcx, |panel, cx| panel.load_bounded_history(crate::harness::BoundedHistoryPage {
+            messages: rows(&[("user", "third")]), images: vec![], before: Some("cursor".into()), prompt_offset: Some(2),
+        }, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-1-3").is_some());
+    }
+
+    #[gpui::test]
+    fn old_bounded_server_does_not_display_wrong_numbers(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("paging".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history(crate::harness::BoundedHistoryPage {
+                messages: rows(&[("user", "new")]),
+                images: vec![], before: Some("cursor".into()), prompt_offset: None,
+            }, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-1").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history_page(Ok(crate::harness::BoundedHistoryPage {
+                messages: rows(&[("user", "old")]),
+                images: vec![], before: None, prompt_offset: None,
+            }), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-1").is_some());
+        assert!(vcx.debug_bounds("prompt-number-1-2").is_some());
+    }
+
+    #[gpui::test]
     fn bounded_pages_prepend_and_continue_from_server_cursor(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
@@ -290,6 +381,7 @@ mod tests {
                     messages: rows(&[("user", "new")]),
                     images: vec![],
                     before: Some("cursor1".into()),
+                    prompt_offset: Some(2),
                 },
                 cx,
             );
@@ -306,6 +398,7 @@ mod tests {
                     messages: rows(&[("user", "old")]),
                     images: vec![],
                     before: Some("cursor2".into()),
+                    prompt_offset: Some(1),
                 }),
                 cx,
             );
@@ -340,6 +433,7 @@ mod tests {
                     messages,
                     images: vec![],
                     before: Some("cursor".into()),
+                    prompt_offset: Some(0),
                 },
                 cx,
             )
