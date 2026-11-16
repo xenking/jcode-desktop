@@ -191,3 +191,38 @@ fn queue_card_remote_outcomes_and_keyboard(cx: &mut gpui::TestAppContext) {
         assert!(matches!(p.items.last(), Some(Item::Error(message)) if message.contains("could not be confirmed")));
     });
 }
+
+#[gpui::test]
+fn queue_card_scrolls_and_expands_long_text(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "queue-many".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.history_loaded = true;
+        panel.startup_layout = None;
+        panel.status = "running".into();
+        panel.items.push(Item::User("initial".into()));
+        for _ in 0..6 {
+            panel.submit_or_queue("A long queued message ".repeat(30), vec![], true, cx);
+        }
+        panel
+    });
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    let items = vcx.debug_bounds("prompt-queue-items").unwrap();
+    assert!(items.size.height <= px(144.));
+    let text = vcx.debug_bounds("queue-row-text-0").unwrap().center();
+    vcx.simulate_click(text, Default::default());
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.prompt_queue.card_expanded.as_deref(), Some("local-0"))
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-queue-items").unwrap().size.height <= px(144.));
+    vcx.simulate_click(text, Default::default());
+    panel.read_with(vcx, |p, _| assert!(p.prompt_queue.card_expanded.is_none()));
+}
