@@ -349,6 +349,21 @@ impl Panel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stored_swarm_result_restores_compact_row() {
+        let history: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
+            {"role":"tool","content":"Direct message sent", "tool": {
+                "id":"call-1", "name":"functions.swarm",
+                "input":{"action":"message","to_session":"session_fox_123","message":"hello"}
+            }}
+        ]))
+        .unwrap();
+        let (items, _) = super::Panel::history_items(history, vec![]);
+        assert!(items.iter().any(
+            |item| matches!(item, super::Item::Tool { name, input, output, .. }
+            if super::parse(name, input, output).is_some())
+        ));
+    }
     use super::*;
     const FOX: &str = "session_fox_1794718668160_87674d9271df588d";
 

@@ -23,6 +23,9 @@ pub struct PromptQueue {
     /// transcript, until `soft_interrupt_injected` says they were delivered.
     #[serde(skip)]
     steered: Vec<QueuedPrompt>,
+    /// Injection ids already observed on this connection, for replayed events.
+    #[serde(skip)]
+    delivered_ids: std::collections::HashSet<String>,
     /// Durable server state plus submissions not yet acknowledged in a snapshot.
     #[serde(skip)]
     remote: Vec<jcode_sdk::api::QueuedPrompt>,
@@ -309,6 +312,40 @@ impl Panel {
     }
 
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        let users_before = matches!(
+            event,
+            ApiEvent::SoftInterruptInjected {
+                content: Some(_),
+                display_role: None,
+                ..
+            }
+        )
+        .then(|| {
+            self.items
+                .iter()
+                .filter(|item| matches!(item, Item::User(_)))
+                .count()
+        });
+        // One injection may combine prompts from this window and other clients.
+        // In that case only the daemon's combined content preserves every prompt.
+        let mixed_delivery = match event {
+            ApiEvent::SoftInterruptInjected {
+                client_ids,
+                content: Some(_),
+                display_role: None,
+                ..
+            } => client_ids.iter().any(|id| {
+                !self.prompt_queue.delivered_ids.contains(id)
+                    && !self
+                        .prompt_queue
+                        .remote
+                        .iter()
+                        .chain(&self.prompt_queue.pending_remote)
+                        .any(|prompt| &prompt.client_id == id)
+            }),
+            _ => false,
+        };
+        let mut mixed_images = Vec::new();
         match event {
             ApiEvent::QueuedPrompts { prompts, .. } => {
                 self.prompt_queue.remote_supported = true;
@@ -371,7 +408,9 @@ impl Panel {
                         .count();
                     let already_in_history =
                         point == "already_delivered" && self.history_loaded && current > previous;
-                    if !already_in_history {
+                    if mixed_delivery {
+                        mixed_images.extend(prompt.images);
+                    } else if !already_in_history {
                         self.push_user_prompt(prompt.content, prompt.images);
                     }
                 }
@@ -379,6 +418,44 @@ impl Panel {
             _ => {}
         }
         self.observe_steered_prompts(event);
+        if let ApiEvent::SoftInterruptInjected {
+            client_ids,
+            content: Some(content),
+            display_role: None,
+            point,
+            ..
+        } = event
+        {
+            let already_seen = !client_ids.is_empty()
+                && client_ids
+                    .iter()
+                    .all(|id| self.prompt_queue.delivered_ids.contains(id));
+            let users_after = self
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::User(_)))
+                .count();
+            let history_contains_retry = point == "already_delivered"
+                && self
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::User(text) if text == content));
+            if !already_seen
+                && users_before == Some(users_after)
+                && !history_contains_retry
+                && !content.trim().is_empty()
+            {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.push_user_prompt(content.clone(), mixed_images);
+            }
+            if self.prompt_queue.delivered_ids.len() > 4096 {
+                self.prompt_queue.delivered_ids.clear();
+            }
+            self.prompt_queue
+                .delivered_ids
+                .extend(client_ids.iter().cloned());
+        }
         self.prompt_queue.auto_poke.observe(event);
         match event {
             ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => {

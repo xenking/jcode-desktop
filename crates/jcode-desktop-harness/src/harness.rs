@@ -138,6 +138,10 @@ pub enum Update {
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
     },
+    HistoryPage {
+        session_id: String,
+        result: Result<jcode_sdk::ApiEvent, String>,
+    },
     /// A streaming event for one session. The worker supplies the session id
     /// because some important events (notably errors) do not include one.
     Event {
@@ -249,6 +253,10 @@ pub enum Command {
     /// Open a dedicated connection for this session (attach + stream).
     Watch {
         session_id: String,
+    },
+    GetCompactedHistory {
+        session_id: String,
+        visible_messages: usize,
     },
     /// Drop a session's dedicated connection.
     Unwatch {
@@ -388,6 +396,7 @@ pub enum SessionOperation {
 
 enum SessionCommand {
     RefreshRuntime,
+    GetCompactedHistory(usize),
     TodoState,
     AckTodoFollowUp(jcode_sdk::todo::TodoEffects),
     AuthChanged(String),
@@ -1180,6 +1189,17 @@ fn run_with_transports(
             }
             Command::Watch { session_id } => {
                 ensure_session_worker(&mut workers, session_id, &updates, &transports);
+            }
+            Command::GetCompactedHistory {
+                session_id,
+                visible_messages,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetCompactedHistory(visible_messages),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
             }
             Command::Unwatch { session_id } => {
                 if let Some(worker) = workers.remove(&session_id) {
@@ -2564,6 +2584,15 @@ fn session_worker_with_connector(
                     WorkerCommand::Disconnected => return,
                 };
                 match command {
+                    SessionCommand::GetCompactedHistory(visible_messages) => {
+                        let result = client
+                            .get_compacted_history(real_id, visible_messages)
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::HistoryPage {
+                            session_id: session_id.clone(),
+                            result,
+                        });
+                    }
                     SessionCommand::RefreshRuntime => {
                         if let Ok(info) = client.get_runtime_info(real_id) {
                             let _ = updates.send(Update::Event {
@@ -3277,6 +3306,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
+        | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
@@ -3318,6 +3348,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
+        | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }

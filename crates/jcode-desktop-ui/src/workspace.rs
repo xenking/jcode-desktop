@@ -2554,6 +2554,15 @@ impl Workspace {
                     }
                 }
             }
+            Update::HistoryPage { session_id, result } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_older_history(result, cx));
+                        break;
+                    }
+                }
+            }
             Update::Event { session_id, event } => {
                 if self.route_side_question_event(&session_id, &event, cx) {
                     return true;

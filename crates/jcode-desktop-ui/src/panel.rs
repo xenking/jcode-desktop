@@ -77,6 +77,8 @@ pub(crate) mod compaction;
 
 #[path = "panel_compaction_render.rs"]
 mod compaction_render;
+#[path = "panel_history_paging.rs"]
+mod history_paging;
 
 #[path = "panel_activity.rs"]
 mod activity;
@@ -670,6 +672,7 @@ pub struct Panel {
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
+    history_paging: Option<history_paging::HistoryPaging>,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
     restored_transcript: bool,
     /// Leading items painted from the persisted session record while the
@@ -1052,6 +1055,9 @@ impl Panel {
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
                 panel.release_startup_preview();
+                if event.is_scrolled && !event.is_following_tail && event.visible_range.start == 0 {
+                    panel.request_older_history();
+                }
                 let stick_to_bottom =
                     event.is_following_tail && !panel.transcript_selection.read(cx).is_dragging();
                 if panel.stick_to_bottom != stick_to_bottom {
@@ -1194,6 +1200,7 @@ impl Panel {
             preview_state: None,
             demo: false,
             history_loaded: false,
+            history_paging: None,
             reconnect_response: None,
             restored_transcript: false,
             provisional_items: 0,
@@ -1250,6 +1257,12 @@ impl Panel {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
         }
+        if pixels < 0.0
+            && self.transcript_list.logical_scroll_top().item_ix == 0
+            && self.transcript_list.logical_scroll_top().offset_in_item <= px(0.)
+        {
+            self.request_older_history();
+        }
         self.flicker_diagnostics
             .borrow_mut()
             .scroll_input(pixels, precise);
@@ -1290,6 +1303,12 @@ impl Panel {
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
+        if delta_y > 0.0
+            && self.transcript_list.logical_scroll_top().item_ix == 0
+            && self.transcript_list.logical_scroll_top().offset_in_item <= px(0.)
+        {
+            self.request_older_history();
+        }
         self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
@@ -1344,6 +1363,9 @@ impl Panel {
         let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, px(target)));
+        if step < 0.0 && target >= 0.0 {
+            self.request_older_history();
+        }
         self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
@@ -2809,7 +2831,9 @@ impl Panel {
                     }
                 }
                 "tool" => {
-                    if let Some(tool) = message.tool.filter(|tool| tool.name == "ask") {
+                    if let Some(tool) = message.tool.filter(|tool| {
+                        tool.name == "ask" || tool.name.trim_start_matches("functions.") == "swarm"
+                    }) {
                         items.push(Item::Tool {
                             call_id: tool.id,
                             name: tool.name,
@@ -2998,6 +3022,14 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        if self.history_paging.is_none() {
+            self.history_paging = history_paging::HistoryPaging::from_history(&messages);
+            if self.history_loaded
+                && let Some(paging) = &mut self.history_paging
+            {
+                paging.set_anchor(&self.items);
+            }
+        }
         self.transcript_measurements.dirty = true;
         if self.restored_transcript {
             self.hydrate_restored_prefix(&messages);
@@ -3036,6 +3068,9 @@ impl Panel {
             self.startup_layout = None;
         }
         let (mut items, history_times) = Self::history_items(messages, images);
+        if let Some(paging) = &mut self.history_paging {
+            paging.set_anchor(&items);
+        }
         if self.adopt_authoritative_over_provisional(&items, &history_times) {
             self.send_queued_prompts(cx);
             cx.notify();
@@ -4028,9 +4063,12 @@ impl Panel {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Tool { call_id, name, done: true, .. } if name == "ask" => {
-                    Some(call_id.as_str())
-                }
+                Item::Tool {
+                    call_id,
+                    name,
+                    done: true,
+                    ..
+                } if name == "ask" => Some(call_id.as_str()),
                 _ => None,
             })
             .collect();
@@ -4052,8 +4090,11 @@ impl Panel {
             }
             // Filter presentation only, never persisted items.
             if matches!(item, Item::User(_)) {
-                inline_images = self.user_image_markers(index)
-                    .into_iter().map(|(index, _)| index).collect();
+                inline_images = self
+                    .user_image_markers(index)
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect();
             }
             if inline_images.contains(&index) {
                 continue;
@@ -4461,9 +4502,11 @@ impl Panel {
                         )
                         .child(div().min_w_0().text_size(px(13.)).child(shown))
                         .child(
-                            div().flex().flex_wrap().gap_1().children(
-                                self.render_ask_result_images(call_id, cx),
-                            ),
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_1()
+                                .children(self.render_ask_result_images(call_id, cx)),
                         )
                         .when(expandable, |el| {
                             el.cursor_pointer()
@@ -6193,12 +6236,15 @@ impl Render for Panel {
                                             let scrolls = panel.swarm_scrolls.borrow();
                                             panel.expanded_regions.iter().find_map(|key| {
                                                 let region = scrolls.get(key)?;
-                                                if !region.hitbox.borrow().as_ref().is_some_and(|hitbox| hitbox.should_handle_scroll(window)) {
+                                                if !region.hitbox.borrow().as_ref().is_some_and(
+                                                    |hitbox| hitbox.should_handle_scroll(window),
+                                                ) {
                                                     return None;
                                                 }
                                                 let scroll = &region.handle;
                                                 let old = scroll.offset();
-                                                let next = (old.y + delta.y).clamp(-scroll.max_offset().y, px(0.));
+                                                let next = (old.y + delta.y)
+                                                    .clamp(-scroll.max_offset().y, px(0.));
                                                 (next != old.y).then(|| (scroll.clone(), old, next))
                                             })
                                         });

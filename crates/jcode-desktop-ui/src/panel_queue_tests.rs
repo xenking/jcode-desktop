@@ -2,6 +2,92 @@ use super::*;
 use serde_json::json;
 
 #[gpui::test]
+fn external_steer_is_visible_live_and_after_history_reload(cx: &mut gpui::TestAppContext) {
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new(
+            "queue-test".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.history_loaded = true;
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.apply(&event(json!({"ev":"text_delta", "text":"before"})), cx);
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"steer from another client", "point":"D", "client_ids":[]})), cx);
+        panel.apply(&event(json!({"ev":"text_delta", "text":"after"})), cx);
+        panel.flush_streaming();
+        assert!(panel.items.iter().any(|i| matches!(i, Item::User(text) if text == "steer from another client")));
+        let index = panel.items.iter().position(|i| matches!(i, Item::User(text) if text == "steer from another client")).unwrap();
+        assert!(panel.items[..index].iter().any(|i| matches!(i, Item::Assistant(text) if text == "before")));
+        assert!(panel.items[index + 1..].iter().any(|i| matches!(i, Item::Assistant(text) if text == "after")));
+    });
+    let restored = cx.new(|cx| {
+        Panel::new(
+            "queue-test".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    restored.update(cx, |panel, cx| {
+        let messages = serde_json::from_value(json!([
+            {"role":"assistant","content":"before"}, {"role":"user","content":"steer from another client"},
+            {"role":"assistant","content":"after"}
+        ])).unwrap();
+        panel.load_history(messages, vec![], cx);
+        assert!(panel.items.iter().any(|i| matches!(i, Item::User(text) if text == "steer from another client")));
+    });
+}
+
+#[gpui::test]
+fn external_injection_is_idempotent_and_system_injections_are_not_prompts(
+    cx: &mut gpui::TestAppContext,
+) {
+    let panel = cx.new(|cx| {
+        Panel::new(
+            "queue-test".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    panel.update(cx, |panel, cx| {
+        let injected = event(json!({"ev":"soft_interrupt_injected", "content":"external steer", "point":"D", "client_ids":["foreign-1"]}));
+        panel.apply(&injected, cx);
+        panel.apply(&injected, cx);
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"internal", "point":"D", "display_role":"system", "client_ids":[]})), cx);
+        assert_eq!(panel.items.iter().filter(|item| matches!(item, Item::User(text) if text == "external steer")).count(), 1);
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::User(text) if text == "internal")));
+    });
+}
+
+#[gpui::test]
+fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppContext) {
+    let panel = cx.new(|cx| {
+        Panel::new(
+            "queue-test".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    panel.update(cx, |panel, cx| {
+        panel.prompt_queue.pending_remote.push(jcode_sdk::api::QueuedPrompt {
+            client_id: "known".into(), content: "local".into(), images: vec![],
+            mode: jcode_sdk::api::QueuedPromptMode::Steer,
+        });
+        panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"local\n\nexternal", "point":"D", "client_ids":["known", "foreign"]})), cx);
+        assert!(panel.items.iter().any(|item| matches!(item, Item::User(text) if text.contains("external"))));
+    });
+}
+
+#[gpui::test]
 fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| {
