@@ -570,9 +570,10 @@ impl Panel {
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 if let Some(review) = &mut this.diff_review
-                                    && !review.collapsed.remove(&path) {
-                                        review.collapsed.insert(path.clone());
-                                    }
+                                    && !review.collapsed.remove(&path)
+                                {
+                                    review.collapsed.insert(path.clone());
+                                }
                                 cx.stop_propagation();
                                 cx.notify();
                             }),
@@ -793,6 +794,7 @@ mod tests {
                 selection_tool(name),
                 Item::Assistant("After".into()),
             ];
+            panel.expanded_regions.insert("selection-edit".into());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -846,11 +848,22 @@ mod tests {
             let after = vcx.debug_bounds("selectable-text-2-0").unwrap();
             let start = gpui::point(before.left() + px(0.1), before.center().y);
             let end = gpui::point(after.right() - px(0.1), after.center().y);
-            let mut expected = format!("Before\n{name}\nUpdate labels\nsrc/first.rs\n");
+            let mut expected =
+                format!("Before\n{name} Update labels\n{name}\nUpdate labels\nsrc/first.rs\n");
             if name == "apply_patch" {
                 expected.push_str("apply_patch\nUpdate labels\nsrc/second.rs\n");
             }
-            expected.push_str("After");
+            let Item::Tool {
+                name,
+                input,
+                output,
+                ..
+            } = selection_tool(name)
+            else {
+                unreachable!()
+            };
+            expected.push_str(&tool_detail(&name, &input, &output));
+            expected.push_str("\nAfter");
             for (start, end) in [(start, end), (end, start)] {
                 assert_eq!(drag_selection(vcx, start, end), expected, "{name}");
                 panel.read_with(vcx, |panel, cx| {
@@ -914,7 +927,7 @@ mod tests {
                     gpui::point(before.left() + px(0.1), before.center().y),
                     gpui::point(path.right() - px(0.1), path.center().y)
                 ),
-                format!("Before\n{name}\nUpdate labels\nsrc/first.rs"),
+                format!("Before\n{name} Update labels\n{name}\nUpdate labels\nsrc/first.rs"),
             );
             assert!(vcx.debug_bounds("edit-expanded-body").is_some());
             assert!(workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).is_none()));
@@ -978,7 +991,10 @@ mod tests {
                 gpui::point(before.left() + px(0.1), before.center().y),
                 gpui::point(after.right() - px(0.1), after.center().y)
             ),
-            "Before\nedit\nUpdate labels\nsrc/first.rs\nNo matching source text\nAfter"
+            panel.read_with(vcx, |panel, _| match &panel.items[1] {
+                Item::Tool { name, input, output, .. } => format!("Before\nedit Update labels\nedit\nUpdate labels\nsrc/first.rs\nNo matching source text\n{}\n\nError\nNo matching source text\nAfter", tool_detail(name, input, output)),
+                _ => unreachable!(),
+            })
         );
         assert!(vcx.debug_bounds("edit-expanded-body").is_some());
         assert!(workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).is_none()));
@@ -1064,6 +1080,7 @@ mod tests {
                 }).to_string(),
                 output: String::new(), done: true, error: None,
             }];
+            panel.expanded_regions.insert("balanced".into());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -1087,7 +1104,7 @@ mod tests {
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("diff-review").is_some());
-        assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.is_empty()));
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("balanced")));
     }
 
     #[test]
@@ -1134,6 +1151,7 @@ mod tests {
                 input: serde_json::json!({"file_path": "src/large.rs", "content": (0..500).map(|n| format!("line {n}\n")).collect::<String>()}).to_string(),
                 output: String::new(), done: true, error: None,
             }];
+            panel.expanded_regions.insert("large".into());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -1190,6 +1208,7 @@ mod tests {
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
             *panel.items = fixture_items();
+            panel.expanded_regions.insert("diff-fixture".into());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -1260,6 +1279,7 @@ mod tests {
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
             *panel.items = fixture_items();
+            panel.expanded_regions.insert("diff-fixture".into());
             panel.input.update(cx, |input, cx| {
                 input.set_content("keep my draft".into(), cx)
             });
@@ -1278,8 +1298,8 @@ mod tests {
             workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert!(
-            panel.read_with(vcx, |p, _| p.expanded_regions.is_empty()),
-            "counts click must not toggle raw JSON"
+            panel.read_with(vcx, |p, _| p.expanded_regions.contains("diff-fixture")),
+            "counts click must not collapse the tool row"
         );
         let file = vcx.debug_bounds("diff-tree-file-1").unwrap();
         vcx.simulate_click(file.center(), gpui::Modifiers::default());

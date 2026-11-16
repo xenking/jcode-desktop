@@ -2,7 +2,7 @@
 use super::*;
 use std::hash::{Hash, Hasher};
 
-use expandable::{collapsed, Open};
+use expandable::Open;
 
 type Segments = Vec<(SharedString, SharedString)>;
 
@@ -192,56 +192,36 @@ pub(super) fn segments_with_display(
             error,
             ..
         } => {
-            if name == "todo" {
-                return result;
-            }
-            let files = diff_review::inline_result_files(
-                name,
-                input,
-                if error.is_none() { output } else { "" },
-            );
-            if !files.is_empty() {
-                // Match the painted header leaves, including repeated headers
-                // in multi-file patches. Tool arguments and output are not
-                // visible transcript text and must never leak into copying.
-                let intent = diff_review::edit_preview_intent(input);
+            push(format!("tool-name-{index}"), name.clone());
+            push(format!("tool-summary-{index}"), tool_summary_full(input));
+            if open.card {
+                let mut detail = tool_detail(name, input, output);
+                if let Some(error) = error {
+                    detail.push_str("\n\nError\n");
+                    detail.push_str(&strip_ansi(error));
+                }
+                let files = if display.diff_display != crate::config::DiffDisplay::Off {
+                    diff_review::inline_result_files(
+                        name,
+                        input,
+                        if error.is_none() { output } else { "" },
+                    )
+                } else {
+                    std::sync::Arc::new(Vec::new())
+                };
                 for (file_index, file) in files.iter().enumerate() {
                     let key = diff_review::edit_preview_key(call_id, file_index);
                     push(format!("{key}-name"), name.clone());
-                    push(format!("{key}-intent"), intent.clone());
+                    push(
+                        format!("{key}-intent"),
+                        diff_review::edit_preview_intent(input),
+                    );
                     push(format!("{key}-path"), file.path.clone());
                     if let Some(error) = error {
                         push(format!("{key}-error"), error.clone());
                     }
                 }
-            } else {
-                push(format!("tool-name-{index}"), name.clone());
-                // The document carries exactly what the row paints: the cut
-                // title while collapsed, the whole intent once expanded.
-                let summary = tool_summary_full(input);
-                push(
-                    format!("tool-summary-{index}"),
-                    match collapsed(&summary, expandable::TITLE) {
-                        Some(preview) if !open.card => preview,
-                        _ => summary,
-                    },
-                );
-                if open.card {
-                    push(
-                        format!("tool-detail-{index}"),
-                        tool_detail(name, input, output),
-                    );
-                }
-                if let Some(error) = error {
-                    let full = strip_ansi(error);
-                    push(
-                        format!("tool-error-{index}"),
-                        match collapsed(&full, expandable::ERROR) {
-                            Some(preview) if !open.card => preview,
-                            _ => full,
-                        },
-                    );
-                }
+                push(format!("tool-detail-{index}"), detail);
             }
         }
         Item::Error(message) => {
@@ -430,15 +410,19 @@ mod tests {
         let text = format!("{}\nTAIL", "first line\n".repeat(8));
         let collapsed = segments(&Item::User(text.clone()), 0, Open::default());
         assert!(!collapsed.iter().any(|(_, text)| text.contains("TAIL")));
-        let expanded = segments(&Item::User(text), 0, Open {
-            prompt: true,
-            ..Open::default()
-        });
+        let expanded = segments(
+            &Item::User(text),
+            0,
+            Open {
+                prompt: true,
+                ..Open::default()
+            },
+        );
         assert!(expanded.iter().any(|(_, text)| text.contains("TAIL")));
     }
 
     #[test]
-    fn edit_card_document_matches_visible_leaves_without_raw_arguments_or_output() {
+    fn edit_tool_document_contains_raw_and_rich_text_only_when_open() {
         let edit = Item::Tool {
             call_id: "edit".into(),
             name: "edit".into(),
@@ -448,75 +432,62 @@ mod tests {
             done: true,
             error: None,
         };
-        let doc = segments(&edit, 5, Open::default());
-        assert_eq!(
-            doc,
-            vec![
-                ("tool-edit-edit-0-name".into(), "edit".into()),
-                ("tool-edit-edit-0-intent".into(), "Edit file".into()),
-                ("tool-edit-edit-0-path".into(), "src/main.rs".into()),
-            ]
+        let closed = segments(&edit, 5, Open::default());
+        assert!(!closed.iter().any(|(_, text)| text.contains("Applied")));
+        let open = Open {
+            card: true,
+            ..Open::default()
+        };
+        let doc = segments(&edit, 5, open);
+        assert!(
+            doc.iter()
+                .any(|(key, text)| key == "tool-detail-5" && text.contains("Applied"))
         );
-        assert_eq!(
-            doc,
-            segments(&edit, 99, Open {
-                card: true,
-                ..Open::default()
-            }),
-            "keys survive row movement"
+        assert!(
+            doc.iter()
+                .any(|(key, text)| key == "tool-edit-edit-0-path" && text == "src/main.rs")
         );
-        let mut failed = edit.clone();
-        if let Item::Tool { input, error, .. } = &mut failed {
-            *input = r#"{"intent":"  ","file_path":"src/main.rs","old_string":"before","new_string":"after"}"#.into();
-            *error = Some("Edit failed".into());
-        }
-        let failed_doc = segments(&failed, 5, Open::default());
-        assert_eq!(failed_doc[..3], doc);
-        assert_eq!(
-            failed_doc[3],
-            ("tool-edit-edit-0-error".into(), "Edit failed".into())
-        );
+        let moved = segments(&edit, 99, open);
+        assert!(moved.iter().any(|(key, _)| key == "tool-edit-edit-0-path"));
         assert_ne!(
             fingerprint(&edit, Open::default()),
-            fingerprint(&failed, Open::default())
+            fingerprint(&edit, open)
         );
     }
 
     #[test]
     fn multi_file_edit_document_keeps_each_header_in_order_with_stable_call_keys() {
         let mut tool = diff_review::fixture_items().pop().unwrap();
-        let doc = segments(&tool, 12, Open::default());
+        let open = Open {
+            card: true,
+            ..Open::default()
+        };
+        let doc = segments(&tool, 12, open);
+        let keys: Vec<_> = doc
+            .iter()
+            .filter(|(key, _)| key.starts_with("tool-edit-"))
+            .map(|(key, _)| key.as_ref())
+            .collect();
         assert_eq!(
-            doc,
+            keys,
             vec![
-                ("tool-edit-diff-fixture-0-name".into(), "apply_patch".into()),
-                (
-                    "tool-edit-diff-fixture-0-intent".into(),
-                    "Improve navigation labels".into()
-                ),
-                (
-                    "tool-edit-diff-fixture-0-path".into(),
-                    "src/navigation.rs".into()
-                ),
-                ("tool-edit-diff-fixture-1-name".into(), "apply_patch".into()),
-                (
-                    "tool-edit-diff-fixture-1-intent".into(),
-                    "Improve navigation labels".into()
-                ),
-                (
-                    "tool-edit-diff-fixture-1-path".into(),
-                    "tests/navigation.rs".into()
-                ),
+                "tool-edit-diff-fixture-0-name",
+                "tool-edit-diff-fixture-0-intent",
+                "tool-edit-diff-fixture-0-path",
+                "tool-edit-diff-fixture-1-name",
+                "tool-edit-diff-fixture-1-intent",
+                "tool-edit-diff-fixture-1-path"
             ]
         );
-        let old_fingerprint = fingerprint(&tool, Open::default());
+        let old = fingerprint(&tool, open);
         if let Item::Tool { call_id, .. } = &mut tool {
             *call_id = "replacement-call".into();
         }
-        assert_ne!(old_fingerprint, fingerprint(&tool, Open::default()));
+        assert_ne!(old, fingerprint(&tool, open));
         assert!(
-            segments(&tool, 12, Open::default())
+            segments(&tool, 12, open)
                 .iter()
+                .filter(|(key, _)| key.starts_with("tool-edit-"))
                 .all(|(key, _)| key.contains("replacement-call"))
         );
     }

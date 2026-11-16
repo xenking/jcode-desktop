@@ -16,6 +16,9 @@ fn completed_ask_replaces_inline_marker_with_image_chip(cx: &mut gpui::TestAppCo
         cx.notify();
     });
     vcx.run_until_parked();
+    let row = vcx.debug_bounds("tool-header").expect("compact ask row");
+    vcx.simulate_click(row.center(), Default::default());
+    vcx.run_until_parked();
     let chip = vcx.debug_bounds("ask-result-inline-image").expect("marker must render inline as a chip");
     assert!(vcx.debug_bounds("ask-result-inline-thumbnail").is_some());
     assert!(vcx.debug_bounds("ask-result-inline-label").is_some());

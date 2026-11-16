@@ -4241,7 +4241,7 @@ impl Panel {
         index: usize,
         item: &Item,
         _show_avatar: bool,
-        response_viewport_height: gpui::Pixels,
+        _response_viewport_height: gpui::Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -4492,86 +4492,6 @@ impl Panel {
                 done,
                 error,
             } => {
-                if name == "ask" && *done {
-                    let text = ask::result_text(input, output, error.as_deref());
-                    let expanded = self.expanded_regions.contains(call_id);
-                    let preview = expandable::collapsed(&text, expandable::Budget::new(500, 4));
-                    let expandable = preview.is_some();
-                    let mut shown = if expanded {
-                        text
-                    } else {
-                        preview.unwrap_or(text)
-                    };
-                    // A collapsed preview must not expose a partial storage marker.
-                    if let Some(start) = shown.rfind("[#image ")
-                        && !shown[start..].contains(']')
-                    {
-                        shown.truncate(start);
-                        shown.push('…');
-                    }
-                    let key = call_id.clone();
-                    return div()
-                        .id(("ask-result", index))
-                        .debug_selector(|| "ask-result".into())
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_2()
-                        .rounded_md()
-                        .bg(Theme::global().TOOL_BG)
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child("Questions and answers"),
-                        )
-                        .child(self.render_ask_answer(call_id, shown, cx))
-                        .when(expandable, |el| {
-                            el.cursor_pointer()
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(Theme::global().ACCENT)
-                                        .child(if expanded { "Show less" } else { "Show all" }),
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !this.expanded_regions.remove(&key) {
-                                        this.expanded_regions.insert(key.clone());
-                                    }
-                                    this.transcript_measurements.dirty = true;
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }))
-                        })
-                        .into_any_element();
-                }
-                if let Some(response) = error
-                    .is_none()
-                    .then(|| user_response::parse(name, input))
-                    .flatten()
-                {
-                    return user_response::render(
-                        &response,
-                        index,
-                        response_viewport_height,
-                        &self.transcript_selection,
-                        self.media_preview_handler(cx),
-                        window,
-                        cx,
-                    );
-                }
-                if display.screenshot_mode && swarm_card::parse(name, input, output).is_none() {
-                    return div()
-                        .px_1()
-                        .text_size(px(12.))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(format!(
-                            "{name} · {}",
-                            if *done { "finished" } else { "running" }
-                        ))
-                        .into_any_element();
-                }
                 let (offset, opacity, animating) = self
                     .arriving_tools
                     .get(call_id)
@@ -4587,172 +4507,23 @@ impl Panel {
                 if animating {
                     window.request_animation_frame();
                 }
-                if let Some(call) = swarm_card::parse(name, input, output) {
+                if !display.screenshot_mode
+                    && let Some(call) = swarm_card::parse(name, input, output)
+                {
                     return self.render_swarm_card(
                         index,
                         call_id,
                         &call,
+                        name,
+                        input,
                         *done,
                         output,
                         error.as_deref(),
                         offset,
                         opacity,
-                        cx,
-                    );
-                }
-                let tool_card = crate::applet_runtime::get(cx)
-                    .host
-                    .borrow()
-                    .tool_card(&self.session_id, call_id)
-                    .map(|mounted| mounted.instance.id.clone());
-                if let Some(instance) = tool_card {
-                    let selection = self.applet_selection.clone();
-                    if let Some(card) =
-                        crate::applet_surface::card(&instance, true, &selection, window, cx)
-                    {
-                        return div()
-                            .id(("tool", index))
-                            .debug_selector(|| "tool-applet".into())
-                            .flex_none()
-                            .ml(px(offset))
-                            .opacity(opacity)
-                            .child(card)
-                            .into_any_element();
-                    }
-                }
-                if name == "todo"
-                    && *done
-                    && error.is_none()
-                    && let Some(payload) = parse_todo_tool_output(output)
-                {
-                    return div()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(render_todo_card_with_style(
-                            &payload,
-                            false,
-                            &format!("todo-{index}"),
-                            &self.transcript_selection,
-                            window,
-                            cx,
-                        ))
-                        .into_any_element();
-                }
-                if display.diff_display != crate::config::DiffDisplay::Off
-                    && let Some(preview) = self.render_edit_metadata(
-                        call_id,
-                        name,
-                        input,
-                        output,
-                        *done,
-                        error.as_deref(),
-                        cx,
-                    )
-                {
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-edit".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(preview)
-                        .into_any_element();
-                }
-                if let Some(compose) = gmail_draft_card::parse(name, input) {
-                    let compose = gmail_draft_card::merge_output(compose, output, *done);
-                    let superseded = self.superseded_drafts().get(call_id).copied();
-                    let expanded = self.expanded_regions.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = gmail_draft_card::render(
-                        index,
-                        &compose,
-                        &gmail_draft_card::outcome(output, *done),
-                        error.as_deref(),
-                        tool_card_token_pill(output),
-                        superseded,
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_regions.remove(&toggle_id) {
-                                this.expanded_regions.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
                         window,
                         cx,
                     );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-gmail-compose".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
-                }
-                if let Some(view) =
-                    gmail_read_card::parse(name, input, output, *done, error.as_deref())
-                {
-                    let expanded = self.expanded_regions.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = gmail_read_card::render(
-                        index,
-                        &view,
-                        tool_card_token_pill(output),
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_regions.remove(&toggle_id) {
-                                this.expanded_regions.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-gmail-read".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
-                }
-                if let Some(view) =
-                    mcp_list_card::parse(name, input, output, *done, error.as_deref())
-                {
-                    let expanded = self.expanded_regions.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = mcp_list_card::render(
-                        index,
-                        &view,
-                        tool_card_token_pill(output),
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_regions.remove(&toggle_id) {
-                                this.expanded_regions.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-mcp-list".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
                 }
                 let expanded = self.expanded_regions.contains(call_id)
                     ^ (name == "agentgrep" && display.show_agentgrep_output);
@@ -4765,27 +4536,37 @@ impl Panel {
                     })
                     .unwrap_or(if expanded { 1.0 } else { 0.0 });
                 let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
-                // The title is always the complete intent; only its paint is
-                // clipped, so expanding reveals text that was never dropped.
-                let full_summary = if display.screenshot_mode {
-                    String::new()
+                let summary = if display.screenshot_mode {
+                    if *done {
+                        "finished".into()
+                    } else {
+                        "running".into()
+                    }
                 } else {
                     tool_summary_full(input)
                 };
-                let summary_preview = expandable::collapsed(&full_summary, expandable::TITLE);
-                let summary_truncated = summary_preview.is_some();
-                let summary = match (&summary_preview, expanded) {
-                    (Some(preview), false) => preview.clone(),
-                    _ => full_summary,
-                };
                 let toggle_key = call_id.clone();
+                let keyboard_key = call_id.clone();
+                let row_focus = self
+                    .swarm_row_focus
+                    .borrow_mut()
+                    .entry(call_id.clone())
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                    .clone();
+                let click_focus = row_focus.clone();
                 // Pretty-printing the arguments and stripping ANSI from the
                 // whole output is the costly part of a tool row, and it was
                 // done for every collapsed row on every frame. The detail
                 // always has a header line, so only build it while it shows.
                 let has_detail = true;
-                let detail = (detail_visible && !display.screenshot_mode)
-                    .then(|| tool_detail(name, input, output));
+                let detail = (detail_visible && !display.screenshot_mode).then(|| {
+                    let mut detail = tool_detail(name, input, output);
+                    if let Some(error) = error {
+                        detail.push_str("\n\nError\n");
+                        detail.push_str(&strip_ansi(error));
+                    }
+                    detail
+                });
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 let running_veil = (!*done && error.is_none()).then(|| {
@@ -4811,7 +4592,23 @@ impl Panel {
                     .overflow_hidden()
                     .child(crate::tool_icon::animate_running(
                         div()
+                            .id(("tool-header-click", index))
                             .debug_selector(|| "tool-header".into())
+                            .cursor_pointer()
+                            .track_focus(&row_focus)
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if event.keystroke.key == "enter" && !event.is_held {
+                                        this.toggle_region(&keyboard_key, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                window.focus(&click_focus, cx);
+                                this.toggle_region(&toggle_key, cx);
+                                cx.stop_propagation();
+                            }))
                             .flex()
                             .flex_row()
                             .gap_2()
@@ -4821,18 +4618,7 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(crate::tool_icon::render_badge_with_label(
-                                name,
-                                *done,
-                                error.is_some(),
-                                text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("tool-name-{index}"),
-                                    name.clone(),
-                                    window,
-                                    cx,
-                                ),
-                            ))
+                            .child(crate::tool_icon::render_badge(name, *done, error.is_some()))
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -4840,42 +4626,11 @@ impl Panel {
                                         .id(("tool-summary-text", index))
                                         .flex_1()
                                         .min_w_0()
-                                        .when(!expanded, |el| {
-                                            el.overflow_hidden().whitespace_nowrap()
-                                        })
-                                        .when(summary_truncated, |el| {
-                                            let key = toggle_key.clone();
-                                            el.cursor_pointer().on_click(cx.listener(
-                                                move |this, _event, _window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.toggle_region(&key, cx);
-                                                },
-                                            ))
-                                        })
+                                        .truncate()
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(Theme::global().TOOL_TEXT)
-                                        .child(text_selection::plain(
-                                            self.transcript_selection.clone(),
-                                            format!("tool-summary-{index}"),
-                                            summary,
-                                            window,
-                                            cx,
-                                        )),
+                                        .child(summary),
                                 )
-                            })
-                            // A cut title carries its own chevron, so the full
-                            // intent is one click away without hunting for the
-                            // token pill.
-                            .when(summary_truncated, |el| {
-                                let key = toggle_key.clone();
-                                el.child(expandable::glyph_toggle(
-                                    format!("tool-title-{index}").into(),
-                                    expanded,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_region(&key, cx);
-                                    }),
-                                ))
                             })
                             .children(self.render_tool_clock(
                                 index,
@@ -4883,32 +4638,8 @@ impl Panel {
                                 *done || error.is_some(),
                                 cx,
                             ))
-                            .when(!*done && error.is_none() && self.has_running_tool(), |el| {
-                                el.child(
-                                    div()
-                                        .id(("tool-background", index))
-                                        .debug_selector(|| "tool-background".into())
-                                        .flex_none()
-                                        .px_2()
-                                        .py(px(2.0))
-                                        .rounded_full()
-                                        .bg(Theme::global().INLINE_CODE_BG)
-                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
-                                        .cursor_pointer()
-                                        .text_size(px(10.0))
-                                        .line_height(px(14.0))
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            this.background_running_tool(cx);
-                                        }))
-                                        .child("Background  Alt+B"),
-                                )
-                            })
-                            // The token pill is the sole expansion control,
-                            // including while a tool is still running.
-                            .when(has_detail, |el| {
-                                let key = call_id.clone();
+                            // The token pill shares the row's click target.
+                            .when(has_detail && !display.screenshot_mode, |el| {
                                 el.child(
                                     div()
                                         .id(("tool-output-toggle", index))
@@ -4924,17 +4655,7 @@ impl Panel {
                                         .text_size(px(10.0))
                                         .line_height(px(14.0))
                                         .text_color(token_color)
-                                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            this.toggle_region(&key, cx);
-                                        }))
-                                        // The chevron makes the pill read as a
-                                        // disclosure control, not just a cost.
-                                        .child(if expanded {
-                                            format!("▾ {token_label}")
-                                        } else {
-                                            format!("▸ {token_label}")
-                                        }),
+                                        .child(token_label),
                                 )
                             }),
                         *done,
@@ -4942,18 +4663,144 @@ impl Panel {
                         running_veil,
                     ))
                     .when_some(detail.filter(|_| has_detail), |el, detail| {
-                        // The complete output lives in a bounded scrolling
-                        // region; Copy carries every line, including any the
-                        // region stops painting.
-                        let (body, hidden) = expandable::expanded_body(&detail);
+                        let region = self
+                            .swarm_scrolls
+                            .borrow_mut()
+                            .entry(call_id.clone())
+                            .or_default()
+                            .clone();
+                        let scroll = region.handle.clone();
+                        let applet_instance = crate::applet_runtime::get(cx)
+                            .host
+                            .borrow()
+                            .tool_card(&self.session_id, &call_id)
+                            .map(|mounted| mounted.instance.id.clone());
+                        let mut supplement = if name == "ask" && *done {
+                            Some(
+                                div()
+                                    .debug_selector(|| "ask-result".into())
+                                    .child(self.render_ask_answer(
+                                        call_id.as_str(),
+                                        ask::result_text(input, output, error.as_deref()),
+                                        cx,
+                                    ))
+                                    .into_any_element(),
+                            )
+                        } else if let Some(response) = error
+                            .is_none()
+                            .then(|| user_response::parse(name, input))
+                            .flatten()
+                        {
+                            Some(user_response::render(
+                                &response,
+                                index,
+                                None,
+                                &self.transcript_selection,
+                                self.media_preview_handler(cx),
+                                window,
+                                cx,
+                            ))
+                        } else if let Some(instance) = applet_instance {
+                            crate::applet_surface::card(
+                                &instance,
+                                true,
+                                &self.applet_selection,
+                                window,
+                                cx,
+                            )
+                        } else if name == "todo" && *done && error.is_none() {
+                            parse_todo_tool_output(output).map(|payload| {
+                                render_todo_card_with_style(
+                                    &payload,
+                                    false,
+                                    &format!("todo-{index}"),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        } else {
+                            None
+                        };
+                        if supplement.is_none()
+                            && display.diff_display != crate::config::DiffDisplay::Off
+                        {
+                            supplement = self.render_edit_metadata(
+                                &call_id,
+                                name,
+                                input,
+                                output,
+                                *done,
+                                error.as_deref(),
+                                cx,
+                            );
+                        }
+                        if supplement.is_none() {
+                            let toggle_id = call_id.clone();
+                            if let Some(compose) = gmail_draft_card::parse(name, input) {
+                                let compose =
+                                    gmail_draft_card::merge_output(compose, output, *done);
+                                supplement = Some(gmail_draft_card::render(
+                                    index,
+                                    &compose,
+                                    &gmail_draft_card::outcome(output, *done),
+                                    error.as_deref(),
+                                    tool_card_token_pill(output),
+                                    self.superseded_drafts().get(&call_id).copied(),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            } else if let Some(view) =
+                                gmail_read_card::parse(name, input, output, *done, error.as_deref())
+                            {
+                                supplement = Some(gmail_read_card::render(
+                                    index,
+                                    &view,
+                                    tool_card_token_pill(output),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            } else if let Some(view) =
+                                mcp_list_card::parse(name, input, output, *done, error.as_deref())
+                            {
+                                supplement = Some(mcp_list_card::render(
+                                    index,
+                                    &view,
+                                    tool_card_token_pill(output),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            }
+                        }
+                        let height = if self.expandable_viewport_height > px(0.) {
+                            (f32::from(self.expandable_viewport_height) * 0.6)
+                                .clamp(1., expandable::MAX_HEIGHT)
+                        } else {
+                            expandable::MAX_HEIGHT
+                        };
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
-                                // Keep the collapsed header inline, and give
-                                // expanded output its own quiet card surface.
                                 .opacity(detail_progress)
                                 .relative()
-                                .left(px(6.0 * (1.0 - detail_progress)))
                                 .ml(px(24.0))
                                 .mt_1()
                                 .mb_1()
@@ -4964,121 +4811,80 @@ impl Panel {
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
                                 .text_color(Theme::global().CODE_TEXT)
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(expandable::scrolled(
-                                    format!("tool-detail-{index}-scroll").into(),
-                                    expandable::MAX_HEIGHT,
-                                    text_selection::plain(
-                                        self.transcript_selection.clone(),
-                                        format!("tool-detail-{index}"),
-                                        body,
-                                        window,
-                                        cx,
-                                    ),
-                                ))
                                 .child(
                                     div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(recovery::copy_pill(
-                                            "tool-detail-copy",
-                                            index,
-                                            detail.clone(),
-                                        ))
-                                        .when(hidden > 0, |el| {
-                                            el.child(
-                                                div()
-                                                    .text_size(px(10.0))
-                                                    .text_color(Theme::global().TEXT_FAINT)
-                                                    .child(format!(
-                                                        "{hidden} more lines kept by Copy"
-                                                    )),
-                                            )
-                                        }),
-                                ),
+                                        .id(format!("tool-detail-{index}-scroll"))
+                                        .debug_selector(move || {
+                                            format!("tool-detail-{index}-scroll")
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .max_h(px(height))
+                                        .overflow_y_scroll()
+                                        .track_scroll(&scroll)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .when(!*done && error.is_none() && self.has_running_tool(), |el| {
+                                                el.child(
+                                                    div()
+                                                        .id(("tool-background", index))
+                                                        .debug_selector(|| "tool-background".into())
+                                                        .flex_none()
+                                                        .px_2()
+                                                        .py(px(2.0))
+                                                        .rounded_full()
+                                                        .bg(Theme::global().INLINE_CODE_BG)
+                                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
+                                                        .cursor_pointer()
+                                                        .text_size(px(10.0))
+                                                        .line_height(px(14.0))
+                                                        .text_color(Theme::global().TEXT_FAINT)
+                                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.background_running_tool(cx);
+                                                        }))
+                                                        .child("Background  Alt+B"),
+                                                )
+                                            })
+                                            .children(supplement)
+                                                .child(text_selection::plain(
+                                                    self.transcript_selection.clone(),
+                                                    format!("tool-detail-{index}"),
+                                                    detail,
+                                                    window,
+                                                    cx,
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .debug_selector(|| "tool-detail-end".into())
+                                                        .child(""),
+                                                ),
+                                        ),
+                                )
+                                .child({
+                                    let hitbox = region.hitbox.clone();
+                                    gpui::canvas(
+                                        |bounds, window, _| {
+                                            window
+                                                .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                        },
+                                        move |_, painted, _, _| {
+                                            *hitbox.borrow_mut() = Some(painted)
+                                        },
+                                    )
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                })
+                                .child(crate::scrollbar::vertical_with_track(
+                                    &scroll,
+                                    "tool-detail-scrollbar",
+                                )),
                         )
                     })
-                    .children(error.clone().map(|message| {
-                        // A refusal can run to paragraphs, and its first lines
-                        // are the ones that judge the command. Show those while
-                        // collapsed; the toggle reveals the whole message in a
-                        // scrolling region, and Copy keeps the raw text.
-                        let full = strip_ansi(&message);
-                        let preview = expandable::collapsed(&full, expandable::ERROR);
-                        let truncated = preview.is_some();
-                        let shown = truncated && expanded;
-                        let body = if shown {
-                            expandable::expanded_body(&full).0
-                        } else {
-                            preview.clone().unwrap_or_else(|| full.clone())
-                        };
-                        div()
-                            .debug_selector(|| "tool-error".into())
-                            .id(("tool-error-row", index))
-                            .ml(px(24.0))
-                            .pr_1()
-                            .py_1()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_size(px(11.5))
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_color(Theme::global().ERROR)
-                            .when(truncated, |el| {
-                                let key = call_id.clone();
-                                el.cursor_pointer().on_click(cx.listener(
-                                    move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_region(&key, cx);
-                                    },
-                                ))
-                            })
-                            .child(if shown {
-                                expandable::scrolled(
-                                    format!("tool-error-{index}-scroll").into(),
-                                    expandable::MAX_HEIGHT,
-                                    text_selection::plain(
-                                        self.transcript_selection.clone(),
-                                        format!("tool-error-{index}"),
-                                        body,
-                                        window,
-                                        cx,
-                                    ),
-                                )
-                                .into_any_element()
-                            } else {
-                                text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("tool-error-{index}"),
-                                    body,
-                                    window,
-                                    cx,
-                                )
-                            })
-                            .when(truncated, |el| {
-                                let key = call_id.clone();
-                                el.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(expandable::toggle(
-                                            format!("tool-error-{index}-expand").into(),
-                                            shown,
-                                            "▸ Show full error",
-                                            "▾ Collapse error",
-                                            cx.listener(move |this, _event, _window, cx| {
-                                                cx.stop_propagation();
-                                                this.toggle_region(&key, cx);
-                                            }),
-                                        ))
-                                        .child(recovery::copy_pill("tool-error-copy", index, full)),
-                                )
-                            })
-                    }))
                     .into_any_element()
             }
             Item::Error(message) => self.render_recovery_error(index, message, window, cx),
@@ -6253,8 +6059,12 @@ impl Render for Panel {
                                         };
                                         let inner = inner.or_else(|| {
                                             let scrolls = panel.swarm_scrolls.borrow();
-                                            panel.expanded_regions.iter().find_map(|key| {
-                                                let region = scrolls.get(key)?;
+                                            scrolls.iter().find_map(|(key, region)| {
+                                                let default_open = crate::config::display().show_agentgrep_output
+                                                    && panel.items.iter().any(|item| matches!(item, Item::Tool { call_id, name, .. } if call_id == key && name == "agentgrep"));
+                                                if !(panel.expanded_regions.contains(key) ^ default_open) {
+                                                    return None;
+                                                }
                                                 if !region.hitbox.borrow().as_ref().is_some_and(
                                                     |hitbox| hitbox.should_handle_scroll(window),
                                                 ) {
@@ -7569,9 +7379,7 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Expanded tool detail: the exact invocation and the complete output. The
-/// painted region scrolls and the copy control carries everything, so no part
-/// of a tool result is unreachable.
+/// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
     let arguments = if input.trim().is_empty() {
         "{}"
@@ -7583,8 +7391,8 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
         .unwrap_or_else(|| arguments.to_string());
     let mut parts = vec![format!("Tool call\n{}\n{}", name.trim(), pretty.trim_end())];
-    if !output.trim().is_empty() {
-        parts.push(format!("Output\n{}", strip_ansi(output).trim_end()));
+    if !output.is_empty() {
+        parts.push(format!("Output\n{}", strip_ansi(output)));
     }
     parts.join("\n\n")
 }
@@ -9352,9 +9160,12 @@ mod tests {
             vcx.simulate_click(pill.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(
-                vcx.debug_bounds("tool-detail").is_none(),
-                "identity pill is not an expansion control"
+                vcx.debug_bounds("tool-detail").is_some(),
+                "identity pill expands the row"
             );
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            settle_tool_details(&panel, vcx);
             let status_selector = if failed {
                 "tool-icon-failed"
             } else if done {
@@ -9383,7 +9194,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn only_the_token_button_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
+    fn whole_tool_row_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9429,15 +9240,11 @@ mod tests {
             "detail stays hidden until expanded"
         );
 
-        // The row itself is no longer an expansion target.
-        // The compact header's center may land on the token button.
-        // Click the intent to exercise the non-interactive part of the row.
+        // The intent, like the rest of the header, expands the call.
         let name = vcx.debug_bounds("tool-summary").unwrap();
         vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("tool-detail").is_none());
-        vcx.simulate_click(hint.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
         settle_tool_details(&panel, vcx);
         let detail = vcx
             .debug_bounds("tool-detail")
@@ -9470,13 +9277,7 @@ mod tests {
         // `lines hidden` marker.
         assert!(!rendered.contains("lines hidden"));
 
-        // Clicking the header or output card leaves it open.
-        // The compact header's center may land on the token button.
-        // Click the intent to exercise the non-interactive part of the row.
-        let name = vcx.debug_bounds("tool-summary").unwrap();
-        vcx.simulate_click(name.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("tool-detail").is_some());
+        // Clicking the body does not collapse the call or prevent selection.
         vcx.simulate_click(detail.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
@@ -9522,54 +9323,28 @@ mod tests {
 
     #[gpui::test]
     fn inline_tool_rows_keep_status_errors_and_edit_previews(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::bind_workspace_keys);
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("session-a", cx);
-            workspace
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "inline-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
         });
-        vcx.run_until_parked();
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .expect("panel exists");
-
-        for (name, input, done, error, preview) in [
-            ("bash", r#"{"command":"cargo test"}"#, false, None, false),
+        for (name, input, error, preview) in [
+            ("bash", r#"{"command":"cargo test"}"#, None, false),
             (
                 "bash",
                 r#"{"command":"cargo test"}"#,
-                true,
                 Some("build failed"),
                 false,
             ),
             (
                 "edit",
                 r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                true,
                 None,
                 true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                false,
-                None,
-                true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                true,
-                Some("original text not found"),
-                true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"#,
-                false,
-                None,
-                false,
             ),
         ] {
             panel.update(vcx, |panel, cx| {
@@ -9578,63 +9353,22 @@ mod tests {
                     name: name.into(),
                     input: input.into(),
                     output: String::new(),
-                    done,
+                    done: true,
                     error: error.map(str::to_owned),
                 }];
+                panel.expanded_regions.clear();
+                panel.tool_detail_motion.clear();
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
+            assert!(vcx.debug_bounds("tool-header").is_some());
+            assert!(vcx.debug_bounds("tool-detail").is_none());
+            assert!(vcx.debug_bounds("code-edit-preview").is_none());
+            let row = vcx.debug_bounds("tool-header").unwrap();
+            vcx.simulate_click(row.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("tool-detail").is_some());
             assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
-            if preview {
-                assert!(vcx.debug_bounds("tool-type-icon").is_some());
-                let card = vcx
-                    .debug_bounds("edit-preview-card-0")
-                    .expect("edit card paints");
-                for selector in [
-                    "tool-inline",
-                    "tool-header",
-                    "tool-output-size",
-                    "tool-detail",
-                ] {
-                    assert!(
-                        vcx.debug_bounds(selector).is_none(),
-                        "no duplicate {selector}"
-                    );
-                }
-                for selector in [
-                    "edit-preview-intent-0",
-                    "edit-preview-footer-0",
-                    "tool-error",
-                ] {
-                    if matches!(selector, "tool-error" | "edit-preview-footer-0") && error.is_none()
-                    {
-                        assert!(vcx.debug_bounds(selector).is_none());
-                        continue;
-                    }
-                    let content = vcx.debug_bounds(selector).expect("card content paints");
-                    assert!(content.origin.x >= card.origin.x);
-                    assert!(content.right() <= card.right());
-                    assert!(content.origin.y >= card.origin.y);
-                    assert!(content.bottom() <= card.bottom());
-                }
-                continue;
-            }
-            let row = vcx.debug_bounds("tool-inline").expect("inline row paints");
-            assert!(vcx.debug_bounds("tool-type-icon").is_some());
-            let header = vcx
-                .debug_bounds("tool-header")
-                .expect("status header paints");
-            assert!(row.size.height >= header.size.height);
-            assert!(vcx.debug_bounds("tool-card").is_none());
-            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
-            assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
-            for selector in ["tool-error", "code-edit-preview"] {
-                if let Some(body) = vcx.debug_bounds(selector) {
-                    assert_eq!(body.origin.x, header.origin.x + px(24.0));
-                    assert!(body.origin.y >= header.bottom());
-                }
-            }
         }
     }
 

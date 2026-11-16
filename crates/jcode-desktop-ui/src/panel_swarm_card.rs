@@ -37,6 +37,13 @@ fn friendly_preview(text: &str) -> String {
     result
 }
 
+fn row_preview(text: &str) -> String {
+    friendly_preview(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
     if name.trim_start_matches("functions.") != "swarm" {
         return None;
@@ -162,11 +169,14 @@ impl Panel {
         index: usize,
         call_id: &str,
         call: &Call,
+        name: &str,
+        input: &str,
         done: bool,
         output: &str,
         error: Option<&str>,
         offset: f32,
         opacity: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -180,28 +190,13 @@ impl Panel {
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         let click_focus = focus.clone();
-        let text = call.text.as_str();
-        let preview_text = friendly_preview(text);
-        let preview =
-            expandable::collapsed(&preview_text, expandable::TITLE).unwrap_or(preview_text);
-        let body = if error.is_some() && !call.text.is_empty() {
-            format!("{}\n\n{}", call.text, error.unwrap_or_default())
-        } else if call.action == "spawn" && error.is_none() {
-            call.text.clone()
-        } else if call.text.is_empty() {
-            error.unwrap_or(output).trim().to_owned()
-        } else if call.action != "message" && !output.trim().is_empty() {
-            format!("{}\n\n{}", call.text, output.trim())
-        } else {
-            text.to_owned()
-        };
-        let (body_prefix, body_last) = body
-            .rsplit_once('\n')
-            .map(|(prefix, last)| (Some(prefix.to_owned()), last.to_owned()))
-            .unwrap_or((None, body));
-        let suffix = (call.action == "spawn" && error.is_none())
-            .then(|| call.session_ids.first().map(|id| short_name(id).to_owned()))
-            .flatten();
+        let preview = row_preview(&call.text);
+        let mut body = tool_detail(name, input, output);
+        if let Some(error) = error {
+            body.push_str("\n\nError\n");
+            body.push_str(&strip_ansi(error));
+        }
+        let (token_label, token_color) = tool_output_token_badge(output);
         let height = if self.expandable_viewport_height > px(0.) {
             (f32::from(self.expandable_viewport_height) * 0.6).clamp(1., expandable::MAX_HEIGHT)
         } else {
@@ -241,7 +236,7 @@ impl Panel {
                         this.transcript_measurements.dirty = true;
                         cx.notify();
                     }))
-                    .child(crate::tool_icon::render_status(
+                    .child(crate::tool_icon::render_badge(
                         "swarm",
                         done,
                         error.is_some(),
@@ -263,6 +258,7 @@ impl Panel {
                     )
                     .child(
                         div()
+                            .debug_selector(|| "tool-swarm-preview".into())
                             .min_w_0()
                             .flex_1()
                             .truncate()
@@ -274,11 +270,18 @@ impl Panel {
                                 format!("· {preview}")
                             }),
                     )
+                    .children(self.render_tool_clock(index, call_id, done || error.is_some(), cx))
                     .child(
                         div()
-                            .text_size(px(10.0))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(if expanded { "▾" } else { "▸" }),
+                            .flex_none()
+                            .ml_auto()
+                            .px_2()
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(theme.INLINE_CODE_BG)
+                            .text_size(px(10.))
+                            .text_color(token_color)
+                            .child(token_label),
                     ),
             )
             .when(expanded, |el| {
@@ -308,20 +311,19 @@ impl Panel {
                                         .flex()
                                         .flex_col()
                                         .text_size(px(12.0))
-                                        .text_color(if error.is_some() {
-                                            theme.ERROR
-                                        } else {
-                                            theme.TOOL_TEXT
-                                        })
-                                        .when_some(body_prefix, |el, prefix| el.child(prefix))
+                                        .text_color(theme.TOOL_TEXT)
+                                        .child(text_selection::plain(
+                                            self.transcript_selection.clone(),
+                                            format!("tool-detail-{index}"),
+                                            body,
+                                            window,
+                                            cx,
+                                        ))
                                         .child(
                                             div()
                                                 .debug_selector(|| "swarm-body-end".into())
-                                                .child(body_last),
-                                        )
-                                        .when_some(suffix, |el, name| {
-                                            el.child(div().text_color(theme.TEXT_FAINT).child(name))
-                                        }),
+                                                .child(""),
+                                        ),
                                 ),
                         )
                         .child({
@@ -366,6 +368,47 @@ mod tests {
     }
     use super::*;
     const FOX: &str = "session_fox_1794718668160_87674d9271df588d";
+
+    #[gpui::test]
+    fn preview_uses_available_width_after_resize(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "width-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let text = "a long message with enough words to fill the transcript ".repeat(20);
+        assert_eq!(row_preview(&text), text.trim_end());
+        assert!(row_preview(&text).len() > 90);
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Tool {
+                call_id: "wide".into(),
+                name: "swarm".into(),
+                input: serde_json::json!({"action":"spawn", "label":"worker", "prompt":text})
+                    .to_string(),
+                output: "ok".into(),
+                done: true,
+                error: None,
+            });
+            cx.notify();
+        });
+        let window = vcx.window_handle();
+        vcx.simulate_window_resize(window, gpui::size(px(1400.), px(800.)));
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("tool-swarm-header").unwrap();
+        let preview = vcx.debug_bounds("tool-swarm-preview").unwrap();
+        assert!(
+            preview.size.width > (row.right() - preview.left()) * 0.8,
+            "{preview:?} in {row:?}"
+        );
+        vcx.simulate_window_resize(window, gpui::size(px(800.), px(800.)));
+        vcx.run_until_parked();
+        let narrower = vcx.debug_bounds("tool-swarm-preview").unwrap();
+        assert!(narrower.size.width < preview.size.width);
+    }
 
     #[test]
     fn compact_call_uses_message_and_friendly_target() {

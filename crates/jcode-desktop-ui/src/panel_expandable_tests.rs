@@ -5,25 +5,45 @@ use super::*;
 
 #[gpui::test]
 fn tool_row_click_and_full_output_scroll(cx: &mut gpui::TestAppContext) {
-    let output = format!("{}last output line", "output line\n".repeat(240));
-    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
-        call_id: "bash-row".into(), name: "bash".into(),
-        input: r#"{"command":"echo test","intent":"Run a command"}"#.into(),
-        output, done: true, error: None,
-    }]);
+    let output = format!("{}last output line", "output line\n".repeat(550));
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "bash-row".into(),
+            name: "bash".into(),
+            input: r#"{"command":"echo test","intent":"Run a command"}"#.into(),
+            output,
+            done: true,
+            error: None,
+        }],
+    );
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail").is_some());
     assert!(vcx.debug_bounds("tool-title-0").is_none());
     assert!(vcx.debug_bounds("tool-detail-copy").is_none());
     let viewport = vcx.debug_bounds("tool-detail-0-scroll").unwrap();
-    let handle = panel.read_with(&*vcx, |panel, _| panel.swarm_scrolls.borrow().get("bash-row").unwrap().handle.clone());
+    let handle = panel.read_with(&*vcx, |panel, _| {
+        panel
+            .swarm_scrolls
+            .borrow()
+            .get("bash-row")
+            .unwrap()
+            .handle
+            .clone()
+    });
     assert!(handle.max_offset().y > px(0.));
     vcx.simulate_mouse_move(viewport.center(), None, gpui::Modifiers::default());
-    for _ in 0..100 {
-        vcx.simulate_event(gpui::ScrollWheelEvent { position: viewport.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))), ..Default::default() });
+    for _ in 0..200 {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+            ..Default::default()
+        });
         vcx.run_until_parked();
     }
     assert_eq!(handle.offset().y, -handle.max_offset().y);
+    let end = vcx.debug_bounds("tool-detail-end").unwrap();
+    assert!(end.bottom() <= viewport.bottom() && end.top() >= viewport.top());
     assert!(document_text(&panel, vcx).contains("last output line"));
 }
 
@@ -250,118 +270,80 @@ fn pinned_expanded_prompt_scrolls_without_moving_transcript(cx: &mut gpui::TestA
 }
 
 #[gpui::test]
-fn tool_error_preview_expands_to_the_whole_refusal(cx: &mut gpui::TestAppContext) {
+fn tool_error_is_available_in_expanded_detail(cx: &mut gpui::TestAppContext) {
     let message = irreversible_error();
-    let items = vec![Item::Tool {
-        call_id: "call".into(),
-        name: "bash".into(),
-        input: r#"{"command":"rm -rf /tmp/x"}"#.into(),
-        output: String::new(),
-        done: true,
-        error: Some(message.clone()),
-    }];
-    let (panel, vcx) = panel_with(cx, items);
-    let compact = vcx.debug_bounds("tool-error").expect("error line paints");
-    // Collapsed: the opening claim only, and never the last paragraph.
-    let collapsed = document_text(&panel, vcx);
-    assert!(collapsed.contains("This command was not run"));
-    assert!(!collapsed.contains("justification field"));
-    assert!(collapsed.contains('…'), "the cut is marked: {collapsed}");
-    click(vcx, "tool-error-0-expand");
-    panel.read_with(&*vcx, |panel, _| {
-        assert!(panel.expanded_regions.contains("call"));
-    });
-    let expanded = vcx.debug_bounds("tool-error").expect("region paints");
-    assert!(
-        expanded.size.height > compact.size.height,
-        "the region grew: {compact:?} -> {expanded:?}"
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "call".into(),
+            name: "bash".into(),
+            input: r#"{"command":"rm -rf /tmp/x"}"#.into(),
+            output: String::new(),
+            done: true,
+            error: Some(message),
+        }],
     );
+    assert!(!document_text(&panel, vcx).contains("justification field"));
+    click(vcx, "tool-header");
     let full = document_text(&panel, vcx);
-    assert!(full.contains("justification field"), "full text reachable");
-    assert!(full.contains("Check 11"));
-    assert!(!full.contains('…'));
-    // The scrolling region keeps a long refusal inside the row.
-    let scroll = vcx
-        .debug_bounds("tool-error-0-scroll")
-        .expect("scrolling region paints");
-    assert!(scroll.size.height <= px(expandable::MAX_HEIGHT + 12.0));
-    assert!(
-        vcx.debug_bounds("tool-error-copy").is_some(),
-        "the raw message is copyable"
-    );
-    click(vcx, "tool-error-0-expand");
-    panel.read_with(&*vcx, |panel, _| {
-        assert!(!panel.expanded_regions.contains("call"));
-    });
-    assert_eq!(
-        vcx.debug_bounds("tool-error").unwrap().size.height,
-        compact.size.height
-    );
+    assert!(full.contains("justification field") && full.contains("Check 11"));
+    assert!(vcx.debug_bounds("tool-detail-0-scroll").is_some());
+    assert!(vcx.debug_bounds("tool-error-copy").is_none());
+    click(vcx, "tool-header");
+    assert!(!panel.read_with(&*vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]
 fn tool_output_expands_past_the_old_clip_and_scrolls(cx: &mut gpui::TestAppContext) {
     let output: String = (0..200).map(|n| format!("output line {n}\n")).collect();
-    let items = vec![Item::Tool {
-        call_id: "call".into(),
-        name: "bash".into(),
-        input: r#"{"command":"make build"}"#.into(),
-        output: output.clone(),
-        done: true,
-        error: None,
-    }];
-    let (panel, vcx) = panel_with(cx, items);
-    assert!(
-        vcx.debug_bounds("tool-detail").is_none(),
-        "collapsed by default"
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "call".into(),
+            name: "bash".into(),
+            input: r#"{"command":"make build"}"#.into(),
+            output,
+            done: true,
+            error: None,
+        }],
     );
+    assert!(vcx.debug_bounds("tool-detail").is_none());
     click(vcx, "tool-output-size");
-    let detail = vcx
-        .debug_bounds("tool-detail")
-        .expect("expanded output paints");
+    let detail = vcx.debug_bounds("tool-detail").unwrap();
     assert!(vcx.debug_bounds("tool-detail-0-scroll").is_some());
     assert!(detail.size.height <= px(expandable::MAX_HEIGHT + 64.0));
-    assert!(vcx.debug_bounds("tool-detail-copy").is_some());
+    assert!(vcx.debug_bounds("tool-detail-copy").is_none());
     let text = document_text(&panel, vcx);
-    assert!(text.contains("output line 0"));
-    assert!(text.contains("output line 199"), "nothing is clipped away");
+    assert!(text.contains("output line 0") && text.contains("output line 199"));
 }
 
 #[gpui::test]
-fn tool_title_expands_from_one_line_to_the_whole_intent(cx: &mut gpui::TestAppContext) {
+fn tool_title_stays_one_line_when_expanded(cx: &mut gpui::TestAppContext) {
     let command = format!(
         "{} --and-then-some-more",
         "cargo test --workspace ".repeat(8)
     );
-    let items = vec![Item::Tool {
-        call_id: "call".into(),
-        name: "bash".into(),
-        input: serde_json::json!({ "command": command }).to_string(),
-        output: "ok".into(),
-        done: true,
-        error: None,
-    }];
-    let (panel, vcx) = panel_with(cx, items);
-    let compact = vcx.debug_bounds("tool-header").expect("header paints").size;
-    let text = document_text(&panel, vcx);
-    assert!(text.contains('…'), "the cut is marked: {text}");
-    assert!(!text.contains("--and-then-some-more"));
-    click(vcx, "tool-title-0");
-    let wrapped = vcx.debug_bounds("tool-header").expect("header paints").size;
-    assert!(
-        wrapped.height > compact.height,
-        "the title wraps: {compact:?} -> {wrapped:?}"
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "call".into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": command }).to_string(),
+            output: "ok".into(),
+            done: true,
+            error: None,
+        }],
     );
-    let full = document_text(&panel, vcx);
-    assert!(
-        full.contains("--and-then-some-more"),
-        "full intent reachable"
-    );
-    click(vcx, "tool-title-0");
+    let compact = vcx.debug_bounds("tool-header").unwrap().size;
+    assert!(vcx.debug_bounds("tool-title-0").is_none());
+    click(vcx, "tool-header");
     assert_eq!(
         vcx.debug_bounds("tool-header").unwrap().size.height,
         compact.height
     );
+    assert!(document_text(&panel, vcx).contains("--and-then-some-more"));
+    click(vcx, "tool-header");
+    assert!(!panel.read_with(&*vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]

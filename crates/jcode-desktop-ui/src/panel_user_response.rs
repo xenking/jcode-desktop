@@ -23,7 +23,7 @@ fn height_cap(viewport: Pixels) -> Pixels {
 pub(super) fn render(
     response: &Response,
     index: usize,
-    viewport_height: Pixels,
+    viewport_height: Option<Pixels>,
     selection: &Entity<TextSelection>,
     on_preview: markdown::MediaPreviewHandler,
     window: &mut Window,
@@ -35,8 +35,9 @@ pub(super) fn render(
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .max_h(height_cap(viewport_height))
-        .overflow_y_scroll()
+        .when_some(viewport_height, |el, viewport| {
+            el.max_h(height_cap(viewport)).overflow_y_scroll()
+        })
         .rounded_xl()
         .bg(Theme::global().TOOL_BG)
         .p_4()
@@ -142,6 +143,10 @@ mod tests {
         let mut heights = Vec::new();
         for item in fixtures {
             panel.update(vcx, |panel, cx| {
+                panel.expanded_regions.clear();
+                if let crate::panel::Item::Tool { call_id, .. } = &item {
+                    panel.expanded_regions.insert(call_id.clone());
+                }
                 *panel.items = vec![item];
                 cx.notify();
             });
@@ -154,17 +159,13 @@ mod tests {
                 card.size.width >= transcript.size.width * 0.85,
                 "card should fill transcript: {card:?} {transcript:?}"
             );
+            let scroll = vcx
+                .debug_bounds("tool-detail-0-scroll")
+                .expect("tool scroll viewport");
+            assert!(scroll.size.height <= px(crate::panel::expandable::MAX_HEIGHT));
             assert!(
-                card.size.height <= transcript.size.height + px(1.),
-                "card should not exceed viewport: {card:?} {transcript:?}"
-            );
-            assert!(
-                card.origin.y >= transcript.origin.y - px(1.),
-                "tail-follow must keep card title visible: {card:?} {transcript:?}"
-            );
-            assert!(
-                card.bottom() <= transcript.bottom(),
-                "card must remain inside usable transcript: {card:?} {transcript:?}"
+                scroll.bottom() <= transcript.bottom(),
+                "scroll viewport stays inside transcript"
             );
             heights.push(card.size.height);
         }

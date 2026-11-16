@@ -244,6 +244,9 @@ mod tests {
             vcx.run_until_parked();
             assert_eq!(drain(&commands), 1, "{chord}");
         }
+        let header = vcx.debug_bounds("tool-header").expect("running tool row");
+        vcx.simulate_click(header.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
         let pill = vcx
             .debug_bounds("tool-background")
             .expect("running tool shows a Background pill");

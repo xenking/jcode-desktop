@@ -173,16 +173,11 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
         panel
     });
     assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-summary-0"),
-        "printf βeta"
-    );
-    assert_eq!(
         drag_copy(vcx, "selectable-text-tool-detail-0"),
-        tool_detail("bash", input, output)
-    );
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-error-0"),
-        "A useful error"
+        format!(
+            "{}\n\nError\nA useful error",
+            tool_detail("bash", input, output)
+        )
     );
     assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
     // Text gestures must not steal the adjacent disclosure control.
