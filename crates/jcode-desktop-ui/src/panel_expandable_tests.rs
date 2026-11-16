@@ -4,6 +4,22 @@
 use super::*;
 
 #[gpui::test]
+fn bg_result_shows_structured_details(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "bg-result".into(), name: "bg".into(),
+        input: r#"{"action":"wait","task_id":"abc"}"#.into(),
+        output: "Background task finished.\n\nTask: abc\nName: build\nStatus: completed\nDuration: 2s\nExit code: 0\n\nOutput preview:\n```text\nhello\n```".into(),
+        done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-detail-status").is_some());
+    assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
+    let text = document_text(&panel, vcx);
+    assert!(text.contains("completed") && text.contains("task_id") && text.contains("hello"));
+    assert!(!text.contains("Tool call\n") && !text.contains("{\n"));
+}
+
+#[gpui::test]
 fn tool_row_click_and_full_output_scroll(cx: &mut gpui::TestAppContext) {
     let output = format!("{}last output line", "output line\n".repeat(550));
     let (panel, vcx) = panel_with(

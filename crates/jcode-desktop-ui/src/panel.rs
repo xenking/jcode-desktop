@@ -4826,6 +4826,10 @@ impl Panel {
                                             div()
                                                 .flex()
                                                 .flex_col()
+                                                .when_some(tool_bg_status(name, output), |el, status| {
+                                                    let color = if status.eq_ignore_ascii_case("completed") { Theme::global().OK } else if status.eq_ignore_ascii_case("failed") { Theme::global().ERROR } else { Theme::global().WARN };
+                                                    el.child(div().debug_selector(|| "tool-detail-status".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(color).child(status))
+                                                })
                                                 .when(!*done && error.is_none() && self.has_running_tool(), |el| {
                                                 el.child(
                                                     div()
@@ -7384,20 +7388,61 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
 
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
-    let arguments = if input.trim().is_empty() {
-        "{}"
-    } else {
-        input.trim()
-    };
-    let pretty = serde_json::from_str::<serde_json::Value>(arguments)
-        .ok()
-        .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| arguments.to_string());
-    let mut parts = vec![format!("Tool call\n{}\n{}", name.trim(), pretty.trim_end())];
+    if matches!(name, "edit" | "apply_patch") {
+        let arguments = if input.trim().is_empty() { "{}" } else { input.trim() };
+        let pretty = serde_json::from_str::<serde_json::Value>(arguments)
+            .ok().and_then(|value| serde_json::to_string_pretty(&value).ok())
+            .unwrap_or_else(|| arguments.to_string());
+        let mut result = format!("Tool call\n{}\n{}", name.trim(), pretty.trim_end());
+        if !output.is_empty() { result.push_str(&format!("\n\nOutput\n{}", strip_ansi(output))); }
+        return result;
+    }
+    let mut parts = Vec::new();
+    if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
+        let rows = arguments
+            .into_iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    serde_json::Value::String(text) => text,
+                    other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+                };
+                format!("{key}: {value}")
+            })
+            .collect::<Vec<_>>();
+        if !rows.is_empty() {
+            parts.push(rows.join("\n"));
+        }
+    } else if !input.trim().is_empty() {
+        parts.push(input.trim().to_string());
+    }
     if !output.is_empty() {
-        parts.push(format!("Output\n{}", strip_ansi(output)));
+        let output = strip_ansi(output);
+        let output = if name == "bg" {
+            output
+                .strip_prefix("Background task finished.\n\n")
+                .or_else(|| output.strip_prefix("Background task was already finished.\n\n"))
+                .unwrap_or(&output)
+                .to_owned()
+        } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
+            serde_json::to_string_pretty(&json).unwrap_or(output)
+        } else {
+            output
+        };
+        parts.push(output);
     }
     parts.join("\n\n")
+}
+
+fn tool_bg_status(name: &str, output: &str) -> Option<String> {
+    if name != "bg" {
+        return None;
+    }
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("Status: "))
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map(str::to_owned)
 }
 
 /// Keep a block short from the top, noting how much was hidden.
@@ -8156,15 +8201,14 @@ mod tests {
     #[test]
     fn tool_detail_pretty_prints_and_clips() {
         let detail = tool_detail("bash", r#"{"a":1}"#, "line1\nline2");
-        assert!(detail.starts_with("Tool call\nbash\n"));
-        assert!(detail.contains("\"a\": 1"));
-        assert!(detail.contains("\n\nOutput\nline1\nline2"));
+        assert!(detail.starts_with("a: 1"));
+        assert!(detail.contains("\n\nline1\nline2"));
         assert!(detail.contains("line2"));
         // Nothing is dropped from the middle: the painted region scrolls and
         // Copy keeps every line, so the detail is the complete output.
         let long: String = (0..500).map(|n| format!("l{n}\n")).collect();
         let detail = tool_detail("bash", "{}", &long);
-        assert!(detail.contains("Tool call\nbash\n{}"));
+        assert!(!detail.contains("Tool call"));
         for n in [0, 250, 499] {
             assert!(detail.contains(&format!("l{n}")), "line {n} is kept");
         }
@@ -9272,9 +9316,8 @@ mod tests {
             other => panic!("expected the tool row, got {other:?}"),
         });
         assert!(!rendered.contains('\u{1b}'), "detail must be ANSI-free");
-        assert!(rendered.contains("Tool call\nbash\n"));
-        assert!(rendered.contains("\"command\": \"make build\""));
-        assert!(rendered.contains("\n\nOutput\n"));
+        assert!(rendered.contains("command:"));
+        assert!(rendered.contains("command: make build"));
         assert!(rendered.contains("line 0") && rendered.contains("line 59"));
         // The complete output is reachable now, not a 40-line window around a
         // `lines hidden` marker.
