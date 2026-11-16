@@ -41,6 +41,8 @@ def main():
         }
         if "--ask" in sys.argv[2:]:
             env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "ask"
+        if "--background" in sys.argv[2:]:
+            env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         with open(root / "stderr", "w+") as log:
             proc = subprocess.Popen([str(binary), "--single-panel", "--new-process", "--no-hot-reload"], env=env, stdout=log, stderr=log)
             try:
@@ -65,6 +67,20 @@ def main():
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["status"] == "ok", state
                 assert state["result"]["panel"]["session_id"] == target["session_id"]
+                if "--background" in sys.argv[2:]:
+                    opened = request(endpoint, {"action": "open_session", "session_id": "swarm-fixture-0", "destination": {"background_panel": {"window_id": window}}})
+                    assert opened["status"] == "ok", opened
+                    background = {"window_id": window, "session_id": "swarm-fixture-0"}
+                    state = request(endpoint, {"action": "state", "target": background})
+                    assert state["status"] == "ok", state
+                    protected = request(endpoint, {"action": "set_composer", "target": target, "text": "must not overwrite"})
+                    assert protected["status"] == "error" and protected["code"] == "user_window_focused", protected
+                    set_background = request(endpoint, {"action": "set_composer", "target": background, "text": "safe background draft"})
+                    assert set_background["status"] == "ok", set_background
+                    state = request(endpoint, {"action": "state", "target": background})
+                    assert state["result"]["panel"]["composer"] == "safe background draft", state
+                    print("private Desktop background session and focused composer protection passed")
+                    return
                 if "--ask" in sys.argv[2:]:
                     for _ in range(60):
                         state = request(endpoint, {"action": "state", "target": target})
