@@ -661,6 +661,7 @@ pub struct Panel {
     publish_armed_at: Option<Instant>,
     /// Whether the session's pinned todo card is hidden by its sidebar button.
     todo_card_hidden: bool,
+    todo_status_view: bool,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -1199,6 +1200,7 @@ impl Panel {
             publish_tracker: false,
             publish_armed_at: None,
             todo_card_hidden: false,
+            todo_status_view: false,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -3777,7 +3779,8 @@ impl Panel {
     }
 
     pub(crate) fn show_or_toggle_todos(&mut self, toggle: bool, cx: &mut Context<Self>) {
-        self.todo_card_hidden = toggle && !self.todo_card_hidden;
+        self.todo_card_hidden = toggle && self.todo_status_view && !self.todo_card_hidden;
+        self.todo_status_view = true;
         cx.notify();
     }
 
@@ -4448,6 +4451,7 @@ impl Panel {
             Item::Todos(payload) => render_todo_card_with_style(
                 payload,
                 false,
+                false,
                 &format!("todo-{index}"),
                 &self.transcript_selection,
                 window,
@@ -4740,6 +4744,7 @@ impl Panel {
                             parse_todo_tool_output(output).map(|payload| {
                                 render_todo_card_with_style(
                                     &payload,
+                                    false,
                                     false,
                                     &format!("todo-{index}"),
                                     &self.transcript_selection,
@@ -6041,6 +6046,7 @@ impl Render for Panel {
                     .child(render_todo_card_with_style(
                         &payload,
                         true,
+                        self.todo_status_view,
                         "pinned-todo",
                         &self.transcript_selection,
                         window,
@@ -7117,6 +7123,7 @@ fn intent_understanding_tone(state: jcode_base::todo::IntentUnderstanding) -> To
 fn render_todo_card_with_style(
     payload: &TodoCardPayload,
     pinned: bool,
+    status_view: bool,
     key: &str,
     selection: &Entity<TextSelection>,
     window: &Window,
@@ -7143,21 +7150,32 @@ fn render_todo_card_with_style(
 
     let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
     for todo in &payload.todos {
-        let group = todo
-            .group
-            .as_deref()
-            .map(str::trim)
-            .filter(|g| !g.is_empty());
+        let group = if status_view {
+            Some(todo.status.as_str())
+        } else {
+            todo.group.as_deref().map(str::trim).filter(|g| !g.is_empty())
+        };
+        let stage = if status_view { None } else { todo.stage };
         if let Some((_, _, items)) = groups
             .iter_mut()
-            .find(|(stage, known, _)| *stage == todo.stage && *known == group)
+            .find(|(known_stage, known, _)| *known_stage == stage && *known == group)
         {
             items.push(todo);
         } else {
-            groups.push((todo.stage, group, vec![todo]));
+            groups.push((stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
+    if status_view {
+        groups.sort_by_key(|(_, group, _)| match *group {
+            Some("in_progress") => 0,
+            Some("pending") => 1,
+            Some("completed") => 2,
+            Some("cancelled") => 3,
+            _ => 4,
+        });
+    } else {
+        groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
+    }
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -7196,8 +7214,10 @@ fn render_todo_card_with_style(
             }
             let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
+                let status_selector = format!("pinned-todo-status-{}", group.unwrap_or("other"));
                 section = section.child(
                     div()
+                        .when(status_view, |el| el.debug_selector(move || status_selector.clone()))
                         .flex()
                         .items_center()
                         .justify_between()
@@ -7226,10 +7246,11 @@ fn render_todo_card_with_style(
                         ),
                 );
             }
-            if let Some(goal) = todo_goal_for_group(&payload.goals, group) {
+            if !status_view && let Some(goal) = todo_goal_for_group(&payload.goals, group) {
                 section = section.child(render_todo_gate_row(goal));
             }
             for (todo_index, todo) in todos.into_iter().enumerate() {
+                let item_selector = format!("pinned-todo-item-{}", todo.content);
                 section = section.child(
                     div()
                         .debug_selector(|| "todo-row".into())
@@ -7243,7 +7264,7 @@ fn render_todo_card_with_style(
                         ))
                         .child(
                             div()
-                                .debug_selector(|| "todo-row-content".into())
+                                .debug_selector(move || if status_view { item_selector.clone() } else { "todo-row-content".into() })
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()

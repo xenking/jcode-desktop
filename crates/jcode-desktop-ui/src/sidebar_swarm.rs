@@ -1067,7 +1067,7 @@ mod tests {
         });
         vcx.run_until_parked();
         let lead = vcx.debug_bounds("sidebar-session-0").unwrap();
-        for (index, glyph) in ["spinner", "check", "cross", "pause"]
+        for (index, glyph) in ["spinner", "pause", "check", "cross"]
             .into_iter()
             .enumerate()
         {
@@ -1155,7 +1155,7 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
             lead_with_workers(w, cx, &[]);
-            w.slots[w.active].panel.update(cx, |panel, cx| panel.test_set_todos(r#"[{"content":"Ship","status":"in_progress","stage":2,"group":"desktop","assigned_to":"@self"}]"#, cx));
+            w.slots[w.active].panel.update(cx, |panel, cx| panel.test_set_todos(r#"[{"content":"Ship","status":"in_progress"},{"content":"Plan","status":"pending"},{"content":"Build","status":"completed"},{"content":"Skip","status":"cancelled"}]"#, cx));
             let other = session("other", None);
             w.sessions.push(other.clone());
             w.active = w.open_session(other, cx);
@@ -1179,6 +1179,12 @@ mod tests {
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "lead")
         });
         assert!(vcx.debug_bounds("pinned-todo-card").is_some());
+        for status in ["in_progress", "pending", "completed", "cancelled"] {
+            assert!(vcx.debug_bounds(format!("pinned-todo-status-{status}").leak()).is_some(), "missing {status}");
+        }
+        for item in ["Ship", "Plan", "Build", "Skip"] {
+            assert!(vcx.debug_bounds(format!("pinned-todo-item-{item}").leak()).is_some(), "missing {item}");
+        }
         let pill = vcx
             .debug_bounds(format!("sidebar-todos-{row}").leak())
             .unwrap()

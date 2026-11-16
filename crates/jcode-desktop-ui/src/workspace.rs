@@ -6089,18 +6089,21 @@ impl Workspace {
                     .sidebar_projects
                     .checkout(&child.session)
                     .map(|checkout| checkout.path);
-                if own.is_some() && own != root_checkout {
+                let worker = crate::swarm_view::Worker::from_session(
+                    &child.session,
+                    self.worker_meta.get(&child.session.session_id),
+                    swarm_now,
+                );
+                let separate_checkout = own.is_some() && own != root_checkout;
+                if separate_checkout && !worker.state.is_live() {
                     continue;
                 }
-                nested.insert(child.session.session_id.clone());
-                nested_workers.entry(root.clone()).or_default().push((
-                    child.depth,
-                    crate::swarm_view::Worker::from_session(
-                        &child.session,
-                        self.worker_meta.get(&child.session.session_id),
-                        swarm_now,
-                    ),
-                ));
+                // Live worktree agents remain visible under their coordinator
+                // and in their own checkout.
+                if !separate_checkout {
+                    nested.insert(child.session.session_id.clone());
+                }
+                nested_workers.entry(root.clone()).or_default().push((child.depth, worker));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
                 if crate::swarm_view::worker_state(&child.session).is_active() {
@@ -6112,6 +6115,8 @@ impl Workspace {
         // and the latest few finished, fold the rest into "+N finished".
         let mut folded_workers: HashMap<String, usize> = HashMap::new();
         for (root, workers) in nested_workers.iter_mut() {
+            // Keep live work first even when the finished section is expanded.
+            workers.sort_by_key(|(_, worker)| !worker.state.is_live());
             let (shown, hidden) = sidebar_swarm::visible(workers);
             if !self
                 .expanded_lines
@@ -6380,11 +6385,7 @@ impl Workspace {
                     saved: session.saved,
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
-                        || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                        || session
-                            .edit_stats
-                            .as_ref()
-                            .is_some_and(sidebar_edits::has_changes)),
+                        || session.transcript_bytes.is_some_and(|bytes| bytes > 0)),
                     menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
@@ -6569,9 +6570,6 @@ impl Workspace {
                                 .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
                             let todo_session = session.clone();
                             let meta = sidebar_session_meta(session);
-                            let edits = session.edit_stats.as_ref().filter(|stats| sidebar_edits::has_changes(stats)).map(|stats| {
-                                sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
-                            });
                             let details = match (directory, meta) {
                                 (Some(directory), Some(meta)) => {
                                     Some(format!("{directory} · {meta}"))
@@ -6843,7 +6841,7 @@ impl Workspace {
                                                 )
                                             })
                                     )
-                                    .when(details.is_some() || edits.is_some() || todo_progress.is_some(), |row| {
+                                    .when(details.is_some() || todo_progress.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -6867,7 +6865,7 @@ impl Workspace {
                                                                 .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
                                                                 .when(details.is_some(), |el| el.mr_1())
                                                                 .when(done == total, |el| el.text_color(Theme::global().OK))
-                                                                .rounded_md().px_1().cursor_pointer()
+                                                                .rounded_full().px_1().cursor_pointer()
                                                                 .hover(|el| el.bg(Theme::global().TOOL_BG))
                                                                 .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
                                                                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
@@ -6885,8 +6883,7 @@ impl Workspace {
                                                         .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
                                                             line.child(div().min_w_0().truncate().child(details))
                                                         }),
-                                                )
-                                                .children(edits),
+                                                ),
                                         )
                                     }),
                             );

@@ -222,6 +222,7 @@ fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
     helper.swarm_status = Some("working".into());
     let mut isolated = session("isolated", &f.search);
     isolated.parent_session_id = Some("lead".into());
+    isolated.swarm_status = Some("running".into());
     let (workspace, vcx, _) = setup(cx, vec![lead, helper, isolated]);
     let ids = workspace.read_with(vcx, |w, _| {
         w.sidebar_session_layout
@@ -235,6 +236,14 @@ fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
         "the coordinator counts its same-checkout agent"
     );
     assert!(!text(vcx, "sidebar-agents-1"));
+    assert!(
+        text(vcx, "sidebar-worker-0-0"),
+        "live worktree worker must appear under its coordinator"
+    );
+    assert!(
+        text(vcx, "sidebar-worker-0-1"),
+        "both live workers must remain visible"
+    );
     assert!(
         text(vcx, "sidebar-checkout-1"),
         "the worktree agent sits under its own branch"
