@@ -243,6 +243,7 @@ pub struct PromptInput {
     editor_scroll: gpui::ScrollHandle,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
+    empty_submit: bool,
     pending_session: bool,
     spacious: bool,
     /// Right padding reserved for a control the host floats inside the box
@@ -821,6 +822,7 @@ impl PromptInput {
             editor_scroll: gpui::ScrollHandle::new(),
             revealed_caret: None,
             submission_enabled: true,
+            empty_submit: false,
             pending_session: false,
             spacious: false,
             trailing_inset: 0.,
@@ -831,6 +833,11 @@ impl PromptInput {
             ghost: None,
             tab_cycle: None,
         }
+    }
+
+    pub(crate) fn with_empty_submit(mut self) -> Self {
+        self.empty_submit = true;
+        self
     }
 
     /// Suggest inline completions (ghost text, Tab accepts) when enabled in
@@ -1450,6 +1457,9 @@ impl PromptInput {
             .unwrap_or_else(|| self.content.to_string());
         let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
+            if self.empty_submit && !queued {
+                (self.on_submit)(String::new(), Vec::new(), false, window, cx);
+            }
             return;
         }
         if self.command_completion && self.attachments.is_empty() {

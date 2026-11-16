@@ -46,6 +46,10 @@ pub struct PromptQueue {
     pending_remote_history_counts: std::collections::HashMap<String, usize>,
     #[serde(default)]
     remote_failures: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    send_now_error: Option<String>,
+    #[serde(skip)]
+    send_now_generation: u64,
     #[serde(default)]
     default_after_yield: bool,
     #[serde(skip)]
@@ -169,6 +173,7 @@ impl Panel {
             .prompt_queue
             .pending_remote
             .iter()
+            .chain(&self.prompt_queue.remote)
             .any(|prompt| prompt.client_id == client_id)
         {
             self.prompt_queue
@@ -309,6 +314,24 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
+        if !queued && self.has_visible_queued_prompts() {
+            if !content.trim().is_empty() || !images.is_empty() {
+                if self.prompt_queue.remote_supported
+                    && !self.is_pending_session()
+                    && !self.prompt_queue.waiting_for_connection
+                {
+                    self.send_remote_prompt(content, images, true, cx);
+                } else {
+                    self.prompt_queue.prompts.push(QueuedPrompt {
+                        content,
+                        images,
+                        after_yield: true,
+                    });
+                }
+            }
+            self.interrupt_all_queued_prompts(cx);
+            return;
+        }
         if self.prompt_queue.remote_supported
             && !self.is_pending_session()
             && !self.prompt_queue.waiting_for_connection
@@ -338,6 +361,56 @@ impl Panel {
             self.send_queued_prompts(cx);
         } else {
             self.send_composer_prompt(content, images, cx);
+        }
+        cx.notify();
+    }
+
+    fn interrupt_all_queued_prompts(&mut self, cx: &mut Context<Self>) {
+        let mut ids = Vec::new();
+        for prompt in self
+            .prompt_queue
+            .remote
+            .iter()
+            .chain(&self.prompt_queue.pending_remote)
+        {
+            if !ids.contains(&prompt.client_id) {
+                ids.push(prompt.client_id.clone());
+            }
+        }
+        if ids.is_empty()
+            || !self.prompt_queue.prompts.is_empty()
+            || !self.prompt_queue.steered.is_empty()
+        {
+            self.prompt_queue.send_now_error = Some("Cannot send this queue now until the runtime reconnects and supports batch delivery.".into());
+        } else {
+            self.prompt_queue.send_now_error = None;
+            for id in &ids {
+                self.prompt_queue.remote_failures.remove(id);
+            }
+            self.prompt_queue.send_now_generation = self.prompt_queue.send_now_generation.wrapping_add(1);
+            let generation = self.prompt_queue.send_now_generation;
+            let pending_ids = ids.clone();
+            self.bridge.send(Command::InterruptQueuedPrompts {
+                session_id: self.session_id.clone(),
+                ids,
+            });
+            cx.spawn(async move |panel, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                let _ = panel.update(cx, |this, cx| {
+                    if this.prompt_queue.send_now_generation != generation { return; }
+                    let remaining: Vec<_> = pending_ids.iter().filter(|id| {
+                        !this.prompt_queue.delivered_ids.contains(*id)
+                            && !this.prompt_queue.remote_failures.contains_key(*id)
+                            && this.prompt_queue.remote.iter().chain(&this.prompt_queue.pending_remote).any(|p| &p.client_id == *id)
+                    }).cloned().collect();
+                    if !remaining.is_empty() {
+                        let reason = "Delivery is still blocked. Escalating cancellation; retry Send now if it remains queued.".to_string();
+                        for id in remaining { this.prompt_queue.remote_failures.insert(id, reason.clone()); }
+                        this.bridge.send(Command::Cancel { session_id: this.session_id.clone() });
+                        cx.notify();
+                    }
+                });
+            }).detach();
         }
         cx.notify();
     }
@@ -491,9 +564,10 @@ impl Panel {
         match event {
             ApiEvent::QueuedPrompts { prompts, .. } => {
                 self.prompt_queue.remote_supported = true;
-                self.prompt_queue
-                    .remote_failures
-                    .retain(|id, _| !prompts.iter().any(|p| &p.client_id == id));
+                self.prompt_queue.remote_failures.retain(|id, _| {
+                    prompts.iter().any(|p| &p.client_id == id)
+                        || self.prompt_queue.pending_remote.iter().any(|p| &p.client_id == id)
+                });
                 self.prompt_queue
                     .pending_remote
                     .retain(|pending| !prompts.iter().any(|p| p.client_id == pending.client_id));

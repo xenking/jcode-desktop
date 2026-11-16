@@ -531,6 +531,113 @@ fn event(mut value: serde_json::Value) -> ApiEvent {
 }
 
 #[gpui::test]
+fn queued_row_has_visible_send_now_action(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(vcx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("queue-row-send-now-0").is_some(),
+        "row Send now must be visible without opening a menu"
+    );
+    assert!(
+        vcx.debug_bounds("queue-send-all-now").is_some(),
+        "header must offer Send all now"
+    );
+    let row = vcx.debug_bounds("queue-row-send-now-0").unwrap();
+    vcx.simulate_click(row.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b"])
+    );
+    let header = vcx.debug_bounds("queue-send-all-now").unwrap();
+    vcx.simulate_click(header.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b"])
+    );
+}
+
+#[gpui::test]
+fn enter_with_text_adds_it_to_the_queued_batch(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
+        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.simulate_input("new text");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let new_id = match commands.try_recv() {
+        Ok(Command::QueuePrompt { prompt, .. }) => {
+            assert_eq!(prompt.content, "new text");
+            assert_eq!(prompt.mode, jcode_sdk::api::QueuedPromptMode::AfterYield);
+            prompt.client_id
+        }
+        _ => panic!("expected queue command"),
+    };
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b", &new_id])
+    );
+}
+
+#[gpui::test]
+fn empty_enter_with_queue_interrupts_now(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
+        let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+    });
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b"]),
+        "empty Enter must trigger batch interrupt"
+    );
+}
+
+#[gpui::test]
+fn unconfirmed_batch_escalates_and_shows_reason(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"after_yield"}]})), cx);
+        panel
+    });
+    panel.update(cx, |p, cx| p.interrupt_all_queued_prompts(cx));
+    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { .. })));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
+    panel.read_with(cx, |p, _| assert!(p.prompt_queue.remote_failures["a"].contains("blocked")));
+}
+
+#[gpui::test]
 fn hidden_retry_output_resumes_queue_without_acceptance_but_cancelled_retry_does_not(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -1157,7 +1264,8 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
     );
 
     panel.update(vcx, |p, cx| {
-        p.submit_or_queue("and this too".into(), vec![], false, cx)
+        p.send_prompt("and this too".into(), vec![], cx);
+        cx.notify();
     });
     vcx.run_until_parked();
     assert!(
@@ -1211,8 +1319,9 @@ fn two_steered_messages_are_queued_or_in_the_transcript_never_both(cx: &mut gpui
     }
     let (panel, vcx, commands) = steered_panel(cx, "steer-both");
     panel.update(vcx, |p, cx| {
-        p.submit_or_queue("first steer".into(), vec![], false, cx);
-        p.submit_or_queue("second steer".into(), vec![], false, cx);
+        p.send_prompt("first steer".into(), vec![], cx);
+        p.send_prompt("second steer".into(), vec![], cx);
+        cx.notify();
     });
     vcx.run_until_parked();
     assert!(matches!(commands.try_recv(), Ok(Command::Send { .. })));
@@ -1333,9 +1442,17 @@ fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestApp
         p.apply(&event(json!({"ev":"session_status", "status":"idle"})), cx);
     });
     vcx.run_until_parked();
-    let button = vcx.debug_bounds("resend-steered-0").expect("unconfirmed steer can be resent explicitly");
+    let button = vcx
+        .debug_bounds("resend-steered-0")
+        .expect("unconfirmed steer can be resent explicitly");
     vcx.simulate_click(button.center(), Default::default());
     vcx.run_until_parked();
     let sent: Vec<_> = commands.try_iter().collect();
-    assert!(sent.iter().any(|command| matches!(command, Command::Send { content, .. } if content == "late note")), "received {} commands", sent.len());
+    assert!(
+        sent.iter().any(
+            |command| matches!(command, Command::Send { content, .. } if content == "late note")
+        ),
+        "received {} commands",
+        sent.len()
+    );
 }

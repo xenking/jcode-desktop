@@ -48,10 +48,7 @@ impl Panel {
                     });
                 }
                 ("enter", false) => {
-                    self.bridge.send(Command::InterruptQueuedPrompt {
-                        session_id: self.session_id.clone(),
-                        client_id: id,
-                    });
+                    self.interrupt_all_queued_prompts(cx);
                     self.prompt_queue.card_menu = None;
                     self.focus_input(window, cx);
                 }
@@ -139,6 +136,32 @@ impl Panel {
                 .px_1()
                 .text_size(px(12.))
                 .text_color(theme.TEXT)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_2()
+                        .child("Queued messages")
+                        .child(
+                            div()
+                                .id("queue-send-all-now")
+                                .debug_selector(|| "queue-send-all-now".into())
+                                .rounded_full()
+                                .px_2()
+                                .py_1()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.TOOL_BG))
+                                .child("Send all now")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.interrupt_all_queued_prompts(cx);
+                                    cx.stop_propagation();
+                                })),
+                        ),
+                )
+                .when_some(queue.send_now_error.clone(), |el, reason| {
+                    el.child(div().px_2().text_color(theme.ERROR).child(reason))
+                })
                 .child(
                     div()
                         .id("prompt-queue-items")
@@ -495,7 +518,6 @@ impl Panel {
         let key_text = key.clone();
         let key_menu = key.clone();
         let mode_id = id.clone();
-        let interrupt_id = id.clone();
         let retry_id = id.clone();
         let retry = prompt.clone();
         let delete_prompt = prompt.clone();
@@ -556,6 +578,9 @@ impl Panel {
                     .child(
                         div()
                             .id(SharedString::from(format!("queue-mode-{id}")))
+                            .debug_selector(move || {
+                                format!("queue-row-send-now-{}", index.unwrap_or(0))
+                            })
                             .flex()
                             .items_center()
                             .gap_1()
@@ -573,19 +598,9 @@ impl Panel {
                                     .size(px(12.))
                                     .text_color(theme.TEXT_DIM),
                             )
-                            .child(if prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer {
-                                "Steer"
-                            } else {
-                                "After yield"
-                            })
+                            .child("Send now")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if !pending {
-                                    this.bridge.send(Command::SetQueuedPromptMode {
-                                        session_id: this.session_id.clone(),
-                                        client_id: mode_id.clone(),
-                                        mode: next,
-                                    });
-                                }
+                                this.interrupt_all_queued_prompts(cx);
                                 cx.stop_propagation();
                             })),
                     )
@@ -601,14 +616,17 @@ impl Panel {
                                 .px_2()
                                 .cursor_pointer()
                                 .text_color(theme.ERROR)
-                                .child(div().size(px(6.)).rounded_full().bg(theme.ERROR))
                                 .child("Retry")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.prompt_queue.remote_failures.remove(&retry_id);
-                                    this.bridge.send(Command::QueuePrompt {
-                                        session_id: this.session_id.clone(),
-                                        prompt: retry.clone(),
-                                    });
+                                    if pending {
+                                        this.bridge.send(Command::QueuePrompt {
+                                            session_id: this.session_id.clone(),
+                                            prompt: retry.clone(),
+                                        });
+                                    } else {
+                                        this.interrupt_all_queued_prompts(cx);
+                                    }
                                     cx.stop_propagation();
                                     cx.notify();
                                 })),
@@ -687,6 +705,10 @@ impl Panel {
             .when(expanded, |el| {
                 el.child(div().px_4().pb_2().text_color(theme.TEXT).child(full))
             })
+            .when_some(
+                self.prompt_queue.remote_failures.get(&id).cloned(),
+                |el, reason| el.child(div().px_2().text_color(theme.ERROR).child(reason)),
+            )
             .when(menu && !pending, |el| {
                 el.child(
                     div()
@@ -695,6 +717,25 @@ impl Panel {
                         .gap_1()
                         .px_2()
                         .pb_2()
+                        .child(menu_action(
+                            "remote-queue-mode",
+                            index.unwrap_or(0),
+                            if next == jcode_sdk::api::QueuedPromptMode::Steer {
+                                "Switch to steer"
+                            } else {
+                                "Switch to after yield"
+                            },
+                            cx.listener(move |this, _, _, cx| {
+                                this.bridge.send(Command::SetQueuedPromptMode {
+                                    session_id: this.session_id.clone(),
+                                    client_id: mode_id.clone(),
+                                    mode: next,
+                                });
+                                this.prompt_queue.card_menu = None;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        ))
                         .when(mutations, |el| {
                             el.child(menu_action(
                                 "remote-queue-edit",
@@ -750,10 +791,7 @@ impl Panel {
                                 .child("Send now / interrupt")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.prompt_queue.card_menu = None;
-                                    this.bridge.send(Command::InterruptQueuedPrompt {
-                                        session_id: this.session_id.clone(),
-                                        client_id: interrupt_id.clone(),
-                                    });
+                                    this.interrupt_all_queued_prompts(cx);
                                     cx.stop_propagation();
                                     cx.notify();
                                 })),

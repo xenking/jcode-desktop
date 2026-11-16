@@ -333,6 +333,10 @@ pub enum Command {
         session_id: String,
         client_id: String,
     },
+    InterruptQueuedPrompts {
+        session_id: String,
+        ids: Vec<String>,
+    },
     CancelQueuedPrompt {
         session_id: String,
         client_id: String,
@@ -465,6 +469,7 @@ enum SessionCommand {
     ReorderQueuedPrompts(Vec<String>),
     SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
     InterruptQueuedPrompt(String),
+    InterruptQueuedPrompts(Vec<String>),
     CancelQueuedPrompt(String),
     /// Send a side question with its steering hidden from the transcript.
     SendSideQuestion {
@@ -1346,6 +1351,14 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::InterruptQueuedPrompt(client_id),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::InterruptQueuedPrompts { session_id, ids } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::InterruptQueuedPrompts(ids),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2845,6 +2858,28 @@ fn session_worker_with_connector(
                                 session_id: session_id.clone(),
                                 reason: error.to_string(),
                             });
+                        }
+                    }
+                    SessionCommand::InterruptQueuedPrompts(ids) => {
+                        let result = if client.supports("queued_prompt_batch_interrupt_v1") {
+                            client
+                                .interrupt_queued_prompts(real_id, ids.clone())
+                                .map_err(|error| error.to_string())
+                        } else if ids.len() == 1 {
+                            client
+                                .interrupt_queued_prompt(real_id, &ids[0])
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("This runtime cannot interrupt a queue batch. Update the runtime and retry.".to_string())
+                        };
+                        if let Err(reason) = result {
+                            for client_id in ids {
+                                let _ = updates.send(Update::QueuePromptFailed {
+                                    session_id: session_id.clone(),
+                                    client_id,
+                                    reason: reason.clone(),
+                                });
+                            }
                         }
                     }
                     SessionCommand::CancelQueuedPrompt(client_id) => {

@@ -2043,6 +2043,18 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        if !queued
+                            && let Some(panel) = weak.upgrade()
+                            && panel.read(app).has_visible_queued_prompts()
+                        {
+                            panel.update(app, |this, cx| {
+                                this.submit_or_queue(content, images, false, cx)
+                            });
+                            return;
+                        }
+                        if content.trim().is_empty() && images.is_empty() {
+                            return;
+                        }
                         if images.is_empty()
                             && let Some(panel) = weak.upgrade()
                             && Panel::dispatch_workspace_command(&panel, &content, _window, app)
@@ -2165,6 +2177,7 @@ impl Panel {
                         }
                     },
                 )
+                .with_empty_submit()
                 .with_example_prompts()
                 .with_ghost_completions({
                     let weak = change_weak.clone();
