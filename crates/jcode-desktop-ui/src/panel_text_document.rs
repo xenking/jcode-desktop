@@ -256,7 +256,12 @@ fn segments_with_regions(
                         push(format!("{key}-error"), error.clone());
                     }
                 }
-                if let Some(result) = tool_output::background_output(name, output) {
+                if let Some((args, result)) =
+                    tool_output::bash_sections(name, input, output, error.as_deref())
+                {
+                    push(format!("tool-detail-{index}"), args);
+                    push(format!("tool-bash-output-{index}"), result);
+                } else if let Some(result) = tool_output::background_output(name, output) {
                     push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
                     for (field_index, line) in result.fields.into_iter().enumerate() {
                         push(format!("tool-bg-field-{index}-{field_index}"), line);
@@ -453,9 +458,10 @@ mod tests {
         tools.insert("call".into());
         let expanded = cache.sync(&items, &rows, &prompts, &tools).unwrap();
         assert!(
-            expanded.iter().any(
-                |(key, text)| key.as_ref() == "tool-detail-1" && text.contains("hidden output")
-            )
+            expanded
+                .iter()
+                .any(|(key, text)| key.as_ref() == "tool-bash-output-1"
+                    && text.contains("hidden output"))
         );
         assert!(cache.sync(&items, &rows, &prompts, &tools).is_none());
         let trimmed = cache.sync(&items, &rows[..1], &prompts, &tools).unwrap();

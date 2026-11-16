@@ -119,10 +119,19 @@ fn transcript_selection_stops_after_release_outside_panel(cx: &mut gpui::TestApp
 }
 
 fn drag_copy(vcx: &mut gpui::VisualTestContext, key: &'static str) -> String {
+    drag_copy_between(vcx, key, key)
+}
+
+fn drag_copy_between(
+    vcx: &mut gpui::VisualTestContext,
+    first: &'static str,
+    last: &'static str,
+) -> String {
     vcx.run_until_parked();
-    let bounds = vcx.debug_bounds(key).unwrap();
-    let start = point(bounds.left() + px(1.), bounds.top() + px(2.));
-    let end = point(bounds.right() + px(20.), bounds.bottom() - px(2.));
+    let first = vcx.debug_bounds(first).unwrap();
+    let last = vcx.debug_bounds(last).unwrap();
+    let start = point(first.left() + px(1.), first.top() + px(2.));
+    let end = point(last.right() + px(20.), last.bottom() - px(2.));
     vcx.simulate_event(gpui::MouseDownEvent {
         button: gpui::MouseButton::Left,
         position: start,
@@ -173,7 +182,11 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
         panel
     });
     assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-detail-0"),
+        drag_copy_between(
+            vcx,
+            "selectable-text-tool-detail-0",
+            "selectable-text-tool-bash-output-0"
+        ),
         format!(
             "{}\n\nError\nA useful error",
             tool_detail("bash", input, output)
@@ -255,16 +268,29 @@ fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
 fn markdown_tool_output_copies_rendered_text(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("tool-markdown-selection".into(), None, None, crate::harness::spawn_inert(), cx);
+        let mut panel = Panel::new(
+            "tool-markdown-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
         *panel.items = vec![Item::Tool {
-            call_id: "md".into(), name: "webfetch".into(), input: "{}".into(),
-            output: "# Report\n\nA **useful** result.".into(), done: true, error: None,
+            call_id: "md".into(),
+            name: "webfetch".into(),
+            input: "{}".into(),
+            output: "# Report\n\nA **useful** result.".into(),
+            done: true,
+            error: None,
         }];
         panel.expanded_regions.insert("md".into());
         panel
     });
     let key = format!("selectable-text-{}-1", tool_output::markdown_row(0));
-    assert_eq!(drag_copy(vcx, Box::leak(key.into_boxed_str())), "A useful result.");
+    assert_eq!(
+        drag_copy(vcx, Box::leak(key.into_boxed_str())),
+        "A useful result."
+    );
 }
 
 #[gpui::test]
@@ -289,7 +315,10 @@ fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppConte
         panel.expanded_regions.insert(expandable::key::task("task"));
         panel
     });
-    assert_eq!(drag_copy(vcx, "selectable-text-background-detail-0"), "Task: task\nAll tests passed");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-background-detail-0"),
+        "Task: task\nAll tests passed"
+    );
 }
 
 #[gpui::test]

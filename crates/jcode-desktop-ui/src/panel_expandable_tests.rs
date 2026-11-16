@@ -52,6 +52,8 @@ fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
     }]);
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail-exit-code").is_some());
+    assert!(vcx.debug_bounds("tool-bash-command").is_some());
+    assert!(vcx.debug_bounds("tool-bash-output-code").is_some());
     assert!(document_text(&panel, vcx).contains("command: false"));
 }
 

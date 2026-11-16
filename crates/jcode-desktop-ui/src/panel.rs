@@ -4890,7 +4890,12 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(if let Some(result) = tool_output::background_output(name, output) {
+                                                .child(if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
+                                                    div().flex().flex_col()
+                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
+                                                        .into_any_element()
+                                                } else if let Some(result) = tool_output::background_output(name, output) {
                                                     let args = tool_detail(name, input, "");
                                                     let rows = result.fields.into_iter().enumerate().filter(|(_, line)| !line.is_empty()).map(|(field_index, line)| {
                                                         div().min_w_0().text_color(Theme::global().TEXT_FAINT).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-field-{index}-{field_index}"), line, window, cx)).into_any_element()

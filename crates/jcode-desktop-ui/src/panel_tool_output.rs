@@ -47,6 +47,29 @@ pub(super) fn bash_exit_code(name: &str, output: &str) -> Option<i32> {
     })
 }
 
+pub(super) fn bash_sections(
+    name: &str,
+    input: &str,
+    output: &str,
+    error: Option<&str>,
+) -> Option<(String, String)> {
+    if name != "bash" {
+        return None;
+    }
+    let input_value: serde_json::Value = serde_json::from_str(input).ok()?;
+    input_value.get("command")?.as_str()?;
+    let mut args = tool_detail(name, input, "");
+    let mut result = strip_ansi(output);
+    if let Some(error) = error {
+        result.push_str("\n\nError\n");
+        result.push_str(&strip_ansi(error));
+    }
+    if !result.is_empty() {
+        args.push('\n');
+    }
+    Some((args, result))
+}
+
 pub(super) struct BackgroundOutput {
     pub fields: Vec<String>,
     pub preview: Option<String>,
