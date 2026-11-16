@@ -3370,6 +3370,9 @@ impl Panel {
                 data,
                 message,
             } => {
+                if *command == jcode_sdk::api::RuntimeCommand::Mode {
+                    self.active_skill = data["pinned_skill"].as_str().map(str::to_owned);
+                }
                 if *command == jcode_sdk::api::RuntimeCommand::Skills {
                     let skills = data["skills"]
                         .as_array()

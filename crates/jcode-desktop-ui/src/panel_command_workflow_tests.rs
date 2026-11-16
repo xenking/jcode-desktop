@@ -37,6 +37,38 @@ fn skills_is_a_runtime_operation_not_a_model_turn(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
+fn mode_command_updates_the_skill_after_daemon_confirmation(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("mode-session".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        assert!(panel.handle_slash_command("/mode poteto-mode", cx));
+        panel.apply_event(
+            &ApiEvent::RuntimeCommandResult {
+                session_id: "mode-session".into(),
+                command: jcode_sdk::api::RuntimeCommand::Mode,
+                data: serde_json::json!({"pinned_skill": "poteto-mode"}),
+                message: "Session mode: poteto-mode".into(),
+            },
+            cx,
+        );
+        assert_eq!(panel.active_skill.as_deref(), Some("poteto-mode"));
+        panel.apply_event(
+            &ApiEvent::RuntimeCommandResult {
+                session_id: "mode-session".into(),
+                command: jcode_sdk::api::RuntimeCommand::Mode,
+                data: serde_json::json!({"pinned_skill": null}),
+                message: "Session mode: off".into(),
+            },
+            cx,
+        );
+        assert!(panel.active_skill.is_none());
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::RuntimeCommand {
+        command: jcode_sdk::api::RuntimeCommand::Mode, args, ..
+    }) if args == ["poteto-mode"]));
+}
+
+#[gpui::test]
 fn skill_invocation_is_not_reported_as_unknown(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("skill-session".into(), None, None, bridge, cx));
