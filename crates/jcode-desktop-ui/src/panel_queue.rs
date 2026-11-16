@@ -100,6 +100,10 @@ impl Panel {
             || !self.prompt_queue.pending_remote.is_empty()
     }
 
+    pub(super) fn has_visible_queued_prompts(&self) -> bool {
+        self.has_queued_prompts() || !self.prompt_queue.steered.is_empty()
+    }
+
     /// Prompts handed to the runtime as steering and not yet delivered.
     pub(crate) fn steered_prompt_count(&self) -> usize {
         self.prompt_queue.steered.len()
@@ -696,7 +700,6 @@ impl Panel {
         }
         row.into_any_element()
     }
-
 }
 
 fn queue_action(

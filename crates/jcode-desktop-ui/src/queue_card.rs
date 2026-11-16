@@ -5,6 +5,58 @@ const TRASH: &[u8] = include_bytes!("../../../assets/icons/trash.svg");
 const OVERFLOW: &[u8] = include_bytes!("../../../assets/icons/overflow.svg");
 
 impl Panel {
+    pub(in crate::panel) fn handle_queue_card_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self
+            .prompt_queue
+            .card_menu
+            .as_deref()
+            .and_then(|key| key.strip_prefix("local-"))
+            .and_then(|index| index.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if index >= self.prompt_queue.prompts.len() {
+            self.prompt_queue.card_menu = None;
+            return false;
+        }
+        let key = event.keystroke.key.as_str();
+        let alt = event.keystroke.modifiers.alt;
+        match (key, alt) {
+            ("up", true) if index > 0 => {
+                self.prompt_queue.prompts.swap(index, index - 1);
+                self.prompt_queue.card_menu = Some(format!("local-{}", index - 1));
+            }
+            ("down", true) if index + 1 < self.prompt_queue.prompts.len() => {
+                self.prompt_queue.prompts.swap(index, index + 1);
+                self.prompt_queue.card_menu = Some(format!("local-{}", index + 1));
+            }
+            ("up" | "down", true) => {}
+            ("m", false) => {
+                self.prompt_queue.prompts[index].after_yield =
+                    !self.prompt_queue.prompts[index].after_yield
+            }
+            ("enter", false)
+                if !self.is_pending_session() && !self.prompt_queue.waiting_for_connection =>
+            {
+                self.prompt_queue.card_menu = None;
+                self.send_queued_prompt_now(index, cx);
+                self.focus_input(window, cx);
+            }
+            ("escape", false) => {
+                self.prompt_queue.card_menu = None;
+                self.focus_input(window, cx);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     pub(super) fn render_queue_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let queue = &self.prompt_queue;
         if queue.prompts.is_empty()
@@ -26,6 +78,7 @@ impl Panel {
                 .flex_col()
                 .rounded_t_lg()
                 .border_1()
+                .border_b_0()
                 .border_color(theme.INPUT_BORDER)
                 .bg(theme.TOOL_BG)
                 .pb(px(4.))
@@ -232,13 +285,18 @@ impl Panel {
                         "queue-overflow",
                         index,
                         OVERFLOW,
-                        cx.listener(move |this, _, _, cx| {
+                        cx.listener(move |this, _, window, cx| {
                             this.prompt_queue.card_menu =
                                 if this.prompt_queue.card_menu.as_deref() == Some(&key_menu) {
                                     None
                                 } else {
                                     Some(key_menu.clone())
                                 };
+                            if this.prompt_queue.card_menu.is_some() {
+                                window.focus(&this.focus_handle, cx);
+                            } else {
+                                this.focus_input(window, cx);
+                            }
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -347,6 +405,20 @@ impl Panel {
                     .child(self.render_queued_content(&prompt.content, &prompt.images, cx)),
             )
             .child(div().text_color(theme.TEXT_DIM).child("Steer"))
+            .when(!self.activity_active(), |row| {
+                row.child(menu_action(
+                    "resend-steered",
+                    index,
+                    "Send again",
+                    cx.listener(move |this, _, _, cx| {
+                        if index < this.prompt_queue.steered.len() {
+                            let prompt = this.prompt_queue.steered.remove(index);
+                            this.submit_or_queue(prompt.content, prompt.images, false, cx);
+                        }
+                        cx.stop_propagation();
+                    }),
+                ))
+            })
             .into_any_element()
     }
 
@@ -358,9 +430,16 @@ impl Panel {
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let id = prompt.client_id.clone();
+        let key = format!("remote-{id}");
+        let expanded = self.prompt_queue.card_expanded.as_deref() == Some(&key);
+        let menu = self.prompt_queue.card_menu.as_deref() == Some(&key);
+        let key_text = key.clone();
+        let key_menu = key.clone();
         let mode_id = id.clone();
+        let interrupt_id = id.clone();
         let retry_id = id.clone();
         let retry = prompt.clone();
+        let full = prompt.content.clone();
         let failed = self.prompt_queue.remote_failures.contains_key(&id);
         let next = match prompt.mode {
             jcode_sdk::api::QueuedPromptMode::Steer => jcode_sdk::api::QueuedPromptMode::AfterYield,
@@ -369,98 +448,165 @@ impl Panel {
         div()
             .id(SharedString::from(format!("daemon-queued-{id}")))
             .flex()
-            .items_center()
-            .gap_2()
+            .flex_col()
+            .flex_none()
             .min_w_0()
-            .h(px(30.))
-            .px_2()
             .rounded_lg()
             .hover(|el| el.bg(theme.QUOTE_BG))
             .child(
-                gpui::svg()
-                    .data(INDENT)
-                    .size(px(14.))
-                    .text_color(theme.TEXT_DIM),
-            )
-            .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(self.render_queued_content(&prompt.content, &prompt.images, cx)),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("queue-mode-{id}")))
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .flex_none()
-                    .rounded_full()
+                    .gap_2()
+                    .min_w_0()
+                    .h(px(30.))
                     .px_2()
-                    .py_1()
-                    .text_color(theme.TEXT_DIM)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.TOOL_BG))
-                    .child(gpui::svg().data(INDENT).size(px(12.)))
-                    .child(if prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer {
-                        "Steer"
-                    } else {
-                        "After yield"
+                    .child(
+                        gpui::svg()
+                            .data(INDENT)
+                            .size(px(14.))
+                            .text_color(theme.TEXT_DIM),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("queue-text-{id}")))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .cursor_pointer()
+                            .child(self.render_queued_content(&prompt.content, &prompt.images, cx))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prompt_queue.card_expanded = if this
+                                    .prompt_queue
+                                    .card_expanded
+                                    .as_deref()
+                                    == Some(&key_text)
+                                {
+                                    None
+                                } else {
+                                    Some(key_text.clone())
+                                };
+                                cx.stop_propagation();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("queue-mode-{id}")))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_none()
+                            .rounded_full()
+                            .px_2()
+                            .py_1()
+                            .text_color(theme.TEXT_DIM)
+                            .when(!pending, |el| {
+                                el.cursor_pointer().hover(|el| el.bg(theme.TOOL_BG))
+                            })
+                            .child(gpui::svg().data(INDENT).size(px(12.)))
+                            .child(if prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer {
+                                "Steer"
+                            } else {
+                                "After yield"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !pending {
+                                    this.bridge.send(Command::SetQueuedPromptMode {
+                                        session_id: this.session_id.clone(),
+                                        client_id: mode_id.clone(),
+                                        mode: next,
+                                    });
+                                }
+                                cx.stop_propagation();
+                            })),
+                    )
+                    .when(failed, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("queue-retry-{id}")))
+                                .debug_selector(|| "queue-send-control".into())
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .rounded_full()
+                                .px_2()
+                                .cursor_pointer()
+                                .text_color(theme.ERROR)
+                                .child(div().size(px(6.)).rounded_full().bg(theme.ERROR))
+                                .child("Retry")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.prompt_queue.remote_failures.remove(&retry_id);
+                                    this.bridge.send(Command::QueuePrompt {
+                                        session_id: this.session_id.clone(),
+                                        prompt: retry.clone(),
+                                    });
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        )
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !pending {
-                            this.bridge.send(Command::SetQueuedPromptMode {
-                                session_id: this.session_id.clone(),
-                                client_id: mode_id.clone(),
-                                mode: next,
-                            });
-                        }
-                        cx.stop_propagation();
-                    })),
+                    .when(!pending, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("queue-overflow-{id}")))
+                                .debug_selector(|| "remote-queue-overflow".into())
+                                .size(px(22.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.TOOL_BG))
+                                .child(
+                                    gpui::svg()
+                                        .data(OVERFLOW)
+                                        .size(px(13.))
+                                        .text_color(theme.TEXT_DIM),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.prompt_queue.card_menu = if this
+                                        .prompt_queue
+                                        .card_menu
+                                        .as_deref()
+                                        == Some(&key_menu)
+                                    {
+                                        None
+                                    } else {
+                                        Some(key_menu.clone())
+                                    };
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
-            .when(failed, |el| {
-                el.child(
-                    div()
-                        .id(SharedString::from(format!("queue-interrupt-{id}")))
-                        .debug_selector(|| "queue-send-control".into())
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .rounded_full()
-                        .px_2()
-                        .cursor_pointer()
-                        .text_color(theme.ERROR)
-                        .child(div().size(px(6.)).rounded_full().bg(theme.ERROR))
-                        .child("Retry")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.prompt_queue.remote_failures.remove(&retry_id);
-                            this.bridge.send(Command::QueuePrompt {
-                                session_id: this.session_id.clone(),
-                                prompt: retry.clone(),
-                            });
-                            cx.stop_propagation();
-                            cx.notify();
-                        })),
-                )
+            .when(expanded, |el| {
+                el.child(div().px_4().pb_2().text_color(theme.TEXT).child(full))
             })
-            .when(!pending, |el| {
+            .when(menu && !pending, |el| {
                 el.child(
-                    div()
-                        .id(SharedString::from(format!("queue-interrupt-action-{id}")))
-                        .debug_selector(|| "queue-send-control".into())
-                        .rounded_full()
-                        .px_2()
-                        .cursor_pointer()
-                        .text_color(theme.TEXT_DIM)
-                        .child("Interrupt")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.bridge.send(Command::InterruptQueuedPrompt {
-                                session_id: this.session_id.clone(),
-                                client_id: id.clone(),
-                            });
-                            cx.stop_propagation();
-                        })),
+                    div().flex().gap_1().px_2().pb_2().child(
+                        div()
+                            .id(SharedString::from(format!("queue-interrupt-{id}")))
+                            .debug_selector(|| "queue-send-control".into())
+                            .rounded_full()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_color(theme.TEXT_DIM)
+                            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+                            .child("Send now / interrupt")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prompt_queue.card_menu = None;
+                                this.bridge.send(Command::InterruptQueuedPrompt {
+                                    session_id: this.session_id.clone(),
+                                    client_id: interrupt_id.clone(),
+                                });
+                                cx.stop_propagation();
+                                cx.notify();
+                            })),
+                    ),
                 )
             })
             .into_any_element()

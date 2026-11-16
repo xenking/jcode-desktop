@@ -5833,6 +5833,7 @@ impl Render for Panel {
                                 .flex()
                                 .flex_col()
                                 .gap_2()
+                                .when(self.has_visible_queued_prompts(), |el| el.gap_0())
                                 .children(self.render_prompt_queue(cx))
                                 .children(self.render_voice_pending())
                                 .child(self.render_composer(window, cx))
@@ -6009,6 +6010,7 @@ impl Render for Panel {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
+                                    .when(self.has_visible_queued_prompts(), |el| el.gap_0())
                                     .children(self.render_prompt_queue(cx))
                                     .children(self.render_voice_pending())
                                     .child(self.render_composer(window, cx))
@@ -6130,7 +6132,8 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.handle_ask_key(event, window, cx)
+                if this.handle_queue_card_key(event, window, cx)
+                    || this.handle_ask_key(event, window, cx)
                     || this.resume_composer_typing(event, false, window, cx)
                 {
                     cx.stop_propagation();

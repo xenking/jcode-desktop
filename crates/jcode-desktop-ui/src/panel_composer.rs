@@ -413,6 +413,10 @@ impl Panel {
                             .flex()
                             .flex_col()
                             .gap_2()
+                            .when(
+                                self.has_visible_queued_prompts() && self.ask_card.is_none(),
+                                |el| el.gap_0(),
+                            )
                             .children(self.render_ask_card(window, cx))
                             .children(self.render_side_question_card(cx))
                             .children(if self.ask_card.is_none() {
