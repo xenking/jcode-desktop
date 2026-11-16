@@ -131,8 +131,7 @@ impl Results {
 }
 
 /// What the screen is currently doing, for the status line and empty states.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Status {
     /// No query typed yet.
     #[default]
@@ -203,7 +202,6 @@ pub struct Screen {
     selected: Option<usize>,
     error: Option<String>,
 }
-
 
 /// What a query change obliges the caller to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,10 +297,7 @@ impl Screen {
         self.expanded.clear();
         self.rows = layout(&results, &self.expanded);
         self.results = Some(results);
-        self.selected = self
-            .rows
-            .iter()
-            .position(Row::is_selectable);
+        self.selected = self.rows.iter().position(Row::is_selectable);
         true
     }
 
@@ -380,9 +375,10 @@ impl Screen {
         self.rows = layout(&results, &self.expanded);
         // The header survives the re-layout, so keep the caret on it rather
         // than on whatever row happens to occupy the old index.
-        self.selected = self.rows.iter().position(|row| {
-            matches!(row, Row::Group { session_id: id, .. } if *id == session_id)
-        });
+        self.selected = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::Group { session_id: id, .. } if *id == session_id));
         true
     }
 
@@ -536,7 +532,6 @@ pub fn window_snippet(snippet: &str, highlights: &[Highlight]) -> (String, Vec<H
             let start = *offsets.get(highlight.start as usize)?;
             start.map(|start| (start, highlight))
         })
-        .map(|(start, highlight)| (start, highlight))
         .min_by_key(|(start, _)| *start);
 
     // Window: about SNIPPET_LEAD characters of context before the match, then
@@ -635,7 +630,11 @@ pub(crate) fn reveal_needle(hit: &SearchHit) -> String {
         return hit.snippet.trim().to_string();
     }
     // Character offset of the first highlight, translated to a segment index.
-    let first_highlight = hit.highlights.first().map(|highlight| highlight.start).unwrap_or(0);
+    let first_highlight = hit
+        .highlights
+        .first()
+        .map(|highlight| highlight.start)
+        .unwrap_or(0);
     let mut consumed = 0u32;
     let mut chosen = segments.len() - 1;
     for (index, segment) in segments.iter().enumerate() {
