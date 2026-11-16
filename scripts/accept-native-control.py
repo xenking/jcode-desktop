@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -70,6 +71,17 @@ def main():
                         break
                     time.sleep(0.05)
                 assert selectors, f"no visible fixture tool selector: {state['result']['panel']['visible_transcript_items']!r}, navigation={state['result']['navigation']!r}"
+                wait = request(endpoint, {"action": "wait_for", "target": target, "condition": {"kind": "selector_visible", "selector": selectors[0]}, "timeout_ms": 1000})
+                assert wait["status"] == "ok", wait
+                blocked = []
+                waiter = threading.Thread(target=lambda: blocked.append(request(endpoint, {"action": "wait_for", "target": target, "condition": {"kind": "text_contains", "text": "never-present-9381948"}, "timeout_ms": 1500})))
+                waiter.start()
+                time.sleep(0.1)
+                start = time.monotonic()
+                concurrent = request(endpoint, {"action": "state", "target": target})
+                assert concurrent["status"] == "ok" and time.monotonic() - start < 0.8, concurrent
+                waiter.join(timeout=3)
+                assert not waiter.is_alive() and blocked[0]["status"] == "error", blocked
                 element_png = root / "tool.png"
                 element = request(endpoint, {"action": "render", "target": target, "selector": selectors[0], "path": str(element_png)})
                 assert element["status"] == "ok", element

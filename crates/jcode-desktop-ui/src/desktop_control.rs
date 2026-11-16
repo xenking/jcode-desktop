@@ -2,7 +2,9 @@
 //! window thread, never on this socket thread.
 #[cfg(unix)]
 mod unix {
-    use jcode_sdk::desktop_control::{DesktopRequest, DesktopResponse};
+    use jcode_sdk::desktop_control::{
+        DESKTOP_CONTROL_VERSION, DesktopAction, DesktopRequest, DesktopResponse,
+    };
     use std::{
         io::{self, Read, Write},
         os::unix::{
@@ -12,7 +14,7 @@ mod unix {
         path::PathBuf,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc,
         },
         thread,
@@ -69,12 +71,13 @@ mod unix {
             listener.set_nonblocking(true)?;
             let stop = Arc::new(AtomicBool::new(false));
             let worker_stop = stop.clone();
+            let waiters = Arc::new(AtomicUsize::new(0));
             let (tx, rx) = async_channel::bounded(8);
             let thread = thread::spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            if let Err(e) = handle(&mut stream, &tx, &worker_stop) {
+                            if let Err(e) = handle(&mut stream, &tx, &worker_stop, &waiters) {
                                 let response = DesktopResponse::Error {
                                     code: "transport".into(),
                                     message: e.to_string(),
@@ -112,7 +115,8 @@ mod unix {
     fn handle(
         stream: &mut UnixStream,
         tx: &async_channel::Sender<Pending>,
-        stop: &AtomicBool,
+        stop: &Arc<AtomicBool>,
+        waiters: &Arc<AtomicUsize>,
     ) -> io::Result<()> {
         // Accepted sockets can inherit the listener's nonblocking mode on macOS.
         // A large semantic state must not be truncated after its first buffer.
@@ -143,7 +147,116 @@ mod unix {
                 Err(e) => return Err(e),
             }
         }
-        let request = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        let request: DesktopRequest = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if let DesktopAction::WaitFor {
+            target,
+            condition,
+            timeout_ms,
+        } = request.action
+        {
+            if request.v != DESKTOP_CONTROL_VERSION || !(1..=120_000).contains(&timeout_ms) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid wait version or timeout",
+                ));
+            }
+            if let jcode_sdk::desktop_control::WaitCondition::SelectorVisible { selector } =
+                &condition
+                && !selector.starts_with("tool:")
+                && !selector.starts_with("row:")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "only transcript selector visibility is supported",
+                ));
+            }
+            if waiters
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < 8).then_some(count + 1)
+                })
+                .is_err()
+            {
+                return Err(io::Error::other("too many concurrent desktop waits"));
+            }
+            let mut socket = match stream.try_clone() {
+                Ok(socket) => socket,
+                Err(error) => {
+                    waiters.fetch_sub(1, Ordering::AcqRel);
+                    return Err(error);
+                }
+            };
+            let tx = tx.clone();
+            let stop = stop.clone();
+            let waiters = waiters.clone();
+            thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+                let response = loop {
+                    if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+                        break DesktopResponse::Error {
+                            code: "timeout".into(),
+                            message: "wait_for timed out".into(),
+                        };
+                    }
+                    let (reply, result) = mpsc::sync_channel(1);
+                    let poll_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
+                    if tx
+                        .try_send(Pending {
+                            request: DesktopRequest {
+                                v: DESKTOP_CONTROL_VERSION,
+                                action: DesktopAction::State {
+                                    target: target.clone(),
+                                },
+                            },
+                            reply,
+                            deadline: poll_deadline,
+                        })
+                        .is_err()
+                    {
+                        break DesktopResponse::Error {
+                            code: "busy".into(),
+                            message: "desktop request queue is full or closed".into(),
+                        };
+                    }
+                    let response = loop {
+                        if stop.load(Ordering::Acquire) || Instant::now() >= poll_deadline {
+                            break None;
+                        }
+                        match result.recv_timeout(Duration::from_millis(10)) {
+                            Ok(response) => break Some(response),
+                            Err(mpsc::RecvTimeoutError::Timeout) => (),
+                            Err(_) => break None,
+                        }
+                    };
+                    match response {
+                        Some(DesktopResponse::Ok { result })
+                            if jcode_sdk::desktop_control::condition_met(&condition, &result) =>
+                        {
+                            break DesktopResponse::Ok { result };
+                        }
+                        Some(DesktopResponse::Ok { .. }) => (),
+                        Some(error) => break error,
+                        None => {
+                            break DesktopResponse::Error {
+                                code: "timeout".into(),
+                                message: "desktop state request timed out".into(),
+                            };
+                        }
+                    }
+                    thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(100)),
+                    );
+                };
+                let _ = writeln!(
+                    socket,
+                    "{}",
+                    serde_json::to_string(&response).unwrap_or_default()
+                );
+                waiters.fetch_sub(1, Ordering::AcqRel);
+            });
+            return Ok(());
+        }
         let (reply, result) = mpsc::sync_channel(1);
         tx.try_send(Pending {
             request,
