@@ -71,6 +71,26 @@ fn assert_settled_partial_output(panel: &Panel) {
 }
 
 #[gpui::test]
+fn unconfirmed_cancel_reports_timeout_and_late_confirmation_replaces_it(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+        assert_eq!(notices(panel)[0].title, "Stop requested by you");
+    });
+    vcx.run_until_parked();
+    vcx.executor().advance_clock(std::time::Duration::from_secs(6));
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        assert_eq!(notices(panel)[0].title, "Stop not confirmed");
+        assert!(notices(panel)[0].detail.contains("may still be running"));
+        panel.apply(&stopped(TurnStopReason::Interrupted, "Runtime confirmed"), cx);
+        assert_eq!(notices(panel)[0].title, "Response interrupted");
+    });
+}
+
+#[gpui::test]
 fn all_stop_categories_preserve_partial_output_settle_tools_and_pause_queue(
     cx: &mut gpui::TestAppContext,
 ) {

@@ -125,6 +125,25 @@ fn connection_lost_detail(reason: &str) -> String {
 }
 
 impl Panel {
+    pub(super) fn record_cancel_requested(&mut self, cx: &mut Context<Self>) {
+        self.record_stop(StopNotice::cancel_requested());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+            let _ = this.update(cx, |panel, cx| {
+                if let Some(notice) = panel.items.iter_mut().rev()
+                    .take_while(|item| !matches!(item, Item::User(_)))
+                    .find_map(|item| match item { Item::Stopped(notice) => Some(notice), _ => None })
+                    && notice.provisional && notice.title == "Stop requested by you"
+                {
+                    notice.title = "Stop not confirmed".into();
+                    notice.detail = "The runtime did not confirm cancellation. The turn may still be running; check the connection and try again.".into();
+                    panel.transcript_measurements.dirty = true;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+
     /// Update the failure of the current turn as automatic recovery progresses.
     pub(super) fn set_auto_retry(&mut self, retry: AutoRetry) {
         let notice = self

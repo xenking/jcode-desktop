@@ -2202,7 +2202,7 @@ impl Panel {
                                 }
                                 this.prompt_queue.paused = true;
                                 this.sound_events.cancel();
-                                this.record_stop(stop_reason::StopNotice::cancel_requested());
+                                this.record_cancel_requested(cx);
                                 handled = true;
                             }
                             cx.notify();
@@ -2307,7 +2307,7 @@ impl Panel {
             self.bridge.send(Command::Cancel {
                 session_id: self.session_id.clone(),
             });
-            self.record_stop(stop_reason::StopNotice::cancel_requested());
+            self.record_cancel_requested(cx);
             self.items.push(Item::Assistant("Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.".into()));
             cx.notify();
             return true;
@@ -2411,7 +2411,7 @@ impl Panel {
                     self.bridge.send(Command::Cancel {
                         session_id: self.session_id.clone(),
                     });
-                    self.record_stop(stop_reason::StopNotice::cancel_requested());
+                    self.record_cancel_requested(cx);
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
