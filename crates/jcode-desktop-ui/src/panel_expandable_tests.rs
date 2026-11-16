@@ -3,6 +3,30 @@
 
 use super::*;
 
+#[gpui::test]
+fn tool_row_click_and_full_output_scroll(cx: &mut gpui::TestAppContext) {
+    let output = format!("{}last output line", "output line\n".repeat(240));
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "bash-row".into(), name: "bash".into(),
+        input: r#"{"command":"echo test","intent":"Run a command"}"#.into(),
+        output, done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-detail").is_some());
+    assert!(vcx.debug_bounds("tool-title-0").is_none());
+    assert!(vcx.debug_bounds("tool-detail-copy").is_none());
+    let viewport = vcx.debug_bounds("tool-detail-0-scroll").unwrap();
+    let handle = panel.read_with(&*vcx, |panel, _| panel.swarm_scrolls.borrow().get("bash-row").unwrap().handle.clone());
+    assert!(handle.max_offset().y > px(0.));
+    vcx.simulate_mouse_move(viewport.center(), None, gpui::Modifiers::default());
+    for _ in 0..100 {
+        vcx.simulate_event(gpui::ScrollWheelEvent { position: viewport.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))), ..Default::default() });
+        vcx.run_until_parked();
+    }
+    assert_eq!(handle.offset().y, -handle.max_offset().y);
+    assert!(document_text(&panel, vcx).contains("last output line"));
+}
+
 /// The daemon's refusal for an irreversible command, as the user sees it: the
 /// first sentence is visible and the paragraphs that follow were unreachable.
 fn irreversible_error() -> String {
