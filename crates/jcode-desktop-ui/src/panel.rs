@@ -5945,6 +5945,41 @@ impl Render for Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
+            .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
+                if this.ask_editor_focused(window, cx) {
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &crate::input::Submit, window, cx| {
+                if this.ask_editor_focused(window, cx) {
+                    if let Some(card) = this.ask_card.as_mut() {
+                        card.switch_tab(card.cursor_question + 1);
+                    }
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .capture_action(
+                cx.listener(|this, _: &crate::input::AcceptCompletion, window, cx| {
+                    if this.ask_editor_focused(window, cx) {
+                        if let Some(card) = this.ask_card.as_mut() {
+                            card.switch_tab(card.cursor_question + 1);
+                        }
+                        window.focus(&this.focus_handle, cx);
+                        cx.notify();
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             // Files dragged in from the file manager: images attach like a
             // paste, other files are referenced by path in the prompt.
             .when(!self.transcript_only && !self.demo, |el| {
