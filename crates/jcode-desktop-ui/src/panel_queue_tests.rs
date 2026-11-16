@@ -140,6 +140,35 @@ fn unconfirmed_steer_survives_serialized_panel_snapshot(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
+fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestAppContext) {
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, crate::harness::spawn_inert(), cx);
+        panel.history_loaded = true;
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        for content in ["plain external prompt", "/poteto-mode давай делать"] {
+            panel.apply(&event(json!({"ev":"peer_user_message", "content":content})), cx);
+        }
+        let users: Vec<_> = panel.items.iter().filter_map(|item| match item { Item::User(text) => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(users, ["plain external prompt", "/poteto-mode давай делать"]);
+    });
+    let restored = cx.new(|cx| Panel::new("queue-test".into(), None, None, crate::harness::spawn_inert(), cx));
+    restored.update(cx, |panel, cx| {
+        let messages = serde_json::from_value(json!([
+            {"role":"user", "content":"plain external prompt"},
+            {"role":"assistant", "content":"answer"},
+            {"role":"system", "content":"skill instructions"},
+            {"role":"user", "content":"/poteto-mode давай делать"}
+        ])).unwrap();
+        panel.load_history(messages, vec![], cx);
+        let users: Vec<_> = panel.items.iter().filter_map(|item| match item { Item::User(text) => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(users, ["plain external prompt", "/poteto-mode давай делать"]);
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::User(text) if text.contains("skill instructions"))));
+    });
+}
+
+#[gpui::test]
 fn external_steer_is_visible_live_and_after_history_reload(cx: &mut gpui::TestAppContext) {
     let panel = cx.new(|cx| {
         let mut panel = Panel::new(
