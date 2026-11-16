@@ -320,6 +320,9 @@ impl Panel {
                 div()
                     .id(("ask-result-image", index))
                     .debug_selector(|| "ask-result-image".into())
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .px_2()
                     .py_1()
                     .rounded_full()
@@ -328,6 +331,13 @@ impl Panel {
                     .bg(Theme::global().USER_BG)
                     .cursor_pointer()
                     .hover(|el| el.text_color(Theme::global().TEXT))
+                    .children(image.preview.clone().map(|preview| {
+                        img(crate::image_cache::source(preview))
+                            .debug_selector(|| "ask-result-image-thumbnail".into())
+                            .size(px(14.))
+                            .rounded_sm()
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_image_preview(preview.clone(), window, cx);
@@ -1229,6 +1239,7 @@ mod tests {
         let chip = vcx
             .debug_bounds("ask-result-image")
             .expect("image appears inside ask result");
+        assert!(vcx.debug_bounds("ask-result-image-thumbnail").is_some());
         vcx.simulate_click(chip.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("image-preview-full").is_some());
