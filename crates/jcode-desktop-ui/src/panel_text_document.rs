@@ -255,7 +255,21 @@ fn segments_with_regions(
                         push(format!("{key}-error"), error.clone());
                     }
                 }
-                if let Some(lines) =
+                if let Some(result) = tool_output::background_output(name, output) {
+                    push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
+                    for (field_index, line) in result.fields.into_iter().enumerate() {
+                        push(format!("tool-bg-field-{index}-{field_index}"), line);
+                    }
+                    if let Some(preview) = result.preview {
+                        push(format!("tool-bg-preview-{index}"), preview);
+                    }
+                    if let Some(error) = error {
+                        push(
+                            format!("tool-detail-error-{index}"),
+                            format!("Error\n{}", strip_ansi(error)),
+                        );
+                    }
+                } else if let Some(lines) =
                     tool_output::json_lines(name, output, call_id, expanded_regions)
                 {
                     push(format!("tool-detail-{index}"), tool_detail(name, input, ""));

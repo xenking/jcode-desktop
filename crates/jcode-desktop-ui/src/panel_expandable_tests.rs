@@ -81,6 +81,9 @@ fn bg_result_shows_structured_details(cx: &mut gpui::TestAppContext) {
     }]);
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail-status").is_some());
+    assert!(vcx.debug_bounds("tool-bg-fields").is_some());
+    assert!(vcx.debug_bounds("tool-bg-output-code").is_some());
+    assert!(vcx.debug_bounds("tool-bg-exit-code").is_some());
     assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
     let text = document_text(&panel, vcx);
     assert!(text.contains("completed") && text.contains("task_id") && text.contains("hello"));

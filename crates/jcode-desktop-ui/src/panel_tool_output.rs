@@ -47,6 +47,41 @@ pub(super) fn bash_exit_code(name: &str, output: &str) -> Option<i32> {
     })
 }
 
+pub(super) struct BackgroundOutput {
+    pub fields: Vec<String>,
+    pub preview: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
+pub(super) fn background_output(name: &str, output: &str) -> Option<BackgroundOutput> {
+    if name != "bg" {
+        return None;
+    }
+    let clean = strip_ansi(output);
+    let body = clean
+        .strip_prefix("Background task finished.\n\n")
+        .or_else(|| clean.strip_prefix("Background task was already finished.\n\n"))?;
+    let (metadata, preview) = match body.split_once("\n\nOutput preview:\n") {
+        Some((metadata, preview)) => {
+            let preview = preview
+                .strip_prefix("```text\n")
+                .and_then(|text| text.trim_end().strip_suffix("```"))
+                .unwrap_or(preview);
+            (metadata, Some(preview.trim_end().to_string()))
+        }
+        None => (body, None),
+    };
+    let fields = metadata.lines().map(str::to_string).collect::<Vec<_>>();
+    let exit_code = fields
+        .iter()
+        .find_map(|line| line.strip_prefix("Exit code: ")?.trim().parse().ok());
+    Some(BackgroundOutput {
+        fields,
+        preview,
+        exit_code,
+    })
+}
+
 /// Prose-bearing tool responses can contain markdown; command and file output
 /// must stay literal even when their content resembles markup.
 pub(super) fn markdown_output(name: &str, output: &str) -> Option<String> {
@@ -258,6 +293,14 @@ pub(super) fn selectable_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_parser_retains_fields_and_unfenced_preview() {
+        let result = background_output("bg", "Background task was already finished.\n\nTask: abc\nStatus: failed\nDuration: 3s\nExit code: 101\n\nOutput preview:\n```text\nerror details\n```").unwrap();
+        assert_eq!(result.exit_code, Some(101));
+        assert!(result.fields.contains(&"Task: abc".into()));
+        assert_eq!(result.preview.as_deref(), Some("error details"));
+        assert!(background_output("bg", "unrecognized result").is_none());
+    }
     #[test]
     fn colors_diff_and_read_code() {
         assert_eq!(

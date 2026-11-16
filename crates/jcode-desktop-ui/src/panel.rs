@@ -4854,10 +4854,16 @@ impl Panel {
                                             div()
                                                 .flex()
                                                 .flex_col()
-                                                .when_some(tool_bg_status(name, output), |el, status| {
-                                                    let color = if status.eq_ignore_ascii_case("completed") { Theme::global().OK } else if status.eq_ignore_ascii_case("failed") { Theme::global().ERROR } else { Theme::global().WARN };
-                                                    el.child(div().debug_selector(|| "tool-detail-status".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(color).child(status))
-                                                })
+                                                .when(name == "bg", |el| el.child(div().flex().flex_wrap().items_center().gap_2().mb_2()
+                                                    .when_some(tool_bg_status(name, output), |el, status| {
+                                                        let color = if status.eq_ignore_ascii_case("completed") { Theme::global().OK } else if status.eq_ignore_ascii_case("failed") { Theme::global().ERROR } else { Theme::global().WARN };
+                                                        el.child(div().debug_selector(|| "tool-detail-status".into()).px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(color).child(status))
+                                                    })
+                                                    .when_some(tool_output::background_output(name, output).and_then(|result| result.exit_code), |el, code| {
+                                                        el.child(div().debug_selector(|| "tool-bg-exit-code".into()).px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
+                                                    })
+                                                    .when_some(output.lines().find_map(|line| line.strip_prefix("Duration: ")), |el, duration| el.child(div().text_color(Theme::global().TEXT_FAINT).child(duration.to_owned())))
+                                                ))
                                                 .when_some(tool_output::bash_exit_code(name, output), |el, code| {
                                                     el.child(div().debug_selector(|| "tool-detail-exit-code".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
                                                 })
@@ -4884,7 +4890,18 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(if let Some(lines) = tool_output::json_lines(name, output, &call_id, &self.expanded_regions) {
+                                                .child(if let Some(result) = tool_output::background_output(name, output) {
+                                                    let args = tool_detail(name, input, "");
+                                                    let rows = result.fields.into_iter().enumerate().filter(|(_, line)| !line.is_empty()).map(|(field_index, line)| {
+                                                        div().min_w_0().text_color(Theme::global().TEXT_FAINT).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-field-{index}-{field_index}"), line, window, cx)).into_any_element()
+                                                    }).collect::<Vec<_>>();
+                                                    div().flex().flex_col().gap_2()
+                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .child(div().debug_selector(|| "tool-bg-fields".into()).flex().flex_col().children(rows))
+                                                        .when_some(result.preview, |el, preview| el.child(div().debug_selector(|| "tool-bg-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-preview-{index}"), preview, window, cx))))
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else if let Some(lines) = tool_output::json_lines(name, output, &call_id, &self.expanded_regions) {
                                                     let args = tool_detail(name, input, "");
                                                     let mut toggle_index = 0usize;
                                                     let rows = lines.into_iter().enumerate().map(|(line_index, line)| {
