@@ -16,8 +16,10 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        // Recording partials live in the composer as dim text (they are cleared
-        // when the recording ends), so nothing is wiped per frame here.
+        // The active microphone button is the only in-window listening indicator.
+        if self.voice.phase == Phase::Recording && self.voice.error.is_none() {
+            return None;
+        }
         // A global hold's status is shown by the OS pill while this window is
         // unfocused. Never show a second, in-panel copy at the same time.
         if self.voice.global_capture && !window.is_window_active() {
@@ -817,6 +819,12 @@ mod tests {
                     cx.notify();
                 });
                 vcx.run_until_parked();
+                if phase == Phase::Recording {
+                    assert!(vcx.debug_bounds("voice-overlay").is_none());
+                    assert!(vcx.debug_bounds("voice-microphone-icon").is_some());
+                    assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), original_input);
+                    continue;
+                }
                 let card = vcx
                     .debug_bounds("voice-overlay")
                     .expect("visible before words arrive");
@@ -873,10 +881,8 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("first partial".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(
-            vcx.debug_bounds("voice-live-transcript").is_some(),
-            "the composer shows the live revision instead of only the pill"
-        );
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+        assert!(vcx.debug_bounds("voice-overlay").is_none());
         panel.update(vcx, |panel, cx| {
             panel.apply_voice_event(
                 NariEvent::Transcript("Revised live words. ".repeat(100)),

@@ -36,18 +36,6 @@ pub(crate) fn dictation_mode() -> jcode_base::protocol::TranscriptMode {
     jcode_base::config::config().dictation.mode
 }
 
-/// What stopping the recording will do, shown above the dim partials. The
-/// preview must not promise a send the mode will not perform.
-fn dictation_hint(mode: jcode_base::protocol::TranscriptMode) -> &'static str {
-    use jcode_base::protocol::TranscriptMode;
-    match mode {
-        TranscriptMode::Insert => "Inserts at the cursor for editing · Enter sends",
-        TranscriptMode::Append => "Appends to the draft for editing · Enter sends",
-        TranscriptMode::Replace => "Replaces the draft for editing · Enter sends",
-        TranscriptMode::Send => "Sends when you stop",
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
@@ -115,10 +103,6 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
-    /// The idle microphone/shortcut swap, animating in its own view.
-    swap: Option<Entity<VoiceSwap>>,
-    /// The colors last handed to `swap`.
-    swap_colors: Option<(gpui::Hsla, gpui::Hsla)>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -530,11 +514,7 @@ impl Panel {
                 self.voice.phase = Phase::Recording;
                 self.voice.recording = Some(recording);
                 self.voice.started = Some(Instant::now());
-                // Show the composer preview at once: "Listening…" with the hint
-                // for what stopping will do, before the first partial arrives.
-                let hint = dictation_hint(dictation_mode());
                 self.input.update(cx, |input, cx| {
-                    input.set_voice_preview_hint(Some(hint), cx);
                     input.set_voice_preview(Some(String::new()), cx);
                 });
                 self.tick_voice(cx);
@@ -651,14 +631,8 @@ impl Panel {
                 // never inserted: only `Finished` edits the draft, once.
                 self.voice.live_transcript = text;
                 let live = self.voice.live_transcript.clone();
-                let hint = if self.ask_voice_input().is_some() {
-                    "Inserts into your answer for editing"
-                } else {
-                    dictation_hint(dictation_mode())
-                };
                 let target = self.ask_voice_input().unwrap_or_else(|| self.input.clone());
                 target.update(cx, |input, cx| {
-                    input.set_voice_preview_hint(Some(hint), cx);
                     input.set_voice_preview(Some(live), cx);
                 });
                 cx.notify();
@@ -1168,9 +1142,7 @@ impl Panel {
         )
     }
 
-    /// Voice pill on the right of the composer's pill row: microphone plus its
-    /// keybinding, so the shortcut is visible without hovering. While
-    /// voice is active it fills with the accent. No glow or halo.
+    /// The shortcut is in the tooltip, never in place of the microphone.
     pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
@@ -1184,48 +1156,6 @@ impl Panel {
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
         let size = VOICE_BUTTON_SIZE;
-        let keycap_color = if active {
-            theme.BG.opacity(0.8)
-        } else {
-            theme.TEXT_FAINT
-        };
-        // Idle, the button alternates between the microphone and its
-        // shortcut instead of showing both side by side. While voice is
-        // active, or with reduced motion, it holds the microphone.
-        let alternate =
-            !active && !cx.reduce_motion() && !crate::config::get().appearance.reduce_motion;
-        let faces = if alternate {
-            // The faces crossfade in their own small view, so each animation
-            // frame redraws only this button. Notifying the panel would
-            // rebuild the transcript and composer and everything observing
-            // the panel, 30 times a second during every crossfade.
-            let swap = self
-                .voice
-                .swap
-                .get_or_insert_with(|| cx.new(VoiceSwap::new))
-                .clone();
-            // Compare against the colors last handed over, not by reading the
-            // swap view: a view that reads another is built again whenever
-            // that one is updated.
-            let colors = (icon_color.into(), keycap_color.into());
-            if self.voice.swap_colors != Some(colors) {
-                self.voice.swap_colors = Some(colors);
-                swap.update(cx, |swap, cx| {
-                    swap.colors = Some(colors);
-                    cx.notify();
-                });
-            }
-            swap.into_any_element()
-        } else {
-            self.voice.swap = None;
-            self.voice.swap_colors = None;
-            div()
-                .absolute()
-                .inset_0()
-                .child(voice_microphone_face(icon_color.into()))
-                .child(voice_shortcut_face(keycap_color.into()).opacity(0.))
-                .into_any_element()
-        };
         let button = div()
             .id("voice-toggle")
             .debug_selector(|| "voice-toggle".into())
@@ -1255,13 +1185,7 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
-            // Invisible keycap sizes the pill so both faces fit.
-            .child(
-                div()
-                    .invisible()
-                    .child(voice_shortcut_keycap(keycap_color.into(), theme)),
-            )
-            .child(faces);
+            .child(voice_microphone_face(icon_color.into()));
         div()
             .flex_none()
             .h(px(size))
@@ -1848,11 +1772,10 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("Streaming Nari words".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(
-            vcx.debug_bounds("voice-live-transcript").is_some(),
-            "the live revision shows in the composer while recording"
-        );
-        assert!(vcx.debug_bounds("voice-waveform").is_some());
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+        assert!(vcx.debug_bounds("voice-overlay").is_none());
+        assert!(vcx.debug_bounds("voice-microphone-icon").is_some());
+        assert!(vcx.debug_bounds("voice-shortcut").is_none());
         panel.read_with(vcx, |panel, cx| {
             assert!(panel.input.read(cx).content.is_empty());
             assert_eq!(
@@ -1931,7 +1854,7 @@ mod tests {
                 let input = vcx.debug_bounds("prompt-input").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
-                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
+                assert!(vcx.debug_bounds("voice-shortcut").is_none());
                 // The voice button sits inside the input box, at its right.
                 assert!(
                     button.left() >= input.left()
@@ -1945,14 +1868,7 @@ mod tests {
                     "voice hugs the input's right edge"
                 );
                 assert_eq!(button.size.height, px(VOICE_BUTTON_SIZE));
-                // Microphone and keybinding share one slot and alternate,
-                // rather than sitting side by side.
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
-                assert!(
-                    icon.right() > shortcut.left() && shortcut.right() > icon.left(),
-                    "faces overlap in one slot: {icon:?} {shortcut:?}"
-                );
                 if phase == Phase::Idle {
                     assert!(
                         vcx.debug_bounds("voice-ready-status").is_none(),
@@ -2000,7 +1916,7 @@ mod tests {
             assert!(vcx.debug_bounds("voice-toggle").is_some());
             if phase == Phase::Recording {
                 assert!(vcx.debug_bounds("voice-cancel").is_none());
-                assert!(vcx.debug_bounds("voice-stop").is_some());
+                assert!(vcx.debug_bounds("voice-stop").is_none());
                 panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
                 continue;
             }

@@ -3115,9 +3115,7 @@ impl Render for PromptInput {
         crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
         let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
-        let spacious = self.spacious
-            && self.voice_preview.is_none()
-            && window.viewport_size().height >= px(400.);
+        let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
@@ -3412,29 +3410,6 @@ impl Render for PromptInput {
                             ),
                     ),
             )
-            .children(self.voice_preview.as_ref().map(|preview| {
-                div()
-                    .id("prompt-voice-preview")
-                    .debug_selector(|| "voice-live-transcript".into())
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .max_h(px(120.0))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.voice_preview_scroll)
-                    .px_3()
-                    .pb_2()
-                    .text_size(px(14.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .when_some(self.voice_preview_hint.clone(), |el, hint| {
-                        el.child(div().text_size(px(10.0)).child(hint))
-                    })
-                    .child(div().flex_none().child(if preview.trim().is_empty() {
-                        "Listening…".to_owned()
-                    } else {
-                        preview.clone()
-                    }))
-            }))
     }
 }
 
@@ -4474,7 +4449,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_preview_renders_below_editor_and_uses_measured_composer(cx: &mut TestAppContext) {
+    fn voice_preview_never_adds_lines_to_composer(cx: &mut TestAppContext) {
         let (input, vcx) =
             cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         input.update(vcx, |input, cx| {
@@ -4482,11 +4457,7 @@ mod tests {
             input.set_voice_preview(Some(String::new()), cx);
         });
         vcx.run_until_parked();
-        let editor = vcx.debug_bounds("prompt-editor").unwrap();
-        let preview = vcx.debug_bounds("voice-live-transcript").unwrap();
-        assert!(preview.top() >= editor.bottom());
-        assert!(preview.top() - editor.bottom() <= px(20.0));
-        assert!(preview.size.height <= px(120.0));
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
         let composer = vcx.debug_bounds("prompt-input").unwrap();
         input.read_with(vcx, |input, _| {
             assert_eq!(input.voice_bounds(), Some(composer));
@@ -4496,15 +4467,8 @@ mod tests {
                 input.set_voice_preview(Some("recognized words\n".repeat(lines)), cx);
             });
             vcx.run_until_parked();
-            assert!(
-                vcx.debug_bounds("voice-live-transcript")
-                    .unwrap()
-                    .size
-                    .height
-                    <= px(120.0)
-            );
+            assert!(vcx.debug_bounds("voice-live-transcript").is_none());
             input.read_with(vcx, |input, _| {
-                assert!(input.voice_preview_scroll.offset().y < px(0.0));
                 assert!(input.content.is_empty());
                 assert!(input.undo.is_empty());
             });
