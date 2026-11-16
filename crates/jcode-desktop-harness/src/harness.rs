@@ -311,6 +311,12 @@ pub enum Command {
         content: String,
         images: Vec<(String, String)>,
     },
+    SendSkill {
+        session_id: String,
+        content: String,
+        images: Vec<(String, String)>,
+        skill: String,
+    },
     QueuePrompt {
         session_id: String,
         prompt: jcode_sdk::api::QueuedPrompt,
@@ -466,6 +472,11 @@ enum SessionCommand {
     Send {
         content: String,
         images: Vec<(String, String)>,
+    },
+    SendSkill {
+        content: String,
+        images: Vec<(String, String)>,
+        skill: String,
     },
     QueuePrompt(jcode_sdk::api::QueuedPrompt),
     RemoveQueuedPrompt(jcode_sdk::api::QueuedPrompt, bool),
@@ -1337,6 +1348,21 @@ fn run_with_transports(
                 images,
             } => {
                 let command = SessionCommand::Send { content, images };
+                send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates, &transports)
+                });
+            }
+            Command::SendSkill {
+                session_id,
+                content,
+                images,
+                skill,
+            } => {
+                let command = SessionCommand::SendSkill {
+                    content,
+                    images,
+                    skill,
+                };
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
@@ -2702,6 +2728,8 @@ fn session_worker_with_connector(
             session_id: session_id.clone(),
         });
 
+        let mut skills_loaded = !client.supports("skill_message_v1")
+            || load_skill_catalog(&client, real_id, &session_id, &updates);
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
         if client.supports("queued_prompts")
@@ -2939,6 +2967,53 @@ fn session_worker_with_connector(
                                     prompts,
                                 },
                             });
+                        }
+                    }
+                    SessionCommand::SendSkill {
+                        content,
+                        images,
+                        skill,
+                    } => {
+                        if !client.supports("skill_message_v1") {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason: "This runtime cannot activate skills from Desktop. Update the runtime and reconnect.".into(),
+                            });
+                            continue;
+                        }
+                        if turn_active || !unaccepted_sends.is_empty() {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason: "A skill cannot be activated while a turn is running. Try again after it finishes.".into(),
+                            });
+                            continue;
+                        }
+                        let reminder = collection_reminder(&session_id);
+                        match client.send_skill_message(
+                            real_id,
+                            &content,
+                            &skill,
+                            images.clone(),
+                            reminder.as_deref(),
+                        ) {
+                            Ok(()) => {
+                                unaccepted_sends.push_back(SessionCommand::SendSkill {
+                                    content,
+                                    images,
+                                    skill,
+                                });
+                                let _ = updates.send(Update::MessageSubmitted {
+                                    session_id: session_id.clone(),
+                                });
+                                turn_active = true;
+                                _detach.set_processing(true);
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::SendFailed {
+                                    session_id: session_id.clone(),
+                                    reason: error.to_string(),
+                                });
+                            }
                         }
                     }
                     SessionCommand::Send { content, images } => {
@@ -3437,6 +3512,9 @@ fn session_worker_with_connector(
                 };
                 let closes_turn =
                     matches!(event, ApiEvent::Error { .. } | ApiEvent::TurnDone { .. });
+                if closes_turn && !skills_loaded {
+                    skills_loaded = load_skill_catalog(&client, real_id, &session_id, &updates);
+                }
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event: namespace_event(event, &address),
@@ -3700,6 +3778,29 @@ fn is_already_processing_error(message: &str) -> bool {
     message
         .to_ascii_lowercase()
         .contains("already processing a message")
+}
+
+fn load_skill_catalog(
+    client: &JcodeClient,
+    real_id: &str,
+    session_id: &str,
+    updates: &UpdateSender,
+) -> bool {
+    let Ok(output) =
+        client.runtime_command(real_id, jcode_sdk::api::RuntimeCommand::Skills, Vec::new())
+    else {
+        return false;
+    };
+    let _ = updates.send(Update::Event {
+        session_id: session_id.to_owned(),
+        event: ApiEvent::RuntimeCommandResult {
+            session_id: session_id.to_owned(),
+            command: output.command,
+            data: output.data,
+            message: String::new(),
+        },
+    });
+    true
 }
 
 fn recover_async_busy(
