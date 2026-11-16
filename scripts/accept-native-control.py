@@ -123,8 +123,15 @@ def main():
                 assert element_png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                 protected = request(endpoint, {"action": "set_composer", "target": target, "text": "must not overwrite"})
                 assert protected["status"] == "error" and protected["code"] == "user_window_focused", protected
+                before_png = root / "before-draft.png"
+                before_render = request(endpoint, {"action": "render", "target": target, "selector": None, "path": str(before_png)})
+                assert before_render["status"] == "ok", before_render
                 result = request(endpoint, {"action": "set_composer", "target": target, "text": "isolated draft", "allow_user_window": True})
                 assert result["status"] == "ok", result
+                after_png = root / "after-draft.png"
+                after_render = request(endpoint, {"action": "render", "target": target, "selector": None, "path": str(after_png)})
+                assert after_render["status"] == "ok", after_render
+                assert before_png.read_bytes() != after_png.read_bytes(), "hidden render returned a stale frame after the composer changed"
                 denied_send = request(endpoint, {"action": "send", "target": target})
                 assert denied_send["status"] == "error" and denied_send["code"] == "user_window_focused", denied_send
                 state = request(endpoint, {"action": "state", "target": target})

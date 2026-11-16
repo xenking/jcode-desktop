@@ -39,6 +39,18 @@ impl Workspace {
                 if Instant::now() >= pending.deadline {
                     continue;
                 }
+                // Hidden windows do not receive compositor frames. Draw outside
+                // the Workspace borrow so capture reflects the latest UI actions.
+                if matches!(&pending.request.action, DesktopAction::Render { .. })
+                    && cx
+                        .update(|window, cx| {
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        })
+                        .is_err()
+                {
+                    break;
+                }
                 let response = this.update_in(cx, |workspace, window, cx| {
                     workspace.handle_desktop_request(pending.request, window, cx)
                 });
@@ -300,7 +312,8 @@ impl Workspace {
                 if allow_user_window {
                     self.control_drafts.remove(&panel_id);
                 } else {
-                    self.control_drafts.insert(panel_id, (text, input.read(cx).control_revision()));
+                    self.control_drafts
+                        .insert(panel_id, (text, input.read(cx).control_revision()));
                 }
                 ok(json!({}))
             }
@@ -323,7 +336,8 @@ impl Workspace {
                 let input = panel.read(cx).input.clone();
                 let draft = input.read(cx).snapshot();
                 if !allow_user_window
-                    && (self.control_drafts.get(&panel_id) != Some(&(draft.content.clone(), input.read(cx).control_revision()))
+                    && (self.control_drafts.get(&panel_id)
+                        != Some(&(draft.content.clone(), input.read(cx).control_revision()))
                         || !draft.attachments.is_empty()
                         || draft.stashed_prompt.is_some())
                 {
