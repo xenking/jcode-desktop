@@ -56,8 +56,8 @@ fn missing_image_marker_in_local_send_echo_is_a_chip(cx: &mut gpui::TestAppConte
 fn missing_image_marker_in_paged_history_is_a_chip(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-paged".into(), None, None, crate::harness::spawn_inert(), cx));
     panel.update(vcx, |panel, cx| {
-        panel.load_bounded_history(crate::harness::BoundedHistoryPage { messages: vec![], images: vec![], before: Some("older".into()) }, cx);
-        panel.load_bounded_history_page(Ok(crate::harness::BoundedHistoryPage { messages: vec![image_marker_history_message()], images: vec![], before: None }), cx);
+        panel.load_bounded_history(crate::harness::BoundedHistoryPage { messages: vec![], images: vec![], before: Some("older".into()), prompt_offset: None }, cx);
+        panel.load_bounded_history_page(Ok(crate::harness::BoundedHistoryPage { messages: vec![image_marker_history_message()], images: vec![], before: None, prompt_offset: None }), cx);
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("transcript-image-chip").is_some(), "paged marker must render as a chip");

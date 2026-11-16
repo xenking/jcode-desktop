@@ -231,10 +231,11 @@ impl Panel {
             .items_start()
             .gap(px(6.))
             .when_some(
-                super::prompt::prompt_number(&self.items, index),
+                self.absolute_prompt_number(index),
                 |row, number| {
                     row.child(
                         div()
+                            .debug_selector(move || format!("decision-number-{number}"))
                             .mt(px(4.))
                             .px_2()
                             .h(px(20.))

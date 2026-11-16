@@ -167,12 +167,20 @@ pub(super) fn prompt_number(items: &[Item], index: usize) -> Option<usize> {
     )
 }
 
-fn is_user_turn(item: &Item) -> bool {
+pub(super) fn is_user_turn(item: &Item) -> bool {
     is_pinnable_prompt(item) || matches!(item, Item::Tool { name, done: true, output, error, .. }
         if name == "ask" && (super::decision::answered(output, error.as_deref()) || output.contains("declined")))
 }
 
 impl Panel {
+    pub(super) fn absolute_prompt_number(&self, index: usize) -> Option<usize> {
+        let offset = match &self.history_paging {
+            Some(paging) => paging.prompt_offset(),
+            None => Some(0),
+        }?;
+        prompt_number(&self.items, index).map(|number| number + offset)
+    }
+
     /// Inline and sticky cards use exactly the same content, colors, width,
     /// padding, selection, and acknowledgement animation. Only placement differs.
     pub(super) fn render_user_prompt(
@@ -197,11 +205,7 @@ impl Panel {
         if animating {
             window.request_animation_frame();
         }
-        let prompt_offset = match &self.history_paging {
-            Some(paging) => paging.prompt_offset(),
-            None => Some(0),
-        };
-        let number = prompt_number(&self.items, index).zip(prompt_offset).map(|(number, offset)| number + offset);
+        let number = self.absolute_prompt_number(index);
         // Keep the number outside the card in a compact circular badge. Wider
         // turn numbers grow into a pill without taking space from card padding.
         let number_width = number.map_or(0., |number| {

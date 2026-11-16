@@ -154,7 +154,7 @@ impl Panel {
         expanded.truncate(prefix_len);
         if let Some(offset) = paging.prompt_offset.as_mut() {
             *offset = offset.saturating_sub(
-                expanded.iter().filter(|item| super::prompt::is_pinnable_prompt(item)).count(),
+                expanded.iter().filter(|item| super::prompt::is_user_turn(item)).count(),
             );
         }
         if paging.remaining == 0 {
@@ -322,6 +322,20 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("prompt-number-0-145").is_some());
         assert!(vcx.debug_bounds("prompt-number-1-146").is_some());
+    }
+
+    #[gpui::test]
+    fn paged_decision_number_is_absolute(cx: &mut gpui::TestAppContext) {
+        let ask: jcode_sdk::HistoryMessage = serde_json::from_value(json!({
+            "role": "tool", "content": "User answers:\n1. Which? -> B\n",
+            "tool": {"id": "ask-1", "name": "ask", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}
+        })).unwrap();
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, crate::harness::spawn_inert(), cx));
+        panel.update(vcx, |panel, cx| panel.load_bounded_history(crate::harness::BoundedHistoryPage {
+            messages: vec![ask], images: vec![], before: Some("cursor".into()), prompt_offset: Some(5),
+        }, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("decision-number-6").is_some());
     }
 
     #[gpui::test]
