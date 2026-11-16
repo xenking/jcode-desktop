@@ -13,14 +13,20 @@ pub(super) fn fixture_image() -> TranscriptImage {
 
 impl Panel {
     pub(super) fn request_history_thumbnail(&self, image: &TranscriptImage, retry: bool) {
-        let Some(key) = image.data.strip_prefix("jcode-lazy:") else { return };
+        let Some(key) = image.data.strip_prefix("jcode-lazy:") else {
+            return;
+        };
         let mut requests = self.history_image_requests.borrow_mut();
-        if requests.get(key).is_some_and(|in_flight| *in_flight || !retry) {
+        if requests
+            .get(key)
+            .is_some_and(|in_flight| *in_flight || !retry)
+        {
             return;
         }
         requests.insert(key.to_owned(), true);
         self.bridge.send(Command::GetHistoryImage {
-            session_id: self.session_id.clone(), key: key.to_owned(),
+            session_id: self.session_id.clone(),
+            key: key.to_owned(),
         });
     }
 
@@ -86,7 +92,9 @@ impl Panel {
             return;
         }
         let open = self.pending_history_image.as_deref() == Some(key.as_str());
-        if open { self.pending_history_image = None; }
+        if open {
+            self.pending_history_image = None;
+        }
         let data = match result {
             Ok(data) => data,
             Err(error) => {
@@ -103,6 +111,16 @@ impl Panel {
                 && image.data == marker
             {
                 image.data = data.clone();
+                if key.starts_with("img_") {
+                    let id_marker = format!("[#{key}]");
+                    let label = image.label.get_or_insert_with(String::new);
+                    if !label.contains(&id_marker) {
+                        if !label.is_empty() {
+                            label.push(' ');
+                        }
+                        label.push_str(&id_marker);
+                    }
+                }
                 image.preview = TranscriptImage::new(
                     image.media_type.clone(),
                     data.clone(),

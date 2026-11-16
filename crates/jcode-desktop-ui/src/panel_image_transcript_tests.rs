@@ -180,6 +180,37 @@ fn completed_ask_replaces_inline_marker_with_image_chip(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
+fn ask_chip_fetches_matching_session_id_even_when_image_order_differs(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("ask-session-id".into(), None, None, bridge, cx));
+    let other = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let comment = "img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    panel.update(vcx, |panel, cx| {
+        let make_image = |id: &str| {
+            let mut image = TranscriptImage::new("image/png".into(), format!("jcode-lazy:{id}"), None);
+            image.source = jcode_sdk::RenderedImageSource::ToolResult { tool_name: "ask".into() };
+            image.anchor = Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: "ask-inline".into() });
+            image
+        };
+        *panel.items = vec![
+            Item::Tool { call_id: "ask-inline".into(), name: "ask".into(), input: "{}".into(),
+                output: format!("User answers:\n1. Which? -> B (comment: reason [#{comment}])"), done: true, error: None },
+            Item::Image(make_image(other)), Item::Image(make_image(comment)),
+        ];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let decision = vcx.debug_bounds("decision-header").unwrap();
+    vcx.simulate_click(decision.center(), Default::default());
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("ask-result-inline-image").unwrap();
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert_eq!(panel.read_with(vcx, |panel, _| panel.pending_history_image.clone()).as_deref(), Some(comment));
+    assert!(matches!(commands.try_recv(), Ok(crate::harness::Command::GetHistoryImage { key, .. }) if key == comment));
+}
+
+#[gpui::test]
 fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new("inline-image-marker".into(), None, None, crate::harness::spawn_inert(), cx)

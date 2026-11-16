@@ -23,10 +23,31 @@ impl Panel {
         let images: Vec<_> = self
             .ask_result_images(call_id)
             .into_iter()
-            .skip(image_offset)
             .map(|(_, image)| image.clone())
             .collect();
         let ranges = crate::input::image_marker_ranges(&shown);
+        let selected: Vec<Option<usize>> = ranges
+            .iter()
+            .enumerate()
+            .map(|(index, range)| {
+                let marker = &shown[range.clone()];
+                if let Some(id) = marker
+                    .strip_prefix("[#")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .filter(|s| s.starts_with("img_"))
+                {
+                    images.iter().position(|image| {
+                        image.data.strip_prefix("jcode-lazy:") == Some(id)
+                            || image
+                                .label
+                                .as_ref()
+                                .is_some_and(|label| label.contains(marker))
+                    })
+                } else {
+                    (image_offset + index < images.len()).then_some(image_offset + index)
+                }
+            })
+            .collect();
         let display = crate::image_chip::mask_markers(&shown, ranges.iter().cloned());
         let styled =
             StyledText::new(display).with_highlights(ranges.iter().cloned().map(|range| {
@@ -46,16 +67,21 @@ impl Panel {
                 (
                     range.clone(),
                     shown[range.clone()].to_owned(),
-                    images.get(index).and_then(|image| image.preview.clone()),
+                    selected[index]
+                        .and_then(|i| images.get(i))
+                        .and_then(|image| image.preview.clone()),
                 )
             })
             .collect();
         let weak = cx.weak_entity();
-        let click_images = images.clone();
+        let click_images: Vec<_> = selected
+            .iter()
+            .map(|index| index.and_then(|i| images.get(i).cloned()))
+            .collect();
         let text = InteractiveText::new(format!("ask-answer-{call_id}"), styled).on_click(
             ranges.clone(),
             move |index, window, cx| {
-                if let Some(image) = click_images.get(index) {
+                if let Some(Some(image)) = click_images.get(index) {
                     let _ = weak.update(cx, |panel, cx| {
                         panel.open_image_preview(image.clone(), window, cx)
                     });
@@ -65,12 +91,27 @@ impl Panel {
         let extras = images
             .into_iter()
             .enumerate()
-            .skip(ranges.len())
+            .skip(image_offset)
+            .filter(|(index, _)| !selected.contains(&Some(*index)))
             .filter(|_| show_extras)
             .map(|(index, image)| {
+                let label = image
+                    .data
+                    .strip_prefix("jcode-lazy:")
+                    .filter(|id| id.starts_with("img_"))
+                    .map(|id| format!("[#{id}]"))
+                    .or_else(|| {
+                        image.label.as_ref().and_then(|text| {
+                            crate::input::image_marker_ranges(text)
+                                .into_iter()
+                                .map(|range| text[range].to_owned())
+                                .find(|marker| marker.starts_with("[#img_"))
+                        })
+                    })
+                    .unwrap_or_else(|| format!("[#image {}]", index + 1));
                 crate::image_chip::chip(
                     image.preview.clone(),
-                    &format!("[#image {}]", index + 1),
+                    &label,
                     "ask-result-image",
                     "ask-result-image-thumbnail",
                     "ask-result-image-label",
