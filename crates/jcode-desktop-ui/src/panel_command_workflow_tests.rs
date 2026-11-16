@@ -73,6 +73,43 @@ fn selfdev_skill_does_not_require_a_desktop_checkout(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn composer_bare_selfdev_activates_for_next_prompt(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("bare-selfdev", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.skills = vec![("selfdev".into(), "Self development".into())];
+        panel
+            .input
+            .update(cx, |input, cx| input.set_skills(panel.skills.clone(), cx));
+    });
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("/selfdev");
+    vcx.simulate_keystrokes("enter enter");
+    assert!(commands.try_recv().is_err());
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.active_skill.as_deref(), Some("selfdev"))
+    });
+    vcx.simulate_input("hello");
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SendSkill { skill, content, .. })
+        if skill == "selfdev" && content == "hello")
+    );
+}
+
+#[gpui::test]
 fn embedded_skill_uses_surrounding_text_and_ignores_paths(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("skill-session".into(), None, None, bridge, cx));

@@ -1378,6 +1378,12 @@ impl PromptInput {
                     });
                 }
             }
+            if trimmed != "/model" && trimmed != "/effort" {
+                suggestions.sort_by_key(|row| {
+                    let value = row.value.to_ascii_lowercase();
+                    (value != query, !value.starts_with(&query))
+                });
+            }
         }
         suggestions
             .into_iter()
