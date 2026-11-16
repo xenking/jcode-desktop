@@ -186,6 +186,8 @@ impl Panel {
             expandable::collapsed(&preview_text, expandable::TITLE).unwrap_or(preview_text);
         let body = if error.is_some() && !call.text.is_empty() {
             format!("{}\n\n{}", call.text, error.unwrap_or_default())
+        } else if call.action == "spawn" && error.is_none() {
+            call.text.clone()
         } else if call.text.is_empty() {
             error.unwrap_or(output).trim().to_owned()
         } else if call.action != "message" && !output.trim().is_empty() {
@@ -193,7 +195,16 @@ impl Panel {
         } else {
             text.to_owned()
         };
-        let body = expandable::expanded_body(&body).0;
+        let suffix = (call.action == "spawn" && error.is_none())
+            .then(|| call.session_ids.first().map(|id| short_name(id).to_owned()))
+            .flatten();
+        let region = self.swarm_scrolls.borrow_mut().entry(call_id.to_owned()).or_default().clone();
+        let scroll = region.handle.clone();
+        let height = if self.expandable_viewport_height > px(0.) {
+            (f32::from(self.expandable_viewport_height) * 0.6).clamp(1., expandable::MAX_HEIGHT)
+        } else {
+            expandable::MAX_HEIGHT
+        };
         div()
             .id(("tool", index))
             .debug_selector(|| "tool-swarm".into())
@@ -273,19 +284,27 @@ impl Panel {
                     div()
                         .debug_selector(|| "tool-swarm-result-body".into())
                         .ml(px(24.0))
-                        .child(expandable::scrolled(
-                            format!("swarm-body-{index}").into(),
-                            expandable::MAX_HEIGHT,
+                        .relative()
+                        .child(
                             div()
-                                .text_size(px(12.0))
-                                .text_color(if error.is_some() {
-                                    theme.ERROR
-                                } else {
-                                    theme.TOOL_TEXT
-                                })
-                                .child(body)
-                                .into_any_element(),
-                        )),
+                                .id(format!("swarm-body-{index}"))
+                                .debug_selector(move || format!("swarm-body-{index}"))
+                                .w_full().min_w_0().max_h(px(height)).overflow_y_scroll()
+                                .track_scroll(&scroll)
+                                .child(div().flex().flex_col().text_size(px(12.0))
+                                    .text_color(if error.is_some() { theme.ERROR } else { theme.TOOL_TEXT })
+                                    .child(body)
+                                    .when_some(suffix, |el, name| el.child(div().text_color(theme.TEXT_FAINT).child(name)))
+                                    .child(div().debug_selector(|| "swarm-body-end".into()).h(px(1.))))
+                        )
+                        .child({
+                            let hitbox = region.hitbox.clone();
+                            gpui::canvas(
+                                |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                                move |_, painted, _, _| *hitbox.borrow_mut() = Some(painted),
+                            ).absolute().top_0().left_0().size_full()
+                        })
+                        .child(crate::scrollbar::vertical_with_track(&scroll, "swarm-scrollbar")),
                 )
             })
             .into_any_element()
@@ -343,5 +362,38 @@ mod tests {
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-swarm-result-body").is_none());
+    }
+
+    #[gpui::test]
+    fn long_swarm_message_scrolls_to_last_line(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("lead", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        let message = format!("{}last line of the full message", "long message line\n".repeat(240));
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Tool { call_id: "long-dm".into(), name: "swarm".into(),
+                input: serde_json::json!({"action": "message", "message": message}).to_string(),
+                output: String::new(), done: true, error: None });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("tool-swarm-header").unwrap();
+        vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let viewport = vcx.debug_bounds("swarm-body-0").unwrap();
+        for _ in 0..100 {
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: viewport.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
+                modifiers: Default::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+        }
+        let end = vcx.debug_bounds("swarm-body-end").expect("full message end rendered");
+        assert!(end.bottom() <= viewport.bottom() && end.top() >= viewport.top(), "last line must be reachable");
     }
 }

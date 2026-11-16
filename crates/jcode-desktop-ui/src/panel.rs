@@ -636,6 +636,7 @@ pub struct Panel {
     expanded_prompts: HashSet<(usize, bool)>,
     prompt_scrolls:
         std::cell::RefCell<std::collections::HashMap<(usize, bool), prompt::PromptScroll>>,
+    swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, prompt::PromptScroll>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
@@ -1169,6 +1170,7 @@ impl Panel {
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
             prompt_scrolls: Default::default(),
+            swarm_scrolls: Default::default(),
             publish_tracker: false,
             publish_armed_at: None,
             todo_card_hidden: false,
@@ -2977,6 +2979,7 @@ impl Panel {
             .collect();
         self.expanded_prompts.clear();
         self.prompt_scrolls.borrow_mut().clear();
+        self.swarm_scrolls.borrow_mut().clear();
         false
     }
 
@@ -6124,6 +6127,19 @@ impl Render for Panel {
                                                     })
                                             })
                                         };
+                                        let inner = inner.or_else(|| {
+                                            let scrolls = panel.swarm_scrolls.borrow();
+                                            panel.expanded_regions.iter().find_map(|key| {
+                                                let region = scrolls.get(key)?;
+                                                if !region.hitbox.borrow().as_ref().is_some_and(|hitbox| hitbox.should_handle_scroll(window)) {
+                                                    return None;
+                                                }
+                                                let scroll = &region.handle;
+                                                let old = scroll.offset();
+                                                let next = (old.y + delta.y).clamp(-scroll.max_offset().y, px(0.));
+                                                (next != old.y).then(|| (scroll.clone(), old, next))
+                                            })
+                                        });
                                         if let Some((scroll, old, next)) = inner {
                                             scroll.set_offset(gpui::point(old.x, next));
                                             cx.notify(wheel_panel.entity_id());
