@@ -7464,15 +7464,6 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
 
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
-    if matches!(name, "edit" | "apply_patch") {
-        let arguments = if input.trim().is_empty() { "{}" } else { input.trim() };
-        let pretty = serde_json::from_str::<serde_json::Value>(arguments)
-            .ok().and_then(|value| serde_json::to_string_pretty(&value).ok())
-            .unwrap_or_else(|| arguments.to_string());
-        let mut result = format!("Tool call\n{}\n{}", name.trim(), pretty.trim_end());
-        if !output.is_empty() { result.push_str(&format!("\n\nOutput\n{}", strip_ansi(output))); }
-        return result;
-    }
     let mut parts = Vec::new();
     if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
         let rows = arguments

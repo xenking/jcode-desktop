@@ -4,6 +4,18 @@
 use super::*;
 
 #[gpui::test]
+fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "edit-arguments".into(), name: "edit".into(), input: r#"{"file_path":"src/lib.rs","old_string":"before","new_string":"after"}"#.into(),
+        output: "Changed file".into(), done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    let text = document_text(&panel, vcx);
+    assert!(text.contains("file_path: src/lib.rs"));
+    assert!(!text.contains("Tool call\n"));
+}
+
+#[gpui::test]
 fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::Tool {
         call_id: "json-nested".into(), name: "webfetch".into(), input: "{}".into(),

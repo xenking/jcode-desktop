@@ -844,10 +844,6 @@ mod tests {
         cx.update(crate::input::bind_keys);
         for name in ["apply_patch", "edit"] {
             let (workspace, panel, vcx) = selection_workspace(cx, name);
-            let before = vcx.debug_bounds("selectable-text-0-0").unwrap();
-            let after = vcx.debug_bounds("selectable-text-2-0").unwrap();
-            let start = gpui::point(before.left() + px(0.1), before.center().y);
-            let end = gpui::point(after.right() - px(0.1), after.center().y);
             let mut expected =
                 format!("Before\n{name} Update labels\n{name}\nUpdate labels\nsrc/first.rs\n");
             if name == "apply_patch" {
@@ -864,7 +860,13 @@ mod tests {
             };
             expected.push_str(&tool_detail(&name, &input, &output));
             expected.push_str("\nAfter");
-            for (start, end) in [(start, end), (end, start)] {
+            for reverse in [false, true] {
+                // Layout can move between gestures. Re-read the painted bounds.
+                let before = vcx.debug_bounds("selectable-text-0-0").unwrap();
+                let after = vcx.debug_bounds("selectable-text-2-0").unwrap();
+                let start = gpui::point(before.left() + px(0.1), before.center().y);
+                let end = gpui::point(after.right() - px(0.1), after.center().y);
+                let (start, end) = if reverse { (end, start) } else { (start, end) };
                 assert_eq!(drag_selection(vcx, start, end), expected, "{name}");
                 panel.read_with(vcx, |panel, cx| {
                     let selection = panel.transcript_selection.read(cx);

@@ -161,6 +161,7 @@ fn segments(item: &Item, index: usize, open: Open) -> Segments {
     segments_with_display(item, index, open, &crate::config::display())
 }
 
+#[cfg(test)]
 pub(super) fn segments_with_display(
     item: &Item,
     index: usize,
