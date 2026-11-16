@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
+use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, SessionInfo};
 
 pub use jcode_sdk::HistoryPage as BoundedHistoryPage;
 
@@ -924,6 +924,7 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     let attempt = || -> jcode_sdk::Result<JcodeClient> {
         let client = JcodeClient::connect(ConnectOptions {
+            socket_path: Some(crate::runtime_generation::local_bridge_socket()?),
             client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
             // Temporarily disabled until inline tool responses have broader testing.
@@ -931,10 +932,16 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
             ..Default::default()
         })?;
         crate::runtime_generation::verify_local_bridge(client.runtime_identity.as_ref())?;
+        crate::runtime_generation::verify_capabilities(&client)?;
         Ok(client)
     };
     match attempt() {
-        Err(error) if error.kind == jcode_sdk::ErrorKind::ConnectFailed => {
+        Err(error)
+            if matches!(
+                error.kind,
+                jcode_sdk::ErrorKind::ConnectFailed | jcode_sdk::ErrorKind::HandshakeFailed
+            ) =>
+        {
             // The runtime was started once at bridge startup. If the harness
             // API bridge later dies (a self-dev restart interrupted halfway,
             // a crash), its socket file is left behind with nothing listening
@@ -974,14 +981,15 @@ fn revive_local_runtime() -> bool {
         }
         *last = Some(std::time::Instant::now());
     }
-    let options = LaunchOptions {
-        binary: Some(crate::platform::companion_executable("jcode")),
-        ..Default::default()
+    let Ok(options) = crate::runtime_generation::launch_options() else {
+        return false;
     };
     let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
     // The SDK treats an existing socket file as a running bridge, so a dead
     // bridge's leftover file would make this a no-op forever.
-    crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
+    if let Some(socket) = &options.api_socket {
+        crate::platform::clear_stale_socket(socket);
+    }
     eprintln!("jcode desktop: reviving harness API bridge");
     match jcode_sdk::ensure_runtime(&options, &|_| {}) {
         Ok(()) => true,
@@ -1045,19 +1053,20 @@ fn start_local_runtime(updates: UpdateSender) {
         {
             return;
         }
-        let options = LaunchOptions {
-            binary: Some(crate::platform::companion_executable("jcode")),
-            ..Default::default()
-        };
-        let started = {
+        let started = crate::runtime_generation::launch_options().and_then(|options| {
             let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
-            crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
+            if let Some(socket) = &options.api_socket {
+                crate::platform::clear_stale_socket(socket);
+            }
             jcode_sdk::ensure_runtime(&options, &|status| {
                 let _ = updates.send(Update::Status(status.to_string()));
             })
-        };
+        });
         match started {
-            Ok(()) => break,
+            Ok(()) => {
+                crate::runtime_generation::retire_stale_bridges();
+                break;
+            }
             Err(error) => {
                 let _ = updates.send(Update::Disconnected {
                     reason: format!("{error}; retrying"),

@@ -4,6 +4,7 @@ use jcode_build_support::runtime_generation::{
     self as generation, GenerationVerdict, ImmutableTarget, ServingIdentity,
 };
 use jcode_sdk::{Error, ErrorKind};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -36,6 +37,66 @@ pub(crate) fn verify_local_bridge(identity: Option<&ServingIdentity>) -> jcode_s
     let target =
         bundle_target().map_err(|reason| Error::new(ErrorKind::HandshakeFailed, reason))?;
     verify_bridge_target(&target, identity)
+}
+
+pub(crate) fn local_bridge_socket() -> jcode_sdk::Result<PathBuf> {
+    let target =
+        bundle_target().map_err(|reason| Error::new(ErrorKind::HandshakeFailed, reason))?;
+    Ok(jcode_sdk::bundle_bridge::bundle_bridge_socket(
+        &jcode_sdk::api::api_socket_path(),
+        &target,
+    ))
+}
+
+pub(crate) fn launch_options() -> jcode_sdk::Result<jcode_sdk::LaunchOptions> {
+    Ok(jcode_sdk::LaunchOptions {
+        binary: Some(crate::platform::companion_executable("jcode")),
+        api_socket: Some(local_bridge_socket()?),
+        ..Default::default()
+    })
+}
+
+pub(crate) fn verify_capabilities(client: &jcode_sdk::JcodeClient) -> jcode_sdk::Result<()> {
+    if jcode_sdk::bundle_bridge::BUNDLE_BRIDGE_CAPABILITIES
+        .iter()
+        .all(|cap| client.supports(cap))
+    {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::HandshakeFailed,
+            "Desktop bridge capability generation is incompatible",
+        ))
+    }
+}
+
+/// Retirement is advisory for pre-lifecycle bridges. They keep their existing
+/// clients but can no longer block this bundle's independently locked endpoint.
+pub(crate) fn retire_stale_bridges() {
+    let Ok(own) = local_bridge_socket() else {
+        return;
+    };
+    let Some(parent) = own.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path == own || !name.starts_with("jcode-api") || !name.ends_with(".sock") {
+            continue;
+        }
+        if let Err(error) =
+            jcode_sdk::bundle_bridge::retire_bridge(&path, Duration::from_millis(200))
+        {
+            eprintln!(
+                "jcode desktop: stale bridge {} could not retire gracefully: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 fn verify_bridge_target(
