@@ -432,10 +432,10 @@ impl Panel {
                 self.answer_ask(AskResponse::default(), cx);
             }
             "left" if !editing => {
-                card.switch_tab(q.saturating_sub(1));
+                card.switch_tab((q + card.questions.len()) % (card.questions.len() + 1));
             }
             "right" if !editing => {
-                card.switch_tab(q + 1);
+                card.switch_tab((q + 1) % (card.questions.len() + 1));
             }
             "up" | "k" if count > 0 => {
                 card.cursor_option = (card.cursor_option + count - 1) % count
@@ -1221,6 +1221,18 @@ mod tests {
         vcx.simulate_keystrokes("right right");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("ask-review").is_some());
+        vcx.simulate_keystrokes("right");
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-question-0").is_some(),
+            "right wraps review to first question"
+        );
+        vcx.simulate_keystrokes("left");
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-review").is_some(),
+            "left wraps first question to review"
+        );
         assert!(
             vcx.debug_bounds("ask-review-comment-0-1").is_some(),
             "review should show the selected option's comment"
