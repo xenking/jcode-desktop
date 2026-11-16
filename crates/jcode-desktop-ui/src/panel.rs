@@ -4884,11 +4884,21 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
-                                                    name, input, output, detail,
-                                                    format!("tool-detail-{index}"),
-                                                    self.transcript_selection.clone(), window, cx,
-                                                )))
+                                                .child(if let Some(markdown) = tool_output::markdown_output(name, output) {
+                                                    let args = tool_detail(name, input, "");
+                                                    div().debug_selector(|| "tool-detail-markdown".into())
+                                                        .flex().flex_col().gap_2()
+                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .child(div().font_family(Theme::global().FONT_AI).child(markdown::render(&markdown, tool_output::markdown_row(index), &self.transcript_selection, window, cx)))
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else {
+                                                    div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
+                                                        name, input, output, detail,
+                                                        format!("tool-detail-{index}"),
+                                                        self.transcript_selection.clone(), window, cx,
+                                                    )).into_any_element()
+                                                })
                                                 .child(
                                                     div()
                                                         .debug_selector(|| "tool-detail-end".into())

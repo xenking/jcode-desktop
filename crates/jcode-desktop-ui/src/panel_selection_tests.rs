@@ -252,6 +252,22 @@ fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn markdown_tool_output_copies_rendered_text(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("tool-markdown-selection".into(), None, None, crate::harness::spawn_inert(), cx);
+        *panel.items = vec![Item::Tool {
+            call_id: "md".into(), name: "webfetch".into(), input: "{}".into(),
+            output: "# Report\n\nA **useful** result.".into(), done: true, error: None,
+        }];
+        panel.expanded_regions.insert("md".into());
+        panel
+    });
+    let key = format!("selectable-text-{}-1", tool_output::markdown_row(0));
+    assert_eq!(drag_copy(vcx, Box::leak(key.into_boxed_str())), "A useful result.");
+}
+
+#[gpui::test]
 fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {

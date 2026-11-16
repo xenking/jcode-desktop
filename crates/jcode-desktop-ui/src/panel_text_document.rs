@@ -222,7 +222,17 @@ pub(super) fn segments_with_display(
                         push(format!("{key}-error"), error.clone());
                     }
                 }
-                push(format!("tool-detail-{index}"), detail);
+                if let Some(markdown) = tool_output::markdown_output(name, output) {
+                    push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
+                    for (key, text) in markdown::selection_segments(&markdown, tool_output::markdown_row(index), false, false) {
+                        push(key.to_string(), text.to_string());
+                    }
+                    if let Some(error) = error {
+                        push(format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)));
+                    }
+                } else {
+                    push(format!("tool-detail-{index}"), detail);
+                }
             }
         }
         Item::Error(message) => {

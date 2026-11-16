@@ -47,6 +47,29 @@ pub(super) fn bash_exit_code(name: &str, output: &str) -> Option<i32> {
     })
 }
 
+/// Prose-bearing tool responses can contain markdown; command and file output
+/// must stay literal even when their content resembles markup.
+pub(super) fn markdown_output(name: &str, output: &str) -> Option<String> {
+    if matches!(name, "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff") {
+        return None;
+    }
+    let output = strip_ansi(output);
+    if serde_json::from_str::<serde_json::Value>(&output).is_ok() {
+        return None;
+    }
+    let looks_like_markdown = output.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("# ") || line.starts_with("## ") || line.starts_with("```")
+            || line.starts_with("- ")
+            || line.starts_with("> ")
+    }) || output.contains("**");
+    looks_like_markdown.then_some(output)
+}
+
+pub(super) fn markdown_row(index: usize) -> usize {
+    usize::MAX.saturating_sub(index.saturating_add(1))
+}
+
 fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, HighlightStyle)> {
     let Some(lang) = language(name, input, output) else {
         return Vec::new();

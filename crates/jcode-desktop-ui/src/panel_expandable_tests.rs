@@ -4,6 +4,19 @@
 use super::*;
 
 #[gpui::test]
+fn markdown_tool_output_is_rendered_and_selectable(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "markdown".into(), name: "webfetch".into(), input: r#"{"url":"example"}"#.into(),
+        output: "# Report\n\nA **useful** result.".into(), done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-detail-markdown").is_some());
+    let document = document_text(&panel, vcx);
+    assert!(document.contains("Report") && document.contains("useful"));
+    assert!(!document.contains("**useful**"));
+}
+
+#[gpui::test]
 fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::Tool {
         call_id: "bash-status".into(), name: "bash".into(), input: r#"{"command":"false"}"#.into(),
