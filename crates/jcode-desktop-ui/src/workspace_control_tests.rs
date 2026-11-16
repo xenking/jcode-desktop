@@ -314,6 +314,15 @@ fn send_requires_agent_owned_draft_and_preserves_user_draft(cx: &mut gpui::TestA
             DesktopResponse::Error { .. }
         ));
         assert_eq!(input.read(cx).snapshot().content, "user draft");
+        let replace = req(DesktopAction::SetComposer {
+            target: target.clone(),
+            text: "overwrite".into(),
+            allow_user_window: false,
+        });
+        assert!(matches!(
+            w.handle_desktop_request(replace, window, cx),
+            DesktopResponse::Error { ref code, .. } if code == "draft_not_empty"
+        ));
         input.update(cx, |input, cx| input.set_content(String::new(), cx));
         let set = req(DesktopAction::SetComposer {
             target: target.clone(),
@@ -324,6 +333,29 @@ fn send_requires_agent_owned_draft_and_preserves_user_draft(cx: &mut gpui::TestA
             w.handle_desktop_request(set, window, cx),
             DesktopResponse::Ok { .. }
         ));
+        input.update(cx, |input, cx| {
+            gpui::EntityInputHandler::replace_text_in_range(input, None, "x", window, cx);
+            gpui::EntityInputHandler::replace_text_in_range(input, Some(11..12), "", window, cx);
+        });
+        assert_eq!(input.read(cx).snapshot().content, "agent draft");
+        assert!(matches!(
+            w.handle_desktop_request(send(), window, cx),
+            DesktopResponse::Error { ref code, .. } if code == "draft_not_owned"
+        ));
+        let replace = req(DesktopAction::SetComposer {
+            target: target.clone(),
+            text: "overwrite".into(),
+            allow_user_window: false,
+        });
+        assert!(matches!(
+            w.handle_desktop_request(replace, window, cx),
+            DesktopResponse::Error { ref code, .. } if code == "draft_not_empty"
+        ));
+        input.update(cx, |input, cx| input.set_content(String::new(), cx));
+        let set = req(DesktopAction::SetComposer {
+            target: target.clone(), text: "agent draft".into(), allow_user_window: false,
+        });
+        assert!(matches!(w.handle_desktop_request(set, window, cx), DesktopResponse::Ok { .. }));
         assert!(matches!(
             w.handle_desktop_request(send(), window, cx),
             DesktopResponse::Ok { .. }

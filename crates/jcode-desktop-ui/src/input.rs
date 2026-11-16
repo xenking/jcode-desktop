@@ -236,6 +236,7 @@ pub struct PromptInput {
     current_effort: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
+    control_revision: u64,
     suggestions_cache: RefCell<Option<model_picker::SuggestionsCache>>,
     command_layout_key: Option<(SharedString, usize, gpui::Size<Pixels>)>,
     command_entrance: jcode_desktop_motion::MenuEntrance,
@@ -655,6 +656,7 @@ impl PromptInput {
         self.attachments = restore_attachments(snapshot.attachments);
         ensure_visible_chips(&mut content, &mut self.attachments);
         let len = content.len();
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
         if self.selected_range.end < self.selected_range.start {
@@ -684,6 +686,7 @@ impl PromptInput {
         if let Some(range) = self.chip_range(&attachment) {
             let mut content = self.content.to_string();
             content.replace_range(range.clone(), "");
+            self.control_revision = self.control_revision.wrapping_add(1);
             self.content = content.into();
             self.selected_range = range.start..range.start;
         }
@@ -811,6 +814,7 @@ impl PromptInput {
             current_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
+            control_revision: 0,
             suggestions_cache: RefCell::new(None),
             command_layout_key: None,
             command_entrance: jcode_desktop_motion::MenuEntrance::default(),
@@ -1540,6 +1544,7 @@ impl PromptInput {
             .collect();
         self.attachment_notice = None;
         self.attachment_preview = None;
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = "".into();
         self.expanded_model_groups.clear();
         self.model_stage = Default::default();
@@ -1649,6 +1654,7 @@ impl PromptInput {
         self.remove_chips_in_range(&range);
         let mut content = self.content.to_string();
         content.replace_range(range.clone(), &marker);
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         let cursor = range.start + marker.len();
         self.selected_range = cursor..cursor;
@@ -1935,6 +1941,7 @@ impl PromptInput {
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = edited.into();
         self.marked_range = None;
         self.history_index = None;
@@ -2201,8 +2208,13 @@ impl PromptInput {
         self.set_content(merged, cx);
     }
 
+    pub(crate) fn control_revision(&self) -> u64 {
+        self.control_revision
+    }
+
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.dismiss_ghost();
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
@@ -2515,6 +2527,7 @@ impl EntityInputHandler for PromptInput {
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -2547,6 +2560,7 @@ impl EntityInputHandler for PromptInput {
 
         let range = self.expanded_chip_range(range);
         self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();

@@ -281,7 +281,8 @@ impl Workspace {
                 let input = self.slots[index].panel.read(cx).input.clone();
                 let draft = input.read(cx).snapshot();
                 let panel_id = self.slots[index].panel.entity_id();
-                let owned = self.control_drafts.get(&panel_id) == Some(&draft.content)
+                let owned = self.control_drafts.get(&panel_id)
+                    == Some(&(draft.content.clone(), input.read(cx).control_revision()))
                     && draft.attachments.is_empty()
                     && draft.stashed_prompt.is_none();
                 if !allow_user_window
@@ -299,7 +300,7 @@ impl Workspace {
                 if allow_user_window {
                     self.control_drafts.remove(&panel_id);
                 } else {
-                    self.control_drafts.insert(panel_id, text);
+                    self.control_drafts.insert(panel_id, (text, input.read(cx).control_revision()));
                 }
                 ok(json!({}))
             }
@@ -322,7 +323,7 @@ impl Workspace {
                 let input = panel.read(cx).input.clone();
                 let draft = input.read(cx).snapshot();
                 if !allow_user_window
-                    && (self.control_drafts.get(&panel_id) != Some(&draft.content)
+                    && (self.control_drafts.get(&panel_id) != Some(&(draft.content.clone(), input.read(cx).control_revision()))
                         || !draft.attachments.is_empty()
                         || draft.stashed_prompt.is_some())
                 {
