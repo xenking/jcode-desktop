@@ -66,13 +66,28 @@ def main():
                 assert result["status"] == "ok", result
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["result"]["panel"]["composer"] == "isolated draft", state
+                sent = request(endpoint, {"action": "send", "target": target, "allow_user_window": True})
+                assert sent["status"] == "ok" and sent["result"]["submitted"], sent
+                state = request(endpoint, {"action": "state", "target": target})
+                assert state["result"]["panel"]["composer"] == "", state
+                for action in ({"action": "press_key", "key": "enter"}, {"action": "click", "selector": "composer.send"}):
+                    result = request(endpoint, {"action": "set_composer", "target": target, "text": "isolated draft", "allow_user_window": True})
+                    assert result["status"] == "ok", result
+                    sent = request(endpoint, {**action, "target": target, "allow_user_window": True})
+                    assert sent["status"] == "ok" and sent["result"]["submitted"], sent
                 wrong = request(endpoint, {"action": "state", "target": {**target, "session_id": "wrong"}})
                 assert wrong["status"] == "error", wrong
+                search = request(endpoint, {"action": "search", "target": target, "query": "needle", "allow_user_window": False})
+                assert search["status"] == "error", search
+                search = request(endpoint, {"action": "search", "target": target, "query": "needle", "allow_user_window": True})
+                assert search["status"] == "ok", search
+                state = request(endpoint, {"action": "state", "target": target})
+                assert state["result"]["search"]["query"] == "needle", state
                 png = root / "window.png"
                 rendered = request(endpoint, {"action": "render", "target": target, "selector": None, "path": str(png)})
                 assert rendered["status"] == "ok", rendered
                 assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-                print("private Desktop socket list/state/set_composer/render passed")
+                print("private Desktop socket list/state/set_composer/send/search/render passed")
             except BaseException:
                 log.flush()
                 log.seek(0)

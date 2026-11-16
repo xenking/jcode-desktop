@@ -1413,6 +1413,17 @@ impl PromptInput {
         self.submit_prompt(true, window, cx);
     }
 
+    pub(crate) fn control_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.submission_enabled
+            || self.content.trim().is_empty()
+            || self.content.trim_start().starts_with('/')
+        {
+            return false;
+        }
+        self.submit_prompt(false, window, cx);
+        self.content.is_empty()
+    }
+
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.submission_enabled {
             return;

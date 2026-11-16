@@ -766,6 +766,7 @@ pub struct Workspace {
     desktop_control: Option<crate::desktop_control::Server>,
     #[cfg(unix)]
     desktop_control_task: Option<gpui::Task<()>>,
+    control_drafts: HashMap<gpui::EntityId, String>,
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
@@ -1142,6 +1143,7 @@ impl Workspace {
             desktop_control: None,
             #[cfg(unix)]
             desktop_control_task: None,
+            control_drafts: HashMap::new(),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -1618,6 +1620,7 @@ impl Workspace {
             desktop_control: None,
             #[cfg(unix)]
             desktop_control_task: None,
+            control_drafts: HashMap::new(),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),

@@ -6,6 +6,190 @@ use jcode_sdk::desktop_control::{
 include!("workspace_control_open_tests.rs");
 
 #[gpui::test]
+fn click_tool_and_enter_use_targeted_semantic_actions(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w.slots[0].panel.update(cx, |p, _| p.control_test_tool());
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-a".into(),
+        };
+        let req = |action| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action,
+        };
+        let focus = w.focus_handle.clone();
+        window.focus(&focus, cx);
+        assert!(matches!(
+            w.handle_desktop_request(
+                req(DesktopAction::Click {
+                    target: target.clone(),
+                    selector: "tool:call-1".into(),
+                    allow_user_window: false
+                }),
+                window,
+                cx
+            ),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(
+                req(DesktopAction::SetComposer {
+                    target: target.clone(),
+                    text: "hello".into(),
+                    allow_user_window: false
+                }),
+                window,
+                cx
+            ),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(
+                req(DesktopAction::PressKey {
+                    target: target.clone(),
+                    key: "enter".into(),
+                    allow_user_window: false
+                }),
+                window,
+                cx
+            ),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(
+            w.slots[0]
+                .panel
+                .read(cx)
+                .input
+                .read(cx)
+                .snapshot()
+                .content
+                .is_empty()
+        );
+        assert!(matches!(
+            w.handle_desktop_request(
+                req(DesktopAction::Click {
+                    target,
+                    selector: "unknown".into(),
+                    allow_user_window: false
+                }),
+                window,
+                cx
+            ),
+            DesktopResponse::Error { .. }
+        ));
+    });
+}
+
+#[gpui::test]
+fn search_requires_explicit_permission_and_sets_query(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-a".into(),
+        };
+        let req = |allow| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action: DesktopAction::Search {
+                target: target.clone(),
+                query: "needle".into(),
+                allow_user_window: allow,
+            },
+        };
+        assert!(matches!(
+            w.handle_desktop_request(req(false), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert!(!w.search_screen_open());
+        assert!(matches!(
+            w.handle_desktop_request(req(true), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        let state = w.handle_desktop_request(
+            DesktopRequest {
+                v: DESKTOP_CONTROL_VERSION,
+                action: DesktopAction::State { target },
+            },
+            window,
+            cx,
+        );
+        assert!(
+            matches!(state, DesktopResponse::Ok { result } if result["search"]["query"] == "needle")
+        );
+    });
+}
+
+#[gpui::test]
+fn send_requires_agent_owned_draft_and_preserves_user_draft(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-a".into(),
+        };
+        let req = |action| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action,
+        };
+        let send = || {
+            req(DesktopAction::Send {
+                target: target.clone(),
+                allow_user_window: false,
+            })
+        };
+        let workspace_focus = w.focus_handle.clone();
+        window.focus(&workspace_focus, cx);
+        let input = w.slots[0].panel.read(cx).input.clone();
+        input.update(cx, |input, cx| input.set_content("user draft".into(), cx));
+        assert!(matches!(
+            w.handle_desktop_request(send(), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert_eq!(input.read(cx).snapshot().content, "user draft");
+        input.update(cx, |input, cx| input.set_content(String::new(), cx));
+        let set = req(DesktopAction::SetComposer {
+            target: target.clone(),
+            text: "agent draft".into(),
+            allow_user_window: false,
+        });
+        assert!(matches!(
+            w.handle_desktop_request(set, window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(send(), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert_eq!(input.read(cx).snapshot().content, "");
+    });
+}
+
+#[gpui::test]
 fn expand_tool_requires_exact_existing_call_and_is_idempotent(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);

@@ -32,6 +32,27 @@ pub(super) struct State {
 }
 
 impl Workspace {
+    pub(super) fn control_search(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_search_screen(&GlobalSearch, window, cx);
+        if let Some(state) = &self.search_screen {
+            state
+                .input
+                .update(cx, |input, cx| input.set_content(query.to_owned(), cx));
+        }
+        self.search_query_changed(query, cx);
+    }
+
+    pub(super) fn control_search_state(&self, cx: &App) -> Option<serde_json::Value> {
+        self.search_screen
+            .as_ref()
+            .map(|state| serde_json::json!({"query": state.input.read(cx).snapshot().content}))
+    }
+
     pub(super) fn open_search_screen(
         &mut self,
         _: &GlobalSearch,

@@ -135,7 +135,78 @@ impl Workspace {
                 };
                 let panel = self.slots[index].panel.read(cx);
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(cx), "search_open":self.search_screen.is_some(), "navigation":self.navigation_state(window,cx)}),
+                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(cx), "search_open":self.search_screen.is_some(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
+                )
+            }
+            DesktopAction::Search {
+                target,
+                query,
+                allow_user_window,
+            } => {
+                if let Err(e) = self.control_target(&target, window, cx) {
+                    return e;
+                }
+                if !allow_user_window {
+                    return error(
+                        "user_window_protected",
+                        "search changes window focus; set allow_user_window to permit it",
+                    );
+                }
+                self.control_search(&query, window, cx);
+                ok(json!({"query":query}))
+            }
+            DesktopAction::Click {
+                target,
+                selector,
+                allow_user_window,
+            } => {
+                let action = if selector == "composer.send" {
+                    DesktopAction::Send {
+                        target,
+                        allow_user_window,
+                    }
+                } else if let Some(call_id) = selector.strip_prefix("tool:") {
+                    DesktopAction::ExpandTool {
+                        target,
+                        selector: call_id.to_owned(),
+                        allow_user_window,
+                    }
+                } else {
+                    return error(
+                        "selector_not_found",
+                        "supported selectors: composer.send, tool:<call_id>",
+                    );
+                };
+                self.handle_desktop_request(
+                    DesktopRequest {
+                        v: DESKTOP_CONTROL_VERSION,
+                        action,
+                    },
+                    window,
+                    cx,
+                )
+            }
+            DesktopAction::PressKey {
+                target,
+                key,
+                allow_user_window,
+            } => {
+                if !key.eq_ignore_ascii_case("enter") && !key.eq_ignore_ascii_case("return") {
+                    return error(
+                        "unsupported",
+                        "only Enter is supported as a semantic send action",
+                    );
+                }
+                self.handle_desktop_request(
+                    DesktopRequest {
+                        v: DESKTOP_CONTROL_VERSION,
+                        action: DesktopAction::Send {
+                            target,
+                            allow_user_window,
+                        },
+                    },
+                    window,
+                    cx,
                 )
             }
             DesktopAction::SetComposer {
@@ -161,16 +232,66 @@ impl Workspace {
                 }
                 let input = self.slots[index].panel.read(cx).input.clone();
                 let draft = input.read(cx).snapshot();
+                let panel_id = self.slots[index].panel.entity_id();
+                let owned = self.control_drafts.get(&panel_id) == Some(&draft.content)
+                    && draft.attachments.is_empty()
+                    && draft.stashed_prompt.is_none();
                 if !allow_user_window
-                    && (!draft.content.is_empty() || !draft.attachments.is_empty())
+                    && (!draft.content.is_empty()
+                        || !draft.attachments.is_empty()
+                        || draft.stashed_prompt.is_some())
+                    && !owned
                 {
                     return error(
                         "draft_not_empty",
                         "refusing to replace an existing draft without allow_user_window",
                     );
                 }
-                input.update(cx, |input, cx| input.set_content(text, cx));
+                input.update(cx, |input, cx| input.set_content(text.clone(), cx));
+                if allow_user_window {
+                    self.control_drafts.remove(&panel_id);
+                } else {
+                    self.control_drafts.insert(panel_id, text);
+                }
                 ok(json!({}))
+            }
+            DesktopAction::Send {
+                target,
+                allow_user_window,
+            } => {
+                let index = match self.control_target(&target, window, cx) {
+                    Ok(index) => index,
+                    Err(error) => return error,
+                };
+                let panel = &self.slots[index].panel;
+                if panel.read(cx).input_focus_handle(cx).is_focused(window) && !allow_user_window {
+                    return error(
+                        "user_window_focused",
+                        "refusing to send from a focused composer without allow_user_window",
+                    );
+                }
+                let panel_id = panel.entity_id();
+                let input = panel.read(cx).input.clone();
+                let draft = input.read(cx).snapshot();
+                if !allow_user_window
+                    && (self.control_drafts.get(&panel_id) != Some(&draft.content)
+                        || !draft.attachments.is_empty()
+                        || draft.stashed_prompt.is_some())
+                {
+                    return error(
+                        "draft_not_owned",
+                        "refusing to send a draft not set by desktop control",
+                    );
+                }
+                let submitted = input.update(cx, |input, cx| input.control_submit(window, cx));
+                if !submitted {
+                    return error(
+                        "not_submitted",
+                        "composer is empty, disabled, or contains a slash command",
+                    );
+                }
+                self.control_drafts.remove(&panel_id);
+                ok(json!({"submitted":true}))
             }
             DesktopAction::ExpandTool {
                 target, selector, ..
