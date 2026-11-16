@@ -61,7 +61,10 @@ pub(super) fn bash_sections(
     let mut args = tool_detail(name, input, "");
     let mut result = strip_ansi(output);
     if let Some(error) = error {
-        result.push_str("\n\nError\n");
+        if !result.is_empty() {
+            result.push_str("\n\n");
+        }
+        result.push_str("Error\n");
         result.push_str(&strip_ansi(error));
     }
     if !result.is_empty() {
@@ -369,6 +372,12 @@ pub(super) fn selectable_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bash_error_without_output_does_not_start_with_blank_lines() {
+        let (_, output) =
+            bash_sections("bash", r#"{"command":"false"}"#, "", Some("denied")).unwrap();
+        assert_eq!(output, "Error\ndenied");
+    }
     #[test]
     fn argument_keys_are_highlighted_even_with_multiline_values() {
         let input = r#"{"command":"echo\nhello","task_id":"abc"}"#;
