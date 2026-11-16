@@ -95,7 +95,7 @@ impl Panel {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        Some(format!("Waiting for {names} · wakes when they report"))
+        Some(format!("Waiting: {names}"))
     }
 
     #[cfg(test)]
@@ -604,7 +604,7 @@ mod tests {
             panel
                 .read_with(vcx, |panel, _| panel.await_line())
                 .as_deref(),
-            Some("Waiting for kangaroo · wakes when they report")
+            Some("Waiting: kangaroo")
         );
         // The information the removed text line carried now lives in the
         // pill: a pause mark in the bar and the names in the hover.
@@ -661,7 +661,7 @@ mod tests {
             panel
                 .read_with(vcx, |panel, _| panel.await_line())
                 .as_deref(),
-            Some("Waiting for calf, sunflower · wakes when they report")
+            Some("Waiting: calf, sunflower")
         );
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(

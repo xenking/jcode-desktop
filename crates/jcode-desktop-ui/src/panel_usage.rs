@@ -49,11 +49,98 @@ impl Render for RowsTooltip {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.title.clone()),
             )
-            .children(
-                self.rows
-                    .iter()
-                    .map(|row| div().text_color(theme.TEXT_DIM).child(row.clone())),
+            .children(self.rows.iter().enumerate().map(|(index, row)| {
+                div()
+                    .debug_selector(move || format!("rows-tooltip-row-{index}"))
+                    .flex_none()
+                    .line_height(px(16.))
+                    .text_color(theme.TEXT_DIM)
+                    .child(row.clone())
+            }))
+    }
+}
+
+struct ContextTooltip {
+    used: Option<u64>,
+    threshold: Option<u64>,
+    window: Option<u64>,
+    percent: Option<f32>,
+}
+
+impl Render for ContextTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        let value = match (self.used, self.threshold) {
+            (Some(used), Some(limit)) => {
+                format!("{} / {}", format_tokens(used), format_tokens(limit))
+            }
+            (Some(used), None) => format_tokens(used),
+            _ => "Not reported".into(),
+        };
+        div()
+            .debug_selector(|| "context-tooltip".into())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .min_w(px(220.))
+            .rounded_xl()
+            .bg(theme.HEADER_BG)
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
+            .text_size(px(11.))
+            .line_height(px(16.))
+            .child(
+                div()
+                    .text_color(theme.TEXT)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Context window"),
             )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap_4()
+                    .text_color(theme.TEXT_DIM)
+                    .child("Context")
+                    .child(
+                        div()
+                            .font_family(theme.FONT_MONO)
+                            .text_color(theme.TEXT)
+                            .child(value),
+                    ),
+            )
+            .children(self.percent.map(|percent| {
+                div()
+                    .debug_selector(|| "context-tooltip-bar".into())
+                    .w_full()
+                    .h(px(4.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(theme.INLINE_CODE_BG)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(percent.clamp(0., 100.) / 100.))
+                            .rounded_full()
+                            .bg(usage_color(percent, theme)),
+                    )
+            }))
+            .children(self.window.map(|window| {
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap_4()
+                    .text_color(theme.TEXT_DIM)
+                    .child("Window")
+                    .child(
+                        div()
+                            .font_family(theme.FONT_MONO)
+                            .text_color(theme.TEXT)
+                            .child(format_tokens(window)),
+                    )
+            }))
     }
 }
 
@@ -704,26 +791,23 @@ impl Panel {
             return None;
         }
         let theme = Theme::global();
-        let window = self.model.as_deref().and_then(context_window_for_model);
+        let capacity = self.model.as_deref().and_then(context_window_for_model);
         // Fill the ring toward the compaction trigger, not the raw window, so
         // the user sees when the session will fold (e.g. 500k on a 1M window).
         let window = self
             .model
             .as_deref()
-            .zip(window)
+            .zip(capacity)
             .and_then(|(model, window)| {
                 super::compaction_threshold_for_model(self.provider.as_deref(), model, window)
             })
-            .or(window);
+            .or(capacity);
         let used = self.context_tokens;
         let percent = used
             .zip(window)
             .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
         // Unknown usage shows only the empty ring, never a placeholder dash.
         let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
-        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
-            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
-            .unwrap_or_else(|| "Context usage is not reported yet.".into());
         Some(
             div()
                 .id("panel-context-meter")
@@ -737,7 +821,15 @@ impl Panel {
                 .text_size(px(10.5))
                 .font_family(theme.FONT_MONO)
                 .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
+                .tooltip(move |_, cx| {
+                    cx.new(|_| ContextTooltip {
+                        used,
+                        threshold: window,
+                        window: capacity,
+                        percent,
+                    })
+                    .into()
+                })
                 .child(context_ring(percent))
                 .children(label)
                 .into_any_element(),
@@ -858,6 +950,36 @@ mod tests {
         assert_eq!(usage_color(70., theme), theme.WARN);
         assert_eq!(usage_color(89., theme), theme.WARN);
         assert_eq!(usage_color(90., theme), theme.ERROR);
+    }
+
+    #[gpui::test]
+    fn context_tooltip_has_compaction_bar(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| ContextTooltip {
+            used: Some(135_000),
+            threshold: Some(500_000),
+            window: Some(1_000_000),
+            percent: Some(27.),
+        });
+        vcx.run_until_parked();
+        let card = vcx.debug_bounds("context-tooltip").unwrap();
+        let bar = vcx.debug_bounds("context-tooltip-bar").unwrap();
+        assert!(bar.top() >= card.top() && bar.bottom() <= card.bottom());
+    }
+
+    #[gpui::test]
+    fn rows_tooltip_wrapped_rows_do_not_overlap(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| RowsTooltip {
+            title: "Workers".into(),
+            rows: vec![
+                "Waiting for spider, swan, squid, elephant, hummingbird, octopus, kangaroo".into(),
+                "5 running · 41 done".into(),
+            ],
+        });
+        vcx.run_until_parked();
+        let first = vcx.debug_bounds("rows-tooltip-row-0").expect("first row");
+        let second = vcx.debug_bounds("rows-tooltip-row-1").expect("second row");
+        assert!(first.size.height > px(16.), "first row must wrap");
+        assert!(second.top() >= first.bottom(), "tooltip rows overlap");
     }
 
     #[test]

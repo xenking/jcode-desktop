@@ -181,21 +181,45 @@ fn tokens(value: u64) -> String {
     }
 }
 
-struct StatsTooltip(String);
+struct StatsTooltip(Vec<(&'static str, String)>);
 impl Render for StatsTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("StatsTooltip");
         div()
+            .debug_selector(|| "stats-tooltip".into())
+            .flex()
+            .flex_col()
+            .gap_1()
             .px_3()
             .py_2()
-            .max_w(px(380.))
-            .rounded_md()
+            .min_w(px(190.))
+            .rounded_xl()
             .bg(Theme::global().HEADER_BG)
             .border_1()
             .border_color(Theme::global().PANEL_BORDER)
             .text_size(px(11.))
             .text_color(Theme::global().TEXT_DIM)
-            .child(self.0.clone())
+            .child(
+                div()
+                    .text_color(Theme::global().TEXT)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Response tokens"),
+            )
+            .children(self.0.iter().enumerate().map(|(index, (label, value))| {
+                div()
+                    .debug_selector(move || format!("stats-tooltip-row-{index}"))
+                    .flex()
+                    .flex_none()
+                    .justify_between()
+                    .gap_4()
+                    .child(*label)
+                    .child(
+                        div()
+                            .text_color(Theme::global().TEXT)
+                            .font_family(Theme::global().FONT_MONO)
+                            .child(value.clone()),
+                    )
+            }))
     }
 }
 
@@ -231,24 +255,24 @@ impl ResponseStats {
         labels
     }
 
-    fn detail(&self) -> String {
-        let mut details = vec!["Provider-reported totals for this response across model requests. Input includes cache for OpenAI, but excludes cache reads/writes for Anthropic. Elapsed time includes tool work observed by Desktop.".to_string()];
+    fn detail(&self) -> Vec<(&'static str, String)> {
+        let mut details = Vec::new();
         if let Some(input) = self.input_tokens {
-            details.push(format!("Input: {input} tokens."));
+            details.push(("Input", input.to_string()));
         }
         if let Some(output) = self.output_tokens {
-            details.push(format!("Output: {output} tokens."));
+            details.push(("Output", output.to_string()));
         }
         if let Some(read) = self.cache_read_tokens {
-            details.push(format!("Cache read: {read} tokens."));
+            details.push(("Cache read", read.to_string()));
         }
         if let Some(created) = self.cache_creation_tokens {
-            details.push(format!("Cache write: {created} tokens."));
+            details.push(("Cache write", created.to_string()));
         }
-        if self.input_tokens.is_none() {
-            details.push("Token usage was not reported.".into());
+        if details.is_empty() {
+            details.push(("Usage", "Not reported".into()));
         }
-        details.join(" ")
+        details
     }
 
     pub(super) fn render(&self, index: usize) -> gpui::Stateful<gpui::Div> {
@@ -280,6 +304,39 @@ impl ResponseStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn response_tooltip_renders_separate_token_rows(cx: &mut gpui::TestAppContext) {
+        let stats = ResponseStats {
+            input_tokens: Some(135_000),
+            output_tokens: Some(500),
+            cache_read_tokens: Some(42),
+            cache_creation_tokens: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            stats.detail(),
+            [
+                ("Input", "135000".into()),
+                ("Output", "500".into()),
+                ("Cache read", "42".into()),
+                ("Cache write", "10".into())
+            ]
+        );
+        let (_, vcx) = cx.add_window_view(|_, _| StatsTooltip(stats.detail()));
+        vcx.run_until_parked();
+        let mut bottom = vcx.debug_bounds("stats-tooltip").unwrap().top();
+        for selector in [
+            "stats-tooltip-row-0",
+            "stats-tooltip-row-1",
+            "stats-tooltip-row-2",
+            "stats-tooltip-row-3",
+        ] {
+            let row = vcx.debug_bounds(selector).unwrap();
+            assert!(row.top() >= bottom);
+            bottom = row.bottom();
+        }
+    }
 
     fn usage(input: u64, output: u64, cache: Option<u64>) -> ApiEvent {
         ApiEvent::TokenUsage {
@@ -461,7 +518,7 @@ mod tests {
         assert_eq!(stats.stat_labels(), ["2 tools"]);
         assert!(stats.at_ms.is_some(), "a finished live response is stamped");
         assert_eq!(stats.input_tokens, None);
-        assert!(stats.detail().contains("not reported"));
+        assert_eq!(stats.detail(), [("Usage", "Not reported".into())]);
         assert!(tracker.finish().is_none());
     }
 
