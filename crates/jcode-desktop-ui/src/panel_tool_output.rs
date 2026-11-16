@@ -276,6 +276,34 @@ fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, Hi
     markdown::highlight_code(output, &lang).1
 }
 
+fn argument_ranges(name: &str, input: &str, detail: &str) -> Vec<(Range<usize>, HighlightStyle)> {
+    let Ok(serde_json::Value::Object(args)) = serde_json::from_str::<serde_json::Value>(input)
+    else {
+        return Vec::new();
+    };
+    let formatted = tool_detail(name, input, "");
+    if !detail.starts_with(&formatted) {
+        return Vec::new();
+    }
+    let mut offset = 0;
+    let mut ranges = Vec::new();
+    for (key, value) in args {
+        let value = match value {
+            serde_json::Value::String(text) => text,
+            other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+        };
+        ranges.push((
+            offset..offset + key.len() + 1,
+            HighlightStyle {
+                color: Some(crate::theme::to_hsla(Theme::global().TEXT_FAINT)),
+                ..Default::default()
+            },
+        ));
+        offset += key.len() + 2 + value.len() + 1;
+    }
+    ranges
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "rendering needs tool data and GPUI selection context"
@@ -291,7 +319,7 @@ pub(super) fn selectable_detail(
     cx: &App,
 ) -> gpui::AnyElement {
     let output = strip_ansi(output);
-    let mut highlights = Vec::new();
+    let mut highlights = argument_ranges(name, input, &detail);
     if !output.is_empty()
         && let Some(offset) = detail.rfind(&output)
     {
@@ -313,9 +341,42 @@ pub(super) fn selectable_detail(
     text_selection::selectable(selection, key, detail, layout, styled, cx)
 }
 
+pub(super) fn selectable_arguments(
+    name: &str,
+    input: &str,
+    args: String,
+    index: usize,
+    selection: Entity<TextSelection>,
+    window: &Window,
+    cx: &App,
+) -> gpui::AnyElement {
+    div()
+        .debug_selector(|| "tool-argument-table".into())
+        .min_w_0()
+        .child(selectable_detail(
+            name,
+            input,
+            "",
+            args,
+            format!("tool-detail-{index}"),
+            selection,
+            window,
+            cx,
+        ))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn argument_keys_are_highlighted_even_with_multiline_values() {
+        let input = r#"{"command":"echo\nhello","task_id":"abc"}"#;
+        let detail = tool_detail("bash", input, "");
+        let ranges = argument_ranges("bash", input, &detail);
+        assert_eq!(&detail[ranges[0].0.clone()], "command:");
+        assert_eq!(&detail[ranges[1].0.clone()], "task_id:");
+    }
     #[test]
     fn background_parser_retains_fields_and_unfenced_preview() {
         let result = background_output("bg", "Background task was already finished.\n\nTask: abc\nStatus: failed\nDuration: 3s\nExit code: 101\n\nOutput preview:\n```text\nerror details\n```").unwrap();

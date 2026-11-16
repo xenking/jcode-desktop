@@ -4892,7 +4892,7 @@ impl Panel {
                                             .children(supplement)
                                                 .child(if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
                                                     div().flex().flex_col()
-                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
                                                         .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
                                                         .into_any_element()
                                                 } else if let Some(result) = tool_output::background_output(name, output) {
@@ -4901,7 +4901,7 @@ impl Panel {
                                                         div().min_w_0().text_color(Theme::global().TEXT_FAINT).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-field-{index}-{field_index}"), line, window, cx)).into_any_element()
                                                     }).collect::<Vec<_>>();
                                                     div().flex().flex_col().gap_2()
-                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
                                                         .child(div().debug_selector(|| "tool-bg-fields".into()).flex().flex_col().children(rows))
                                                         .when_some(result.preview, |el, preview| el.child(div().debug_selector(|| "tool-bg-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-preview-{index}"), preview, window, cx))))
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
@@ -4921,7 +4921,7 @@ impl Panel {
                                                         div().flex().child(toggle).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-json-{index}-{line_index}"), line.text, window, cx)).into_any_element()
                                                     }).collect::<Vec<_>>();
                                                     div().debug_selector(|| "tool-detail-json".into()).font_family(Theme::global().FONT_MONO).flex().flex_col()
-                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
                                                         .children(rows)
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
@@ -4929,16 +4929,16 @@ impl Panel {
                                                     let args = tool_detail(name, input, "");
                                                     div().debug_selector(|| "tool-detail-markdown".into())
                                                         .flex().flex_col().gap_2()
-                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
                                                         .child(div().font_family(Theme::global().FONT_AI).child(markdown::render(&markdown, tool_output::markdown_row(index), &self.transcript_selection, window, cx)))
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
                                                 } else {
-                                                    div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
+                                                    div().debug_selector(|| "tool-argument-table".into()).child(div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
                                                         name, input, output, detail,
                                                         format!("tool-detail-{index}"),
                                                         self.transcript_selection.clone(), window, cx,
-                                                    )).into_any_element()
+                                                    ))).into_any_element()
                                                 })
                                                 .child(
                                                     div()

@@ -10,6 +10,7 @@ fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppCont
         output: "Changed file".into(), done: true, error: None,
     }]);
     click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-argument-table").is_some());
     let text = document_text(&panel, vcx);
     assert!(text.contains("file_path: src/lib.rs"));
     assert!(!text.contains("Tool call\n"));
@@ -53,6 +54,7 @@ fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail-exit-code").is_some());
     assert!(vcx.debug_bounds("tool-bash-command").is_some());
+    assert!(vcx.debug_bounds("tool-argument-table").is_some());
     assert!(vcx.debug_bounds("tool-bash-output-code").is_some());
     assert!(document_text(&panel, vcx).contains("command: false"));
 }
