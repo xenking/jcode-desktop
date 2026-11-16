@@ -343,6 +343,27 @@ impl Panel {
         }
     }
 
+    pub(crate) fn capture_focused_ask_voice_target(&mut self, window: &Window, cx: &App) -> bool {
+        let Some(card) = self.ask_card.as_mut() else {
+            return false;
+        };
+        for (q, input) in card.other_inputs.iter().enumerate() {
+            if input.read(cx).focus_handle.is_focused(window) {
+                card.voice_target = Some((q, None));
+                return true;
+            }
+        }
+        for (q, inputs) in card.comment_inputs.iter().enumerate() {
+            for (o, input) in inputs.iter().enumerate() {
+                if input.read(cx).focus_handle.is_focused(window) {
+                    card.voice_target = Some((q, Some(o)));
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn render_ask_microphone(
         &self,
         q: usize,
@@ -359,21 +380,43 @@ impl Panel {
             .size(px(28.))
             .rounded_full()
             .cursor_pointer()
-            .bg(if active { theme.ACCENT } else { theme.TOOL_BG })
-            .child(jcode_desktop_voice::chrome::voice_microphone_face(
+            .bg(if active { theme.ERROR } else { theme.TOOL_BG })
+            .child({
+                let icon = div()
+                    .absolute()
+                    .inset_0()
+                    .when(active, |el| {
+                        el.debug_selector(move || {
+                            format!("ask-voice-recording-indicator-{q}-{}", option.map_or(0, |o| o + 1))
+                        })
+                    })
+                    .child(jcode_desktop_voice::chrome::voice_microphone_face(if active {
+                        theme.BG.into()
+                    } else {
+                        theme.TEXT_DIM.into()
+                    }));
                 if active {
-                    theme.BG.into()
+                    gpui::AnimationExt::with_animation(
+                        icon,
+                        ("ask-voice-pulse", q * 16 + option.map_or(0, |o| o + 1)),
+                        gpui::Animation::new(std::time::Duration::from_millis(1200))
+                            .repeat()
+                            .with_easing(gpui::pulsating_between(0.5, 1.0)),
+                        |el, opacity| el.opacity(opacity),
+                    ).into_any_element()
                 } else {
-                    theme.TEXT_DIM.into()
-                },
-            ))
+                    icon.into_any_element()
+                }
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 if !this.voice_active()
                     && let Some(card) = this.ask_card.as_mut()
                 {
                     card.voice_target = Some((q, option));
                 }
-                window.focus(&this.focus_handle, cx);
+                if let Some(input) = this.ask_voice_input() {
+                    window.focus(&input.read(cx).focus_handle.clone(), cx);
+                }
                 window.dispatch_action(Box::new(voice::ToggleVoice), cx);
                 cx.stop_propagation();
             }))

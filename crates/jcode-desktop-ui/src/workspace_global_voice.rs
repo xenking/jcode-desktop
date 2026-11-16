@@ -376,6 +376,15 @@ impl Workspace {
         self.global_voice.pending_target = self
             .voice_target(cx)
             .map(|index| self.slots[index].panel.downgrade());
+        if window.is_window_active()
+            && let Some(panel) = self.global_voice.pending_target.as_ref().and_then(|p| p.upgrade())
+        {
+            panel.update(cx, |panel, cx| {
+                if !panel.voice_active() {
+                    panel.capture_focused_ask_voice_target(window, cx);
+                }
+            });
+        }
         self.global_voice.held = true;
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
         self.check_global_voice_permission(true, window, cx);

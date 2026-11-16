@@ -813,7 +813,7 @@ impl Panel {
         self.clear_voice_preview(cx);
         match result {
             Ok(text) if !text.trim().is_empty() => {
-                if let Some(input) = self.ask_voice_input() {
+                if !self.voice.global_capture && let Some(input) = self.ask_voice_input() {
                     input.update(cx, |input, cx| input.insert_dictation(&text, cx));
                     self.voice.error = None;
                     cx.notify();
@@ -879,7 +879,13 @@ impl Panel {
         {
             return;
         }
-        if allowed && mode != jcode_base::protocol::TranscriptMode::Send {
+        if allowed && let Some(input) = self.ask_voice_input() {
+            input.update(cx, |input, cx| input.insert_dictation(&text, cx));
+            self.voice.phase = Phase::Idle;
+            self.voice.error = None;
+            self.voice.decision = Some("Inserted into the answer".into());
+            cx.notify();
+        } else if allowed && mode != jcode_base::protocol::TranscriptMode::Send {
             // Unfocused hold into the draft: the words appear in the composer
             // the user comes back to, and the OS pill says so.
             eprintln!(
@@ -1171,7 +1177,7 @@ impl Panel {
             .justify_center()
             .cursor_pointer()
             .bg(if active {
-                theme.ACCENT
+                theme.ERROR
             } else {
                 theme.prompt_background(usize::MAX)
             })
@@ -1185,8 +1191,21 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
-            .child(div().when(active, |el| el.debug_selector(|| "voice-recording-indicator".into()))
-                .child(voice_microphone_face(icon_color.into())));
+            .child({
+                let icon = div().absolute().inset_0()
+                    .when(active, |el| el.debug_selector(|| "voice-recording-indicator".into()))
+                    .child(voice_microphone_face(icon_color.into()));
+                if active {
+                    gpui::AnimationExt::with_animation(
+                        icon,
+                        "voice-recording-pulse",
+                        gpui::Animation::new(Duration::from_millis(1200)).repeat().with_easing(gpui::pulsating_between(0.5, 1.0)),
+                        |el, opacity| el.opacity(opacity),
+                    ).into_any_element()
+                } else {
+                    icon.into_any_element()
+                }
+            });
         div()
             .flex_none()
             .h(px(size))
@@ -1786,7 +1805,8 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-live-transcript").is_none());
         assert!(vcx.debug_bounds("voice-overlay").is_none());
-        assert!(vcx.debug_bounds("voice-microphone-icon").is_some());
+        let microphone = vcx.debug_bounds("voice-microphone-icon").expect("microphone element");
+        assert!(microphone.size.width > px(0.) && microphone.size.height > px(0.), "microphone must have visible bounds: {microphone:?}");
         assert!(vcx.debug_bounds("voice-shortcut").is_none());
         panel.read_with(vcx, |panel, cx| {
             assert!(panel.input.read(cx).content.is_empty());
@@ -2035,6 +2055,72 @@ mod tests {
             });
             assert_eq!(panel.items.len(), items, "draft modes must not send");
         });
+    }
+
+    #[gpui::test]
+    fn focused_ask_comment_receives_shortcut_voice_and_recording_indicator(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-ask", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+        panel.update(vcx, |panel, cx| { panel.test_settled_conversation(1, cx); panel.apply(&event, cx); });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus(&panel.read(cx).focus_handle.clone(), cx));
+        vcx.simulate_keystrokes("2 n");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.dispatch_action(Box::new(ToggleVoice), cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.apply_voice_event(NariEvent::Transcript("partial".into()), cx);
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.comment_inputs[0][1].read(cx).voice_preview(), Some("partial"));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-voice-recording-indicator-0-2").is_some());
+        panel.update(vcx, |panel, cx| panel.finish_voice_with_mode(Ok("final words".into()), jcode_base::protocol::TranscriptMode::Insert, cx));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.comment_inputs[0][1].read(cx).snapshot().content, "final words");
+            assert!(card.other_inputs[0].read(cx).snapshot().content.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn global_voice_to_focused_free_answer_requires_permission(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-ask", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"}]}]}"#).unwrap();
+        panel.update(vcx, |panel, cx| { panel.test_settled_conversation(1, cx); panel.apply(&event, cx); });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let input = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0].clone();
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            panel.update(cx, |panel, cx| assert!(panel.capture_focused_ask_voice_target(window, cx)));
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.prepare_voice_attempt(true);
+            panel.voice.global_capture = true;
+            panel.voice.phase = Phase::Transcribing;
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_global_voice_text(&attempt, "denied".into(), None, false, jcode_base::protocol::TranscriptMode::Insert, cx);
+            assert!(panel.ask_voice_input().unwrap().read(cx).snapshot().content.is_empty());
+            panel.prepare_voice_attempt(true);
+            panel.voice.global_capture = true;
+            panel.voice.phase = Phase::Transcribing;
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_global_voice_text(&attempt, "answer".into(), None, true, jcode_base::protocol::TranscriptMode::Insert, cx);
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| assert_eq!(panel.ask_voice_input().unwrap().read(cx).snapshot().content, "answer"));
     }
 
     #[gpui::test]

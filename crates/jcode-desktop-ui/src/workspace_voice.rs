@@ -161,8 +161,12 @@ impl Workspace {
             self.overview = false;
             self.overview_progress.set(0.0, Instant::now());
         }
-        self.focus_active(window, cx);
         let starting = !panel.read(cx).voice_active();
+        let ask_focused = starting
+            && panel.update(cx, |panel, cx| panel.capture_focused_ask_voice_target(window, cx));
+        if !ask_focused {
+            self.focus_active(window, cx);
+        }
         panel.update(cx, |panel, cx| panel.toggle_voice(cx));
         if starting && panel.read(cx).voice_active() {
             self.configure_voice_navigation(&panel, window, cx);
@@ -332,7 +336,10 @@ impl Workspace {
             self.overview = false;
             self.overview_progress.set(0.0, Instant::now());
         }
-        self.focus_active(window, cx);
+        let ask_focused = panel.update(cx, |panel, cx| panel.capture_focused_ask_voice_target(window, cx));
+        if !ask_focused {
+            self.focus_active(window, cx);
+        }
         panel.update(cx, |panel, cx| panel.begin_voice_hold(cx));
         if panel.read(cx).voice_active() {
             self.configure_voice_navigation(&panel, window, cx);

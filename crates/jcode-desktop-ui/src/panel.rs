@@ -5879,7 +5879,10 @@ impl Render for Panel {
                     panel.jump_to_latest_if_empty(cx);
                 }),
             )
-            .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
+            .on_action(cx.listener(|panel, _: &voice::ToggleVoice, window, cx| {
+                if !panel.voice_active() {
+                    panel.capture_focused_ask_voice_target(window, cx);
+                }
                 panel.toggle_voice(cx);
             }))
             .on_action(
