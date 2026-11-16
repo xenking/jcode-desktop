@@ -1,0 +1,488 @@
+use super::*;
+
+const INDENT: &[u8] = include_bytes!("../../../assets/icons/queue-indent.svg");
+const TRASH: &[u8] = include_bytes!("../../../assets/icons/trash.svg");
+const OVERFLOW: &[u8] = include_bytes!("../../../assets/icons/overflow.svg");
+
+impl Panel {
+    pub(super) fn render_queue_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let queue = &self.prompt_queue;
+        if queue.prompts.is_empty()
+            && queue.steered.is_empty()
+            && queue.remote.is_empty()
+            && queue.pending_remote.is_empty()
+        {
+            return None;
+        }
+        let theme = Theme::global();
+        Some(
+            div()
+                .id("queue-card")
+                .debug_selector(|| "queue-card".into())
+                .w_full()
+                .min_w_0()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .rounded_t_lg()
+                .border_1()
+                .border_color(theme.INPUT_BORDER)
+                .bg(theme.TOOL_BG)
+                .pb(px(4.))
+                .pt_1()
+                .px_1()
+                .text_size(px(12.))
+                .text_color(theme.TEXT)
+                .child(
+                    div()
+                        .id("prompt-queue-items")
+                        .debug_selector(|| "prompt-queue-items".into())
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .max_h(px(144.))
+                        .overflow_y_scroll()
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .when(
+                            !queue.remote.is_empty() || !queue.pending_remote.is_empty(),
+                            |el| {
+                                el.child(
+                                    div()
+                                        .debug_selector(|| "daemon-prompt-queue".into())
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .children(
+                                            queue.remote.iter().map(|prompt| {
+                                                self.card_remote_row(prompt, false, cx)
+                                            }),
+                                        )
+                                        .children(
+                                            queue.pending_remote.iter().map(|prompt| {
+                                                self.card_remote_row(prompt, true, cx)
+                                            }),
+                                        ),
+                                )
+                            },
+                        )
+                        .when(!queue.steered.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .debug_selector(|| "steered-prompts".into())
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(
+                                        queue
+                                            .steered
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, prompt)| self.card_legacy_row(i, prompt, cx)),
+                                    ),
+                            )
+                        })
+                        .when(!queue.prompts.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .debug_selector(|| "prompt-queue".into())
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(
+                                        queue
+                                            .prompts
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, prompt)| self.card_local_row(i, prompt, cx)),
+                                    ),
+                            )
+                        }),
+                )
+                .when(queue.paused && !queue.prompts.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .id("resume-prompt-queue")
+                            .rounded_full()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_color(theme.TEXT_DIM)
+                            .hover(|el| el.bg(theme.QUOTE_BG))
+                            .child("Resume queue")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.prompt_queue.paused = false;
+                                this.send_queued_prompts(cx);
+                                cx.notify();
+                            })),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn card_local_row(
+        &self,
+        index: usize,
+        prompt: &QueuedPrompt,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let key = format!("local-{index}");
+        let expanded = self.prompt_queue.card_expanded.as_deref() == Some(&key);
+        let menu = self.prompt_queue.card_menu.as_deref() == Some(&key);
+        let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
+        let full = prompt.content.clone();
+        let key_text = key.clone();
+        let key_menu = key.clone();
+        let theme = Theme::global();
+        div()
+            .id(("queued-prompt", index))
+            .debug_selector(move || format!("queued-prompt-{index}"))
+            .flex()
+            .flex_col()
+            .flex_none()
+            .min_w_0()
+            .rounded_lg()
+            .hover(|el| el.bg(theme.QUOTE_BG))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .h(px(30.))
+                    .px_2()
+                    .child(
+                        div()
+                            .debug_selector(move || format!("queue-row-icon-{index}"))
+                            .flex_none()
+                            .child(
+                                gpui::svg()
+                                    .data(INDENT)
+                                    .size(px(14.))
+                                    .text_color(theme.TEXT_DIM),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("queue-row-text", index))
+                            .debug_selector(move || format!("queue-row-text-{index}"))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .cursor_pointer()
+                            .child(preview)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prompt_queue.card_expanded = if this
+                                    .prompt_queue
+                                    .card_expanded
+                                    .as_deref()
+                                    == Some(&key_text)
+                                {
+                                    None
+                                } else {
+                                    Some(key_text.clone())
+                                };
+                                cx.stop_propagation();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("local-queue-mode", index))
+                            .debug_selector(move || format!("queue-mode-button-{index}"))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .rounded_full()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_color(theme.TEXT_DIM)
+                            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+                            .child(gpui::svg().data(INDENT).size(px(12.)))
+                            .child(if prompt.after_yield {
+                                "After yield"
+                            } else {
+                                "Steer"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(prompt) = this.prompt_queue.prompts.get_mut(index) {
+                                    prompt.after_yield = !prompt.after_yield;
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            })),
+                    )
+                    .child(queue_action(
+                        "remove-queued-prompt",
+                        index,
+                        TRASH,
+                        cx.listener(move |this, _, _, cx| {
+                            if index < this.prompt_queue.prompts.len() {
+                                this.prompt_queue.prompts.remove(index);
+                            }
+                            this.prompt_queue.card_menu = None;
+                            this.prompt_queue.card_expanded = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(queue_action(
+                        "queue-overflow",
+                        index,
+                        OVERFLOW,
+                        cx.listener(move |this, _, _, cx| {
+                            this.prompt_queue.card_menu =
+                                if this.prompt_queue.card_menu.as_deref() == Some(&key_menu) {
+                                    None
+                                } else {
+                                    Some(key_menu.clone())
+                                };
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .when(expanded, |el| {
+                el.child(div().px_4().pb_2().text_color(theme.TEXT).child(full))
+            })
+            .when(menu, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .px_2()
+                        .pb_2()
+                        .child(menu_action(
+                            "recall-queued-prompt",
+                            index,
+                            "Edit",
+                            cx.listener(move |this, _, window, cx| {
+                                this.prompt_queue.card_menu = None;
+                                this.recall_queued_prompt(index, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        ))
+                        .when(
+                            !self.prompt_queue.waiting_for_connection && !self.is_pending_session(),
+                            |el| {
+                                el.child(menu_action(
+                                    "send-queued-prompt",
+                                    index,
+                                    "Send now",
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.prompt_queue.card_menu = None;
+                                        this.send_queued_prompt_now(index, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                ))
+                            },
+                        )
+                        .when(index > 0, |el| {
+                            el.child(menu_action(
+                                "queue-move-up",
+                                index,
+                                "Move up",
+                                cx.listener(move |this, _, _, cx| {
+                                    if index < this.prompt_queue.prompts.len() && index > 0 {
+                                        this.prompt_queue.prompts.swap(index, index - 1);
+                                    }
+                                    this.prompt_queue.card_menu = None;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            ))
+                        })
+                        .when(index + 1 < self.prompt_queue.prompts.len(), |el| {
+                            el.child(menu_action(
+                                "queue-move-down",
+                                index,
+                                "Move down",
+                                cx.listener(move |this, _, _, cx| {
+                                    if index + 1 < this.prompt_queue.prompts.len() {
+                                        this.prompt_queue.prompts.swap(index, index + 1);
+                                    }
+                                    this.prompt_queue.card_menu = None;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            ))
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn card_legacy_row(
+        &self,
+        index: usize,
+        prompt: &QueuedPrompt,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        div()
+            .id(("steered-prompt", index))
+            .debug_selector(move || format!("steered-prompt-{index}"))
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .h(px(30.))
+            .px_2()
+            .rounded_lg()
+            .hover(|el| el.bg(theme.QUOTE_BG))
+            .child(
+                gpui::svg()
+                    .data(INDENT)
+                    .size(px(14.))
+                    .text_color(theme.TEXT_DIM),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(self.render_queued_content(&prompt.content, &prompt.images, cx)),
+            )
+            .child(div().text_color(theme.TEXT_DIM).child("Steer"))
+            .into_any_element()
+    }
+
+    fn card_remote_row(
+        &self,
+        prompt: &jcode_sdk::api::QueuedPrompt,
+        pending: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let id = prompt.client_id.clone();
+        let mode_id = id.clone();
+        let retry_id = id.clone();
+        let retry = prompt.clone();
+        let failed = self.prompt_queue.remote_failures.contains_key(&id);
+        let next = match prompt.mode {
+            jcode_sdk::api::QueuedPromptMode::Steer => jcode_sdk::api::QueuedPromptMode::AfterYield,
+            jcode_sdk::api::QueuedPromptMode::AfterYield => jcode_sdk::api::QueuedPromptMode::Steer,
+        };
+        div()
+            .id(SharedString::from(format!("daemon-queued-{id}")))
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .h(px(30.))
+            .px_2()
+            .rounded_lg()
+            .hover(|el| el.bg(theme.QUOTE_BG))
+            .child(
+                gpui::svg()
+                    .data(INDENT)
+                    .size(px(14.))
+                    .text_color(theme.TEXT_DIM),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(self.render_queued_content(&prompt.content, &prompt.images, cx)),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("queue-mode-{id}")))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_none()
+                    .rounded_full()
+                    .px_2()
+                    .py_1()
+                    .text_color(theme.TEXT_DIM)
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.TOOL_BG))
+                    .child(gpui::svg().data(INDENT).size(px(12.)))
+                    .child(if prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer {
+                        "Steer"
+                    } else {
+                        "After yield"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !pending {
+                            this.bridge.send(Command::SetQueuedPromptMode {
+                                session_id: this.session_id.clone(),
+                                client_id: mode_id.clone(),
+                                mode: next,
+                            });
+                        }
+                        cx.stop_propagation();
+                    })),
+            )
+            .when(failed, |el| {
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("queue-interrupt-{id}")))
+                        .debug_selector(|| "queue-send-control".into())
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .rounded_full()
+                        .px_2()
+                        .cursor_pointer()
+                        .text_color(theme.ERROR)
+                        .child(div().size(px(6.)).rounded_full().bg(theme.ERROR))
+                        .child("Retry")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.prompt_queue.remote_failures.remove(&retry_id);
+                            this.bridge.send(Command::QueuePrompt {
+                                session_id: this.session_id.clone(),
+                                prompt: retry.clone(),
+                            });
+                            cx.stop_propagation();
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(!pending, |el| {
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("queue-interrupt-action-{id}")))
+                        .debug_selector(|| "queue-send-control".into())
+                        .rounded_full()
+                        .px_2()
+                        .cursor_pointer()
+                        .text_color(theme.TEXT_DIM)
+                        .child("Interrupt")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.bridge.send(Command::InterruptQueuedPrompt {
+                                session_id: this.session_id.clone(),
+                                client_id: id.clone(),
+                            });
+                            cx.stop_propagation();
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+fn menu_action(
+    id: &'static str,
+    index: usize,
+    label: &'static str,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let theme = Theme::global();
+    div()
+        .id((id, index))
+        .debug_selector(move || format!("{id}-{index}"))
+        .rounded_full()
+        .px_2()
+        .py_1()
+        .cursor_pointer()
+        .text_color(theme.TEXT_DIM)
+        .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+        .child(label)
+        .on_click(on_click)
+}

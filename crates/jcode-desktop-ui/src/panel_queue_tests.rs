@@ -1,5 +1,7 @@
 use super::*;
 
+include!("queue_card_tests.rs");
+
 #[gpui::test]
 fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
@@ -1017,7 +1019,7 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
         p
     });
     vcx.run_until_parked();
-    let queue = vcx.debug_bounds("prompt-queue").unwrap();
+    let queue = vcx.debug_bounds("queue-card").unwrap();
     let items = vcx.debug_bounds("prompt-queue-items").unwrap();
     let input = vcx.debug_bounds("prompt-input").unwrap();
     assert!(items.size.height <= px(144.));
@@ -1029,13 +1031,15 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
         first.size.height >= px(24.),
         "rows must not shrink to fit the stack"
     );
-    let send = vcx.debug_bounds("send-queued-prompt-0").unwrap();
-    let recall = vcx.debug_bounds("recall-queued-prompt-0").unwrap();
+    let overflow = vcx.debug_bounds("queue-overflow-0").unwrap();
+    let delete = vcx.debug_bounds("remove-queued-prompt-0").unwrap();
     assert!(
-        recall.right() <= items.right() && send.right() <= recall.left(),
-        "long text must not push the arrows out"
+        delete.right() <= overflow.left() && overflow.right() <= items.right(),
+        "long text must not push actions out"
     );
-    assert!(vcx.debug_bounds("remove-queued-prompt-0").is_none());
+    vcx.simulate_click(overflow.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let recall = vcx.debug_bounds("recall-queued-prompt-0").unwrap();
     vcx.simulate_click(recall.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {
@@ -1157,8 +1161,8 @@ fn message_sent_while_busy_shows_queued_row_until_delivered(cx: &mut gpui::TestA
     });
     vcx.run_until_parked();
     assert!(
-        vcx.debug_bounds("steered-count").is_some(),
-        "count marker with two"
+        vcx.debug_bounds("steered-prompt-1").is_some(),
+        "both messages have their own rows"
     );
 
     // Delivered: both become one transcript pass, after the streamed text.
@@ -1225,7 +1229,6 @@ fn two_steered_messages_are_queued_or_in_the_transcript_never_both(cx: &mut gpui
     });
     assert!(vcx.debug_bounds("steered-prompt-0").is_some());
     assert!(vcx.debug_bounds("steered-prompt-1").is_some());
-    assert!(vcx.debug_bounds("steered-count").is_some());
 
     // Delivered: the rows go away and each message enters the transcript once.
     panel.update(vcx, |p, cx| {

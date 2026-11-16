@@ -3,6 +3,8 @@ use super::*;
 
 #[path = "panel_auto_poke.rs"]
 mod auto_poke;
+#[path = "queue_card.rs"]
+mod card;
 pub(in crate::panel) use auto_poke::{auto_poke_notice_text, parse_poke_command};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -42,6 +44,10 @@ pub struct PromptQueue {
     remote_failures: std::collections::HashMap<String, String>,
     #[serde(default)]
     default_after_yield: bool,
+    #[serde(skip)]
+    card_menu: Option<String>,
+    #[serde(skip)]
+    card_expanded: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -628,24 +634,7 @@ impl Panel {
     /// Everything waiting above the composer: prompts already handed to the
     /// runtime as steering, then prompts held back until the turn ends.
     pub(super) fn render_prompt_queue(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let remote = self.render_remote_prompts(cx);
-        let steered = self.render_steered_prompts(cx);
-        let waiting = self.render_waiting_prompts(cx);
-        if remote.is_none() && steered.is_none() && waiting.is_none() {
-            return None;
-        }
-        Some(
-            div()
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .min_w_0()
-                .children(remote)
-                .children(steered)
-                .children(waiting)
-                .into_any_element(),
-        )
+        self.render_queue_card(cx)
     }
 
     fn render_queued_content(
@@ -708,321 +697,6 @@ impl Panel {
         row.into_any_element()
     }
 
-    fn render_remote_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if !self.prompt_queue.remote_supported
-            || (self.prompt_queue.remote.is_empty() && self.prompt_queue.pending_remote.is_empty())
-        {
-            return None;
-        }
-        let theme = Theme::global();
-        let rows = self
-            .prompt_queue
-            .remote
-            .iter()
-            .map(|prompt| (prompt, false))
-            .chain(
-                self.prompt_queue
-                    .pending_remote
-                    .iter()
-                    .map(|prompt| (prompt, true)),
-            );
-        Some(
-            div()
-                .id("daemon-prompt-queue")
-                .debug_selector(|| "daemon-prompt-queue".into())
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .mx_2()
-                .p_2()
-                .rounded_md()
-                .bg(theme.TOOL_BG)
-                .text_size(px(12.))
-                .text_color(theme.TEXT_DIM)
-                .children(rows.map(|(prompt, pending)| {
-                    let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
-                    let id = prompt.client_id.clone();
-                    let id2 = id.clone();
-                    let retry = prompt.clone();
-                    let failure = self
-                        .prompt_queue
-                        .remote_failures
-                        .get(&prompt.client_id)
-                        .cloned();
-                    let mode = prompt.mode;
-                    let label = match mode {
-                        jcode_sdk::api::QueuedPromptMode::Steer => "Steer",
-                        jcode_sdk::api::QueuedPromptMode::AfterYield => "Follow-up",
-                    };
-                    let next = match mode {
-                        jcode_sdk::api::QueuedPromptMode::Steer => {
-                            jcode_sdk::api::QueuedPromptMode::AfterYield
-                        }
-                        jcode_sdk::api::QueuedPromptMode::AfterYield => {
-                            jcode_sdk::api::QueuedPromptMode::Steer
-                        }
-                    };
-                    div()
-                        .id(SharedString::from(format!("daemon-queued-{id}")))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("queue-mode-{id}")))
-                                .cursor_pointer()
-                                .child(label)
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    if !pending {
-                                        this.bridge.send(Command::SetQueuedPromptMode {
-                                            session_id: this.session_id.clone(),
-                                            client_id: id.clone(),
-                                            mode: next,
-                                        });
-                                    }
-                                })),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().child(preview))
-                        .when(!pending || failure.is_some(), |row| {
-                            row.child(
-                                div()
-                                    .id(SharedString::from(format!("queue-interrupt-{id2}")))
-                                    .debug_selector(|| "queue-send-control".into())
-                                    .cursor_pointer()
-                                    .child(if pending { "Retry" } else { "Interrupt ↵" })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if pending {
-                                            this.prompt_queue
-                                                .remote_failures
-                                                .remove(&retry.client_id);
-                                            this.bridge.send(Command::QueuePrompt {
-                                                session_id: this.session_id.clone(),
-                                                prompt: retry.clone(),
-                                            });
-                                        } else {
-                                            this.bridge.send(Command::InterruptQueuedPrompt {
-                                                session_id: this.session_id.clone(),
-                                                client_id: id2.clone(),
-                                            });
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                        })
-                        .when_some(failure, |row, reason| {
-                            row.child(div().text_color(theme.TEXT_DIM).child(reason))
-                        })
-                }))
-                .into_any_element(),
-        )
-    }
-
-    /// Dim `queued ⏎ <text>` rows for prompts the runtime has not delivered.
-    fn render_steered_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let steered = &self.prompt_queue.steered;
-        if steered.is_empty() {
-            return None;
-        }
-        const SHOWN: usize = 3;
-        let theme = Theme::global();
-        let count = steered.len();
-        Some(
-            div()
-                .id("steered-prompts")
-                .debug_selector(|| "steered-prompts".into())
-                .flex_none()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .mx_2()
-                .p_2()
-                .rounded_md()
-                // The composer sits on a see-through veil, so unbacked text
-                // would read against transcript rows streaming underneath.
-                .bg(theme.TOOL_BG)
-                .gap_1()
-                .text_size(px(12.))
-                .text_color(theme.TEXT_DIM)
-                .children(
-                    steered
-                        .iter()
-                        .take(SHOWN)
-                        .enumerate()
-                        .map(|(index, prompt)| {
-                            let preview =
-                                self.render_queued_content(&prompt.content, &prompt.images, cx);
-                            div()
-                                .id(("steered-prompt", index))
-                                .debug_selector(move || format!("steered-prompt-{index}"))
-                                .flex()
-                                .flex_none()
-                                .min_w_0()
-                                .items_center()
-                                .gap_2()
-                                .child(div().flex_none().child("queued ⏎"))
-                                .child(div().flex_1().min_w_0().truncate().child(preview))
-                                .when(!self.activity_active(), |row| {
-                                    row.child(
-                                        div()
-                                            .id(("resend-steered", index))
-                                            .debug_selector(move || format!("resend-steered-{index}"))
-                                            .rounded_full()
-                                            .px_2()
-                                            .cursor_pointer()
-                                            .child("Send again")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if index < this.prompt_queue.steered.len() {
-                                                    let prompt = this.prompt_queue.steered.remove(index);
-                                                    this.submit_or_queue(prompt.content, prompt.images, false, cx);
-                                                }
-                                            })),
-                                    )
-                                })
-                                .when(index == 0 && count > 1, |row| {
-                                    row.child(
-                                        div()
-                                            .debug_selector(|| "steered-count".into())
-                                            .flex_none()
-                                            .child(format!("⏎ {count}")),
-                                    )
-                                })
-                        }),
-                )
-                .when(count > SHOWN, |el| {
-                    el.child(div().child(format!("+{} more queued", count - SHOWN)))
-                })
-                .into_any_element(),
-        )
-    }
-
-    fn render_waiting_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if self.prompt_queue.prompts.is_empty() {
-            return None;
-        }
-        let theme = Theme::global();
-        Some(
-            div()
-                .id("prompt-queue")
-                .debug_selector(|| "prompt-queue".into())
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .min_w_0()
-                .mx_2()
-                .p_2()
-                .rounded_md()
-                .bg(theme.TOOL_BG)
-                .text_size(px(12.))
-                .child(
-                    div()
-                        .text_color(theme.TEXT_DIM)
-                        .child(if self.prompt_queue.paused {
-                            "Queue paused · waiting prompts are preserved"
-                        } else if self.is_pending_session()
-                            || self.prompt_queue.waiting_for_connection
-                        {
-                            "Queued · sends when connected"
-                        } else {
-                            "Queued · sends after this response"
-                        }),
-                )
-                .child(
-                    div()
-                        .id("prompt-queue-items")
-                        .debug_selector(|| "prompt-queue-items".into())
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .max_h(px(144.))
-                        .overflow_y_scroll()
-                        // The dock passes wheel input to the transcript; the
-                        // queue scrolls on its own.
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .children(self.prompt_queue.prompts.iter().enumerate().map(
-                            |(index, prompt)| {
-                                let label =
-                                    self.render_queued_content(&prompt.content, &prompt.images, cx);
-                                div()
-                                    .id(("queued-prompt", index))
-                                    .debug_selector(move || format!("queued-prompt-{index}"))
-                                    .flex()
-                                    .flex_none()
-                                    .min_w_0()
-                                    .items_center()
-                                    .gap_2()
-                                    .py_1()
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .min_w(px(20.))
-                                            .text_color(theme.TEXT_DIM)
-                                            .child(format!("{}.", index + 1)),
-                                    )
-                                    .child(div().flex_1().min_w_0().truncate().child(label))
-                                    .child(
-                                        div()
-                                            .id(("local-queue-mode", index))
-                                            .cursor_pointer()
-                                            .text_color(theme.TEXT_DIM)
-                                            .child(if prompt.after_yield {
-                                                "Follow-up"
-                                            } else {
-                                                "Steer"
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(prompt) =
-                                                    this.prompt_queue.prompts.get_mut(index)
-                                                {
-                                                    prompt.after_yield = !prompt.after_yield;
-                                                    cx.notify();
-                                                }
-                                            })),
-                                    )
-                                    .when(
-                                        !self.prompt_queue.waiting_for_connection
-                                            && !self.is_pending_session(),
-                                        |el| {
-                                            el.child(queue_action(
-                                                "send-queued-prompt",
-                                                index,
-                                                include_bytes!(
-                                                    "../../../assets/icons/arrow-up.svg"
-                                                ),
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.send_queued_prompt_now(index, cx)
-                                                }),
-                                            ))
-                                        },
-                                    )
-                                    .child(queue_action(
-                                        "recall-queued-prompt",
-                                        index,
-                                        include_bytes!("../../../assets/icons/arrow-down.svg"),
-                                        cx.listener(move |this, _, window, cx| {
-                                            this.recall_queued_prompt(index, window, cx)
-                                        }),
-                                    ))
-                            },
-                        )),
-                )
-                .when(self.prompt_queue.paused, |el| {
-                    el.child(
-                        div()
-                            .id("resume-prompt-queue")
-                            .cursor_pointer()
-                            .child("Resume queue")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.prompt_queue.paused = false;
-                                this.send_queued_prompts(cx);
-                                cx.notify();
-                            })),
-                    )
-                })
-                .into_any_element(),
-        )
-    }
 }
 
 fn queue_action(
@@ -1040,7 +714,7 @@ fn queue_action(
         .items_center()
         .justify_center()
         .size(px(22.))
-        .rounded_sm()
+        .rounded_full()
         .cursor_pointer()
         .hover(|el| el.bg(theme.QUOTE_BG))
         .child(
