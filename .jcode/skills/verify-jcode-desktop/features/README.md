@@ -1,8 +1,9 @@
 # Jcode Desktop verification map
 
-Read the index and affected recipes before driving. These five primary user
-features are the maintained verification source, not five permanently passing
-journeys. macOS semantic-control and Linux native-input proof are separate.
+Read the index and affected recipes before driving. These feature files map
+verification coverage and explicit gaps, not permanently passing journeys.
+macOS semantic-control, headless regression tests and Linux native-input proof
+are separate.
 
 ## Baseline preconditions
 
@@ -39,6 +40,9 @@ journeys. macOS semantic-control and Linux native-input proof are separate.
 | [Workspace](workspace.md) | Tabs, panel shortcuts, four workspaces | Linux real-daemon native navigation, macOS control gap |
 | [Transcript and review](transcript.md) | Tool token button, Review metadata | macOS semantic tool toggle, Linux hit testing/diff review |
 | [Terminal](terminal.md) | Cmd/Super+T, shell input | Linux real-shell PTY acceptance, macOS control gap |
+| [Provider accounts](authentication.md) | /login, Accounts, connection test | Headless account UI/status regression, live OAuth gap |
+| [Persistence](persistence.md) | Preferences, quit/relaunch, crash recovery | Temporary-file and headless recovery regression, process relaunch gap |
+| [Reload](reload.md) | Development Ctrl+R, failed candidate recovery | Headless host transactions, private dynamic-library reload gap |
 
 ## Proof reporting
 

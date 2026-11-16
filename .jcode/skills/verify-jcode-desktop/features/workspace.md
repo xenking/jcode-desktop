@@ -38,6 +38,9 @@ Openbox, xdotool, ImageMagick and Mesa lavapipe. Use short fresh output paths.
 
 ## Gotchas
 
+- The acceptance commands above are Linux-only. macOS without Xvfb/xdotool
+  cannot execute them. Use the private helper's [session search](sessions.md)
+  for that narrower path, not as a workspace-navigation substitute.
 - macOS helper keys are only Enter/Escape. It refuses arbitrary navigation input
   rather than injecting globally into the user's desktop.
 - Initial macOS skill proof did not run Linux navigation. A tool PNG cannot prove

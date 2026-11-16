@@ -35,6 +35,10 @@ ImageMagick, Tesseract, Mesa lavapipe and Pillow. No daemon/model auth required.
 
 ## Gotchas
 
+- The acceptance commands above are Linux-only. On macOS, headless host/PTY
+  regression tests can run with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer justrust test -p jcode-desktop --bin jcode-desktop host::resources::tests:: --target-dir target/verify-build`.
+  Report actual failures. This checks resource lifecycle, not native terminal
+  input, rendering or image acceptance.
 - macOS helper has no terminal route. It refuses unsupported key injection.
   A chat screenshot cannot prove a shell command ran.
 - `--no-kitty` omits image acceptance. Report reduced coverage, not a full pass.
