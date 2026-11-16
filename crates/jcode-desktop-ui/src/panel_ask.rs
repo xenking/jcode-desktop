@@ -461,6 +461,9 @@ impl Panel {
         let Some(card) = self.ask_card.as_mut() else {
             return false;
         };
+        if card.confirming_decline && key != "escape" && key != "enter" {
+            return true;
+        }
         let q = card.cursor_question;
         let count = card
             .questions
@@ -880,7 +883,11 @@ impl Panel {
                                 .child(
                                     div()
                                         .debug_selector(move || format!("ask-label-{q}-{o}"))
-                                        .child(option.label.clone()),
+                                        .child(if o < 9 {
+                                            format!("{}. {}", o + 1, option.label)
+                                        } else {
+                                            option.label.clone()
+                                        }),
                                 )
                                 .when_some(option.description.clone(), |el, desc| {
                                     el.child(
@@ -984,14 +991,24 @@ impl Panel {
                 } else {
                     values.join(", ")
                 };
-                review = review.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(format!("{}. {}", q + 1, question.question))
-                        .child(div().text_color(theme.TEXT_DIM).child(text)),
-                );
+                let mut summary = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(format!("{}. {}", q + 1, question.question))
+                    .child(div().text_color(theme.TEXT_DIM).child(text));
+                for &o in &card.chosen[q] {
+                    let comment = card.comments[q][o].trim();
+                    if !comment.is_empty() {
+                        summary = summary.child(
+                            div()
+                                .debug_selector(move || format!("ask-review-comment-{q}-{o}"))
+                                .text_color(theme.TEXT_DIM)
+                                .child(format!("{}: {}", question.options[o].label, comment)),
+                        );
+                    }
+                }
+                review = review.child(summary);
             }
             questions = questions.child(review);
         }
@@ -1225,6 +1242,17 @@ mod tests {
         vcx.simulate_keystrokes("tab");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("ask-question-1").is_some());
+        vcx.simulate_keystrokes("n");
+        vcx.run_until_parked();
+        vcx.simulate_input("second comment");
+        vcx.simulate_keystrokes("shift-tab");
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-question-0").is_some(),
+            "shift-tab from an editor must switch tabs"
+        );
+        vcx.simulate_keystrokes("tab");
+        vcx.run_until_parked();
         vcx.simulate_keystrokes("1 left");
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
@@ -1232,8 +1260,16 @@ mod tests {
             assert_eq!(card.chosen[0], vec![1]);
             assert_eq!(card.chosen[1], vec![0]);
             assert_eq!(card.comments[0][1], "comment");
+            assert_eq!(card.comments[1][0], "second comment");
             assert_eq!(card.cursor_question, 0);
         });
+        vcx.simulate_keystrokes("right right");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-review").is_some());
+        assert!(
+            vcx.debug_bounds("ask-review-comment-0-1").is_some(),
+            "review should show the selected option's comment"
+        );
     }
 
     #[gpui::test]
@@ -1321,6 +1357,36 @@ mod tests {
             transcript
         );
         panel.update(vcx, |panel, cx| {
+            panel
+                .ask_card
+                .as_ref()
+                .unwrap()
+                .scroll
+                .set_offset(gpui::point(px(0.), px(0.)));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let option = vcx.debug_bounds("ask-option-0-0").unwrap();
+        vcx.simulate_mouse_move(option.center(), None, gpui::Modifiers::default());
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: option.center(),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0., -2.)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        assert!(
+            panel.read_with(vcx, |panel, _| panel
+                .ask_card
+                .as_ref()
+                .unwrap()
+                .scroll
+                .offset()
+                .y)
+                < px(0.),
+            "line wheel over option should scroll the card"
+        );
+        panel.update(vcx, |panel, cx| {
             let scroll = &panel.ask_card.as_ref().unwrap().scroll;
             scroll.set_offset(gpui::point(px(0.), -scroll.max_offset().y));
             cx.notify();
@@ -1349,6 +1415,72 @@ mod tests {
         assert!(
             after > before,
             "wheel over short editor should scroll ask: {before:?} -> {after:?}"
+        );
+        let input = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().other_inputs[0].clone()
+        });
+        input.update(vcx, |input, cx| {
+            input.set_content("long answer\n".repeat(100), cx)
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            let scroll = &panel.ask_card.as_ref().unwrap().scroll;
+            scroll.set_offset(gpui::point(px(0.), -scroll.max_offset().y));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let editor = input.read_with(vcx, |input, _| input.test_editor_scroll());
+        assert!(
+            editor.max_offset().y > px(100.),
+            "long editor must overflow"
+        );
+        editor.set_offset(gpui::point(px(0.), px(-100.)));
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        let own = editor.bounds();
+        let before_card = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().scroll.offset().y
+        });
+        let before_editor = editor.offset().y;
+        vcx.simulate_mouse_move(own.center(), None, gpui::Modifiers::default());
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: own.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(40.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        assert!(
+            editor.offset().y > before_editor,
+            "overflowing editor should scroll first"
+        );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel
+                .ask_card
+                .as_ref()
+                .unwrap()
+                .scroll
+                .offset()
+                .y),
+            before_card,
+            "editor wheel must not also scroll the card"
+        );
+        editor.set_offset(gpui::point(px(0.), px(0.)));
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: own.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(40.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        let after_card = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().scroll.offset().y
+        });
+        assert!(
+            after_card > before_card,
+            "wheel at editor edge should scroll the card: {before_card:?} -> {after_card:?}"
         );
     }
 
