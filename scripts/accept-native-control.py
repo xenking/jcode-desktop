@@ -74,8 +74,12 @@ def main():
                 element = request(endpoint, {"action": "render", "target": target, "selector": selectors[0], "path": str(element_png)})
                 assert element["status"] == "ok", element
                 assert element_png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+                protected = request(endpoint, {"action": "set_composer", "target": target, "text": "must not overwrite"})
+                assert protected["status"] == "error" and protected["code"] == "user_window_focused", protected
                 result = request(endpoint, {"action": "set_composer", "target": target, "text": "isolated draft", "allow_user_window": True})
                 assert result["status"] == "ok", result
+                denied_send = request(endpoint, {"action": "send", "target": target})
+                assert denied_send["status"] == "error" and denied_send["code"] == "user_window_focused", denied_send
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["result"]["panel"]["composer"] == "isolated draft", state
                 sent = request(endpoint, {"action": "send", "target": target, "allow_user_window": True})
