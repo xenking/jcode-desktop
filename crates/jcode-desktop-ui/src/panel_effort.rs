@@ -250,6 +250,48 @@ mod tests {
         panel.read_with(vcx, |panel, _| panel.reasoning_effort.clone())
     }
 
+    #[gpui::test]
+    fn typed_effort_medium_reaches_opus_55_from_enter(cx: &mut gpui::TestAppContext) {
+        typed_medium(cx, "claude-oauth", "claude-opus-5-5");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_reaches_sol_from_enter(cx: &mut gpui::TestAppContext) {
+        typed_medium(cx, "openai", "gpt-6.1-sol");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_after_pill_click_reaches_opus_55(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, commands) = setup(cx, "claude-oauth", "claude-opus-5-5", Some("high"));
+        let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill painted");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_some());
+        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert!(vcx.debug_bounds("picker-search").is_none(), "picker closes after submission");
+    }
+
+    fn typed_medium(cx: &mut gpui::TestAppContext, provider: &str, model: &str) {
+        let (panel, vcx, commands) = setup(cx, provider, model, Some("high"));
+        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "/effort medium"
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert_eq!(panel.read_with(vcx, |panel, _| panel.composer_identity().1), Some("medium".into()));
+        assert!(vcx.debug_bounds("panel-model-effort").is_some(), "footer effort pill is painted");
+    }
+
     /// The configured chords (Alt+Left/Right by default) step one rung at a
     /// time from the focused composer, stop at the ends, and update the pill
     /// immediately without waiting for the runtime.
