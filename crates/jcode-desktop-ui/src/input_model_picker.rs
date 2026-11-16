@@ -235,7 +235,15 @@ impl PromptInput {
     /// Hover changes selection, not the catalog. Retain rows across repaints and
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {
-        if self.accepted_command.as_ref() == Some(&self.content) {
+        if self.accepted_command.as_ref() == Some(&self.content)
+            || (self.picker_prefix.is_none()
+                && self.cursor_offset() == self.content.len()
+                && self
+                    .content
+                    .trim()
+                    .strip_prefix("/effort ")
+                    .is_some_and(|level| self.effort_ladder.contains(&level.trim())))
+        {
             return Arc::new(Vec::new());
         }
         let minute = model_menu::now_unix_secs() / 60;
