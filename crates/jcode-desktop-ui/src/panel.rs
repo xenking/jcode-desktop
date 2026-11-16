@@ -3383,7 +3383,9 @@ impl Panel {
                         })
                         .collect::<Vec<_>>();
                     self.skills = skills.clone();
-                    self.active_skill = data["active_skill"].as_str().map(str::to_owned);
+                    if self.active_skill.is_none() {
+                        self.active_skill = data["active_skill"].as_str().map(str::to_owned);
+                    }
                     self.input
                         .update(cx, |input, cx| input.set_skills(skills, cx));
                     if message.is_empty() {

@@ -73,6 +73,23 @@ fn selfdev_skill_does_not_require_a_desktop_checkout(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn late_skill_catalog_does_not_clear_a_locally_selected_skill(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("catalog-race".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        panel.skills = vec![("selfdev".into(), "Self development".into())];
+        assert!(panel.handle_slash_command("/selfdev", cx));
+        panel.apply_event(&ApiEvent::RuntimeCommandResult {
+            session_id: "catalog-race".into(),
+            command: jcode_sdk::api::RuntimeCommand::Skills,
+            data: serde_json::json!({"skills": [{"name":"selfdev","description":"Self development"}], "active_skill": null}),
+            message: String::new(),
+        }, cx);
+        assert_eq!(panel.active_skill.as_deref(), Some("selfdev"));
+    });
+}
+
+#[gpui::test]
 fn composer_bare_selfdev_activates_for_next_prompt(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
