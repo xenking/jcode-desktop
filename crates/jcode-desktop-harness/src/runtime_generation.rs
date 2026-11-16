@@ -8,26 +8,28 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 fn bundle_target() -> Result<ImmutableTarget, String> {
-    static TARGET: OnceLock<Result<ImmutableTarget, String>> = OnceLock::new();
-    TARGET
-        .get_or_init(|| {
-            let cli = crate::platform::companion_executable("jcode");
-            let target =
-                generation::resolve(generation::DesiredSelection::Path(cli)).map_err(|error| {
-                    format!("selected Desktop runtime target is unknown: {error:#}")
-                })?;
-            #[cfg(not(unix))]
-            let target = {
-                let mut bridge = generation::pin_path(&crate::platform::companion_executable(
-                    "jcode-harness-api-bridge",
-                ))
-                .map_err(|error| format!("selected Desktop bridge target is unknown: {error:#}"))?;
-                bridge.git_hash = target.git_hash;
-                bridge
-            };
-            Ok(target)
-        })
-        .clone()
+    static TARGET: OnceLock<ImmutableTarget> = OnceLock::new();
+    if let Some(target) = TARGET.get() {
+        return Ok(target.clone());
+    }
+    let target = (|| {
+        let cli = crate::platform::companion_executable("jcode");
+        let target = generation::resolve(generation::DesiredSelection::Path(cli))
+            .map_err(|error| format!("selected Desktop runtime target is unknown: {error:#}"))?;
+        #[cfg(not(unix))]
+        let target = {
+            let mut bridge = generation::pin_path(&crate::platform::companion_executable(
+                "jcode-harness-api-bridge",
+            ))
+            .map_err(|error| format!("selected Desktop bridge target is unknown: {error:#}"))?;
+            bridge.git_hash = target.git_hash;
+            bridge
+        };
+        Ok::<_, String>(target)
+    })()?;
+    // An atomic bundle replacement may temporarily hide its companion. Do not
+    // freeze that observation as the Desktop's identity for the entire process.
+    Ok(TARGET.get_or_init(|| target).clone())
 }
 
 pub(crate) fn verify_local_bridge(identity: Option<&ServingIdentity>) -> jcode_sdk::Result<()> {
