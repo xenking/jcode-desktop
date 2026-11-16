@@ -99,6 +99,12 @@ def main():
                 assert search["status"] == "ok", search
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["result"]["search"]["query"] == "needle", state
+                denied_escape = request(endpoint, {"action": "press_key", "target": target, "key": "escape"})
+                assert denied_escape["status"] == "error", denied_escape
+                escaped = request(endpoint, {"action": "press_key", "target": target, "key": "escape", "allow_user_window": True})
+                assert escaped["status"] == "ok", escaped
+                state = request(endpoint, {"action": "state", "target": target})
+                assert not state["result"]["search_open"], state
                 png = root / "window.png"
                 rendered = request(endpoint, {"action": "render", "target": target, "selector": None, "path": str(png)})
                 assert rendered["status"] == "ok", rendered

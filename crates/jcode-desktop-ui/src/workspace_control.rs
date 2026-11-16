@@ -201,10 +201,26 @@ impl Workspace {
                 key,
                 allow_user_window,
             } => {
+                if key.eq_ignore_ascii_case("escape") || key.eq_ignore_ascii_case("esc") {
+                    if let Err(error) = self.control_target(&target, window, cx) {
+                        return error;
+                    }
+                    if !allow_user_window {
+                        return error(
+                            "user_window_protected",
+                            "closing search changes window focus; set allow_user_window to permit it",
+                        );
+                    }
+                    if self.search_screen.is_none() {
+                        return error("not_open", "search is not open");
+                    }
+                    self.close_search_screen(window, cx);
+                    return ok(json!({"search_open": false}));
+                }
                 if !key.eq_ignore_ascii_case("enter") && !key.eq_ignore_ascii_case("return") {
                     return error(
                         "unsupported",
-                        "only Enter is supported as a semantic send action",
+                        "supported keys: Enter to send, Escape to close search",
                     );
                 }
                 self.handle_desktop_request(

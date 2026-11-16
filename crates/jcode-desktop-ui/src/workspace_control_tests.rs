@@ -204,7 +204,9 @@ fn search_requires_explicit_permission_and_sets_query(cx: &mut gpui::TestAppCont
         let state = w.handle_desktop_request(
             DesktopRequest {
                 v: DESKTOP_CONTROL_VERSION,
-                action: DesktopAction::State { target },
+                action: DesktopAction::State {
+                    target: target.clone(),
+                },
             },
             window,
             cx,
@@ -212,6 +214,24 @@ fn search_requires_explicit_permission_and_sets_query(cx: &mut gpui::TestAppCont
         assert!(
             matches!(state, DesktopResponse::Ok { result } if result["search"]["query"] == "needle")
         );
+        let escape = |allow| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action: DesktopAction::PressKey {
+                target: target.clone(),
+                key: "escape".into(),
+                allow_user_window: allow,
+            },
+        };
+        assert!(matches!(
+            w.handle_desktop_request(escape(false), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert!(w.search_screen_open());
+        assert!(matches!(
+            w.handle_desktop_request(escape(true), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(!w.search_screen_open());
     });
 }
 
