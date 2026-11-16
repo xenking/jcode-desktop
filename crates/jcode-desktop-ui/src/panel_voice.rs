@@ -1146,7 +1146,7 @@ impl Panel {
     pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
-        let active = phase != Phase::Idle;
+        let active = phase == Phase::Recording;
         let label = match phase {
             Phase::Idle => "Start voice",
             Phase::Checking => "Cancel microphone connection",
@@ -1185,7 +1185,8 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
-            .child(voice_microphone_face(icon_color.into()));
+            .child(div().when(active, |el| el.debug_selector(|| "voice-recording-indicator".into()))
+                .child(voice_microphone_face(icon_color.into())));
         div()
             .flex_none()
             .h(px(size))
@@ -1573,6 +1574,17 @@ mod tests {
             assert!(panel.voice.recording.is_none());
             assert!(panel.voice.task.is_none());
         });
+    }
+
+    #[gpui::test]
+    fn voice_recording_indicator_clears_when_capture_stops(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| { panel.voice.phase = Phase::Recording; cx.notify(); });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-recording-indicator").is_some());
+        panel.update(vcx, |panel, cx| { panel.voice.phase = Phase::Transcribing; cx.notify(); });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-recording-indicator").is_none());
     }
 
     #[gpui::test]
