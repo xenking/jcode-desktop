@@ -262,18 +262,40 @@ mod tests {
 
     #[gpui::test]
     fn typed_effort_medium_after_pill_click_reaches_opus_55(cx: &mut gpui::TestAppContext) {
-        let (panel, vcx, commands) = setup(cx, "claude-oauth", "claude-opus-5-5", Some("high"));
-        let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill painted");
+        typed_medium_after_pill(cx, "claude-oauth", "claude-opus-5-5");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_after_pill_click_reaches_sol(cx: &mut gpui::TestAppContext) {
+        typed_medium_after_pill(cx, "openai", "gpt-6.1-sol");
+    }
+
+    fn typed_medium_after_pill(cx: &mut gpui::TestAppContext, provider: &str, model: &str) {
+        let (panel, vcx, commands) = setup(cx, provider, model, Some("high"));
+        let pill = vcx
+            .debug_bounds("panel-model-effort")
+            .expect("effort pill painted");
         vcx.simulate_click(pill.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("picker-search").is_some());
         vcx.simulate_keystrokes("/ e f f o r t space m e d i u m");
         vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("voice-toggle").is_none(),
+            "empty main composer must not advertise example prompts under the picker"
+        );
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert_eq!(sent_efforts(&commands), ["medium"]);
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
-        assert!(vcx.debug_bounds("picker-search").is_none(), "picker closes after submission");
+        assert!(
+            vcx.debug_bounds("effort-icon-medium").is_some(),
+            "footer draws medium, not a stale effort"
+        );
+        assert!(
+            vcx.debug_bounds("picker-search").is_none(),
+            "picker closes after submission"
+        );
     }
 
     fn typed_medium(cx: &mut gpui::TestAppContext, provider: &str, model: &str) {
@@ -288,8 +310,76 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(sent_efforts(&commands), ["medium"]);
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
-        assert_eq!(panel.read_with(vcx, |panel, _| panel.composer_identity().1), Some("medium".into()));
-        assert!(vcx.debug_bounds("panel-model-effort").is_some(), "footer effort pill is painted");
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.composer_identity().1),
+            Some("medium".into())
+        );
+        assert!(
+            vcx.debug_bounds("panel-model-effort").is_some(),
+            "footer effort pill is painted"
+        );
+        assert!(
+            vcx.debug_bounds("effort-icon-medium").is_some(),
+            "footer draws medium"
+        );
+    }
+
+    #[gpui::test]
+    fn effort_medium_row_click_reaches_opus_55(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, commands) = setup(cx, "claude-oauth", "claude-opus-5-5", Some("high"));
+        let pill = vcx.debug_bounds("panel-model-effort").unwrap();
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let medium = vcx
+            .debug_bounds("slash-command-row-2")
+            .expect("Claude medium row");
+        vcx.simulate_click(medium.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert!(vcx.debug_bounds("effort-icon-medium").is_some());
+    }
+
+    #[gpui::test]
+    fn model_second_step_accepts_full_effort_command(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-6.1-sol", Some("high"));
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::RuntimeInfo {
+                    session_id: "session-a".into(),
+                    provider: Some("openai".into()),
+                    model: Some("gpt-6.1-sol".into()),
+                    reasoning_effort: Some("high".into()),
+                    auth_method: None,
+                    account_label: None,
+                    routes: vec![jcode_sdk::ModelRouteInfo {
+                        model: "claude-opus-5-5".into(),
+                        provider: "anthropic".into(),
+                        api_method: "claude-oauth".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    }],
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let model = vcx.debug_bounds("panel-model").unwrap();
+        vcx.simulate_click(model.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("/ m o d e l space c l a u d e - o p u s - 5 - 5 enter");
+        vcx.run_until_parked();
+        assert!(
+            commands.try_iter().next().is_none(),
+            "model selection waits for effort"
+        );
+        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m enter");
+        vcx.run_until_parked();
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(sent.iter().any(|command| matches!(command, Command::SetModel { model, .. } if model == "claude-oauth:claude-opus-5-5")), "selected model reaches bridge");
+        assert!(sent.iter().any(|command| matches!(command, Command::SessionOperation { operation: SessionOperation::SetEffort(effort), .. } if effort == "medium")), "selected effort reaches bridge");
+        assert!(vcx.debug_bounds("effort-icon-medium").is_some());
     }
 
     /// The configured chords (Alt+Left/Right by default) step one rung at a

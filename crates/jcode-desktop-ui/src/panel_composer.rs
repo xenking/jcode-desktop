@@ -290,24 +290,29 @@ impl Panel {
                     .debug_selector(|| "picker-search".into())
                     .child(search.clone())
             }))
-            .child(
-                // The voice button floats inside the input's right edge. The
-                // input reserves matching trailing space for it.
-                div()
-                    .relative()
-                    .w_full()
-                    .min_w_0()
-                    .child(self.render_voice_input_slot(cx))
-                    .child(
+            .when(
+                self.picker_search.is_none() || self.input.read(cx).has_draft(),
+                |el| {
+                    el.child(
+                        // The voice button floats inside the input's right edge. The
+                        // input reserves matching trailing space for it.
                         div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right(px(VOICE_INSET))
-                            .flex()
-                            .items_center()
-                            .child(self.render_voice_tab(cx)),
-                    ),
+                            .relative()
+                            .w_full()
+                            .min_w_0()
+                            .child(self.render_voice_input_slot(cx))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right(px(VOICE_INSET))
+                                    .flex()
+                                    .items_center()
+                                    .child(self.render_voice_tab(cx)),
+                            ),
+                    )
+                },
             )
             .child(pills)
             .into_any_element()

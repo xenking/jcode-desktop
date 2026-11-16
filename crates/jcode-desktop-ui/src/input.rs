@@ -1138,6 +1138,10 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn has_draft(&self) -> bool {
+        !self.content.is_empty() || !self.attachments.is_empty()
+    }
+
     pub(crate) fn working_dir(&self) -> Option<&str> {
         self.working_dir.as_deref()
     }
@@ -1314,6 +1318,29 @@ impl PromptInput {
             .or_else(|| provider_fallback_spec(provider))
     }
 
+    /// A picker accepts either its search argument or the full slash command.
+    /// Both the rows and Enter must interpret that text identically.
+    fn command_content(&self) -> String {
+        let Some(prefix) = self.picker_prefix else {
+            return self.content.to_string();
+        };
+        let content = self.content.trim_start();
+        let strip = |command: &str| {
+            content
+                .strip_prefix(command)
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        };
+        let query = strip(prefix)
+            .or_else(|| {
+                (prefix == "/model"
+                    && matches!(self.model_stage, model_stage::ModelStage::Efforts { .. }))
+                .then(|| strip("/effort"))
+                .flatten()
+            })
+            .unwrap_or(content);
+        format!("{prefix} {}", query.trim_start())
+    }
+
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
         if !self.command_completion {
             return Vec::new();
@@ -1324,10 +1351,7 @@ impl PromptInput {
             &self.command_models,
             &self.model_details,
         );
-        let picker_content = self
-            .picker_prefix
-            .map(|prefix| format!("{prefix} {}", self.content));
-        let command_content = picker_content.as_deref().unwrap_or(&self.content);
+        let command_content = self.command_content();
         let trimmed = command_content.trim_start();
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
@@ -1335,7 +1359,7 @@ impl PromptInput {
                 self.model_stage_rows(query)
             } else {
                 command_suggestions_with_efforts(
-                    command_content,
+                    &command_content,
                     &self.command_models,
                     EffortMenu {
                         ladder: Some(&self.effort_ladder),
@@ -1451,10 +1475,7 @@ impl PromptInput {
             cx.notify();
             return;
         }
-        let raw_content = self
-            .picker_prefix
-            .map(|prefix| format!("{prefix} {}", self.content))
-            .unwrap_or_else(|| self.content.to_string());
+        let raw_content = self.command_content();
         let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
             if self.empty_submit && !queued {
