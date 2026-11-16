@@ -325,51 +325,6 @@ impl Panel {
         }).collect()
     }
 
-    pub(super) fn render_ask_result_images(
-        &self,
-        call_id: &str,
-        cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        self.ask_result_images(call_id)
-            .into_iter()
-            .enumerate()
-            .map(|(ordinal, (index, image))| {
-                let label = image
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| format!("Image {}", ordinal + 1));
-                let preview = image.clone();
-                div()
-                    .id(("ask-result-image", index))
-                    .debug_selector(|| "ask-result-image".into())
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .text_size(px(11.))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .bg(Theme::global().USER_BG)
-                    .cursor_pointer()
-                    .hover(|el| el.text_color(Theme::global().TEXT))
-                    .children(image.preview.clone().map(|preview| {
-                        img(crate::image_cache::source(preview))
-                            .debug_selector(|| "ask-result-image-thumbnail".into())
-                            .size(px(14.))
-                            .rounded_sm()
-                            .object_fit(gpui::ObjectFit::Cover)
-                    }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_image_preview(preview.clone(), window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .into_any_element()
-            })
-            .collect()
-    }
-
     pub(super) fn ask_editor_focused(&self, window: &Window, cx: &App) -> bool {
         self.ask_card.as_ref().is_some_and(|card| {
             card.other_inputs
