@@ -4884,7 +4884,26 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(if let Some(markdown) = tool_output::markdown_output(name, output) {
+                                                .child(if let Some(lines) = tool_output::json_lines(name, output, &call_id, &self.expanded_regions) {
+                                                    let args = tool_detail(name, input, "");
+                                                    let mut toggle_index = 0usize;
+                                                    let rows = lines.into_iter().enumerate().map(|(line_index, line)| {
+                                                        let toggle = line.toggle.map(|key| {
+                                                            let selector = format!("tool-json-toggle-{toggle_index}");
+                                                            toggle_index += 1;
+                                                            div().id(SharedString::from(format!("json-toggle-{index}-{line_index}"))).debug_selector(move || selector.clone().into())
+                                                                .w(px(18.0)).flex_none().cursor_pointer().text_color(Theme::global().TEXT_FAINT)
+                                                                .child(if line.collapsed { "▸" } else { "▾" })
+                                                                .on_click(cx.listener(move |this, _, _, cx| { cx.stop_propagation(); this.toggle_line(&key, cx); })).into_any_element()
+                                                        }).unwrap_or_else(|| div().w(px(18.0)).flex_none().into_any_element());
+                                                        div().flex().child(toggle).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-json-{index}-{line_index}"), line.text, window, cx)).into_any_element()
+                                                    }).collect::<Vec<_>>();
+                                                    div().debug_selector(|| "tool-detail-json".into()).font_family(Theme::global().FONT_MONO).flex().flex_col()
+                                                        .when(!args.is_empty(), |el| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-{index}"), args, window, cx)))
+                                                        .children(rows)
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else if let Some(markdown) = tool_output::markdown_output(name, output) {
                                                     let args = tool_detail(name, input, "");
                                                     div().debug_selector(|| "tool-detail-markdown".into())
                                                         .flex().flex_col().gap_2()

@@ -4,6 +4,22 @@
 use super::*;
 
 #[gpui::test]
+fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "json-nested".into(), name: "webfetch".into(), input: "{}".into(),
+        output: r#"{"outer":{"child":"secret"},"other":7}"#.into(), done: true, error: None,
+    }]);
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("tool-json-toggle-1").is_some());
+    assert!(document_text(&panel, vcx).contains("secret"));
+    click(vcx, "tool-json-toggle-1");
+    assert!(!document_text(&panel, vcx).contains("secret"));
+    assert!(document_text(&panel, vcx).contains("other"));
+    click(vcx, "tool-json-toggle-1");
+    assert!(document_text(&panel, vcx).contains("secret"));
+}
+
+#[gpui::test]
 fn markdown_tool_output_is_rendered_and_selectable(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::Tool {
         call_id: "markdown".into(), name: "webfetch".into(), input: r#"{"url":"example"}"#.into(),

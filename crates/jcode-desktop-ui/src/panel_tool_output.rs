@@ -50,7 +50,10 @@ pub(super) fn bash_exit_code(name: &str, output: &str) -> Option<i32> {
 /// Prose-bearing tool responses can contain markdown; command and file output
 /// must stay literal even when their content resembles markup.
 pub(super) fn markdown_output(name: &str, output: &str) -> Option<String> {
-    if matches!(name, "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff") {
+    if matches!(
+        name,
+        "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff"
+    ) {
         return None;
     }
     let output = strip_ansi(output);
@@ -59,7 +62,9 @@ pub(super) fn markdown_output(name: &str, output: &str) -> Option<String> {
     }
     let looks_like_markdown = output.lines().any(|line| {
         let line = line.trim_start();
-        line.starts_with("# ") || line.starts_with("## ") || line.starts_with("```")
+        line.starts_with("# ")
+            || line.starts_with("## ")
+            || line.starts_with("```")
             || line.starts_with("- ")
             || line.starts_with("> ")
     }) || output.contains("**");
@@ -68,6 +73,115 @@ pub(super) fn markdown_output(name: &str, output: &str) -> Option<String> {
 
 pub(super) fn markdown_row(index: usize) -> usize {
     usize::MAX.saturating_sub(index.saturating_add(1))
+}
+
+pub(super) struct JsonLine {
+    pub text: String,
+    pub toggle: Option<String>,
+    pub collapsed: bool,
+}
+
+pub(super) fn json_prefix(call_id: &str) -> String {
+    format!("tool-json:{call_id}:")
+}
+
+/// Visible JSON lines are shared by painting and the logical selection document.
+pub(super) fn json_lines(
+    name: &str,
+    output: &str,
+    call_id: &str,
+    collapsed: &HashSet<String>,
+) -> Option<Vec<JsonLine>> {
+    if matches!(
+        name,
+        "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff"
+    ) || output.len() > 200_000
+    {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&strip_ansi(output)).ok()?;
+    if !value.is_object() && !value.is_array() {
+        return None;
+    }
+    fn walk(
+        value: &serde_json::Value,
+        label: &str,
+        path: String,
+        depth: usize,
+        comma: bool,
+        collapsed: &HashSet<String>,
+        lines: &mut Vec<JsonLine>,
+    ) {
+        let indent = "  ".repeat(depth);
+        let suffix = if comma { "," } else { "" };
+        let children: Vec<(String, &serde_json::Value)> = match value {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        format!("{}: ", serde_json::to_string(k).unwrap_or_default()),
+                        v,
+                    )
+                })
+                .collect(),
+            serde_json::Value::Array(items) => items.iter().map(|v| (String::new(), v)).collect(),
+            _ => Vec::new(),
+        };
+        let (open, close) = if value.is_object() {
+            ("{", "}")
+        } else {
+            ("[", "]")
+        };
+        if !children.is_empty() {
+            let is_collapsed = collapsed.contains(&path);
+            let text = if is_collapsed {
+                format!("{indent}{label}{open}…{close}{suffix}")
+            } else {
+                format!("{indent}{label}{open}")
+            };
+            lines.push(JsonLine {
+                text,
+                toggle: Some(path.clone()),
+                collapsed: is_collapsed,
+            });
+            if !is_collapsed {
+                let count = children.len();
+                for (i, (child_label, child)) in children.into_iter().enumerate() {
+                    walk(
+                        child,
+                        &child_label,
+                        format!("{path}{i}/"),
+                        depth + 1,
+                        i + 1 != count,
+                        collapsed,
+                        lines,
+                    );
+                }
+                lines.push(JsonLine {
+                    text: format!("{indent}{close}{suffix}"),
+                    toggle: None,
+                    collapsed: false,
+                });
+            }
+        } else {
+            lines.push(JsonLine {
+                text: format!("{indent}{label}{}{suffix}", value),
+                toggle: None,
+                collapsed: false,
+            });
+        }
+    }
+    let mut lines = Vec::new();
+    walk(
+        &value,
+        "",
+        json_prefix(call_id),
+        0,
+        false,
+        collapsed,
+        &mut lines,
+    );
+    (lines.len() <= 500).then_some(lines)
 }
 
 fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, HighlightStyle)> {
@@ -104,7 +218,10 @@ fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, Hi
     markdown::highlight_code(output, &lang).1
 }
 
-#[allow(clippy::too_many_arguments, reason = "rendering needs tool data and GPUI selection context")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "rendering needs tool data and GPUI selection context"
+)]
 pub(super) fn selectable_detail(
     name: &str,
     input: &str,

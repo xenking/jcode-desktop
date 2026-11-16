@@ -50,7 +50,24 @@ impl TranscriptTextDocument {
                 expanded_prompts.contains(&(row.index, false)),
             );
             let flags = open.bits();
+            let json_candidate = matches!(item, Item::Tool { name, output, .. } if open.card && !matches!(name.as_str(), "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff") && matches!(output.trim_start().chars().next(), Some('{' | '[')));
+            let json_state = if let Item::Tool { call_id, .. } = item
+                && json_candidate
+            {
+                let prefix = tool_output::json_prefix(call_id);
+                let mut keys: Vec<_> = expanded_regions
+                    .iter()
+                    .filter(|key| key.starts_with(&prefix))
+                    .collect();
+                keys.sort_unstable();
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                keys.hash(&mut hasher);
+                hasher.finish()
+            } else {
+                0
+            };
             if settled_unchanged
+                && !json_candidate
                 && matches!(row.source, TranscriptRowSource::Settled(_))
                 && self
                     .rows
@@ -61,7 +78,7 @@ impl TranscriptTextDocument {
             }
             // The low bits carry the disclosure flags so a settled row
             // skipped above still notices when it is expanded or collapsed.
-            let fingerprint = (fingerprint(item, open) & !Open::MASK) | flags;
+            let fingerprint = ((fingerprint(item, open) ^ json_state) & !Open::MASK) | flags;
             if self
                 .rows
                 .get(&row.index)
@@ -69,7 +86,7 @@ impl TranscriptTextDocument {
             {
                 continue;
             }
-            let segments = segments(item, row.index, open);
+            let segments = segments_with_regions(item, row.index, open, &display, expanded_regions);
             self.rows.insert(row.index, (fingerprint, segments));
             changed = true;
         }
@@ -111,7 +128,12 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
             output.hash(&mut state);
             error.hash(&mut state);
         }
-        Item::BackgroundTask { label, summary, detail, .. } => {
+        Item::BackgroundTask {
+            label,
+            summary,
+            detail,
+            ..
+        } => {
             label.hash(&mut state);
             summary.hash(&mut state);
             detail.hash(&mut state);
@@ -134,6 +156,7 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
     state.finish()
 }
 
+#[cfg(test)]
 fn segments(item: &Item, index: usize, open: Open) -> Segments {
     segments_with_display(item, index, open, &crate::config::display())
 }
@@ -143,6 +166,16 @@ pub(super) fn segments_with_display(
     index: usize,
     open: Open,
     display: &crate::config::DisplayConfig,
+) -> Segments {
+    segments_with_regions(item, index, open, display, &HashSet::new())
+}
+
+fn segments_with_regions(
+    item: &Item,
+    index: usize,
+    open: Open,
+    display: &crate::config::DisplayConfig,
+    expanded_regions: &HashSet<String>,
 ) -> Segments {
     if display.screenshot_mode {
         match item {
@@ -222,13 +255,34 @@ pub(super) fn segments_with_display(
                         push(format!("{key}-error"), error.clone());
                     }
                 }
-                if let Some(markdown) = tool_output::markdown_output(name, output) {
+                if let Some(lines) =
+                    tool_output::json_lines(name, output, call_id, expanded_regions)
+                {
                     push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
-                    for (key, text) in markdown::selection_segments(&markdown, tool_output::markdown_row(index), false, false) {
+                    for (line_index, line) in lines.into_iter().enumerate() {
+                        push(format!("tool-json-{index}-{line_index}"), line.text);
+                    }
+                    if let Some(error) = error {
+                        push(
+                            format!("tool-detail-error-{index}"),
+                            format!("Error\n{}", strip_ansi(error)),
+                        );
+                    }
+                } else if let Some(markdown) = tool_output::markdown_output(name, output) {
+                    push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
+                    for (key, text) in markdown::selection_segments(
+                        &markdown,
+                        tool_output::markdown_row(index),
+                        false,
+                        false,
+                    ) {
                         push(key.to_string(), text.to_string());
                     }
                     if let Some(error) = error {
-                        push(format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)));
+                        push(
+                            format!("tool-detail-error-{index}"),
+                            format!("Error\n{}", strip_ansi(error)),
+                        );
                     }
                 } else {
                     push(format!("tool-detail-{index}"), detail);
@@ -254,11 +308,20 @@ pub(super) fn segments_with_display(
                 push(format!("{index}-stop-reason"), notice.plain_detail());
             }
         }
-        Item::BackgroundTask { task_id, label, summary, detail, .. } => {
+        Item::BackgroundTask {
+            task_id,
+            label,
+            summary,
+            detail,
+            ..
+        } => {
             push(format!("background-label-{index}"), label.clone());
             push(format!("background-summary-{index}"), summary.clone());
             if open.details {
-                push(format!("background-detail-{index}"), background_task::detail_text(task_id, summary, detail.as_deref()));
+                push(
+                    format!("background-detail-{index}"),
+                    background_task::detail_text(task_id, summary, detail.as_deref()),
+                );
             }
         }
         Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
