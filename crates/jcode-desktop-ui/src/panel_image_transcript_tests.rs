@@ -1,6 +1,19 @@
 use super::*;
 
 #[gpui::test]
+fn live_user_image_marker_is_replaced_by_server_session_id(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("live-image-ids".into(), None, None, crate::harness::spawn_inert(), cx));
+    let old = "look [#image 1]";
+    let id = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User(old.into()), Item::Image(image_preview::fixture_image())];
+        let event = serde_json::from_value(serde_json::json!({"ev":"user_image_ids", "session_id":"live-image-ids", "original_content":old, "content":format!("look [#{id}]"), "image_ids":[id]})).unwrap();
+        panel.apply(&event, cx);
+        assert!(matches!(&panel.items[0], Item::User(text) if text == &format!("look [#{id}]")));
+    });
+}
+
+#[gpui::test]
 fn session_gallery_is_available_without_loaded_history_images(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("gallery-old-image".into(), None, None, bridge, cx));

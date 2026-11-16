@@ -5,6 +5,16 @@ use super::*;
 
 impl Panel {
     pub(super) fn observe_activity_state(&mut self, event: &ApiEvent) {
+        if let ApiEvent::UserImageIds { session_id, original_content, content, .. } = event {
+            if session_id == &self.session_id {
+                if let Some(Item::User(text)) = self.items.iter_mut().find(|item| {
+                    matches!(item, Item::User(text) if text == original_content)
+                }) {
+                    *text = content.clone();
+                    self.transcript_measurements.dirty = true;
+                }
+            }
+        }
         // The harness explicitly clears this phase when an automatic retry is
         // cancelled. A countdown made the panel busy even though no request was
         // in flight, so clearing only its label would leave an endless spinner.
