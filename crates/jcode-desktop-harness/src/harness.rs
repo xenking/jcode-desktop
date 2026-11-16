@@ -185,6 +185,16 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    QueueMutationCapability {
+        session_id: String,
+        supported: bool,
+    },
+    QueueRemovalSettled {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+        result: Result<jcode_sdk::api::QueuedPromptRemovalOutcome, String>,
+    },
     QueuePromptFailed {
         session_id: String,
         client_id: String,
@@ -304,6 +314,15 @@ pub enum Command {
     QueuePrompt {
         session_id: String,
         prompt: jcode_sdk::api::QueuedPrompt,
+    },
+    RemoveQueuedPrompt {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+    },
+    ReorderQueuedPrompts {
+        session_id: String,
+        order: Vec<String>,
     },
     SetQueuedPromptMode {
         session_id: String,
@@ -442,6 +461,8 @@ enum SessionCommand {
         images: Vec<(String, String)>,
     },
     QueuePrompt(jcode_sdk::api::QueuedPrompt),
+    RemoveQueuedPrompt(jcode_sdk::api::QueuedPrompt, bool),
+    ReorderQueuedPrompts(Vec<String>),
     SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
     InterruptQueuedPrompt(String),
     CancelQueuedPrompt(String),
@@ -1282,6 +1303,26 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::QueuePrompt(prompt),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::RemoveQueuedPrompt {
+                session_id,
+                prompt,
+                edit,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RemoveQueuedPrompt(prompt, edit),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ReorderQueuedPrompts { session_id, order } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ReorderQueuedPrompts(order),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2588,6 +2629,10 @@ fn session_worker_with_connector(
         eprintln!("jcode desktop: session {session_id} connected");
         // Publish the capability before history can unblock composer sends.
         // The authoritative snapshot follows history recovery below.
+        let _ = updates.send(Update::QueueMutationCapability {
+            session_id: session_id.clone(),
+            supported: client.supports("queued_prompt_mutations_v1"),
+        });
         if client.supports("queued_prompts") {
             let _ = updates.send(Update::Event {
                 session_id: session_id.clone(),
@@ -2752,6 +2797,36 @@ fn session_worker_with_connector(
                                 session_id: session_id.clone(),
                                 client_id,
                                 reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::RemoveQueuedPrompt(prompt, edit) => {
+                        let result = if client.supports("queued_prompt_mutations_v1") {
+                            client
+                                .remove_queued_prompt(real_id, "jcode-desktop", &prompt.client_id)
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue editing is not supported by this runtime".into())
+                        };
+                        let _ = updates.send(Update::QueueRemovalSettled {
+                            session_id: session_id.clone(),
+                            prompt,
+                            edit,
+                            result,
+                        });
+                    }
+                    SessionCommand::ReorderQueuedPrompts(order) => {
+                        let result = if client.supports("queued_prompt_mutations_v1") {
+                            client
+                                .reorder_queued_prompts(real_id, "jcode-desktop", order)
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue reordering is not supported by this runtime".into())
+                        };
+                        if let Err(reason) = result {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
                             });
                         }
                     }

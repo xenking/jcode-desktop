@@ -2804,6 +2804,34 @@ impl Workspace {
                     }
                 }
             }
+            Update::QueueMutationCapability {
+                session_id,
+                supported,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_mutations_supported(supported, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueueRemovalSettled {
+                session_id,
+                prompt,
+                edit,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queue_removal_settled(prompt, edit, result, cx)
+                        });
+                        break;
+                    }
+                }
+            }
             Update::QueuePromptFailed {
                 session_id,
                 client_id,
@@ -2851,6 +2879,7 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_mutations_supported(false, cx);
                             panel.connection_lost(&reason, cx);
                         });
                         break;

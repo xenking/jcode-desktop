@@ -11,6 +11,59 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(id) = self
+            .prompt_queue
+            .card_menu
+            .as_deref()
+            .and_then(|key| key.strip_prefix("remote-"))
+            .map(str::to_owned)
+        {
+            let Some(index) = self
+                .prompt_queue
+                .remote
+                .iter()
+                .position(|prompt| prompt.client_id == id)
+            else {
+                self.prompt_queue.card_menu = None;
+                return false;
+            };
+            let key = event.keystroke.key.as_str();
+            let alt = event.keystroke.modifiers.alt;
+            match (key, alt) {
+                ("up", true) => self.reorder_remote_card_prompt(index, true),
+                ("down", true) => self.reorder_remote_card_prompt(index, false),
+                ("m", false) => {
+                    let mode = match self.prompt_queue.remote[index].mode {
+                        jcode_sdk::api::QueuedPromptMode::Steer => {
+                            jcode_sdk::api::QueuedPromptMode::AfterYield
+                        }
+                        jcode_sdk::api::QueuedPromptMode::AfterYield => {
+                            jcode_sdk::api::QueuedPromptMode::Steer
+                        }
+                    };
+                    self.bridge.send(Command::SetQueuedPromptMode {
+                        session_id: self.session_id.clone(),
+                        client_id: id,
+                        mode,
+                    });
+                }
+                ("enter", false) => {
+                    self.bridge.send(Command::InterruptQueuedPrompt {
+                        session_id: self.session_id.clone(),
+                        client_id: id,
+                    });
+                    self.prompt_queue.card_menu = None;
+                    self.focus_input(window, cx);
+                }
+                ("escape", false) => {
+                    self.prompt_queue.card_menu = None;
+                    self.focus_input(window, cx);
+                }
+                _ => return false,
+            }
+            cx.notify();
+            return true;
+        }
         let Some(index) = self
             .prompt_queue
             .card_menu
@@ -80,7 +133,7 @@ impl Panel {
                 .border_1()
                 .border_b_0()
                 .border_color(theme.INPUT_BORDER)
-                .bg(theme.TOOL_BG)
+                .bg(theme.INLINE_CODE_BG)
                 .pb(px(4.))
                 .pt_1()
                 .px_1()
@@ -105,14 +158,14 @@ impl Panel {
                                         .flex()
                                         .flex_col()
                                         .gap_1()
-                                        .children(
-                                            queue.remote.iter().map(|prompt| {
-                                                self.card_remote_row(prompt, false, cx)
-                                            }),
-                                        )
+                                        .children(queue.remote.iter().enumerate().map(
+                                            |(index, prompt)| {
+                                                self.card_remote_row(prompt, Some(index), cx)
+                                            },
+                                        ))
                                         .children(
                                             queue.pending_remote.iter().map(|prompt| {
-                                                self.card_remote_row(prompt, true, cx)
+                                                self.card_remote_row(prompt, None, cx)
                                             }),
                                         ),
                                 )
@@ -253,7 +306,12 @@ impl Panel {
                             .cursor_pointer()
                             .text_color(theme.TEXT_DIM)
                             .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-                            .child(gpui::svg().data(INDENT).size(px(12.)))
+                            .child(
+                                gpui::svg()
+                                    .data(INDENT)
+                                    .size(px(12.))
+                                    .text_color(theme.TEXT_DIM),
+                            )
                             .child(if prompt.after_yield {
                                 "After yield"
                             } else {
@@ -425,9 +483,10 @@ impl Panel {
     fn card_remote_row(
         &self,
         prompt: &jcode_sdk::api::QueuedPrompt,
-        pending: bool,
+        index: Option<usize>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let pending = index.is_none();
         let theme = Theme::global();
         let id = prompt.client_id.clone();
         let key = format!("remote-{id}");
@@ -439,6 +498,10 @@ impl Panel {
         let interrupt_id = id.clone();
         let retry_id = id.clone();
         let retry = prompt.clone();
+        let delete_prompt = prompt.clone();
+        let edit_prompt = prompt.clone();
+        let mutations = self.prompt_queue.remote_mutations_supported
+            && !self.prompt_queue.remote_removing.contains(&id);
         let full = prompt.content.clone();
         let failed = self.prompt_queue.remote_failures.contains_key(&id);
         let next = match prompt.mode {
@@ -504,7 +567,12 @@ impl Panel {
                             .when(!pending, |el| {
                                 el.cursor_pointer().hover(|el| el.bg(theme.TOOL_BG))
                             })
-                            .child(gpui::svg().data(INDENT).size(px(12.)))
+                            .child(
+                                gpui::svg()
+                                    .data(INDENT)
+                                    .size(px(12.))
+                                    .text_color(theme.TEXT_DIM),
+                            )
                             .child(if prompt.mode == jcode_sdk::api::QueuedPromptMode::Steer {
                                 "Steer"
                             } else {
@@ -546,11 +614,41 @@ impl Panel {
                                 })),
                         )
                     })
+                    .when(!pending && mutations, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("queue-delete-{id}")))
+                                .debug_selector(|| "remote-queue-delete".into())
+                                .size(px(22.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.QUOTE_BG))
+                                .child(
+                                    gpui::svg()
+                                        .data(TRASH)
+                                        .size(px(13.))
+                                        .text_color(theme.TEXT_DIM),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_remote_card_prompt(
+                                        delete_prompt.clone(),
+                                        false,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                })),
+                        )
+                    })
                     .when(!pending, |el| {
                         el.child(
                             div()
                                 .id(SharedString::from(format!("queue-overflow-{id}")))
-                                .debug_selector(|| "remote-queue-overflow".into())
+                                .debug_selector(move || {
+                                    format!("remote-queue-overflow-{}", index.unwrap_or(0))
+                                })
                                 .size(px(22.))
                                 .flex()
                                 .items_center()
@@ -564,7 +662,7 @@ impl Panel {
                                         .size(px(13.))
                                         .text_color(theme.TEXT_DIM),
                                 )
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.prompt_queue.card_menu = if this
                                         .prompt_queue
                                         .card_menu
@@ -575,6 +673,11 @@ impl Panel {
                                     } else {
                                         Some(key_menu.clone())
                                     };
+                                    if this.prompt_queue.card_menu.is_some() {
+                                        window.focus(&this.focus_handle, cx);
+                                    } else {
+                                        this.focus_input(window, cx);
+                                    }
                                     cx.stop_propagation();
                                     cx.notify();
                                 })),
@@ -586,27 +689,75 @@ impl Panel {
             })
             .when(menu && !pending, |el| {
                 el.child(
-                    div().flex().gap_1().px_2().pb_2().child(
-                        div()
-                            .id(SharedString::from(format!("queue-interrupt-{id}")))
-                            .debug_selector(|| "queue-send-control".into())
-                            .rounded_full()
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .text_color(theme.TEXT_DIM)
-                            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-                            .child("Send now / interrupt")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prompt_queue.card_menu = None;
-                                this.bridge.send(Command::InterruptQueuedPrompt {
-                                    session_id: this.session_id.clone(),
-                                    client_id: interrupt_id.clone(),
-                                });
-                                cx.stop_propagation();
-                                cx.notify();
-                            })),
-                    ),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .px_2()
+                        .pb_2()
+                        .when(mutations, |el| {
+                            el.child(menu_action(
+                                "remote-queue-edit",
+                                index.unwrap_or(0),
+                                "Edit",
+                                cx.listener(move |this, _, window, cx| {
+                                    this.remove_remote_card_prompt(edit_prompt.clone(), true, cx);
+                                    this.focus_input(window, cx);
+                                    cx.stop_propagation();
+                                }),
+                            ))
+                        })
+                        .when(mutations && index.is_some_and(|i| i > 0), |el| {
+                            el.child(menu_action(
+                                "remote-queue-up",
+                                index.unwrap_or(0),
+                                "Move up",
+                                cx.listener(move |this, _, _, cx| {
+                                    this.reorder_remote_card_prompt(index.unwrap_or(0), true);
+                                    this.prompt_queue.card_menu = None;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            ))
+                        })
+                        .when(
+                            mutations
+                                && index.is_some_and(|i| i + 1 < self.prompt_queue.remote.len()),
+                            |el| {
+                                el.child(menu_action(
+                                    "remote-queue-down",
+                                    index.unwrap_or(0),
+                                    "Move down",
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.reorder_remote_card_prompt(index.unwrap_or(0), false);
+                                        this.prompt_queue.card_menu = None;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ))
+                            },
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("queue-interrupt-{id}")))
+                                .debug_selector(|| "queue-send-control".into())
+                                .rounded_full()
+                                .px_2()
+                                .py_1()
+                                .cursor_pointer()
+                                .text_color(theme.TEXT_DIM)
+                                .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+                                .child("Send now / interrupt")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.prompt_queue.card_menu = None;
+                                    this.bridge.send(Command::InterruptQueuedPrompt {
+                                        session_id: this.session_id.clone(),
+                                        client_id: interrupt_id.clone(),
+                                    });
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
             .into_any_element()

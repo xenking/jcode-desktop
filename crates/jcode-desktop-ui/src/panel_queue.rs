@@ -33,6 +33,10 @@ pub struct PromptQueue {
     remote: Vec<jcode_sdk::api::QueuedPrompt>,
     #[serde(skip)]
     remote_supported: bool,
+    #[serde(skip)]
+    remote_mutations_supported: bool,
+    #[serde(skip)]
+    remote_removing: std::collections::HashSet<String>,
     #[serde(default)]
     pending_remote: Vec<jcode_sdk::api::QueuedPrompt>,
     #[serde(skip)]
@@ -63,6 +67,98 @@ fn default_follow_up() -> bool {
 }
 
 impl Panel {
+    pub(crate) fn set_queue_mutations_supported(
+        &mut self,
+        supported: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue.remote_mutations_supported = supported;
+        cx.notify();
+    }
+
+    pub(crate) fn queue_removal_settled(
+        &mut self,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+        result: Result<jcode_sdk::api::QueuedPromptRemovalOutcome, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue.remote_removing.remove(&prompt.client_id);
+        match result {
+            Ok(jcode_sdk::api::QueuedPromptRemovalOutcome::Removed) => {
+                self.prompt_queue
+                    .remote
+                    .retain(|p| p.client_id != prompt.client_id);
+                if edit {
+                    self.input.update(cx, |input, cx| {
+                        input.recall_prompt(&prompt.content, prompt.images, cx)
+                    });
+                }
+            }
+            Ok(outcome) => self.items.push(Item::Error(format!(
+                "Could not remove queued message: {outcome:?}"
+            ))),
+            Err(reason) => {
+                if edit {
+                    self.input.update(cx, |input, cx| {
+                        input.recall_prompt(&prompt.content, prompt.images, cx)
+                    });
+                    self.items.push(Item::Error(format!("Queue removal could not be confirmed: {reason}. A copy is in the composer; check whether the original was delivered before sending.")));
+                } else {
+                    self.items.push(Item::Error(format!(
+                        "Queue removal could not be confirmed: {reason}"
+                    )));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn remove_remote_card_prompt(
+        &mut self,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prompt_queue.remote_mutations_supported
+            && self
+                .prompt_queue
+                .remote_removing
+                .insert(prompt.client_id.clone())
+        {
+            self.bridge.send(Command::RemoveQueuedPrompt {
+                session_id: self.session_id.clone(),
+                prompt,
+                edit,
+            });
+            self.prompt_queue.card_menu = None;
+            cx.notify();
+        }
+    }
+
+    fn reorder_remote_card_prompt(&mut self, index: usize, up: bool) {
+        let mut order: Vec<String> = self
+            .prompt_queue
+            .remote
+            .iter()
+            .map(|p| p.client_id.clone())
+            .collect();
+        let other = if up {
+            index.checked_sub(1)
+        } else {
+            (index + 1 < order.len()).then_some(index + 1)
+        };
+        if self.prompt_queue.remote_mutations_supported
+            && let Some(other) = other
+        {
+            order.swap(index, other);
+            self.bridge.send(Command::ReorderQueuedPrompts {
+                session_id: self.session_id.clone(),
+                order,
+            });
+        }
+    }
+
     pub(crate) fn queue_prompt_failed(
         &mut self,
         client_id: &str,
@@ -105,6 +201,7 @@ impl Panel {
     }
 
     /// Prompts handed to the runtime as steering and not yet delivered.
+    #[cfg(test)]
     pub(crate) fn steered_prompt_count(&self) -> usize {
         self.prompt_queue.steered.len()
             + self
@@ -178,6 +275,7 @@ impl Panel {
             "and re-run the desktop tests after that",
             "ping me when the build is green",
         ];
+        self.prompt_queue.remote_mutations_supported = true;
         for index in 0..count {
             let sample = SAMPLES[index % SAMPLES.len()];
             self.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
@@ -654,6 +752,9 @@ impl Panel {
     ) -> gpui::AnyElement {
         let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
         let ranges = crate::input::image_marker_ranges(&flat);
+        if ranges.is_empty() && images.is_empty() {
+            return div().min_w_0().truncate().child(flat).into_any_element();
+        }
         let mut row = div()
             .flex()
             .items_center()
