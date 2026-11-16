@@ -1,6 +1,30 @@
 use super::*;
 
 #[gpui::test]
+fn completed_ask_replaces_inline_marker_with_image_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("ask-inline-image".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        let mut image = image_preview::fixture_image();
+        image.source = jcode_sdk::RenderedImageSource::ToolResult { tool_name: "ask".into() };
+        image.anchor = Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: "ask-inline".into() });
+        *panel.items = vec![Item::Tool {
+            call_id: "ask-inline".into(), name: "ask".into(), input: "{}".into(),
+            output: "User answers:\n1. Which? -> Look [#image 1] here".into(), done: true, error: None,
+        }, Item::Image(image)];
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("ask-result-inline-image").expect("marker must render inline as a chip");
+    assert!(vcx.debug_bounds("ask-result-inline-thumbnail").is_some());
+    assert!(vcx.debug_bounds("ask-result-inline-label").is_some());
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
 fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new("inline-image-marker".into(), None, None, crate::harness::spawn_inert(), cx)

@@ -93,6 +93,8 @@ mod tail_glide;
 use scroll_motion::WheelGlide;
 #[path = "panel_ask.rs"]
 mod ask;
+#[path = "panel_ask_images.rs"]
+mod ask_images;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -4478,11 +4480,18 @@ impl Panel {
                     let expanded = self.expanded_regions.contains(call_id);
                     let preview = expandable::collapsed(&text, expandable::Budget::new(500, 4));
                     let expandable = preview.is_some();
-                    let shown = if expanded {
+                    let mut shown = if expanded {
                         text
                     } else {
                         preview.unwrap_or(text)
                     };
+                    // A collapsed preview must not expose a partial storage marker.
+                    if let Some(start) = shown.rfind("[#image ")
+                        && !shown[start..].contains(']')
+                    {
+                        shown.truncate(start);
+                        shown.push('…');
+                    }
                     let key = call_id.clone();
                     return div()
                         .id(("ask-result", index))
@@ -4500,14 +4509,7 @@ impl Panel {
                                 .text_color(Theme::global().TEXT_DIM)
                                 .child("Questions and answers"),
                         )
-                        .child(div().min_w_0().text_size(px(13.)).child(shown))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_1()
-                                .children(self.render_ask_result_images(call_id, cx)),
-                        )
+                        .child(self.render_ask_answer(call_id, shown, cx))
                         .when(expandable, |el| {
                             el.cursor_pointer()
                                 .child(

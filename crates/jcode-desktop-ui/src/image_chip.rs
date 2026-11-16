@@ -89,6 +89,7 @@ pub(crate) struct PositionedChips {
     layout: TextLayout,
     chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
     children: Vec<AnyElement>,
+    selectors: (&'static str, &'static str, &'static str),
     #[cfg(test)]
     thumbnails: Vec<(Arc<Image>, Bounds<Pixels>)>,
 }
@@ -97,9 +98,26 @@ impl PositionedChips {
         layout: TextLayout,
         chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
     ) -> Self {
+        Self::with_selectors(
+            layout,
+            chips,
+            (
+                "transcript-image-chip",
+                "transcript-image-thumbnail",
+                "transcript-image-label",
+            ),
+        )
+    }
+
+    pub(crate) fn with_selectors(
+        layout: TextLayout,
+        chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
+        selectors: (&'static str, &'static str, &'static str),
+    ) -> Self {
         Self {
             layout,
             chips,
+            selectors,
             children: Vec::new(),
             #[cfg(test)]
             thumbnails: Vec::new(),
@@ -155,10 +173,7 @@ impl Element for PositionedChips {
                 && let Some(next) = self.layout.position_for_index(range.start + 1)
                 && next.y == end.y
             {
-                start = gpui::point(
-                    next.x - (end.x - next.x) / (range.len() - 1) as f32,
-                    next.y,
-                );
+                start = gpui::point(next.x - (end.x - next.x) / (range.len() - 1) as f32, next.y);
             }
             if start.y != end.y {
                 continue;
@@ -167,9 +182,9 @@ impl Element for PositionedChips {
             let mut element = chip(
                 image.clone(),
                 marker,
-                "transcript-image-chip",
-                "transcript-image-thumbnail",
-                "transcript-image-label",
+                self.selectors.0,
+                self.selectors.1,
+                self.selectors.2,
             )
             .w(width)
             .h(window.line_height())
