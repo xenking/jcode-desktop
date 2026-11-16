@@ -79,8 +79,17 @@ fn embedded_skill_uses_surrounding_text_and_ignores_paths(cx: &mut gpui::TestApp
     panel.update(cx, |panel, cx| {
         panel.load_history(vec![], vec![], cx);
         panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
-        assert!(!panel.handle_embedded_commands("visit https://a/b and /usr/bin", cx));
-        assert!(panel.handle_embedded_commands("fix this /poteto-mode please", cx));
+        assert!(
+            panel
+                .embedded_command_sequence("visit https://a/b and /usr/bin")
+                .is_none()
+        );
+        let commands = panel
+            .embedded_command_sequence("fix this /poteto-mode please")
+            .unwrap();
+        for command in commands {
+            panel.handle_slash_command(&command, cx);
+        }
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::SendSkill { content, skill, .. })
@@ -213,6 +222,30 @@ fn composer_dispatches_multiple_commands_in_order(cx: &mut gpui::TestAppContext)
             ..
         })
     ));
+}
+
+#[gpui::test]
+fn composer_routes_embedded_workspace_command(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("workspace-command", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("ask /btw please");
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SideQuestion { question, .. }) if question == "ask please")
+    );
 }
 
 #[gpui::test]

@@ -2053,8 +2053,13 @@ impl Panel {
                             && panel.read(app).preview_state.is_none()
                             && !(panel.read(app).prompt_queue.waiting_for_connection
                                 && !panel.read(app).history_loaded)
-                            && panel.update(app, |this, cx| this.handle_embedded_commands(&content, cx))
+                            && let Some(sequence) = panel.read(app).embedded_command_sequence(&content)
                         {
+                            for command in sequence {
+                                if !Panel::dispatch_workspace_command(&panel, &command, _window, app) {
+                                    panel.update(app, |this, cx| this.handle_slash_command(&command, cx));
+                                }
+                            }
                             return;
                         }
                         if !queued
@@ -2638,7 +2643,7 @@ impl Panel {
         true
     }
 
-    fn handle_embedded_commands(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+    fn embedded_command_sequence(&self, content: &str) -> Option<Vec<String>> {
         let mut names: Vec<String> = crate::commands::REGISTERED_COMMANDS
             .iter()
             .map(|command| command.name.to_string())
@@ -2647,12 +2652,11 @@ impl Panel {
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let matches = jcode_slash_command::find_known_commands(content, &refs);
         if matches.is_empty() || (matches.len() == 1 && matches[0].start == 0) {
-            return false;
+            return None;
         }
-        for command in jcode_slash_command::split_command_sequence(content, &matches) {
-            self.handle_slash_command(&command, cx);
-        }
-        true
+        Some(jcode_slash_command::split_command_sequence(
+            content, &matches,
+        ))
     }
 
     /// Compose cards a later Gmail call replaced, recomputed only when the
