@@ -11,6 +11,8 @@ mod bundled_applets;
 mod changelog;
 mod clipboard_image;
 mod commands;
+#[cfg(unix)]
+mod desktop_control;
 mod diff_block;
 mod diff_review_content;
 mod diff_view;

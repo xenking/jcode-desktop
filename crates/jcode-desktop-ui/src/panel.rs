@@ -24,6 +24,9 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_control.rs"]
+mod control;
+
 #[path = "panel_workspace_commands.rs"]
 pub(crate) mod workspace_commands;
 

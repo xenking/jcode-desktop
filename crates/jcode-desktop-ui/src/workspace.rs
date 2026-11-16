@@ -4,6 +4,13 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[cfg(test)]
+#[path = "workspace_control_tests.rs"]
+mod control_tests;
+
+#[path = "workspace_control.rs"]
+mod control;
+
 #[path = "workspace_commands.rs"]
 mod commands;
 
@@ -755,6 +762,10 @@ pub struct Workspace {
     voice_key: voice::CopilotLatch,
     last_voice_chat: Option<gpui::EntityId>,
     _voice_activation: Option<gpui::Subscription>,
+    #[cfg(unix)]
+    desktop_control: Option<crate::desktop_control::Server>,
+    #[cfg(unix)]
+    desktop_control_task: Option<gpui::Task<()>>,
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
@@ -1127,6 +1138,10 @@ impl Workspace {
                     this.voice_key = Default::default();
                 }
             })),
+            #[cfg(unix)]
+            desktop_control: None,
+            #[cfg(unix)]
+            desktop_control_task: None,
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -1534,6 +1549,8 @@ impl Workspace {
             workspace.start_default_startup(cx);
         }
         workspace.start_preview_control(cx);
+        #[cfg(unix)]
+        workspace.start_desktop_control(window, cx);
         workspace.start_global_voice(window, cx);
         workspace.detect_account_imports(cx);
         workspace.load_collections(cx);
@@ -1597,6 +1614,10 @@ impl Workspace {
             voice_key: Default::default(),
             last_voice_chat: None,
             _voice_activation: None,
+            #[cfg(unix)]
+            desktop_control: None,
+            #[cfg(unix)]
+            desktop_control_task: None,
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
