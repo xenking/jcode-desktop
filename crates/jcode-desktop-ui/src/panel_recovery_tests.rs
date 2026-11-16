@@ -45,6 +45,23 @@ fn error(message: &str) -> ApiEvent {
     }
 }
 
+#[gpui::test]
+fn tool_output_timeout_does_not_create_a_recovery_card(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("tool-test".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.apply(&ApiEvent::ToolStart { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into() }, cx);
+        panel.apply(&ApiEvent::ToolDone { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into(), output: "grep: previous request timed out".into(), error: None }, cx);
+        assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { output, error: None, done: true, .. } if output.contains("timed out"))));
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::Stopped(_))));
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("tool-inline").is_some());
+    assert!(vcx.debug_bounds("recovery-error").is_none());
+}
+
 fn failed_turn(panel: &mut Panel, message: &str, cx: &mut Context<Panel>) {
     panel.apply(
         &ApiEvent::TurnStopped {
@@ -372,7 +389,10 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     assert!(vcx.debug_bounds("recovery-model-picker").is_none());
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::SessionOperation { operation: SessionOperation::SetEffort(_), .. })
+        Ok(Command::SessionOperation {
+            operation: SessionOperation::SetEffort(_),
+            ..
+        })
     ));
 
     panel.update(vcx, |panel, cx| {

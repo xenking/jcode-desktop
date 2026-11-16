@@ -5,7 +5,7 @@
 //! 2. a collapsed divider is one rule line and a click reveals the summary;
 //! 3. the running divider is replaced by the completed one, never stacked.
 
-use super::super::{Item, Panel};
+use super::super::{ApiEvent, Item, Panel};
 use super::{CompactionRow, CompactionState};
 
 const DIVIDER_BODY: &str = "compacted · snapcompact · 180k→26k · 12s\n\n\
@@ -169,4 +169,31 @@ fn a_running_divider_is_replaced_by_the_completed_one(cx: &mut gpui::TestAppCont
     assert_eq!(rows.len(), 1, "one compaction, one divider: {rows:?}");
     assert_eq!(rows[0].state, CompactionState::Collapsed);
     assert_eq!(rows[0].label(), "compacted · snapcompact · 180k→26k · 12s");
+}
+
+#[gpui::test]
+fn completed_compaction_immediately_replaces_context_usage(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("session-a", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.context_tokens = Some(345_200);
+        panel.apply(
+            &ApiEvent::CompactionDivider {
+                session_id: "session-a".into(),
+                content: "compacted · snapcompact · 513k→135k".into(),
+                running: false,
+                method: Some("snapcompact".into()),
+                trigger: None,
+                pre_tokens: Some(513_000),
+                post_tokens: Some(135_000),
+            },
+            cx,
+        );
+        assert_eq!(panel.context_tokens, Some(135_000));
+    });
 }
