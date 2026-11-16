@@ -3015,6 +3015,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "async-task",
+ "backtrace",
  "bindgen",
  "bitflags 2.13.1",
  "chrono",
