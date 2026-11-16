@@ -25,6 +25,8 @@ mod inline_image;
 mod image_chip;
 mod image_modal;
 mod input;
+#[cfg(target_os = "macos")]
+mod ime_log;
 mod live_profile;
 mod markdown;
 mod markdown_inline_code;

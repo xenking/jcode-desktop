@@ -551,6 +551,11 @@ fn detach_console() {
 #[cfg(not(windows))]
 fn detach_console() {}
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn jcode_ime_log_start();
+}
+
 fn main() {
     attach_parent_console();
     if let Some(code) = jcode_desktop_ui::run_restart_worker_if_requested() {
@@ -580,6 +585,9 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+    #[cfg(target_os = "macos")]
+    // The host owns these hooks for the entire process, including UI reloads.
+    unsafe { jcode_ime_log_start() };
     // Single-panel windows share one host unless `--new-process` isolates them.
     let shared_single_panel = LaunchMode::shared_single_panel(env::args_os());
     let instance_name =

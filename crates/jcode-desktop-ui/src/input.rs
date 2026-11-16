@@ -172,6 +172,8 @@ pub fn bind_keys(cx: &mut App) {
 
 pub struct PromptInput {
     pub focus_handle: FocusHandle,
+    #[cfg(target_os = "macos")]
+    ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
     pub content: SharedString,
     placeholder: SharedString,
     selected_range: Range<usize>,
@@ -763,6 +765,8 @@ impl PromptInput {
     ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            #[cfg(target_os = "macos")]
+            ime_log_focus_subscriptions: None,
             content: "".into(),
             placeholder: placeholder.into(),
             selected_range: 0..0,
@@ -2979,6 +2983,13 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
+        #[cfg(target_os = "macos")]
+        if focus_handle.is_focused(window) {
+            crate::ime_log::record(format_args!(
+                "composer-handler-register entity={:?}",
+                self.input.entity_id()
+            ));
+        }
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -3113,6 +3124,20 @@ impl Render for PromptInput {
         #[cfg(test)]
         crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
+        #[cfg(target_os = "macos")]
+        if crate::ime_log::enabled() && self.ime_log_focus_subscriptions.is_none() {
+            let id = cx.entity_id();
+            crate::ime_log::record(format_args!(
+                "composer-focus-initial entity={id:?} focused={focused}"
+            ));
+            let focus = cx.on_focus(&self.focus_handle, window, move |_, _, _| {
+                crate::ime_log::record(format_args!("composer-focus entity={id:?}"));
+            });
+            let blur = cx.on_blur(&self.focus_handle, window, move |_, _, _| {
+                crate::ime_log::record(format_args!("composer-blur entity={id:?}"));
+            });
+            self.ime_log_focus_subscriptions = Some(vec![focus, blur]);
+        }
         let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
         let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
@@ -4247,6 +4272,38 @@ mod tests {
         });
         let generation = ghost.machine.on_edit(&draft, true).unwrap();
         assert!(ghost.machine.on_response(generation, suffix));
+    }
+
+    #[gpui::test]
+    fn typing_keeps_composer_focus_across_ghost_and_snapshot_frames(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let initial_focus = window
+            .update(cx, |input, _, _| input.focus_handle.clone())
+            .unwrap();
+        for (index, letter) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            cx.simulate_input(*window, letter);
+            window
+                .update(cx, |input, window, cx| {
+                    assert_eq!(input.focus_handle, initial_focus);
+                    assert!(initial_focus.is_focused(window));
+                    assert_eq!(input.snapshot().content, "abcde"[..=index]);
+                    if index >= 3 {
+                        show_ghost(input, " suggestion");
+                    }
+                    cx.notify();
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |input, window, _| {
+                    assert_eq!(input.focus_handle, initial_focus);
+                    assert!(initial_focus.is_focused(window));
+                })
+                .unwrap();
+        }
+        window
+            .update(cx, |input, _, _| assert_eq!(&*input.content, "abcde"))
+            .unwrap();
     }
 
     #[gpui::test]

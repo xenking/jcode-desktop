@@ -20,6 +20,7 @@ fn command_output(program: &str, args: &[&str]) -> String {
 
 fn main() {
     println!("cargo:rerun-if-changed=packaging/macos/updater_bootstrap.m");
+    println!("cargo:rerun-if-changed=packaging/macos/ime_log.m");
 
     let target = env::var("TARGET").expect("TARGET was not set by Cargo");
     // Windows reserves only 1 MiB for the main thread, which GPUI renders on.
@@ -44,7 +45,7 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR was not set by Cargo"));
     let object = out.join("updater_bootstrap.o");
 
-    let status = Command::new(clang)
+    let status = Command::new(&clang)
         .args([
             "-fobjc-arc",
             "-fmodules",
@@ -72,6 +73,30 @@ fn main() {
     println!(
         "cargo:rustc-link-arg-bin=jcode-desktop={}",
         object.display()
+    );
+    let ime_object = out.join("ime_log.o");
+    let status = Command::new(&clang)
+        .args([
+            "-fobjc-arc",
+            "-fmodules",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-target",
+            clang_target,
+            "-isysroot",
+            &sdk,
+            "-c",
+            "packaging/macos/ime_log.m",
+            "-o",
+        ])
+        .arg(&ime_object)
+        .status()
+        .expect("failed to compile the macOS IME logger");
+    assert!(status.success(), "failed to compile the macOS IME logger");
+    println!(
+        "cargo:rustc-link-arg-bin=jcode-desktop={}",
+        ime_object.display()
     );
     println!("cargo:rustc-link-lib=framework=AppKit");
 }
