@@ -62,6 +62,18 @@ def main():
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["status"] == "ok", state
                 assert state["result"]["panel"]["session_id"] == target["session_id"]
+                for _ in range(60):
+                    state = request(endpoint, {"action": "state", "target": target})
+                    rows = state["result"]["panel"]["visible_transcript_items"] or []
+                    selectors = [row["selector"] for row in rows if row["selector"]]
+                    if selectors:
+                        break
+                    time.sleep(0.05)
+                assert selectors, f"no visible fixture tool selector: {state['result']['panel']['visible_transcript_items']!r}, navigation={state['result']['navigation']!r}"
+                element_png = root / "tool.png"
+                element = request(endpoint, {"action": "render", "target": target, "selector": selectors[0], "path": str(element_png)})
+                assert element["status"] == "ok", element
+                assert element_png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
                 result = request(endpoint, {"action": "set_composer", "target": target, "text": "isolated draft", "allow_user_window": True})
                 assert result["status"] == "ok", result
                 state = request(endpoint, {"action": "state", "target": target})

@@ -135,7 +135,7 @@ impl Workspace {
                 };
                 let panel = self.slots[index].panel.read(cx);
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(cx), "search_open":self.search_screen.is_some(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
+                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.search_screen.is_some(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
                 )
             }
             DesktopAction::Search {
@@ -317,14 +317,44 @@ impl Workspace {
                 selector,
                 path,
             } => {
-                if let Err(e) = self.control_target(&target, window, cx) {
-                    return e;
-                }
-                if selector.is_some() {
-                    return error("unsupported", "element rendering is not implemented");
-                }
+                let index = match self.control_target(&target, window, cx) {
+                    Ok(index) => index,
+                    Err(e) => return e,
+                };
+                let bounds = match selector.as_deref() {
+                    Some(selector) => match self.slots[index]
+                        .panel
+                        .read(cx)
+                        .control_element_bounds(selector, window)
+                    {
+                        Some(bounds) => Some(bounds),
+                        None => {
+                            return error(
+                                "selector_not_visible",
+                                "selector is not uniquely visible in the last frame",
+                            );
+                        }
+                    },
+                    None => None,
+                };
                 let result = (|| -> anyhow::Result<()> {
-                    let image = window.render_to_image()?;
+                    let mut image = window.render_to_image()?;
+                    if let Some(bounds) = bounds {
+                        let viewport = window.viewport_size();
+                        let sx = image.width() as f32 / f32::from(viewport.width);
+                        let sy = image.height() as f32 / f32::from(viewport.height);
+                        let x = (f32::from(bounds.left()) * sx).floor().max(0.) as u32;
+                        let y = (f32::from(bounds.top()) * sy).floor().max(0.) as u32;
+                        let right =
+                            ((f32::from(bounds.right()) * sx).ceil() as u32).min(image.width());
+                        let bottom =
+                            ((f32::from(bounds.bottom()) * sy).ceil() as u32).min(image.height());
+                        if right <= x || bottom <= y {
+                            anyhow::bail!("selector has empty bounds");
+                        }
+                        image = image::imageops::crop_imm(&image, x, y, right - x, bottom - y)
+                            .to_image();
+                    }
                     let mut file = std::fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)
