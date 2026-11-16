@@ -261,6 +261,7 @@ mod socket_tests {
                 selected: vec!["B".into()],
                 other: Some("own answer".into()),
                 comments: [("B".into(), "why".into())].into_iter().collect(),
+                ..Default::default()
             }]),
         };
         worker

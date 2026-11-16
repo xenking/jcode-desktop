@@ -1603,7 +1603,7 @@ impl PromptInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn attach_image(
+    pub(crate) fn attach_image(
         &mut self,
         image: crate::clipboard_image::ClipboardImage,
         cx: &mut Context<Self>,

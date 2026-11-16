@@ -1925,7 +1925,7 @@ impl Panel {
             ask_draft: self
                 .ask_card
                 .as_ref()
-                .map(ask::AskCard::draft)
+                .map(|card| card.draft(cx))
                 .or_else(|| self.pending_ask_draft.clone()),
             scroll_x: f32::from(offset.x),
             scroll_y: f32::from(offset.y),
@@ -3269,7 +3269,7 @@ impl Panel {
                         || error
                             .as_deref()
                             .is_some_and(|error| error.contains("reload"));
-                    self.pending_ask_draft = was_reload.then(|| card.draft());
+                    self.pending_ask_draft = was_reload.then(|| card.draft(cx));
                     let input = serde_json::json!({"questions": card.questions}).to_string();
                     Some(input)
                 } else {
@@ -3613,7 +3613,8 @@ impl Panel {
         if self.items.iter().any(|item| {
             matches!(item, Item::Image(existing)
                 if existing.anchor == image.anchor && existing.source == image.source
-                    && existing.media_type == image.media_type && existing.data == image.data)
+                    && existing.media_type == image.media_type && existing.data == image.data
+                    && (!matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask") || existing.label == image.label))
         }) {
             return;
         }
@@ -4023,6 +4024,16 @@ impl Panel {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
         let mut inline_images = HashSet::new();
+        let completed_asks: HashSet<&str> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Tool { call_id, name, done: true, .. } if name == "ask" => {
+                    Some(call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
@@ -4045,6 +4056,15 @@ impl Panel {
                     .into_iter().map(|(index, _)| index).collect();
             }
             if inline_images.contains(&index) {
+                continue;
+            }
+            // Ask-result attachments render inside their answer card. Keep
+            // the image items for the session image browser and history.
+            if let Item::Image(image) = item
+                && matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask")
+                && let Some(jcode_sdk::RenderedImageAnchor::ToolCall { id }) = &image.anchor
+                && completed_asks.contains(id.as_str())
+            {
                 continue;
             }
             if matches!(item, Item::Reasoning(_))
@@ -4440,6 +4460,11 @@ impl Panel {
                                 .child("Questions and answers"),
                         )
                         .child(div().min_w_0().text_size(px(13.)).child(shown))
+                        .child(
+                            div().flex().flex_wrap().gap_1().children(
+                                self.render_ask_result_images(call_id, cx),
+                            ),
+                        )
                         .when(expandable, |el| {
                             el.cursor_pointer()
                                 .child(

@@ -53,6 +53,10 @@ pub struct AskDraft {
     chosen: Vec<Vec<usize>>,
     other: Vec<Option<String>>,
     comments: Vec<Vec<String>>,
+    #[serde(default)]
+    other_inputs: Vec<PromptInputSnapshot>,
+    #[serde(default)]
+    comment_inputs: Vec<Vec<PromptInputSnapshot>>,
 }
 
 impl AskDraft {
@@ -103,13 +107,28 @@ impl AskCard {
         }
     }
 
-    pub fn draft(&self) -> AskDraft {
+    pub fn draft(&self, cx: &App) -> AskDraft {
         AskDraft {
             request_id: self.request_id.clone(),
             questions: self.questions.clone(),
             chosen: self.chosen.clone(),
             other: self.other.clone(),
             comments: self.comments.clone(),
+            other_inputs: self
+                .other_inputs
+                .iter()
+                .map(|input| input.read(cx).snapshot())
+                .collect(),
+            comment_inputs: self
+                .comment_inputs
+                .iter()
+                .map(|inputs| {
+                    inputs
+                        .iter()
+                        .map(|input| input.read(cx).snapshot())
+                        .collect()
+                })
+                .collect(),
         }
     }
 
@@ -136,12 +155,29 @@ impl AskCard {
         self.comments = draft.comments;
         for (q, input) in self.other_inputs.iter().enumerate() {
             let text = self.other[q].clone().unwrap_or_default();
-            input.update(cx, |input, cx| input.set_content(text, cx));
+            if let Some(snapshot) = draft
+                .other_inputs
+                .get(q)
+                .filter(|snapshot| snapshot.content.trim() == text.trim())
+            {
+                input.update(cx, |input, cx| input.restore(snapshot.clone(), cx));
+            } else {
+                input.update(cx, |input, cx| input.set_content(text, cx));
+            }
         }
         for (q, inputs) in self.comment_inputs.iter().enumerate() {
             for (o, input) in inputs.iter().enumerate() {
                 let text = self.comments[q][o].clone();
-                input.update(cx, |input, cx| input.set_content(text, cx));
+                if let Some(snapshot) = draft
+                    .comment_inputs
+                    .get(q)
+                    .and_then(|inputs| inputs.get(o))
+                    .filter(|snapshot| snapshot.content == text)
+                {
+                    input.update(cx, |input, cx| input.restore(snapshot.clone(), cx));
+                } else {
+                    input.update(cx, |input, cx| input.set_content(text, cx));
+                }
             }
         }
     }
@@ -193,12 +229,53 @@ impl AskCard {
                             (!text.is_empty()).then(|| (label.clone(), text.to_owned()))
                         })
                         .collect(),
+                    other_images: Vec::new(),
+                    comment_images: Default::default(),
                 }
             })
             .collect();
         AskResponse {
             answers: Some(answers),
         }
+    }
+
+    /// Snapshot only the active answers, in marker order, immediately before
+    /// dispatch. Images belonging to deselected choices are never sent.
+    fn response_with_images(&self, cx: &App) -> AskResponse {
+        fn images(input: &Entity<PromptInput>, cx: &App) -> Vec<(String, String)> {
+            let snapshot = input.read(cx).snapshot();
+            let mut attachments = snapshot.attachments;
+            attachments
+                .sort_by_key(|image| snapshot.content.find(&image.label).unwrap_or(usize::MAX));
+            attachments
+                .into_iter()
+                .map(|image| (image.media_type, image.encoded))
+                .collect()
+        }
+        let mut response = self.response();
+        if let Some(answers) = response.answers.as_mut() {
+            for (q, answer) in answers.iter_mut().enumerate() {
+                if answer.other.is_some()
+                    && let Some(input) = self.other_inputs.get(q)
+                {
+                    answer.other_images = images(input, cx);
+                }
+                for &o in &self.chosen[q] {
+                    if let (Some(option), Some(input)) = (
+                        self.questions[q].options.get(o),
+                        self.comment_inputs.get(q).and_then(|inputs| inputs.get(o)),
+                    ) {
+                        let attachments = images(input, cx);
+                        if !attachments.is_empty() {
+                            answer
+                                .comment_images
+                                .insert(option.label.clone(), attachments);
+                        }
+                    }
+                }
+            }
+        }
+        response
     }
 }
 
@@ -217,6 +294,50 @@ fn question_without_header<'a>(question: &'a str, header: Option<&str>) -> &'a s
 }
 
 impl Panel {
+    pub(super) fn ask_result_images(&self, call_id: &str) -> Vec<(usize, &TranscriptImage)> {
+        self.items.iter().enumerate().filter_map(|(index, item)| match item {
+            Item::Image(image)
+                if matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask")
+                    && matches!(&image.anchor, Some(jcode_sdk::RenderedImageAnchor::ToolCall { id }) if id == call_id) => Some((index, image)),
+            _ => None,
+        }).collect()
+    }
+
+    pub(super) fn render_ask_result_images(
+        &self,
+        call_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        self.ask_result_images(call_id)
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, (index, image))| {
+                let label = image
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("Image {}", ordinal + 1));
+                let preview = image.clone();
+                div()
+                    .id(("ask-result-image", index))
+                    .debug_selector(|| "ask-result-image".into())
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .text_size(px(11.))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .bg(Theme::global().USER_BG)
+                    .cursor_pointer()
+                    .hover(|el| el.text_color(Theme::global().TEXT))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_image_preview(preview.clone(), window, cx);
+                        cx.stop_propagation();
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     pub(super) fn ask_editor_focused(&self, window: &Window, cx: &App) -> bool {
         self.ask_card.as_ref().is_some_and(|card| {
             card.other_inputs
@@ -291,7 +412,7 @@ impl Panel {
             .any(|input| input.read(cx).focus_handle.is_focused(window));
         if editing {
             if event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
-                if let Some(response) = card.complete().then(|| card.response()) {
+                if let Some(response) = card.complete().then(|| card.response_with_images(cx)) {
                     self.answer_ask(response, cx);
                 }
                 return true;
@@ -330,7 +451,7 @@ impl Panel {
             }
             "enter" => {
                 if card.complete() {
-                    let response = card.response();
+                    let response = card.response_with_images(cx);
                     self.answer_ask(response, cx);
                 }
             }
@@ -346,6 +467,7 @@ impl Panel {
         q: usize,
         option: Option<usize>,
         text: String,
+        images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
         let Some(card) = self
@@ -360,18 +482,21 @@ impl Panel {
         } else {
             card.set_other(q, &text);
         }
+        // PromptInput clears itself before invoking its submit callback. Put
+        // the whole draft back, including image chips, before sending so an
+        // incomplete ask or a failed submission cannot discard attachments.
+        let input = match option {
+            Some(o) => card.comment_inputs.get(q).and_then(|inputs| inputs.get(o)),
+            None => card.other_inputs.get(q),
+        }
+        .cloned();
+        if let Some(input) = input {
+            input.update(cx, |input, cx| input.recall_prompt(&text, images, cx));
+        }
         if card.complete() {
-            let response = card.response();
+            let response = card.response_with_images(cx);
             self.answer_ask(response, cx);
         } else {
-            let input = match option {
-                Some(o) => card.comment_inputs.get(q).and_then(|inputs| inputs.get(o)),
-                None => card.other_inputs.get(q),
-            }
-            .cloned();
-            if let Some(input) = input {
-                cx.defer(move |cx| input.update(cx, |input, cx| input.set_content(text, cx)));
-            }
             cx.notify();
         }
     }
@@ -390,12 +515,12 @@ impl Panel {
             let id = request_id.clone();
             let submit_id = id.clone();
             other_inputs.push(cx.new(|cx| {
-                PromptInput::new(cx, "Your own answer…", move |text, _, _, app| {
+                PromptInput::new(cx, "Your own answer…", move |text, images, _, app| {
                     let submit = submit.clone();
                     let id = submit_id.clone();
                     app.defer(move |app| {
                         let _ = submit.update(app, |panel, cx| {
-                            panel.submit_ask_editor(&id, q, None, text, cx)
+                            panel.submit_ask_editor(&id, q, None, text, images, cx)
                         });
                     });
                 })
@@ -417,12 +542,12 @@ impl Panel {
                 let id = request_id.clone();
                 let submit_id = id.clone();
                 inputs.push(cx.new(|cx| {
-                    PromptInput::new(cx, "Add a comment…", move |text, _, _, app| {
+                    PromptInput::new(cx, "Add a comment…", move |text, images, _, app| {
                         let submit = submit.clone();
                         let id = submit_id.clone();
                         app.defer(move |app| {
                             let _ = submit.update(app, |panel, cx| {
-                                panel.submit_ask_editor(&id, q, Some(o), text, cx)
+                                panel.submit_ask_editor(&id, q, Some(o), text, images, cx)
                             });
                         });
                     })
@@ -767,7 +892,7 @@ impl Panel {
                                     .ask_card
                                     .as_ref()
                                     .filter(|card| card.complete())
-                                    .map(AskCard::response)
+                                    .map(|card| card.response_with_images(cx))
                                 {
                                     this.answer_ask(response, cx);
                                 }
@@ -1058,13 +1183,55 @@ mod tests {
             {"role":"user","content":"Choose"},
             {"role":"tool","content":"1. Which? -> B (comment: reason)","tool":{"id":"ask-1","name":"ask","input":input}}
         ])).unwrap();
-        panel.update(vcx, |panel, cx| panel.load_history(history, vec![], cx));
+        let image = jcode_sdk::RenderedImage {
+            history_message_index: Some(2),
+            media_type: "image/png".into(),
+            data: base64::engine::general_purpose::STANDARD
+                .encode(include_bytes!("../../../assets/previews/image-preview.png")),
+            label: Some("Answer image".into()),
+            source: jcode_sdk::RenderedImageSource::ToolResult {
+                tool_name: "ask".into(),
+            },
+            anchor: Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: "ask-1".into() }),
+        };
+        let mut second = image.clone();
+        second.history_message_index = None;
+        second.label = Some("Comment image".into());
+        panel.update(vcx, |panel, cx| {
+            panel.load_history(history, vec![image], cx);
+            let event = jcode_sdk::ApiEvent::SidePaneImages {
+                session_id: "session-a".into(),
+                images: vec![second],
+            };
+            panel.apply(&event, cx);
+            panel.apply(&event, cx);
+        });
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { name, output, .. } if name == "ask" && output.contains("reason")))));
         assert!(
             vcx.debug_bounds("ask-result").is_some(),
             "reopened history must render ask result"
         );
+        panel.read_with(vcx, |panel, _| {
+            let indices = panel.session_image_indices();
+            assert_eq!(
+                indices.len(),
+                2,
+                "distinct labels survive, replay is deduplicated"
+            );
+            assert!(
+                !panel
+                    .transcript_render_rows()
+                    .iter()
+                    .any(|row| indices.contains(&row.index))
+            );
+        });
+        let chip = vcx
+            .debug_bounds("ask-result-image")
+            .expect("image appears inside ask result");
+        vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("image-preview-full").is_some());
     }
 
     #[gpui::test]
@@ -1283,6 +1450,154 @@ mod tests {
             assert!(panel.ask_card.is_none(), "completed tool must close its card");
             let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
             assert!(result_text(input, output, error.as_deref()).contains("Which database"));
+        });
+    }
+
+    #[gpui::test]
+    fn ask_comment_image_survives_draft_and_enter(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            let event = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+            panel.apply(&event, cx);
+            panel.ask_card.as_mut().unwrap().toggle(0, 0);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let input = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().comment_inputs[0][0].clone()
+        });
+        input.update(vcx, |input, cx| {
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: vec![2],
+                    width: 1,
+                    height: 1,
+                },
+                cx,
+            )
+        });
+        let draft = panel.read_with(vcx, |panel, cx| panel.ask_card.as_ref().unwrap().draft(cx));
+        let draft = serde_json::from_str(&serde_json::to_string(&draft).unwrap()).unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.ask_card.as_mut().unwrap().restore_draft(draft, cx)
+        });
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(
+                card.comment_inputs[0][0].read(cx).snapshot().attachments[0].encoded,
+                "Ag=="
+            );
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus(&input.read(cx).focus_handle.clone(), cx));
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        let response = commands
+            .try_iter()
+            .find_map(|command| match command {
+                crate::harness::Command::AskResponse { response, .. } => {
+                    Some(serde_json::to_value(response).unwrap())
+                }
+                _ => None,
+            })
+            .expect("ask response was sent");
+        assert_eq!(
+            response["answers"][0]["comment_images"]["Postgres"][0][1],
+            "Ag=="
+        );
+        assert_eq!(response["answers"][0]["comments"]["Postgres"], "[#image 1]");
+    }
+
+    #[gpui::test]
+    fn ask_answer_image_is_sent_and_survives_incomplete_enter(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        let mut value: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        let question = value["questions"][0].clone();
+        value["questions"].as_array_mut().unwrap().push(question);
+        let event = serde_json::from_value(value).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let input = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0].clone();
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            input.update(cx, |input, cx| {
+                input.attach_image(
+                    crate::clipboard_image::ClipboardImage {
+                        media_type: "image/png".into(),
+                        bytes: vec![1],
+                        width: 1,
+                        height: 1,
+                    },
+                    cx,
+                )
+            });
+        });
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            let snapshot = card.other_inputs[0].read(cx).snapshot();
+            assert_eq!(
+                snapshot.attachments.len(),
+                1,
+                "incomplete Enter must retain the image"
+            );
+        });
+        panel.update(vcx, |panel, cx| {
+            let card = panel.ask_card.as_mut().unwrap();
+            card.toggle(1, 0);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let submit = vcx.debug_bounds("ask-submit").unwrap().center();
+        vcx.simulate_click(submit, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let response = commands
+            .try_iter()
+            .find_map(|command| match command {
+                crate::harness::Command::AskResponse { response, .. } => {
+                    Some(serde_json::to_value(response).unwrap())
+                }
+                _ => None,
+            })
+            .expect("ask response was sent");
+        assert_eq!(response["answers"][0]["other_images"][0][1], "AQ==");
+        panel.update(vcx, |panel, cx| {
+            let request_id = panel.ask_card.as_ref().unwrap().request_id.clone();
+            panel.ask_response_settled(&request_id, Some("network error".into()), cx);
+        });
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert!(!card.submitting);
+            assert_eq!(
+                card.other_inputs[0].read(cx).snapshot().attachments[0].encoded,
+                "AQ=="
+            );
         });
     }
 
