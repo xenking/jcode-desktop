@@ -469,28 +469,35 @@ pub fn spawn() -> Feed {
 }
 
 /// Process-wide account poller with fan-out to every window's feed.
+#[derive(Default)]
 struct Poller {
-    subscribers: Mutex<Vec<Sender<Vec<Account>>>>,
-    latest: Mutex<Option<Vec<Account>>>,
+    state: Mutex<PollerState>,
+}
+
+#[derive(Default)]
+struct PollerState {
+    subscribers: Vec<Sender<Vec<Account>>>,
+    latest: Option<Vec<Account>>,
 }
 
 impl Poller {
     fn subscribe(&self, tx: Sender<Vec<Account>>) {
         // A new window gets the current snapshot immediately instead of
         // waiting up to a minute for the next poll.
-        if let Some(latest) = self.latest.lock().unwrap().clone() {
+        let mut state = self.state.lock().unwrap();
+        if let Some(latest) = state.latest.clone() {
             let _ = tx.send(latest);
         }
-        self.subscribers.lock().unwrap().push(tx);
+        state.subscribers.push(tx);
     }
 
     /// Deliver to live subscribers and drop closed windows' senders.
     fn publish(&self, accounts: Vec<Account>) {
-        self.subscribers
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state
+            .subscribers
             .retain(|subscriber| subscriber.send(accounts.clone()).is_ok());
-        *self.latest.lock().unwrap() = Some(accounts);
+        state.latest = Some(accounts);
     }
 }
 
@@ -513,10 +520,7 @@ fn shared_poller() -> &'static Poller {
                 }
             })
             .expect("spawn accounts thread");
-        Poller {
-            subscribers: Mutex::new(Vec::new()),
-            latest: Mutex::new(None),
-        }
+        Poller::default()
     })
 }
 
@@ -1271,6 +1275,42 @@ mod tests {
         let latest = feed.latest().expect("two snapshots are pending");
         assert_eq!(latest[0].id, "fresh", "the poll skips stale snapshots");
         assert_eq!(feed.latest(), None, "and the queue is now drained");
+    }
+
+    #[test]
+    fn concurrent_subscription_observes_the_latest_published_snapshot() {
+        for attempt in 0..1024 {
+            let poller = Poller {
+                state: Mutex::new(PollerState {
+                    subscribers: Vec::new(),
+                    latest: Some(Vec::new()),
+                }),
+            };
+            let (tx, rx) = channel();
+            let start = std::sync::Barrier::new(2);
+            std::thread::scope(|threads| {
+                threads.spawn(|| {
+                    start.wait();
+                    poller.subscribe(tx);
+                });
+                start.wait();
+                poller.publish(vec![Account {
+                    id: "fresh".into(),
+                    display_name: "Fresh account".into(),
+                    status: "available".into(),
+                    auth_kind: "OAuth".into(),
+                    method: "OAuth".into(),
+                    usage_reports: Vec::new(),
+                    limits: Vec::new(),
+                }]);
+            });
+            let latest = rx.try_iter().last().expect("initial snapshot");
+            assert_eq!(
+                latest.first().map(|account| account.id.as_str()),
+                Some("fresh"),
+                "subscription missed the completed publish at attempt {attempt}"
+            );
+        }
     }
 
     /// Acceptance path: the real CLI's real report must parse and yield the
