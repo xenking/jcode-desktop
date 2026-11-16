@@ -1,4 +1,4 @@
-//! A window-sized image lightbox. The transcript stays mounted behind it, so
+//! An image lightbox. The transcript stays mounted behind it, so
 //! closing the preview preserves the user's scroll position and draft.
 use super::*;
 
@@ -50,6 +50,7 @@ impl Panel {
         if image.preview.is_none() {
             return;
         }
+        self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
         self.image_preview = Some(image);
         self.image_preview_zoom = 1.0;
         self.image_preview_scroll = gpui::ScrollHandle::new();
@@ -106,22 +107,24 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let image = self.image_preview.as_ref()?;
         let preview = image.preview.clone()?;
-        let overlay = div()
-                .id("image-preview")
-                .debug_selector(|| "image-preview".into())
-                .w(window.viewport_size().width)
-                .h(window.viewport_size().height)
+        let dialog_size = crate::image_modal::dialog_size(window.viewport_size(), self.image_preview_dimensions);
+        let dialog = div()
+                .id("image-preview-dialog")
+                .debug_selector(|| "image-preview-dialog".into())
+                .w(dialog_size.width)
+                .h(dialog_size.height)
                 .flex()
                 .flex_col()
                 .gap_3()
                 .p_4()
                 .bg(Theme::global().PANEL_BG)
+                .rounded_lg()
+                .border_1()
+                .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                .shadow_lg()
                 .occlude()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_image_preview(window, cx);
-                    cx.stop_propagation();
-                }))
+                .on_click(|_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .on_pinch(|_, _, cx| cx.stop_propagation())
                 .child(
@@ -284,6 +287,20 @@ impl Panel {
                         .child("Pinch or Ctrl+scroll to zoom · Drag or scroll to pan · Click image to close"),
                 )
                 .into_any_element();
+        let overlay = div()
+            .id("image-preview")
+            .debug_selector(|| "image-preview".into())
+            .w(window.viewport_size().width)
+            .h(window.viewport_size().height)
+            .flex().items_center().justify_center()
+            .bg(gpui::black().opacity(0.6))
+            .occlude()
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_image_preview(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(dialog);
         // Defer beyond panel clipping and anchor in window coordinates so the
         // viewer covers the sidebar and neighboring panels as well.
         Some(
@@ -301,6 +318,24 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn image_preview_is_centered_and_capped(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("modal-geometry".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(800.), px(600.)));
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.open_image_preview(fixture_image(), window, cx)));
+        vcx.run_until_parked();
+        let modal = vcx.debug_bounds("image-preview-dialog").expect("modal dialog");
+        assert!(modal.size.width <= px(640.) && modal.size.height <= px(480.));
+        assert!((modal.center().x - px(400.)).abs() < px(1.));
+        assert!((modal.center().y - px(300.)).abs() < px(1.));
+        vcx.simulate_click(gpui::point(px(5.), px(5.)), Default::default());
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+    }
 
     #[gpui::test]
     fn inline_image_panel_hover_gestures_preserve_composer_and_route_scroll(

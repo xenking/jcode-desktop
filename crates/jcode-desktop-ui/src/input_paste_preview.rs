@@ -6,11 +6,12 @@ pub(super) type MeasuredBounds = Rc<Cell<Option<Bounds<Pixels>>>>;
 
 pub(super) struct Preview {
     pub index: usize,
+    dimensions: std::cell::OnceCell<Option<(u32, u32)>>,
 }
 
 impl Preview {
     pub fn new(index: usize) -> Self {
-        Self { index }
+        Self { index, dimensions: std::cell::OnceCell::new() }
     }
 }
 
@@ -35,20 +36,28 @@ impl PromptInput {
     ) -> Option<gpui::AnyElement> {
         let preview = self.attachment_preview.as_ref()?;
         let index = preview.index;
-        let image = self.attachments.get(index)?.preview.clone();
+        let attachment = self.attachments.get(index)?;
+        let image = attachment.preview.clone();
         let viewport = window.viewport_size();
-        let overlay = div()
-            .id("paste-image-preview")
-            .debug_selector(|| "paste-image-preview".into())
-            .w(viewport.width)
-            .h(viewport.height)
+        let dimensions = *preview.dimensions.get_or_init(|| crate::image_modal::dimensions(&attachment.encoded));
+        let dialog_size = crate::image_modal::dialog_size(viewport, dimensions);
+        let dialog = div()
+            .id("paste-image-preview-dialog")
+            .debug_selector(|| "paste-image-preview-dialog".into())
+            .w(dialog_size.width)
+            .h(dialog_size.height)
             .flex()
             .flex_col()
             .gap_3()
             .p_4()
             .bg(Theme::global().PANEL_BG)
+            .rounded_lg()
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+            .shadow_lg()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -96,6 +105,20 @@ impl PromptInput {
                     .min_h_0()
                     .object_fit(gpui::ObjectFit::Contain),
             );
+        let overlay = div()
+            .id("paste-image-preview")
+            .debug_selector(|| "paste-image-preview".into())
+            .w(viewport.width).h(viewport.height)
+            .flex().items_center().justify_center()
+            .bg(gpui::black().opacity(0.6))
+            .occlude()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.attachment_preview = None;
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(dialog);
         Some(
             gpui::deferred(
                 gpui::anchored()

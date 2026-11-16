@@ -20,6 +20,7 @@ mod example_prompts;
 mod fps_counter;
 mod html_preview;
 mod inline_image;
+mod image_modal;
 mod input;
 mod live_profile;
 mod markdown;
