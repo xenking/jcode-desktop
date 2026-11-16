@@ -2563,6 +2563,37 @@ impl Workspace {
                     }
                 }
             }
+            Update::BoundedHistory { session_id, page } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_bounded_history(page, cx));
+                        break;
+                    }
+                }
+            }
+            Update::BoundedHistoryPage { session_id, result } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_bounded_history_page(result, cx));
+                        break;
+                    }
+                }
+            }
+            Update::HistoryImage {
+                session_id,
+                key,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_history_image(key, result, cx));
+                        break;
+                    }
+                }
+            }
             Update::Event { session_id, event } => {
                 if self.route_side_question_event(&session_id, &event, cx) {
                     return true;

@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
 
+pub use jcode_sdk::HistoryPage as BoundedHistoryPage;
+
 #[path = "harness_spawn.rs"]
 mod spawn_profile;
 
@@ -142,6 +144,19 @@ pub enum Update {
         session_id: String,
         result: Result<jcode_sdk::ApiEvent, String>,
     },
+    BoundedHistory {
+        session_id: String,
+        page: BoundedHistoryPage,
+    },
+    BoundedHistoryPage {
+        session_id: String,
+        result: Result<BoundedHistoryPage, String>,
+    },
+    HistoryImage {
+        session_id: String,
+        key: String,
+        result: Result<String, String>,
+    },
     /// A streaming event for one session. The worker supplies the session id
     /// because some important events (notably errors) do not include one.
     Event {
@@ -257,6 +272,14 @@ pub enum Command {
     GetCompactedHistory {
         session_id: String,
         visible_messages: usize,
+    },
+    GetHistoryPage {
+        session_id: String,
+        before: String,
+    },
+    GetHistoryImage {
+        session_id: String,
+        key: String,
     },
     /// Drop a session's dedicated connection.
     Unwatch {
@@ -397,6 +420,8 @@ pub enum SessionOperation {
 enum SessionCommand {
     RefreshRuntime,
     GetCompactedHistory(usize),
+    GetHistoryPage(String),
+    GetHistoryImage(String),
     TodoState,
     AckTodoFollowUp(jcode_sdk::todo::TodoEffects),
     AuthChanged(String),
@@ -1198,6 +1223,22 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::GetCompactedHistory(visible_messages),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::GetHistoryPage { session_id, before } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetHistoryPage(before),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::GetHistoryImage { session_id, key } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetHistoryImage(key),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2590,6 +2631,25 @@ fn session_worker_with_connector(
                             .map_err(|error| error.to_string());
                         let _ = updates.send(Update::HistoryPage {
                             session_id: session_id.clone(),
+                            result,
+                        });
+                    }
+                    SessionCommand::GetHistoryPage(before) => {
+                        let result = client
+                            .get_history_page(real_id, Some(before))
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::BoundedHistoryPage {
+                            session_id: session_id.clone(),
+                            result,
+                        });
+                    }
+                    SessionCommand::GetHistoryImage(key) => {
+                        let result = client
+                            .get_history_image(real_id, &key)
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::HistoryImage {
+                            session_id: session_id.clone(),
+                            key,
                             result,
                         });
                     }

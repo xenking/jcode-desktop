@@ -48,6 +48,15 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         if image.preview.is_none() {
+            if let Some(key) = image.data.strip_prefix("jcode-lazy:")
+                && self.pending_history_image.as_deref() != Some(key)
+            {
+                self.pending_history_image = Some(key.to_string());
+                self.bridge.send(Command::GetHistoryImage {
+                    session_id: self.session_id.clone(),
+                    key: key.to_string(),
+                });
+            }
             return;
         }
         self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
@@ -56,6 +65,51 @@ impl Panel {
         self.image_preview_scroll = gpui::ScrollHandle::new();
         self.image_preview_drag = None;
         self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn load_history_image(
+        &mut self,
+        key: String,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_history_image.as_deref() != Some(key.as_str()) {
+            return;
+        }
+        self.pending_history_image = None;
+        let data = match result {
+            Ok(data) => data,
+            Err(error) => {
+                eprintln!("jcode desktop: image load failed: {error}");
+                return;
+            }
+        };
+        let marker = format!("jcode-lazy:{key}");
+        let mut selected = None;
+        for item in self.items.iter_mut() {
+            if let Item::Image(image) = item
+                && image.data == marker
+            {
+                image.data = data.clone();
+                image.preview = TranscriptImage::new(
+                    image.media_type.clone(),
+                    data.clone(),
+                    image.label.clone(),
+                )
+                .preview;
+                if selected.is_none() {
+                    selected = Some(image.clone());
+                }
+            }
+        }
+        if let Some(image) = selected.filter(|image| image.preview.is_some()) {
+            self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
+            self.image_preview = Some(image);
+            self.image_preview_zoom = 1.0;
+            self.image_preview_scroll = gpui::ScrollHandle::new();
+            self.image_preview_drag = None;
+        }
         cx.notify();
     }
 
@@ -107,7 +161,8 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let image = self.image_preview.as_ref()?;
         let preview = image.preview.clone()?;
-        let dialog_size = crate::image_modal::dialog_size(window.viewport_size(), self.image_preview_dimensions);
+        let dialog_size =
+            crate::image_modal::dialog_size(window.viewport_size(), self.image_preview_dimensions);
         let dialog = div()
                 .id("image-preview-dialog")
                 .debug_selector(|| "image-preview-dialog".into())
@@ -292,7 +347,9 @@ impl Panel {
             .debug_selector(|| "image-preview".into())
             .w(window.viewport_size().width)
             .h(window.viewport_size().height)
-            .flex().items_center().justify_center()
+            .flex()
+            .items_center()
+            .justify_center()
             .bg(gpui::black().opacity(0.6))
             .occlude()
             .on_click(cx.listener(|this, _, window, cx| {
@@ -322,13 +379,25 @@ mod tests {
     #[gpui::test]
     fn image_preview_is_centered_and_capped(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
-            Panel::new("modal-geometry".into(), None, None, crate::harness::spawn_inert(), cx)
+            Panel::new(
+                "modal-geometry".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
         });
         let window = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(window, gpui::size(px(800.), px(600.)));
-        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.open_image_preview(fixture_image(), window, cx)));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_image_preview(fixture_image(), window, cx)
+            })
+        });
         vcx.run_until_parked();
-        let modal = vcx.debug_bounds("image-preview-dialog").expect("modal dialog");
+        let modal = vcx
+            .debug_bounds("image-preview-dialog")
+            .expect("modal dialog");
         assert!(modal.size.width <= px(640.) && modal.size.height <= px(480.));
         assert!((modal.center().x - px(400.)).abs() < px(1.));
         assert!((modal.center().y - px(300.)).abs() < px(1.));

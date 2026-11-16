@@ -622,6 +622,7 @@ pub struct Panel {
     image_pane_scroll: ScrollHandle,
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
+    pending_history_image: Option<String>,
     image_preview_dimensions: Option<(u32, u32)>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
@@ -1163,6 +1164,7 @@ impl Panel {
             image_pane_scroll: ScrollHandle::new(),
             image_pane_stacked: false,
             image_preview: None,
+            pending_history_image: None,
             image_preview_dimensions: None,
             diff_review: None,
             edit_previews: diff_review::EditPreviews::default(),
@@ -4341,11 +4343,26 @@ impl Panel {
                         )
                     })
                     .when(image.preview.is_none(), |el| {
+                        let lazy_image = image.clone();
+                        let lazy = image.data.starts_with("jcode-lazy:");
                         el.child(
                             div()
+                                .id(("history-image-placeholder", index))
+                                .debug_selector(|| "history-image-placeholder".into())
                                 .text_size(px(11.0))
                                 .text_color(Theme::global().TEXT_DIM)
-                                .child(format!("{label} (could not display {})", image.media_type)),
+                                .when(lazy, |el| {
+                                    el.cursor_pointer().on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.open_image_preview(lazy_image.clone(), window, cx);
+                                        },
+                                    ))
+                                })
+                                .child(if lazy {
+                                    format!("{label} (click to load)")
+                                } else {
+                                    format!("{label} (could not display {})", image.media_type)
+                                }),
                         )
                     })
                     .into_any_element()

@@ -16,7 +16,11 @@ impl Panel {
             (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
                 .then(|| tail[..=end].to_string())
         });
-        let images = self.items.iter().enumerate().skip(user_index + 1)
+        let images = self
+            .items
+            .iter()
+            .enumerate()
+            .skip(user_index + 1)
             .take_while(|(_, item)| !matches!(item, Item::User(_)))
             .filter_map(|(index, item)| match item {
                 Item::Image(image)
@@ -26,7 +30,10 @@ impl Panel {
                 }
                 _ => None,
             });
-        labels.zip(images).map(|(label, index)| (index, label)).collect()
+        labels
+            .zip(images)
+            .map(|(label, index)| (index, label))
+            .collect()
     }
 
     pub(super) fn render_user_image_chip(
@@ -290,12 +297,32 @@ impl Panel {
                                 }))
                         })
                         .when(image.preview.is_none(), |el| {
+                            let lazy = image.data.starts_with("jcode-lazy:");
+                            let lazy_image = image.clone();
                             el.flex().items_center().justify_center().child(
                                 div()
+                                    .id("session-image-placeholder")
+                                    .debug_selector(|| "session-image-placeholder".into())
                                     .p_3()
                                     .text_size(px(12.))
                                     .text_color(theme.TEXT_DIM)
-                                    .child(format!("Could not display {}", image.media_type)),
+                                    .when(lazy, |el| {
+                                        el.cursor_pointer().on_click(cx.listener(
+                                            move |this, _, window, cx| {
+                                                this.open_image_preview(
+                                                    lazy_image.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        ))
+                                    })
+                                    .child(if lazy {
+                                        "Click to load image".to_string()
+                                    } else {
+                                        format!("Could not display {}", image.media_type)
+                                    }),
                             )
                         }),
                 )

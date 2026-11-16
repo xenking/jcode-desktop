@@ -9,6 +9,10 @@ pub(super) struct HistoryPaging {
     visible: usize,
     remaining: usize,
     anchor: Vec<Item>,
+    #[serde(default)]
+    bounded: bool,
+    #[serde(default)]
+    cursor: Option<String>,
     #[serde(skip)]
     pub(super) in_flight: bool,
 }
@@ -30,6 +34,8 @@ impl HistoryPaging {
             visible: INITIAL_WINDOW,
             remaining,
             anchor: Vec::new(),
+            bounded: false,
+            cursor: None,
             in_flight: false,
         })
     }
@@ -77,6 +83,18 @@ impl Panel {
         let Some(paging) = &mut self.history_paging else {
             return;
         };
+        if paging.bounded {
+            if !paging.in_flight
+                && let Some(before) = paging.cursor.clone()
+            {
+                paging.in_flight = true;
+                self.bridge.send(Command::GetHistoryPage {
+                    session_id: self.session_id.clone(),
+                    before,
+                });
+            }
+            return;
+        }
         if paging.in_flight || paging.remaining == 0 || paging.anchor.is_empty() {
             return;
         }
@@ -123,6 +141,65 @@ impl Panel {
         }
         expanded.truncate(prefix_len);
         paging.set_anchor(&expanded);
+        self.prepend_history_items(expanded, new_times, cx);
+    }
+
+    pub(crate) fn load_bounded_history(
+        &mut self,
+        page: crate::harness::BoundedHistoryPage,
+        cx: &mut Context<Self>,
+    ) {
+        self.load_history(page.messages, page.images, cx);
+        self.history_paging = Some(HistoryPaging {
+            visible: 0,
+            remaining: 0,
+            anchor: Vec::new(),
+            bounded: true,
+            cursor: page.before,
+            in_flight: false,
+        });
+    }
+
+    pub(crate) fn load_bounded_history_page(
+        &mut self,
+        result: Result<crate::harness::BoundedHistoryPage, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(paging) = &mut self.history_paging else {
+            return;
+        };
+        if !paging.bounded {
+            return;
+        }
+        paging.in_flight = false;
+        let page = match result {
+            Ok(page) => page,
+            Err(error) => {
+                eprintln!("jcode desktop: older history page failed: {error}");
+                self.items.push(Item::Error(format!("Could not load older history: {error}. Reopen the session if scrolling still fails.")));
+                cx.notify();
+                return;
+            }
+        };
+        paging.cursor = page.before;
+        let (items, times) = Self::history_items(page.messages, page.images);
+        if items.is_empty() {
+            self.request_older_history();
+            return;
+        }
+        self.prepend_history_items(items, times, cx);
+    }
+
+    fn prepend_history_items(
+        &mut self,
+        mut expanded: Vec<Item>,
+        new_times: std::collections::HashMap<usize, i64>,
+        cx: &mut Context<Self>,
+    ) {
+        let prefix_len = expanded.len();
+        if prefix_len == 0 {
+            return;
+        }
         let added_prompts = expanded
             .iter()
             .filter(|item| matches!(item, Item::User(_)))
@@ -200,6 +277,181 @@ mod tests {
 
     fn marker() -> &'static str {
         "Earlier conversation compacted - 2305 older historical messages hidden. Showing 68 of 2373 compacted messages. Scroll to the top to load more. Hidden user prompts: 145."
+    }
+
+    #[gpui::test]
+    fn bounded_pages_prepend_and_continue_from_server_cursor(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, bridge, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history(
+                crate::harness::BoundedHistoryPage {
+                    messages: rows(&[("user", "new")]),
+                    images: vec![],
+                    before: Some("cursor1".into()),
+                },
+                cx,
+            );
+            panel.request_older_history();
+            panel.request_older_history();
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before == "cursor1")
+        );
+        assert!(commands.try_recv().is_err());
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history_page(
+                Ok(crate::harness::BoundedHistoryPage {
+                    messages: rows(&[("user", "old")]),
+                    images: vec![],
+                    before: Some("cursor2".into()),
+                }),
+                cx,
+            );
+            assert!(matches!(&panel.items[0], Item::User(text) if text == "old"));
+            assert!(matches!(&panel.items[1], Item::User(text) if text == "new"));
+            panel.request_older_history();
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before == "cursor2")
+        );
+    }
+
+    #[gpui::test]
+    fn bounded_history_requests_cursor_on_scroll_up(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, bridge, cx));
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+        let messages = (0..50)
+            .map(|i| jcode_sdk::HistoryMessage {
+                role: "user".into(),
+                content: format!("recent {i}"),
+                timestamp_ms: None,
+                response_stats: None,
+                tool: None,
+            })
+            .collect();
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history(
+                crate::harness::BoundedHistoryPage {
+                    messages,
+                    images: vec![],
+                    before: Some("cursor".into()),
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.stick_to_bottom = false;
+            panel.transcript_list.scroll_to(gpui::ListOffset {
+                item_ix: 1,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let transcript = vcx
+            .debug_bounds("transcript-with-response")
+            .or_else(|| vcx.debug_bounds("transcript"))
+            .unwrap();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: transcript.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(300.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before == "cursor")
+        );
+    }
+
+    #[gpui::test]
+    fn lazy_image_is_fetched_only_when_clicked(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("paging".into(), None, None, bridge, cx));
+        let image = TranscriptImage::new("image/png".into(), "jcode-lazy:abc".into(), None);
+        panel.update(vcx, |panel, _| {
+            *panel.items = vec![Item::Image(image.clone())];
+        });
+        assert!(commands.try_recv().is_err());
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.open_image_preview(image, window, cx))
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::GetHistoryImage { key, .. }) if key == "abc")
+        );
+        let data = image_preview::fixture_image().data;
+        panel.update(vcx, |panel, cx| {
+            panel.load_history_image("abc".into(), Ok(data), cx);
+            assert!(panel.image_preview.is_some());
+            assert!(matches!(&panel.items[0], Item::Image(image) if image.preview.is_some()));
+        });
+    }
+
+    #[gpui::test]
+    #[ignore = "requires isolated JCODE_HISTORY_API and generated session_bounded_fixture"]
+    fn large_generated_session_through_sdk_and_panel(cx: &mut gpui::TestAppContext) {
+        let socket = std::env::var("JCODE_HISTORY_API").unwrap();
+        let id = "session_bounded_fixture";
+        let client = jcode_sdk::JcodeClient::connect(jcode_sdk::ConnectOptions {
+            socket_path: Some(socket.into()),
+            client_name: "jcode-desktop-bounded-test".into(),
+            request_timeout: Some(std::time::Duration::from_secs(120)),
+            ensure_runtime: false,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(client.supports("bounded_history_v1"));
+        client.attach_session(id).unwrap();
+        let first = client.get_history_page(id, None).unwrap();
+        let image = first
+            .images
+            .iter()
+            .find(|image| image.data.starts_with("jcode-lazy:"))
+            .unwrap();
+        let key = image.data.strip_prefix("jcode-lazy:").unwrap();
+        assert!(
+            client
+                .get_history_image(id, key)
+                .unwrap()
+                .starts_with("iVBORw0KGgo")
+        );
+        let cursor = first.before.clone().unwrap();
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| Panel::new(id.into(), None, None, bridge, cx));
+        panel.update(cx, |panel, cx| {
+            panel.load_bounded_history(first, cx);
+            assert!(panel.items.iter().any(
+                |item| matches!(item, Item::User(text) if text == "synthetic user prompt 99")
+            ));
+            assert!(
+                panel.items.iter().any(
+                    |item| matches!(item, Item::Tool { name, .. } if name == "functions.swarm")
+                )
+            );
+            panel.request_older_history();
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before == cursor)
+        );
+        let second = client.get_history_page(id, Some(cursor)).unwrap();
+        assert!(second.before.is_some());
+        panel.update(cx, |panel, cx| {
+            panel.load_bounded_history_page(Ok(second), cx);
+            assert!(panel.items.iter().any(
+                |item| matches!(item, Item::User(text) if text == "synthetic user prompt 30")
+            ));
+            assert!(panel.items.iter().any(
+                |item| matches!(item, Item::User(text) if text == "synthetic user prompt 99")
+            ));
+        });
     }
 
     #[gpui::test]
