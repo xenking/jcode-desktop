@@ -157,8 +157,16 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
         .is_finite()
         .then(|| limit.usage_percent.clamp(0., 100.));
     let value = used
-        .map(|used| format!("{used:.0}%"))
+        .map(|used| {
+            let used = used.round() as u8;
+            if jcode_base::config::config().display.usage_display_used() {
+                format!("{used}% used")
+            } else {
+                format!("{}% left", 100 - used)
+            }
+        })
         .unwrap_or_else(|| "not reported".into());
+    let value_selector = format!("panel-limit-value-{index}-{value}");
     div()
         .debug_selector(move || format!("panel-limit-{index}"))
         .flex()
@@ -177,24 +185,15 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
                         .truncate()
                         .child(limit.name.clone()),
                 )
-                .child(div().flex_none().font_family(theme.FONT_MONO).child(value)),
-        )
-        .children(used.map(|used| {
-            div()
-                .debug_selector(move || format!("panel-limit-bar-{index}"))
-                .w_full()
-                .h(px(4.))
-                .rounded_full()
-                .overflow_hidden()
-                .bg(theme.INLINE_CODE_BG)
                 .child(
                     div()
-                        .h_full()
-                        .w(relative(used / 100.))
-                        .rounded_full()
-                        .bg(usage_color(used, theme)),
-                )
-        }))
+                        .debug_selector(move || value_selector.clone())
+                        .flex_none()
+                        .font_family(theme.FONT_MONO)
+                        .child(value),
+                ),
+        )
+        .children(used.map(|used| usage_bar(index, used, theme)))
         .children(limit.reset_in.as_ref().map(|reset| {
             div()
                 .text_size(px(10.))
@@ -204,13 +203,31 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
         .into_any_element()
 }
 
+/// Shared quota bar for both the panel and sidebar limit cards.
+fn usage_bar(index: usize, used: f32, theme: &Theme) -> gpui::Div {
+    div()
+        .debug_selector(move || format!("panel-limit-bar-{index}"))
+        .w_full()
+        .h(px(4.))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme.INLINE_CODE_BG)
+        .child(
+            div()
+                .h_full()
+                .w(relative(used / 100.))
+                .rounded_full()
+                .bg(usage_color(used, theme)),
+        )
+}
+
 pub(crate) fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
     if used >= 90. {
         theme.ERROR
     } else if used >= 70. {
         theme.WARN
     } else {
-        theme.ACCENT
+        gpui::rgb(0x64c864).into()
     }
 }
 
@@ -813,6 +830,35 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn quota_tooltip_uses_shared_bar_and_tui_labels(cx: &mut gpui::TestAppContext) {
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"}]}"#,
+        )
+        .unwrap();
+        accounts[0].limits = vec![UsageLimit {
+            name: "Weekly".into(),
+            usage_percent: 41.,
+            reset_in: Some("2h".into()),
+        }];
+        let chip = quota_chips(&accounts).remove(0);
+        let card = quota_card(&accounts[0], &chip);
+        let (_, vcx) = cx.add_window_view(|_, _| card);
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limit-bar-0").is_some());
+        let label = if jcode_base::config::config().display.usage_display_used() {
+            "panel-limit-value-0-41% used"
+        } else {
+            "panel-limit-value-0-59% left"
+        };
+        assert!(vcx.debug_bounds(label).is_some());
+        let theme = Theme::global();
+        assert_eq!(usage_color(69., theme), gpui::rgb(0x64c864).into());
+        assert_eq!(usage_color(70., theme), theme.WARN);
+        assert_eq!(usage_color(89., theme), theme.WARN);
+        assert_eq!(usage_color(90., theme), theme.ERROR);
+    }
 
     #[test]
     fn quota_card_tracks_the_active_login_and_banked_resets() {
