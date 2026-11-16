@@ -1099,9 +1099,9 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
             let mut workers = (0..8)
-                .map(|i| (format!("session_w{i}_{i}_a"), "ready"))
+                .map(|i| (format!("session_w{i}_{i}_a"), "stopped"))
                 .collect::<Vec<_>>();
-            workers.insert(1, ("session_live_9_z".into(), "running"));
+            workers.push(("session_live_9_z".into(), "running"));
             let refs = workers
                 .iter()
                 .map(|(id, s)| (id.as_str(), *s))
@@ -1140,13 +1140,7 @@ mod tests {
             vcx.debug_bounds("sidebar-worker-0-4").is_none(),
             "second click collapses"
         );
-        assert!(
-            vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
-                .is_some()
-                || vcx
-                    .debug_bounds("sidebar-worker-glyph-0-1-spinner")
-                    .is_some()
-        );
+        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner").is_some(), "live worker is first even after many stopped workers");
     }
 
     #[gpui::test]
