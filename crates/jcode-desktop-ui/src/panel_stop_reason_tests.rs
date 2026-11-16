@@ -71,6 +71,55 @@ fn assert_settled_partial_output(panel: &Panel) {
 }
 
 #[gpui::test]
+fn unconfirmed_stop_shows_force_stop_button_and_click_escalates(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("stop-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
+    vcx.run_until_parked();
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    vcx.run_until_parked();
+    let button = vcx
+        .debug_bounds("force-stop-button")
+        .expect("force stop button must be visible");
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::ForceStopTurn { session_id }) if session_id == "stop-test")
+    );
+}
+
+#[gpui::test]
+fn repeated_stop_escalates_and_force_button_remains_retryable(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("stop-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::ForceStopTurn { .. })
+    ));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("force-stop-button").is_some());
+}
+
+#[gpui::test]
 fn unconfirmed_cancel_reports_timeout_and_late_confirmation_replaces_it(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -80,12 +129,16 @@ fn unconfirmed_cancel_reports_timeout_and_late_confirmation_replaces_it(
         assert_eq!(notices(panel)[0].title, "Stop requested by you");
     });
     vcx.run_until_parked();
-    vcx.executor().advance_clock(std::time::Duration::from_secs(6));
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(6));
     vcx.run_until_parked();
     panel.update(vcx, |panel, cx| {
         assert_eq!(notices(panel)[0].title, "Stop not confirmed");
         assert!(notices(panel)[0].detail.contains("may still be running"));
-        panel.apply(&stopped(TurnStopReason::Interrupted, "Runtime confirmed"), cx);
+        panel.apply(
+            &stopped(TurnStopReason::Interrupted, "Runtime confirmed"),
+            cx,
+        );
         assert_eq!(notices(panel)[0].title, "Response interrupted");
     });
 }

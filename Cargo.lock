@@ -4088,6 +4088,7 @@ version = "0.1.0"
 name = "jcode-compaction-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "fontdue",
  "jcode-message-types",
  "png 0.17.16",

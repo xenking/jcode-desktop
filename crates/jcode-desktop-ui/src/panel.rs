@@ -2213,19 +2213,15 @@ impl Panel {
                                 handled = true;
                             } else if !this.is_pending_session()
                                 && (this.status != "idle"
+                                    || this.has_unconfirmed_stop()
                                     || !this.connection_phase.is_empty()
                                     || !this.streaming_text.is_empty()
                                     || !this.streaming_reasoning.is_empty()
                                     || !this.pending_users.is_empty())
                             {
-                                if this.preview_state.is_none() {
-                                    this.bridge.send(Command::Cancel {
-                                        session_id: this.session_id.clone(),
-                                    });
-                                }
                                 this.prompt_queue.paused = true;
                                 this.sound_events.cancel();
-                                this.record_cancel_requested(cx);
+                                this.request_user_stop(cx);
                                 handled = true;
                             }
                             cx.notify();
@@ -2327,10 +2323,7 @@ impl Panel {
         }
         if matches!(trimmed, "/improve stop" | "/refactor stop") {
             self.pause_queue_for_stop();
-            self.bridge.send(Command::Cancel {
-                session_id: self.session_id.clone(),
-            });
-            self.record_cancel_requested(cx);
+            self.request_user_stop(cx);
             self.items.push(Item::Assistant("Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.".into()));
             cx.notify();
             return true;
@@ -2431,10 +2424,7 @@ impl Panel {
         } else {
             match trimmed {
                 "/cancel" => {
-                    self.bridge.send(Command::Cancel {
-                        session_id: self.session_id.clone(),
-                    });
-                    self.record_cancel_requested(cx);
+                    self.request_user_stop(cx);
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
@@ -10317,6 +10307,12 @@ mod tests {
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
             Ok(Command::Cancel { session_id }) if session_id == "session-a"
+        ));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::ForceStopTurn { session_id }) if session_id == "session-a"
         ));
     }
 

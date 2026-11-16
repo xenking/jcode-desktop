@@ -115,10 +115,51 @@ impl StopNotice {
 }
 
 impl Panel {
+    pub(super) fn has_unconfirmed_stop(&self) -> bool {
+        self.items.iter().rev().take_while(|item| !matches!(item, Item::User(_)))
+            .any(|item| matches!(item, Item::Stopped(notice) if notice.provisional && !notice.failure))
+    }
+
+    pub(super) fn request_user_stop(&mut self, cx: &mut Context<Self>) {
+        if self.has_unconfirmed_stop() {
+            self.force_stop(cx);
+        } else {
+            if self.preview_state.is_none() {
+                self.bridge.send(Command::Cancel {
+                    session_id: self.session_id.clone(),
+                });
+            }
+            self.record_cancel_requested(cx);
+        }
+    }
+
+    fn force_stop(&mut self, cx: &mut Context<Self>) {
+        if self.preview_state.is_none() {
+            self.bridge.send(Command::ForceStopTurn {
+                session_id: self.session_id.clone(),
+            });
+        }
+        if let Some(notice) = self
+            .items
+            .iter_mut()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .find_map(|item| match item {
+                Item::Stopped(notice) if notice.provisional => Some(notice),
+                _ => None,
+            })
+        {
+            notice.title = "Force stop requested".into();
+            notice.detail = "Waiting for the runtime to confirm the turn has stopped.".into();
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
     pub(super) fn record_cancel_requested(&mut self, cx: &mut Context<Self>) {
         self.record_stop(StopNotice::cancel_requested());
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+            cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
             let _ = this.update(cx, |panel, cx| {
                 if let Some(notice) = panel.items.iter_mut().rev()
                     .take_while(|item| !matches!(item, Item::User(_)))
@@ -269,6 +310,31 @@ impl Panel {
                         .child(super::recovery::copy_pill("stop-notice-copy", index, copy)),
                 )
             })
+            .when(
+                notice.provisional
+                    && (notice.title == "Stop not confirmed"
+                        || notice.title == "Force stop requested"),
+                |el| {
+                    el.child(
+                        div()
+                            .id(("force-stop-button", index))
+                            .debug_selector(|| "force-stop-button".into())
+                            .flex_none()
+                            .px_2p5()
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(Theme::global().ACCENT_DIM)
+                            .text_color(Theme::global().TEXT)
+                            .cursor_pointer()
+                            .hover(|el| el.opacity(0.8))
+                            .on_click(cx.listener(|panel, _, _, cx| {
+                                cx.stop_propagation();
+                                panel.force_stop(cx);
+                            }))
+                            .child("Force stop"),
+                    )
+                },
+            )
             .children(
                 notice
                     .provider_stop_reason

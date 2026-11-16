@@ -344,6 +344,9 @@ pub enum Command {
     Cancel {
         session_id: String,
     },
+    ForceStopTurn {
+        session_id: String,
+    },
     /// Move the running tool call to the background (the TUI's Alt+B).
     BackgroundTool {
         session_id: String,
@@ -476,6 +479,7 @@ enum SessionCommand {
         question: String,
     },
     Cancel,
+    ForceStopTurn,
     BackgroundTool,
     AskResponse {
         request_id: String,
@@ -1376,6 +1380,11 @@ fn run_with_transports(
             Command::Cancel { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
                     let _ = worker.send(SessionCommand::Cancel);
+                }
+            }
+            Command::ForceStopTurn { session_id } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::ForceStopTurn);
                 }
             }
             Command::BackgroundTool { session_id } => {
@@ -2999,12 +3008,36 @@ fn session_worker_with_connector(
                         if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
                             send_retry_phase(&updates, &session_id, String::new());
                         }
-                        if let Err(error) = client.cancel(real_id) {
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Could not stop the running turn: {error}. Automatic retries have been cancelled, but the runtime may still be working."),
-                            });
-                        }
+                        let client = client.clone();
+                        let real_id = real_id.to_string();
+                        std::thread::spawn(move || {
+                            let _ = client.cancel(&real_id);
+                        });
+                    }
+                    SessionCommand::ForceStopTurn => {
+                        recovery.supersede();
+                        let client = client.clone();
+                        let real_id = real_id.to_string();
+                        let updates = updates.clone();
+                        let session_id = session_id.clone();
+                        std::thread::spawn(move || {
+                            let result = if client.supports("force_stop_turn_v1") {
+                                client.force_stop_turn(&real_id)
+                            } else {
+                                Err(jcode_sdk::Error::new(
+                                    jcode_sdk::ErrorKind::UnsupportedCapability,
+                                    "This runtime does not support force stop. Update the runtime and reconnect.",
+                                ))
+                            };
+                            if let Err(error) = result
+                                && error.kind != jcode_sdk::ErrorKind::Timeout
+                            {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id,
+                                    reason: format!("Could not force stop: {error}"),
+                                });
+                            }
+                        });
                     }
                     SessionCommand::AskResponse {
                         request_id,
