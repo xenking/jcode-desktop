@@ -26,7 +26,7 @@ impl From<jcode_sdk::ResponseStats> for ResponseStats {
             output_tokens: stats.output_tokens,
             cache_read_tokens: stats.cache_read_tokens,
             cache_creation_tokens: stats.cache_creation_tokens,
-            tool_calls: None,
+            tool_calls: stats.tool_calls,
             at_ms: None,
             cache_at_ms: None,
         }
@@ -550,6 +550,7 @@ mod tests {
                     response_stats: Some(jcode_sdk::ResponseStats {
                         input_tokens: Some(12_000),
                         output_tokens: Some(500),
+                        tool_calls: Some(1),
                         ..Default::default()
                     }),
                 },
@@ -563,7 +564,7 @@ mod tests {
             let Item::ResponseStats(stats) = &panel.items[2] else {
                 panic!("missing saved stats")
             };
-            assert_eq!(stats.labels(), ["↑ 12.0k in", "↓ 500 out"]);
+            assert_eq!(stats.labels(), ["↑ 12.0k in", "↓ 500 out", "1 tool"]);
             for _ in 0..2 {
                 panel.load_history(history(), vec![], cx);
                 panel.apply(
