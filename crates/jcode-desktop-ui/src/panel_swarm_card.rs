@@ -195,11 +195,13 @@ impl Panel {
         } else {
             text.to_owned()
         };
+        let (body_prefix, body_last) = body
+            .rsplit_once('\n')
+            .map(|(prefix, last)| (Some(prefix.to_owned()), last.to_owned()))
+            .unwrap_or((None, body));
         let suffix = (call.action == "spawn" && error.is_none())
             .then(|| call.session_ids.first().map(|id| short_name(id).to_owned()))
             .flatten();
-        let region = self.swarm_scrolls.borrow_mut().entry(call_id.to_owned()).or_default().clone();
-        let scroll = region.handle.clone();
         let height = if self.expandable_viewport_height > px(0.) {
             (f32::from(self.expandable_viewport_height) * 0.6).clamp(1., expandable::MAX_HEIGHT)
         } else {
@@ -280,6 +282,13 @@ impl Panel {
                     ),
             )
             .when(expanded, |el| {
+                let region = self
+                    .swarm_scrolls
+                    .borrow_mut()
+                    .entry(call_id.to_owned())
+                    .or_default()
+                    .clone();
+                let scroll = region.handle.clone();
                 el.child(
                     div()
                         .debug_selector(|| "tool-swarm-result-body".into())
@@ -289,22 +298,49 @@ impl Panel {
                             div()
                                 .id(format!("swarm-body-{index}"))
                                 .debug_selector(move || format!("swarm-body-{index}"))
-                                .w_full().min_w_0().max_h(px(height)).overflow_y_scroll()
+                                .w_full()
+                                .min_w_0()
+                                .max_h(px(height))
+                                .overflow_y_scroll()
                                 .track_scroll(&scroll)
-                                .child(div().flex().flex_col().text_size(px(12.0))
-                                    .text_color(if error.is_some() { theme.ERROR } else { theme.TOOL_TEXT })
-                                    .child(body)
-                                    .when_some(suffix, |el, name| el.child(div().text_color(theme.TEXT_FAINT).child(name)))
-                                    .child(div().debug_selector(|| "swarm-body-end".into()).h(px(1.))))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .text_size(px(12.0))
+                                        .text_color(if error.is_some() {
+                                            theme.ERROR
+                                        } else {
+                                            theme.TOOL_TEXT
+                                        })
+                                        .when_some(body_prefix, |el, prefix| el.child(prefix))
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "swarm-body-end".into())
+                                                .child(body_last),
+                                        )
+                                        .when_some(suffix, |el, name| {
+                                            el.child(div().text_color(theme.TEXT_FAINT).child(name))
+                                        }),
+                                ),
                         )
                         .child({
                             let hitbox = region.hitbox.clone();
                             gpui::canvas(
-                                |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                                |bounds, window, _| {
+                                    window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                                },
                                 move |_, painted, _, _| *hitbox.borrow_mut() = Some(painted),
-                            ).absolute().top_0().left_0().size_full()
+                            )
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
                         })
-                        .child(crate::scrollbar::vertical_with_track(&scroll, "swarm-scrollbar")),
+                        .child(crate::scrollbar::vertical_with_track(
+                            &scroll,
+                            "swarm-scrollbar",
+                        )),
                 )
             })
             .into_any_element()
@@ -367,16 +403,25 @@ mod tests {
     #[gpui::test]
     fn long_swarm_message_scrolls_to_last_line(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
             workspace.push_test_panel("lead", cx);
             workspace
         });
         let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
-        let message = format!("{}last line of the full message", "long message line\n".repeat(240));
+        let message = format!(
+            "{}last line of the full message",
+            "long message line\n".repeat(240)
+        );
         panel.update(vcx, |panel, cx| {
-            panel.items.push(Item::Tool { call_id: "long-dm".into(), name: "swarm".into(),
+            panel.items.push(Item::Tool {
+                call_id: "long-dm".into(),
+                name: "swarm".into(),
                 input: serde_json::json!({"action": "message", "message": message}).to_string(),
-                output: String::new(), done: true, error: None });
+                output: String::new(),
+                done: true,
+                error: None,
+            });
             cx.notify();
         });
         vcx.run_until_parked();
@@ -393,7 +438,12 @@ mod tests {
             });
             vcx.run_until_parked();
         }
-        let end = vcx.debug_bounds("swarm-body-end").expect("full message end rendered");
-        assert!(end.bottom() <= viewport.bottom() && end.top() >= viewport.top(), "last line must be reachable");
+        let end = vcx
+            .debug_bounds("swarm-body-end")
+            .expect("full message end rendered");
+        assert!(
+            end.bottom() <= viewport.bottom() && end.top() >= viewport.top(),
+            "last line must be reachable"
+        );
     }
 }
