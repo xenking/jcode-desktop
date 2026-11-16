@@ -512,6 +512,7 @@ mod tests {
         });
         vcx.simulate_input("/effort Low");
         vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert_eq!(sent_efforts(&commands), ["low"]);
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("low"));

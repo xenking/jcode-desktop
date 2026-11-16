@@ -172,6 +172,7 @@ mod tests {
         for command in ["/onboarding-sim", "/onboarding-preview"] {
             vcx.simulate_input(command);
             vcx.simulate_keystrokes("enter");
+            vcx.simulate_keystrokes("enter");
             vcx.run_until_parked();
         }
         workspace.read_with(vcx, |w, _| {

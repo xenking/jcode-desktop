@@ -253,5 +253,6 @@ fn model_without_effort_control_switches_immediately(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.simulate_keystrokes(*window, "enter");
+    cx.simulate_keystrokes(*window, "enter");
     assert_eq!(submitted.borrow().as_slice(), ["/model llama3"]);
 }

@@ -210,26 +210,6 @@ impl Workspace {
                     source.update(cx, |panel, cx| panel.workspace_command_notice("Transfer requires a connected conversation. The source session is unchanged.", cx));
                 }
             }
-            WorkspaceCommand::Selfdev(argument) => {
-                let checkout = source.read(cx).selfdev_checkout();
-                let desktop = source.read(cx).publish_checkout().is_some();
-                if argument == "status" {
-                    let message = match checkout {
-                        None => "This session is not in a Jcode or Jcode Desktop self-development checkout.".into(),
-                        Some(path) if desktop => format!("Desktop self-development checkout: {}. /rebuild uses the host's state-preserving UI rebuild action.", path.display()),
-                        Some(path) => format!("Jcode self-development checkout: {}. Sessions here run in self-dev mode; build and reload go through the daemon's selfdev tool.", path.display()),
-                    };
-                    source.update(cx, |panel, cx| panel.workspace_command_notice(message, cx));
-                } else if argument.is_empty() || argument == "enter" {
-                    if let Some(path) = checkout {
-                        self.open_local_draft(Some(path.to_string_lossy().into_owned()), cx);
-                    } else {
-                        source.update(cx, |panel, cx| panel.workspace_command_notice("/selfdev requires a local Jcode or Jcode Desktop checkout. No session was replaced.", cx));
-                    }
-                } else {
-                    source.update(cx, |panel, cx| panel.workspace_command_notice("Usage: /selfdev [enter|status]. Prompt arguments are not supported in Desktop.", cx));
-                }
-            }
             WorkspaceCommand::Publish => {
                 if source.read(cx).publish_checkout().is_some() {
                     source.update(cx, |panel, cx| panel.workspace_command_notice("Desktop release aliases use the standard publish tracker, not the TUI's platform-specific fast-release pipeline.", cx));

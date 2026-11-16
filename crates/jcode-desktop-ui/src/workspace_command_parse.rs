@@ -9,14 +9,16 @@ pub(crate) enum WorkspaceCommand {
     Machines(Option<String>),
     Remote(String),
     ServerReload,
-    Resume { active: bool, query: String },
+    Resume {
+        active: bool,
+        query: String,
+    },
     Catchup(bool),
     Back,
     Workspace,
     Quit,
     Reload,
     Restart,
-    Selfdev(String),
     Transfer,
     Publish,
     Invalid(&'static str),
@@ -46,7 +48,6 @@ pub(crate) fn parse(content: &str) -> Option<WorkspaceCommand> {
         "/transfer" => Invalid("Usage: /transfer"),
         "/server-reload" if tail.is_empty() => ServerReload,
         "/server-reload" => Invalid("Usage: /server-reload"),
-        "/selfdev" => Selfdev(tail.into()),
         "/back" if tail.is_empty() => Back,
         "/workspace" if tail.is_empty() => Workspace,
         "/quit" if tail.is_empty() => Quit,
@@ -132,7 +133,6 @@ mod tests {
             "reload",
             "restart",
             "rebuild",
-            "selfdev",
             "client-reload",
             "server-reload",
             "fast-release",
@@ -143,5 +143,6 @@ mod tests {
         ] {
             assert!(parse(&format!("/{name}")).is_some(), "{name}");
         }
+        assert!(parse("/selfdev").is_none());
     }
 }

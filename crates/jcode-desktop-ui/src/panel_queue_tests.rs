@@ -21,6 +21,7 @@ fn effort_command_during_running_turn_is_immediate_not_a_steer(cx: &mut gpui::Te
     });
     vcx.simulate_input("/effort high");
     vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("enter");
     assert!(matches!(commands.try_recv(), Ok(Command::SessionOperation {
         operation: SessionOperation::SetEffort(level), ..
     }) if level == "high"));
@@ -701,11 +702,17 @@ fn unconfirmed_batch_escalates_and_shows_reason(cx: &mut gpui::TestAppContext) {
         panel
     });
     panel.update(cx, |p, cx| p.interrupt_all_queued_prompts(cx));
-    assert!(matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { .. })));
-    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::InterruptQueuedPrompts { .. })
+    ));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
     cx.run_until_parked();
     assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
-    panel.read_with(cx, |p, _| assert!(p.prompt_queue.remote_failures["a"].contains("blocked")));
+    panel.read_with(cx, |p, _| {
+        assert!(p.prompt_queue.remote_failures["a"].contains("blocked"))
+    });
 }
 
 #[gpui::test]
@@ -1097,6 +1104,7 @@ fn startup_slash_command_stays_in_editor_until_explicit_ready_submission(
         commands.try_recv().is_err(),
         "connecting does not execute editor commands"
     );
+    vcx.simulate_keystrokes("enter");
     vcx.simulate_keystrokes("enter");
     assert!(matches!(commands.try_recv(), Ok(Command::SessionOperation {
         session_id, operation: SessionOperation::Clear,

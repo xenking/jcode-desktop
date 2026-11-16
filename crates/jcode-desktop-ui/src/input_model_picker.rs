@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) struct SuggestionsCache {
     content: SharedString,
+    cursor: usize,
     revision: u64,
     minute: u64,
     completion: bool,
@@ -234,10 +235,14 @@ impl PromptInput {
     /// Hover changes selection, not the catalog. Retain rows across repaints and
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {
+        if self.accepted_command.as_ref() == Some(&self.content) {
+            return Arc::new(Vec::new());
+        }
         let minute = model_menu::now_unix_secs() / 60;
         let mut cache = self.suggestions_cache.borrow_mut();
         if let Some(cached) = cache.as_ref()
             && cached.content == self.content
+            && cached.cursor == self.cursor_offset()
             && cached.revision == self.suggestions_revision
             && cached.minute == minute
             && cached.completion == self.command_completion
@@ -261,6 +266,7 @@ impl PromptInput {
         }
         *cache = Some(SuggestionsCache {
             content: self.content.clone(),
+            cursor: self.cursor_offset(),
             revision: self.suggestions_revision,
             minute,
             completion: self.command_completion,

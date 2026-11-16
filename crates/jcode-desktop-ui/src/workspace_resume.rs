@@ -222,18 +222,19 @@ impl Workspace {
                 state.start_on_close = start_on_close;
                 self.refresh_resume_content(cx);
             }
-            None | Some(Snapshot::Legacy) if resume_requested
+            None | Some(Snapshot::Legacy)
+                if resume_requested
                 // Old linked hosts omitted picker state. Recover only while the
                 // active slot is still the unstarted startup draft, not a chat.
                 && (snapshot.is_none()
                     || self
                         .slots
                         .get(self.active)
-                        .is_some_and(|slot| slot.panel.read(cx).is_startup_draft()))
-                => {
-                    self.open_resume(&OpenResume, window, cx);
-                    self.resume.as_mut().unwrap().start_on_close = true;
-                }
+                        .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())) =>
+            {
+                self.open_resume(&OpenResume, window, cx);
+                self.resume.as_mut().unwrap().start_on_close = true;
+            }
             _ => {}
         }
     }
@@ -1828,6 +1829,7 @@ mod tests {
                 workspace.update_in(vcx, |w, window, cx| w.focus_active(window, cx));
                 vcx.run_until_parked();
                 vcx.simulate_input(command);
+                vcx.simulate_keystrokes("enter");
                 vcx.simulate_keystrokes("enter");
                 vcx.run_until_parked();
                 workspace.read_with(vcx, |w, _| {

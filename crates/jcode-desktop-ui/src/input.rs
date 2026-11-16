@@ -217,9 +217,11 @@ pub struct PromptInput {
     #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
+    command_skills: Vec<(String, String)>,
     /// A standalone picker owns plain query text rather than a slash command.
     picker_prefix: Option<&'static str>,
     command_completion: bool,
+    accepted_command: Option<SharedString>,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
@@ -262,9 +264,6 @@ pub struct PromptInput {
     motion: std::rc::Rc<std::cell::RefCell<MotionState>>,
     /// Inline autocomplete. `None` for composers that never suggest.
     ghost: Option<GhostState>,
-    /// Slash rows captured on the first Tab and the index shown, so repeated
-    /// Tab cycles them like the TUI does.
-    tab_cycle: Option<(Vec<String>, usize)>,
 }
 
 /// Recent transcript turns for the completion request.
@@ -418,7 +417,7 @@ fn command_suggestions_with_efforts(
             .then_some((command, help, command_lower.starts_with(&query)))
         })
         .collect::<Vec<_>>();
-    commands.sort_by_key(|(_, _, prefix)| !prefix);
+    commands.sort_by_key(|(name, _, prefix)| (name.to_ascii_lowercase() != query, !prefix));
     commands
         .into_iter()
         .map(|(value, help, _)| CommandSuggestion {
@@ -803,8 +802,10 @@ impl PromptInput {
             on_change: None,
             on_overlay_cancel: None,
             command_models: Vec::new(),
+            command_skills: Vec::new(),
             picker_prefix: None,
             command_completion: true,
+            accepted_command: None,
             command_selection: 0,
             model_details: HashMap::new(),
             applied_model_routes: None,
@@ -831,7 +832,6 @@ impl PromptInput {
             working_dir: None,
             motion: Default::default(),
             ghost: None,
-            tab_cycle: None,
         }
     }
 
@@ -1000,6 +1000,9 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.complete_slash_command(cx) {
+            return;
+        }
         let at_end = self.cursor_at_end() && self.marked_range.is_none();
         let accepted = self
             .ghost
@@ -1010,12 +1013,11 @@ impl PromptInput {
                 self.replace_text_in_range(None, &suffix, window, cx);
                 self.dismiss_ghost();
             }
-            None if self.complete_slash_command(cx) => {}
             None => cx.propagate(),
         }
     }
 
-    /// Tab on a visible slash popup: fill the highlighted row, then cycle.
+    /// Tab on a visible slash popup accepts its highlighted row.
     fn complete_slash_command(&mut self, cx: &mut Context<Self>) -> bool {
         if self.picker_prefix.is_some() {
             return false;
@@ -1023,45 +1025,29 @@ impl PromptInput {
         if !self.command_completion || !self.attachments.is_empty() {
             return false;
         }
-        let current = self.content.trim().to_string();
-        let (values, index) = match self.tab_cycle.take() {
-            Some((values, index)) if values.get(index) == Some(&current) && values.len() > 1 => {
-                let next = (index + 1) % values.len();
-                (values, next)
-            }
-            _ => {
-                let suggestions = self.command_suggestions();
-                let values: Vec<String> = suggestions
-                    .iter()
-                    .filter(|row| {
-                        row.toggle.is_none()
-                            && (row.action.is_none()
-                                || (self.model_stage == model_stage::ModelStage::Models
-                                    && row.value.starts_with("/model ")))
-                    })
-                    .map(|row| row.value.clone())
-                    .collect();
-                if values.is_empty() {
-                    return false;
-                }
-                let selected = suggestions
-                    .get(self.command_selection)
-                    .and_then(|row| values.iter().position(|v| v == &row.value))
-                    .unwrap_or(0);
-                let index = if values[selected] == current && values.len() > 1 {
-                    (selected + 1) % values.len()
-                } else {
-                    selected
-                };
-                (values, index)
-            }
+        let suggestions = self.command_suggestions();
+        let Some(row) = suggestions.get(self.command_selection) else {
+            return false;
         };
-        if values[index] != current {
-            self.undo.push(self.edit_snapshot());
-            self.redo.clear();
+        if row.toggle.is_some()
+            || (row.action.is_some()
+                && !(self.model_stage == model_stage::ModelStage::Models
+                    && row.value.starts_with("/model ")))
+        {
+            return false;
         }
-        self.set_content(values[index].clone(), cx);
-        self.tab_cycle = Some((values, index));
+        let value = row.value.clone();
+        let cursor = self
+            .embedded_command_span()
+            .map(|(_, _, end)| value.len() - (self.content.len() - end));
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        self.set_content(value, cx);
+        if let Some(cursor) = cursor {
+            self.selected_range = cursor..cursor;
+        }
+        self.accepted_command = Some(self.content.clone());
+        cx.notify();
         true
     }
 
@@ -1094,7 +1080,8 @@ impl PromptInput {
         if !fresh {
             // A shared project is not a session boundary: another session's
             // unfinished todos must never become this composer's examples.
-            let prompts = motion::pick_prompts(&[] as &[SharedString], state.seed).map(SharedString::from);
+            let prompts =
+                motion::pick_prompts(&[] as &[SharedString], state.seed).map(SharedString::from);
             if state
                 .prompts
                 .as_ref()
@@ -1351,9 +1338,13 @@ impl PromptInput {
             &self.command_models,
             &self.model_details,
         );
-        let command_content = self.command_content();
+        let embedded = self.embedded_command_span();
+        let command_content = embedded.map_or_else(
+            || self.command_content(),
+            |(start, cursor, _)| self.content[start..cursor].to_string(),
+        );
         let trimmed = command_content.trim_start();
-        let suggestions =
+        let mut suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
                 let query = trimmed.strip_prefix("/model").unwrap_or_default();
                 self.model_stage_rows(query)
@@ -1367,6 +1358,27 @@ impl PromptInput {
                     },
                 )
             };
+        if self.picker_prefix.is_none()
+            && trimmed.starts_with('/')
+            && !trimmed.contains(char::is_whitespace)
+        {
+            let query = trimmed.to_ascii_lowercase();
+            for (name, description) in &self.command_skills {
+                let value = format!("/{name}");
+                if value.to_ascii_lowercase().starts_with(&query)
+                    && !suggestions.iter().any(|row| row.value == value)
+                {
+                    suggestions.push(CommandSuggestion {
+                        value,
+                        help: description.clone(),
+                        detail: Some("Skill".into()),
+                        header: None,
+                        toggle: None,
+                        action: None,
+                    });
+                }
+            }
+        }
         suggestions
             .into_iter()
             .map(|mut suggestion| {
@@ -1386,9 +1398,32 @@ impl PromptInput {
                         };
                     }
                 }
+                if let Some((start, _, end)) = embedded {
+                    suggestion.value = format!(
+                        "{}{}{}",
+                        &self.content[..start],
+                        suggestion.value,
+                        &self.content[end..]
+                    );
+                }
                 suggestion
             })
             .collect()
+    }
+
+    fn embedded_command_span(&self) -> Option<(usize, usize, usize)> {
+        if self.picker_prefix.is_some() {
+            return None;
+        }
+        let (start, cursor) =
+            jcode_slash_command::active_token_before_cursor(&self.content, self.cursor_offset())?;
+        if start == 0 && cursor == self.content.len() {
+            return None;
+        }
+        let end = self.content[cursor..]
+            .find(char::is_whitespace)
+            .map_or(self.content.len(), |offset| cursor + offset);
+        Some((start, cursor, end))
     }
 
     fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
@@ -1498,6 +1533,7 @@ impl PromptInput {
             if (raw_content.trim_start() == "/model"
                 || raw_content.trim_start().starts_with("/model "))
                 && suggestions.is_empty()
+                && self.accepted_command.as_ref() != Some(&self.content)
             {
                 return;
             }
@@ -1511,16 +1547,18 @@ impl PromptInput {
             if let Some(accepted) =
                 accepted_command_submission(&suggestions, self.command_selection)
             {
-                // `/eff` + Enter completes to `/effort` like the TUI. Exact
-                // commands and argument searches still send.
-                if self.picker_prefix.is_none()
-                    && !content.contains(char::is_whitespace)
-                    && accepted != content
-                    && crate::commands::registered_command(&content).is_none()
-                {
+                if self.picker_prefix.is_none() {
+                    let cursor = self
+                        .embedded_command_span()
+                        .map(|(_, _, end)| accepted.len() - (self.content.len() - end));
                     self.undo.push(self.edit_snapshot());
                     self.redo.clear();
                     self.set_content(accepted, cx);
+                    if let Some(cursor) = cursor {
+                        self.selected_range = cursor..cursor;
+                    }
+                    self.accepted_command = Some(self.content.clone());
+                    cx.notify();
                     return;
                 }
                 content = accepted;
@@ -2245,6 +2283,7 @@ impl PromptInput {
 
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.dismiss_ghost();
+        self.accepted_command = None;
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         self.reset_model_groups_after_exit();
@@ -2252,6 +2291,12 @@ impl PromptInput {
         self.reveal_command(0);
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
+        cx.notify();
+    }
+
+    pub(crate) fn set_skills(&mut self, skills: Vec<(String, String)>, cx: &mut Context<Self>) {
+        self.command_skills = skills;
+        self.suggestions_revision += 1;
         cx.notify();
     }
 
@@ -2270,11 +2315,16 @@ impl PromptInput {
         let offset = self.index_for_mouse_position(event.position, window);
         let clicked_chip = self.last_bounds.as_ref().and_then(|text_bounds| {
             let relative = event.position - text_bounds.origin;
-            self.chip_positions.iter().find_map(|(index, bounds)| bounds.contains(&relative).then_some(*index))
+            self.chip_positions
+                .iter()
+                .find_map(|(index, bounds)| bounds.contains(&relative).then_some(*index))
         });
         if !event.modifiers.shift
-            && let Some(index) = clicked_chip.or_else(|| self.chip_ranges().into_iter()
-                .find_map(|(index, range)| range.contains(&offset).then_some(index)))
+            && let Some(index) = clicked_chip.or_else(|| {
+                self.chip_ranges()
+                    .into_iter()
+                    .find_map(|(index, range)| range.contains(&offset).then_some(index))
+            })
         {
             self.is_selecting = false;
             self.attachment_preview = Some(paste_preview::Preview::new(index));
@@ -2559,6 +2609,7 @@ impl EntityInputHandler for PromptInput {
         self.redo.clear();
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
+        self.accepted_command = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -2592,6 +2643,7 @@ impl EntityInputHandler for PromptInput {
         let range = self.expanded_chip_range(range);
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
+        self.accepted_command = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -3079,10 +3131,16 @@ impl Element for TextElement {
                     // GPUI assigns a boundary index to the preceding row even
                     // when its first glyph is on the next visual row.
                     if start.y != end.y {
-                        let next = line.position_for_index(range.start + 1, window.line_height())?;
-                        if next.y == end.y { start = point(px(0.), next.y); }
+                        let next =
+                            line.position_for_index(range.start + 1, window.line_height())?;
+                        if next.y == end.y {
+                            start = point(px(0.), next.y);
+                        }
                     }
-                    (start.y == end.y).then_some((index, Bounds::new(start, size(end.x - start.x, window.line_height()))))
+                    (start.y == end.y).then_some((
+                        index,
+                        Bounds::new(start, size(end.x - start.x, window.line_height())),
+                    ))
                 })
                 .collect();
             if input.chip_positions != positions {
@@ -3201,6 +3259,7 @@ impl Render for PromptInput {
             self.command_selection = 0;
         }
         let command_visible = self.command_completion
+            && self.accepted_command.as_ref() != Some(&self.content)
             && (!suggestions.is_empty()
                 || self.picker_prefix == Some("/model")
                 || self.content.trim_start().starts_with("/model "));
@@ -3473,13 +3532,18 @@ impl Render for PromptInput {
                                         |(index, bounds)| {
                                             let attachment = self.attachments.get(*index)?;
                                             Some(
-                                                crate::image_chip::chip(Some(attachment.preview.clone()), &attachment.label,
-                                                    "composer-image-chip", "composer-image-thumbnail", "composer-image-label")
-                                                    .absolute()
-                                                    .left(bounds.origin.x)
-                                                    .top(bounds.origin.y)
-                                                    .w(bounds.size.width)
-                                                    .h(bounds.size.height),
+                                                crate::image_chip::chip(
+                                                    Some(attachment.preview.clone()),
+                                                    &attachment.label,
+                                                    "composer-image-chip",
+                                                    "composer-image-thumbnail",
+                                                    "composer-image-label",
+                                                )
+                                                .absolute()
+                                                .left(bounds.origin.x)
+                                                .top(bounds.origin.y)
+                                                .w(bounds.size.width)
+                                                .h(bounds.size.height),
                                             )
                                         },
                                     )),
@@ -3541,9 +3605,17 @@ mod tests {
         assert!(vcx.debug_bounds("prompt-attachments").is_none());
         let chip = vcx.debug_bounds("composer-image-chip").expect("chip");
         let label = vcx.debug_bounds("composer-image-label").expect("label");
-        let thumb = vcx.debug_bounds("composer-image-thumbnail").expect("thumbnail");
-        assert!(thumb.right() < label.left(), "thumbnail and label have a gap");
-        assert!(label.right() <= chip.right(), "label must fit inside chip: {label:?} {chip:?}");
+        let thumb = vcx
+            .debug_bounds("composer-image-thumbnail")
+            .expect("thumbnail");
+        assert!(
+            thumb.right() < label.left(),
+            "thumbnail and label have a gap"
+        );
+        assert!(
+            label.right() <= chip.right(),
+            "label must fit inside chip: {label:?} {chip:?}"
+        );
         vcx.simulate_keystrokes("backspace");
         vcx.run_until_parked();
         input.read_with(vcx, |input, _| {
@@ -3559,18 +3631,28 @@ mod tests {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
             input.set_content("before ".into(), cx);
             input.selected_range = 7..7;
-            input.attach_image(crate::clipboard_image::ClipboardImage {
-                media_type: "image/png".into(),
-                bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
-                width: 1000, height: 600,
-            }, cx);
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 1000,
+                    height: 600,
+                },
+                cx,
+            );
             input.focus_handle.focus(window, cx);
             input
         });
         vcx.run_until_parked();
-        let thumbnail = vcx.debug_bounds("composer-image-thumbnail").expect("thumbnail is painted");
+        let thumbnail = vcx
+            .debug_bounds("composer-image-thumbnail")
+            .expect("thumbnail is painted");
         assert_eq!(thumbnail.size, size(px(14.), px(14.)));
-        assert!(vcx.debug_bounds("prompt-editor").unwrap().contains(&thumbnail.center()));
+        assert!(
+            vcx.debug_bounds("prompt-editor")
+                .unwrap()
+                .contains(&thumbnail.center())
+        );
         vcx.simulate_click(thumbnail.center(), Default::default());
         vcx.run_until_parked();
         assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_some()));
@@ -3579,36 +3661,55 @@ mod tests {
 
     #[gpui::test]
     fn clicking_end_of_composer_chip_opens_preview(cx: &mut TestAppContext) {
-        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
-        input.update(vcx, |input, cx| input.attach_image(crate::clipboard_image::ClipboardImage {
-            media_type: "image/png".into(),
-            bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
-            width: 640, height: 480,
-        }, cx));
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(vcx, |input, cx| {
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            )
+        });
         vcx.run_until_parked();
         let chip = vcx.debug_bounds("composer-image-chip").unwrap();
-        vcx.simulate_click(point(chip.right() - px(1.), chip.center().y), Default::default());
+        vcx.simulate_click(
+            point(chip.right() - px(1.), chip.center().y),
+            Default::default(),
+        );
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
     }
 
     #[gpui::test]
     fn composer_image_chip_never_disappears_at_wrap_boundary(cx: &mut TestAppContext) {
-        let (input, vcx) = cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         let window = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(window, gpui::size(px(240.), px(400.)));
         for n in 1..45 {
             input.update(vcx, |input, cx| {
                 input.attachments.clear();
                 input.set_content(format!("{} ", "x".repeat(n)), cx);
-                input.attach_image(crate::clipboard_image::ClipboardImage {
-                    media_type: "image/png".into(),
-                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
-                    width: 640, height: 480,
-                }, cx);
+                input.attach_image(
+                    crate::clipboard_image::ClipboardImage {
+                        media_type: "image/png".into(),
+                        bytes: include_bytes!("../../../assets/previews/image-preview.png")
+                            .to_vec(),
+                        width: 640,
+                        height: 480,
+                    },
+                    cx,
+                );
             });
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("composer-image-chip").is_some(), "prefix length {n}");
+            assert!(
+                vcx.debug_bounds("composer-image-chip").is_some(),
+                "prefix length {n}"
+            );
         }
     }
 
@@ -4366,15 +4467,21 @@ mod tests {
     fn slash_draft_hides_existing_ghost_and_does_not_request_completion(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "previous draft");
-        window.update(cx, |input, _, _| show_ghost(input, " old suggestion")).unwrap();
-        window.update(cx, |input, _, cx| input.set_content(String::new(), cx)).unwrap();
+        window
+            .update(cx, |input, _, _| show_ghost(input, " old suggestion"))
+            .unwrap();
+        window
+            .update(cx, |input, _, cx| input.set_content(String::new(), cx))
+            .unwrap();
         cx.simulate_input(*window, "/effort high");
         cx.executor().advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
-        window.update(cx, |input, _, _| {
-            assert_eq!(input.ghost_text(), None);
-            assert!(input.ghost.as_ref().unwrap().task.is_none());
-        }).unwrap();
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.ghost_text(), None);
+                assert!(input.ghost.as_ref().unwrap().task.is_none());
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -4427,9 +4534,48 @@ mod tests {
             .unwrap();
     }
 
-    /// User report: `/eff` + Tab did nothing, Enter sent at once.
     #[gpui::test]
-    fn tab_completes_slash_command_and_cycles(cx: &mut TestAppContext) {
+    fn embedded_slash_opens_completion_and_preserves_prefix(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "fix this /eff");
+        window
+            .update(cx, |input, _, _| {
+                assert!(
+                    input
+                        .command_suggestions()
+                        .iter()
+                        .any(|row| row.value.contains("/effort"))
+                );
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "fix this /effort");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn embedded_completion_replaces_token_at_cursor_and_keeps_suffix(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, cx| {
+                input.set_content("fix /effort please".into(), cx);
+                input.selected_range = 8..8;
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "fix /effort please");
+                assert_eq!(input.selected_range, 11..11);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn tab_completes_the_selected_slash_command(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "/eff");
         cx.simulate_keystrokes(*window, "tab");
@@ -4460,10 +4606,54 @@ mod tests {
                 assert_eq!(input.content.as_ref(), expected[0])
             })
             .unwrap();
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.command_suggestions().is_empty())
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn tab_accepts_highlighted_exact_command_without_sending(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/help");
+        window
+            .update(cx, |input, _, _| {
+                assert!(!input.command_suggestions().is_empty())
+            })
+            .unwrap();
         cx.simulate_keystrokes(*window, "tab");
         window
             .update(cx, |input, _, _| {
-                assert_eq!(input.content.as_ref(), expected[1])
+                assert_eq!(input.content.as_ref(), "/help");
+                assert!(input.history.is_empty());
+                assert!(input.command_suggestions().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn enter_accepts_a_visible_exact_command_without_sending(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/help");
+        window
+            .update(cx, |input, _, _| {
+                assert!(!input.command_suggestions().is_empty())
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/help");
+                assert!(input.history.is_empty());
+                assert!(input.command_suggestions().is_empty());
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.content.is_empty());
+                assert_eq!(input.history.last().map(String::as_str), Some("/help"));
             })
             .unwrap();
     }
@@ -4482,6 +4672,7 @@ mod tests {
         window
             .update(cx, |input, _, cx| input.set_content("/models".into(), cx))
             .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
         cx.simulate_keystrokes(*window, "enter");
         window
             .update(cx, |input, _, _| {

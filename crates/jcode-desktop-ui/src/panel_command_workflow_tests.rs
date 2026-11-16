@@ -37,6 +37,139 @@ fn skills_is_a_runtime_operation_not_a_model_turn(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
+fn skill_invocation_is_not_reported_as_unknown(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("skill-session".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
+        assert!(panel.handle_slash_command("/poteto-mode hello", cx));
+        assert!(
+            !panel
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Error(_)))
+        );
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SendSkill { session_id, content, skill, .. })
+        if session_id == "skill-session" && content == "hello" && skill == "poteto-mode")
+    );
+}
+
+#[gpui::test]
+fn selfdev_skill_does_not_require_a_desktop_checkout(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("remote-selfdev".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.skills = vec![("selfdev".into(), "Self development".into())];
+        assert!(panel.handle_slash_command("/selfdev fix this", cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SendSkill { skill, content, .. })
+        if skill == "selfdev" && content == "fix this")
+    );
+}
+
+#[gpui::test]
+fn embedded_skill_uses_surrounding_text_and_ignores_paths(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| Panel::new("skill-session".into(), None, None, bridge, cx));
+    panel.update(cx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
+        assert!(!panel.handle_embedded_commands("visit https://a/b and /usr/bin", cx));
+        assert!(panel.handle_embedded_commands("fix this /poteto-mode please", cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SendSkill { content, skill, .. })
+        if content == "fix this please" && skill == "poteto-mode")
+    );
+}
+
+#[gpui::test]
+fn composer_sends_embedded_skill_prompt(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("skill-composer", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
+    });
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("fix this /poteto-mode please");
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SendSkill { content, skill, .. })
+        if content == "fix this please" && skill == "poteto-mode")
+    );
+}
+
+#[gpui::test]
+fn composer_runs_compact_as_a_session_operation(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("compact-composer", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("/compact");
+    vcx.simulate_keystrokes("enter enter");
+    match commands.try_recv() {
+        Ok(Command::SessionOperation {
+            session_id,
+            operation: SessionOperation::Compact,
+        }) => assert_eq!(session_id, "compact-composer"),
+        Ok(_) => panic!("received unexpected command"),
+        Err(_) => panic!("no command"),
+    }
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn composer_unknown_slash_is_an_inline_error(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("unknown-composer", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("/foo");
+    vcx.simulate_keystrokes("enter");
+    panel.read_with(vcx, |panel, _| assert!(matches!(panel.items.last(), Some(Item::Error(message)) if message.contains("Unknown command"))));
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
 fn unknown_commands_stay_local_and_do_not_start_model_work(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("unknown-session".into(), None, None, bridge, cx));

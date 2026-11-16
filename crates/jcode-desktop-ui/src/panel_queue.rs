@@ -314,6 +314,27 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.active_skill.is_some() {
+            if !self.is_pending_session()
+                && self.history_loaded
+                && !self.activity_active()
+                && self.pending_users.is_empty()
+                && !self.has_visible_queued_prompts()
+                && !self.prompt_queue.waiting_for_connection
+            {
+                self.send_composer_prompt(content, images, cx);
+            } else {
+                self.prompt_queue.prompts.push(QueuedPrompt {
+                    content,
+                    images,
+                    after_yield: true,
+                });
+                self.prompt_queue.paused = false;
+                self.send_queued_prompts(cx);
+            }
+            cx.notify();
+            return;
+        }
         if !queued && self.has_visible_queued_prompts() {
             if !content.trim().is_empty() || !images.is_empty() {
                 if self.prompt_queue.remote_supported
@@ -387,7 +408,8 @@ impl Panel {
             for id in &ids {
                 self.prompt_queue.remote_failures.remove(id);
             }
-            self.prompt_queue.send_now_generation = self.prompt_queue.send_now_generation.wrapping_add(1);
+            self.prompt_queue.send_now_generation =
+                self.prompt_queue.send_now_generation.wrapping_add(1);
             let generation = self.prompt_queue.send_now_generation;
             let pending_ids = ids.clone();
             self.bridge.send(Command::InterruptQueuedPrompts {
@@ -476,18 +498,27 @@ impl Panel {
         self.send_prompt(content, images, cx);
     }
 
-    fn send_prompt(
+    pub(super) fn send_prompt(
         &mut self,
         content: String,
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
         let steering = self.send_is_steering();
-        self.bridge.send(Command::Send {
-            session_id: self.session_id.clone(),
-            content: content.clone(),
-            images: images.clone(),
-        });
+        if let Some(skill) = &self.active_skill {
+            self.bridge.send(Command::SendSkill {
+                session_id: self.session_id.clone(),
+                content: content.clone(),
+                images: images.clone(),
+                skill: skill.clone(),
+            });
+        } else {
+            self.bridge.send(Command::Send {
+                session_id: self.session_id.clone(),
+                content: content.clone(),
+                images: images.clone(),
+            });
+        }
         self.prepare_prompt(&content);
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
@@ -566,7 +597,11 @@ impl Panel {
                 self.prompt_queue.remote_supported = true;
                 self.prompt_queue.remote_failures.retain(|id, _| {
                     prompts.iter().any(|p| &p.client_id == id)
-                        || self.prompt_queue.pending_remote.iter().any(|p| &p.client_id == id)
+                        || self
+                            .prompt_queue
+                            .pending_remote
+                            .iter()
+                            .any(|p| &p.client_id == id)
                 });
                 self.prompt_queue
                     .pending_remote
@@ -748,6 +783,19 @@ impl Panel {
         if self.prompt_queue.paused || self.is_pending_session() || !self.history_loaded {
             return;
         }
+        if self.active_skill.is_some() {
+            if self.activity_active()
+                || !self.pending_users.is_empty()
+                || !(self.status == "idle" || self.status == "connected")
+            {
+                return;
+            }
+            let prompt = self.prompt_queue.prompts.remove(0);
+            self.prompt_queue.waiting_for_connection = false;
+            self.send_composer_prompt(prompt.content, prompt.images, cx);
+            cx.notify();
+            return;
+        }
         if !self.prompt_queue.remote_supported
             && (!(self.status == "idle"
                 || (self.prompt_queue.waiting_for_connection && self.status == "connected"))
@@ -782,6 +830,13 @@ impl Panel {
     /// Send one queued prompt immediately. During an active turn the harness
     /// delivers it as an urgent steer rather than waiting for the turn to end.
     pub(super) fn send_queued_prompt_now(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.active_skill.is_some() && self.activity_active() {
+            self.items.push(Item::Error(
+                "Skill prompts wait until the current turn finishes.".into(),
+            ));
+            cx.notify();
+            return;
+        }
         if index >= self.prompt_queue.prompts.len()
             || self.is_pending_session()
             || self.prompt_queue.waiting_for_connection

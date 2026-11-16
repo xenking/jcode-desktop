@@ -592,6 +592,8 @@ pub struct Panel {
     pub account_label: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
+    skills: Vec<(String, String)>,
+    active_skill: Option<String>,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
     /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
@@ -1146,6 +1148,8 @@ impl Panel {
             auth_method: usage_fixture.then(|| "oauth".into()),
             account_label: usage_fixture.then(|| "work@example.com".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
+            skills: Vec::new(),
+            active_skill: None,
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
@@ -2044,6 +2048,7 @@ impl Panel {
                     "Type something…",
                     move |content, images, queued, _window, app| {
                         if !queued
+                            && jcode_base::skill::SkillRegistry::parse_invocation(&content).is_none()
                             && let Some(panel) = weak.upgrade()
                             && panel.read(app).has_visible_queued_prompts()
                         {
@@ -2167,6 +2172,20 @@ impl Panel {
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
                                     this.handle_preview_command(&content, cx);
+                                    return;
+                                }
+                                if images.is_empty() && this.handle_embedded_commands(&content, cx) {
+                                    return;
+                                }
+                                if !images.is_empty() && this.handle_skill_invocation_with_images(&content, images.clone(), queued, cx) {
+                                    return;
+                                }
+                                if !images.is_empty()
+                                    && jcode_base::skill::SkillRegistry::parse_invocation(&content).is_some()
+                                {
+                                    this.items.push(Item::Error("Slash commands cannot be submitted with attachments. Submit the command first, then send the attachment.".into()));
+                                    this.input.update(cx, |input, cx| input.recall_prompt(&content, images, cx));
+                                    cx.notify();
                                     return;
                                 }
                                 if images.is_empty() && this.handle_slash_command(&content, cx) {
@@ -2312,6 +2331,9 @@ impl Panel {
             return self.handle_preview_command(content, cx);
         }
         let trimmed = content.trim();
+        if self.handle_skill_invocation(trimmed, cx) {
+            return true;
+        }
         if self.handle_special_command(trimmed, cx)
             || self.handle_recovery_command(trimmed, cx)
             || self.handle_runtime_command(trimmed, cx)
@@ -2552,13 +2574,77 @@ impl Panel {
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
                 ),
-                _ if trimmed.starts_with('/') => self.items.push(Item::Error(command_unavailable_message(trimmed).to_string())),
+                _ if jcode_base::skill::SkillRegistry::parse_invocation(trimmed).is_some() => self.items.push(Item::Error(command_unavailable_message(trimmed).to_string())),
                 _ => return false,
             }
         }
         self.stick_to_bottom = true;
         self.transcript_list.scroll_to_end();
         cx.notify();
+        true
+    }
+
+    fn handle_skill_invocation(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        self.handle_skill_invocation_with_images(content, Vec::new(), false, cx)
+    }
+
+    fn handle_skill_invocation_with_images(
+        &mut self,
+        content: &str,
+        images: Vec<(String, String)>,
+        queued: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(rest) = content.strip_prefix('/') else {
+            return false;
+        };
+        let Some((name, description)) = self
+            .skills
+            .iter()
+            .filter(|(name, _)| {
+                rest.strip_prefix(name)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+                    && (name == "selfdev"
+                        || crate::commands::registered_command(&format!("/{name}")).is_none())
+            })
+            .max_by_key(|(name, _)| name.len())
+            .cloned()
+        else {
+            return false;
+        };
+        let prompt = rest[name.len()..].trim();
+        let prompt = match prompt.as_bytes() {
+            [b'"', .., b'"'] | [b'\'', .., b'\''] if prompt.len() >= 2 => {
+                &prompt[1..prompt.len() - 1]
+            }
+            _ => prompt,
+        }
+        .to_string();
+        self.active_skill = Some(name.clone());
+        self.items.push(Item::Assistant(format!(
+            "Activated skill: {name} - {description}"
+        )));
+        if !prompt.is_empty() || !images.is_empty() {
+            self.submit_or_queue(prompt, images, queued, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    fn handle_embedded_commands(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        let mut names: Vec<String> = crate::commands::REGISTERED_COMMANDS
+            .iter()
+            .map(|command| command.name.to_string())
+            .collect();
+        names.extend(self.skills.iter().map(|(name, _)| format!("/{name}")));
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let matches = jcode_slash_command::find_known_commands(content, &refs);
+        if matches.is_empty() || (matches.len() == 1 && matches[0].start == 0) {
+            return false;
+        }
+        for command in jcode_slash_command::split_command_sequence(content, &matches) {
+            self.handle_slash_command(&command, cx);
+        }
         true
     }
 
@@ -3273,6 +3359,26 @@ impl Panel {
                 data,
                 message,
             } => {
+                if *command == jcode_sdk::api::RuntimeCommand::Skills {
+                    let skills = data["skills"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|skill| {
+                            Some((
+                                skill["name"].as_str()?.to_string(),
+                                skill["description"].as_str().unwrap_or("").to_string(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    self.skills = skills.clone();
+                    self.active_skill = data["active_skill"].as_str().map(str::to_owned);
+                    self.input
+                        .update(cx, |input, cx| input.set_skills(skills, cx));
+                    if message.is_empty() {
+                        return;
+                    }
+                }
                 let output = jcode_sdk::api::RuntimeCommandOutput {
                     session_id: session_id.clone(),
                     command: *command,
@@ -3779,7 +3885,10 @@ impl Panel {
         let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
-            || matches!(self.items.last(), Some(Item::Error(_) | Item::RuntimeError { .. }))
+            || matches!(
+                self.items.last(),
+                Some(Item::Error(_) | Item::RuntimeError { .. })
+            )
         {
             MinimapSessionState::Error
         } else if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
@@ -4358,16 +4467,23 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let display = crate::config::display();
-        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }) {
+        if display.screenshot_mode
+            && matches!(
+                item,
+                Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }
+            )
+        {
             return div()
                 .px_1()
                 .text_size(px(11.))
                 .text_color(Theme::global().TEXT_DIM)
-                .child(if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
-                    "Error details hidden"
-                } else {
-                    "Background task"
-                })
+                .child(
+                    if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
+                        "Error details hidden"
+                    } else {
+                        "Background task"
+                    },
+                )
                 .into_any_element();
         }
         let notice_title = match item {
@@ -5131,7 +5247,9 @@ impl Panel {
                     .into_any_element()
             }
             Item::Error(message) => self.render_recovery_error(index, message, false, window, cx),
-            Item::RuntimeError { message, .. } => self.render_recovery_error(index, message, true, window, cx),
+            Item::RuntimeError { message, .. } => {
+                self.render_recovery_error(index, message, true, window, cx)
+            }
         }
     }
 
@@ -10558,6 +10676,7 @@ mod tests {
 
         vcx.simulate_input("/effort x");
         vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
             Ok(Command::SessionOperation {
@@ -10567,6 +10686,7 @@ mod tests {
         ));
 
         vcx.simulate_input("/clear");
+        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
@@ -10601,6 +10721,7 @@ mod tests {
         });
 
         vcx.simulate_input("/update");
+        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
 
@@ -10793,6 +10914,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
         vcx.simulate_input("/models");
+        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_some());

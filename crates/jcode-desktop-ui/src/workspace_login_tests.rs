@@ -35,7 +35,12 @@ fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
 
 fn submit(vcx: &mut gpui::VisualTestContext, command: &str) {
     vcx.simulate_input(command);
+    vcx.run_until_parked();
+    let has_suggestions = vcx.debug_bounds("slash-command-overlay").is_some();
     vcx.simulate_keystrokes("enter");
+    if has_suggestions {
+        vcx.simulate_keystrokes("enter");
+    }
     vcx.run_until_parked();
 }
 
