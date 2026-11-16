@@ -269,7 +269,7 @@ impl Panel {
                     .child(notice.title().to_owned()),
             )
             .when(notice.shows_error(), |el| {
-                el.child(self.render_recovery_error(index, &notice.detail, window, cx))
+                el.child(self.render_recovery_error(index, &notice.detail, true, window, cx))
             })
             .when(!notice.shows_error(), |el| {
                 let copy = notice.raw.clone().unwrap_or_else(|| notice.detail.clone());

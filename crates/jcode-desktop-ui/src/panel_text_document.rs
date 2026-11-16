@@ -114,6 +114,7 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
         Item::User(text) | Item::Assistant(text) | Item::Reasoning(text) | Item::Error(text) => {
             text.hash(&mut state)
         }
+        Item::RuntimeError { message, .. } => message.hash(&mut state),
         Item::Tool {
             call_id,
             name,
@@ -180,7 +181,11 @@ fn segments_with_regions(
 ) -> Segments {
     if display.screenshot_mode {
         match item {
-            Item::Tool { .. } | Item::BackgroundTask { .. } | Item::Image(_) | Item::Error(_) => {
+            Item::Tool { .. }
+            | Item::BackgroundTask { .. }
+            | Item::Image(_)
+            | Item::Error(_)
+            | Item::RuntimeError { .. } => {
                 return Vec::new();
             }
             Item::Stopped(notice) => {
@@ -310,6 +315,12 @@ fn segments_with_regions(
             }
         }
         Item::Error(message) => {
+            push(format!("{index}-error"), message.clone());
+            if open.details {
+                push(format!("{index}-error-raw"), message.clone());
+            }
+        }
+        Item::RuntimeError { message, .. } => {
             push(
                 format!("{index}-error"),
                 recovery::native_error_message(message),

@@ -152,7 +152,7 @@ pub(crate) fn all_regions(items: &[Item]) -> HashSet<String> {
             Item::Tool { call_id, .. } => {
                 keys.insert(call_id.clone());
             }
-            Item::Error(_) => {
+            Item::Error(_) | Item::RuntimeError { .. } => {
                 keys.insert(key::details(index));
             }
             Item::Stopped(_) | Item::CacheMiss(_) => {

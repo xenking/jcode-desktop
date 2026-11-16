@@ -351,7 +351,13 @@ pub enum Item {
         done: bool,
     },
     Todos(TodoCardPayload),
+    /// A local UI/command failure, whose text is not a provider error.
     Error(String),
+    /// A structured error reported by the runtime API.
+    RuntimeError {
+        code: jcode_sdk::api::ErrorCode,
+        message: String,
+    },
     Stopped(stop_reason::StopNotice),
     /// A completed or in-progress context compaction: one full-width rule with a
     /// centered label that expands to the summary and elided-message detail.
@@ -3587,11 +3593,14 @@ impl Panel {
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
             }
-            ApiEvent::Error { message, .. } => {
+            ApiEvent::Error { code, message } => {
                 self.finish_response();
                 if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
                 {
-                    self.items.push(Item::Error(message.clone()));
+                    self.items.push(Item::RuntimeError {
+                        code: *code,
+                        message: message.clone(),
+                    });
                 }
             }
             _ => {}
@@ -3757,7 +3766,7 @@ impl Panel {
         let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
-            || matches!(self.items.last(), Some(Item::Error(_)))
+            || matches!(self.items.last(), Some(Item::Error(_) | Item::RuntimeError { .. }))
         {
             MinimapSessionState::Error
         } else if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
@@ -4336,12 +4345,12 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let display = crate::config::display();
-        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::BackgroundTask { .. }) {
+        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }) {
             return div()
                 .px_1()
                 .text_size(px(11.))
                 .text_color(Theme::global().TEXT_DIM)
-                .child(if matches!(item, Item::Error(_)) {
+                .child(if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
                     "Error details hidden"
                 } else {
                     "Background task"
@@ -5108,7 +5117,8 @@ impl Panel {
                     })
                     .into_any_element()
             }
-            Item::Error(message) => self.render_recovery_error(index, message, window, cx),
+            Item::Error(message) => self.render_recovery_error(index, message, false, window, cx),
+            Item::RuntimeError { message, .. } => self.render_recovery_error(index, message, true, window, cx),
         }
     }
 
@@ -6590,7 +6600,8 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Compaction(_)
         | Item::CacheMiss(_)
         | Item::Applet(_)
-        | Item::Error(_) => None,
+        | Item::Error(_)
+        | Item::RuntimeError { .. } => None,
     }
 }
 

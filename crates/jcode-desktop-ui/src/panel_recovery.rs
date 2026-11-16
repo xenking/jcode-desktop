@@ -153,7 +153,9 @@ fn action_pill(id: &'static str, index: usize, label: &'static str) -> gpui::Sta
 impl Panel {
     fn can_resume_error(&self, index: usize, message: &str) -> bool {
         let confirmed_failure = match self.items.get(index) {
-            Some(Item::Error(current)) => current == message,
+            Some(Item::RuntimeError {
+                message: current, ..
+            }) => current == message,
             Some(Item::Stopped(notice)) => {
                 notice.shows_error() && !notice.provisional && notice.detail == message
             }
@@ -286,10 +288,15 @@ impl Panel {
         &self,
         index: usize,
         message: &str,
+        runtime_error: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let kind = recovery_kind(message);
+        let kind = if runtime_error {
+            recovery_kind(message)
+        } else {
+            RecoveryKind::Other
+        };
         let details = message.to_string();
         // The native summary above is a rewrite of the provider's text. Keep
         // the original one click away, in full, instead of only on the
@@ -311,7 +318,11 @@ impl Panel {
             .child(text_selection::plain(
                 self.transcript_selection.clone(),
                 format!("{index}-error"),
-                native_error_message(message),
+                if runtime_error {
+                    native_error_message(message)
+                } else {
+                    message.to_owned()
+                },
                 window,
                 cx,
             ))
