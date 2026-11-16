@@ -307,7 +307,11 @@ unsafe extern "C-unwind" fn activate(
             let app = unsafe { &*app.cast::<App>() };
             workspace::restart::take_restore_state(window, app)
         };
-        restart.or_else(workspace::recovery::load)
+        restart.or_else(|| {
+            let window = unsafe { &*window.cast::<Window>() };
+            let app = unsafe { &*app.cast::<App>() };
+            workspace::recovery::load(window, app)
+        })
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
@@ -334,12 +338,16 @@ unsafe extern "C-unwind" fn activate(
             // A shared single-panel host owns other people's windows. Quit
             // closes this one; the process exits after its last window.
             if jcode_desktop_api::WindowLaunches::shared(cx)
-                && let Some(window) = cx.active_window() {
-                    cx.defer(move |cx| {
-                        let _ = window.update(cx, |_, window, _| window.remove_window());
+                && let Some(window) = cx.active_window()
+            {
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        workspace::recovery::clean_window(window, cx);
+                        window.remove_window();
                     });
-                    return;
-                }
+                });
+                return;
+            }
             cx.quit()
         });
         let workspace =

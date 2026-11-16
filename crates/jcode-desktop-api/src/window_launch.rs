@@ -107,6 +107,12 @@ impl WindowLaunches {
         cx.has_global::<Self>()
     }
 
+    /// Forwarded launches are separate, intentionally fresh windows.
+    pub fn is_forwarded(cx: &App, window: u64) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|launches| launches.0.contains_key(&window))
+    }
+
     pub fn insert(cx: &mut App, window: u64, launch: WindowLaunch) {
         Self::install(cx);
         cx.global_mut::<Self>().0.insert(window, launch);

@@ -36,18 +36,33 @@ fn now_ms() -> u64 {
 }
 
 fn filename(mode: jcode_desktop_api::LaunchMode) -> Option<&'static str> {
-    // Standalone invocations are always fresh. They must neither consume nor
-    // overwrite the main workspace's checkpoint (or another standalone's).
-    // In-process Ctrl+R snapshots remain available without a recovery file.
+    // Keep the primary single-panel window separate from spatial workspaces.
     match mode {
-        jcode_desktop_api::LaunchMode::SinglePanel => None,
+        jcode_desktop_api::LaunchMode::SinglePanel => Some("crash-recovery-single-panel.json"),
         jcode_desktop_api::LaunchMode::NoSidebar => Some("crash-recovery-no-sidebar.json"),
         jcode_desktop_api::LaunchMode::Workspace => Some("crash-recovery.json"),
     }
 }
 
-fn path() -> Option<PathBuf> {
-    let name = filename(jcode_desktop_api::LaunchMode::from_args(std::env::args_os()))?;
+fn recovery_enabled(launch: &jcode_desktop_api::WindowLaunch, forwarded: bool) -> bool {
+    use jcode_desktop_api::LaunchMode;
+    let mode = LaunchMode::from_args(&launch.args);
+    mode != LaunchMode::SinglePanel
+        || (!forwarded
+            && !LaunchMode::resume_requested(&launch.args)
+            && LaunchMode::requested_session(&launch.args).is_none())
+}
+
+fn path(window: &Window, app: &App) -> Option<PathBuf> {
+    let id = window.window_handle().window_id().as_u64();
+    let launch = jcode_desktop_api::WindowLaunches::get(app, id);
+    if !recovery_enabled(
+        &launch,
+        jcode_desktop_api::WindowLaunches::is_forwarded(app, id),
+    ) {
+        return None;
+    }
+    let name = filename(jcode_desktop_api::LaunchMode::from_args(&launch.args))?;
     Some(crate::learning::state_path()?.with_file_name(name))
 }
 
@@ -138,8 +153,8 @@ fn write(path: &Path, checkpoint: &Checkpoint) -> anyhow::Result<()> {
     result
 }
 
-pub(crate) fn load() -> Option<WorkspaceSnapshot> {
-    let path = path()?;
+pub(crate) fn load(window: &Window, app: &App) -> Option<WorkspaceSnapshot> {
+    let path = path(window, app)?;
     let _lock = lock(&path).ok()?;
     let checkpoint = read(&path)?;
     let now = now_ms();
@@ -186,9 +201,28 @@ struct Writer {
 struct SuspendedSnapshot {
     window_id: gpui::WindowId,
     snapshot: Rc<RefCell<Option<WorkspaceSnapshot>>>,
+    writer: Writer,
+    workspace: gpui::WeakEntity<Workspace>,
 }
 
 impl gpui::Global for SuspendedSnapshot {}
+
+/// Capture the last edits before a shared single-panel window is destroyed.
+pub(crate) fn clean_window(window: &Window, app: &App) {
+    let Some(state) = app.try_global::<SuspendedSnapshot>() else {
+        return;
+    };
+    if state.window_id != window.window_handle().window_id() {
+        return;
+    }
+    let snapshot = state
+        .workspace
+        .upgrade()
+        .and_then(|workspace| workspace.read(app).snapshot(window, app).ok());
+    if let Err(error) = state.writer.clean_quit(snapshot) {
+        eprintln!("failed to save closing desktop workspace: {error:#}");
+    }
+}
 
 pub(super) fn remember_reload_snapshot(snapshot: &WorkspaceSnapshot, window: &Window, app: &App) {
     if let Some(suspended) = app.try_global::<SuspendedSnapshot>()
@@ -260,7 +294,9 @@ impl Writer {
 /// Install at the plugin boundary so Ctrl+R enables recovery in existing hosts.
 /// The loop retains only a weak workspace, never an old generation's panels.
 pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut App) {
-    let Some(path) = path() else { return };
+    let Some(path) = path(window, app) else {
+        return;
+    };
     install_at_path(workspace, window, app, path);
 }
 
@@ -286,7 +322,17 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
     app.set_global(SuspendedSnapshot {
         window_id: quit_window.window_id(),
         snapshot: suspended_snapshot.clone(),
+        writer: writer.clone(),
+        workspace: workspace.downgrade(),
     });
+    if jcode_desktop_api::WindowLaunches::shared(app) {
+        // Unlike the spatial host, this host does not install a suspend
+        // handler. Native close destroys the root before app quit can read it.
+        window.on_window_should_close(app, |window, app| {
+            clean_window(window, app);
+            true
+        });
+    }
     app.on_app_quit(move |app| {
         let snapshot = quit_window
             .update(app, |_, window, app| {
@@ -336,6 +382,134 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::AppContext;
+
+    fn relaunch_restores_tabs_and_pending_ask(cx: &mut gpui::TestAppContext, single: bool) {
+        use jcode_desktop_api::LaunchMode;
+        cx.update(crate::bind_workspace_keys);
+        let mode = if single {
+            LaunchMode::SinglePanel
+        } else {
+            LaunchMode::Workspace
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root
+            .path()
+            .join(filename(mode).expect("launch mode must persist its workspace"));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.single_panel = single;
+            workspace.push_test_panel("session-a", cx);
+            workspace.push_test_panel("session-b", cx);
+            workspace.active = 1;
+            workspace.row_focus[0] = Some(workspace.slots[1].panel.entity_id());
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(1))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(
+            r#"{
+            "ev":"ask_request", "session_id":"session-b", "request_id":"ask-1",
+            "tool_call_id":"tool-1", "questions":[{"header":"Database",
+            "question":"Which database?", "options":[{"label":"Postgres"},{"label":"SQLite"}]}]
+        }"#,
+        )
+        .unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_keystrokes("2 n");
+        vcx.simulate_input("important note");
+        vcx.run_until_parked();
+        let snapshot = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        let draft = serde_json::to_value(&snapshot.slots[1].panel).unwrap();
+        assert_eq!(draft["ask_draft"]["chosen"][0], serde_json::json!([1]));
+        assert_eq!(draft["ask_draft"]["comments"][0][1], "important note");
+        let writer = Writer::begin(path.clone(), snapshot.clone()).unwrap();
+        writer.clean_quit(Some(snapshot)).unwrap();
+        let recovered = restore(&read(&path).unwrap(), now_ms(), false).unwrap();
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let workspace = vcx.update(|_, cx| {
+            cx.new(|cx| {
+                let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+                workspace.single_panel = single;
+                workspace
+            })
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.bridge = bridge;
+            workspace.apply_snapshot(recovered, cx);
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(workspace.active, 1);
+            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "session-a");
+            assert_eq!(workspace.slots[1].panel.read(cx).session_id, "session-b");
+        });
+        let watched: Vec<_> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
+        assert!(watched.iter().any(|cmd| matches!(cmd, crate::harness::Command::Watch { session_id } if session_id == "session-b")));
+        let restored = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(1))
+            .unwrap();
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::Event {
+                    session_id: "session-b".into(),
+                    event,
+                },
+                cx,
+            );
+        });
+        let restored_draft = restored.read_with(vcx, |panel, cx| {
+            serde_json::to_value(panel.snapshot(cx)).unwrap()
+        });
+        assert_eq!(
+            restored_draft["ask_draft"]["chosen"][0],
+            serde_json::json!([1])
+        );
+        assert_eq!(
+            restored_draft["ask_draft"]["comments"][0][1],
+            "important note"
+        );
+    }
+
+    #[gpui::test]
+    fn relaunch_restores_single_panel_tabs_and_ask(cx: &mut gpui::TestAppContext) {
+        relaunch_restores_tabs_and_pending_ask(cx, true);
+    }
+
+    #[gpui::test]
+    fn relaunch_restores_workspace_tabs_and_ask(cx: &mut gpui::TestAppContext) {
+        relaunch_restores_tabs_and_pending_ask(cx, false);
+    }
+
+    #[gpui::test]
+    fn single_panel_native_close_saves_latest_state(cx: &mut gpui::TestAppContext) {
+        cx.update(jcode_desktop_api::WindowLaunches::install);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("single.json");
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.single_panel = true;
+            workspace.push_test_panel("first", cx);
+            workspace
+        });
+        vcx.update(|window, app| install_at_path(&workspace, window, app, path.clone()));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("second", cx);
+            workspace.active = 1;
+            workspace.row_focus[0] = Some(workspace.slots[1].panel.entity_id());
+        });
+        assert!(vcx.simulate_close());
+        let record = read(&path).unwrap();
+        assert!(record.clean);
+        assert_eq!(record.snapshot.slots.len(), 2);
+        assert_eq!(record.snapshot.active, 1);
+        assert_eq!(record.snapshot.slots[1].panel.session_id, "second");
+    }
 
     fn snapshot() -> WorkspaceSnapshot {
         WorkspaceSnapshot::decode(br#"{"format_version":1,"slots":[],"active":0,"active_row":0,"row_focus":[null,null,null,null],"previous":null,"camera_x":[0,0,0,0],"camera_target":[0,0,0,0],"overview":false,"hints_overlay":false,"folder_picker_dir":null,"folder_picker_error":null,"folder_search":null,"focus":"Workspace"}"#).unwrap()
@@ -472,14 +646,26 @@ mod tests {
     }
 
     #[test]
-    fn single_panel_never_consumes_or_overwrites_workspace_recovery() {
+    fn single_panel_recovery_is_separate_and_fresh_launches_are_excluded() {
         use jcode_desktop_api::LaunchMode;
-        assert_eq!(filename(LaunchMode::SinglePanel), None);
+        use jcode_desktop_api::WindowLaunch;
+        assert_eq!(
+            filename(LaunchMode::SinglePanel),
+            Some("crash-recovery-single-panel.json")
+        );
         assert_eq!(filename(LaunchMode::Workspace), Some("crash-recovery.json"));
         assert_eq!(
             filename(LaunchMode::NoSidebar),
             Some("crash-recovery-no-sidebar.json")
         );
+        let launch = |args: &[&str]| WindowLaunch::from_parts(args.iter().copied(), []);
+        assert!(recovery_enabled(&launch(&["--single-panel"]), false));
+        assert!(!recovery_enabled(&launch(&["--single-panel"]), true));
+        assert!(!recovery_enabled(
+            &launch(&["--single-panel", "--session=other"]),
+            false
+        ));
+        assert!(!recovery_enabled(&launch(&["--resume"]), false));
     }
 
     #[test]
