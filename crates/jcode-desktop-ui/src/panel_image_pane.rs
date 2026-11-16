@@ -56,6 +56,10 @@ impl Panel {
             _ => None,
         }
         .unwrap_or_else(|| format!("[#image {number}]"));
+        let label = label
+            .trim_start_matches("[#")
+            .trim_end_matches(']')
+            .to_owned();
         let preview = image.clone();
         div()
             .flex()
@@ -64,6 +68,9 @@ impl Panel {
                 div()
                     .id(("transcript-user-image-chip", index))
                     .debug_selector(|| "transcript-user-image-chip".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
                     .rounded_full()
                     .px_2()
                     .py_1()
@@ -72,6 +79,13 @@ impl Panel {
                     .bg(Theme::global().USER_BG)
                     .cursor_pointer()
                     .hover(|style| style.text_color(Theme::global().TEXT))
+                    .children(image.preview.clone().map(|image| {
+                        img(crate::image_cache::source(image))
+                            .debug_selector(|| "transcript-fallback-thumbnail".into())
+                            .size(px(14.))
+                            .rounded_sm()
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_image_preview(preview.clone(), window, cx);

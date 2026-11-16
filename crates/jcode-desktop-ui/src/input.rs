@@ -2790,30 +2790,49 @@ impl Element for TextElement {
         // Keep source byte offsets intact for editing, selection and submission,
         // while reserving the opening brackets for the thumbnail.
         if !input.content.is_empty() {
-            let hidden: Vec<_> = input.chip_ranges().into_iter().flat_map(|(_, range)| {
-                [range.start..(range.start + 2).min(range.end), range.end.saturating_sub(1)..range.end]
-            }).collect();
+            let hidden: Vec<_> = input
+                .chip_ranges()
+                .into_iter()
+                .flat_map(|(_, range)| {
+                    [
+                        range.start..(range.start + 2).min(range.end),
+                        range.end.saturating_sub(1)..range.end,
+                    ]
+                })
+                .collect();
             let mut offset = 0;
-            runs = runs.into_iter().flat_map(|run| {
-                let start = offset;
-                let end = start + run.len;
-                offset = end;
-                let mut cuts = vec![start, end];
-                for range in &hidden {
-                    if range.start > start && range.start < end { cuts.push(range.start); }
-                    if range.end > start && range.end < end { cuts.push(range.end); }
-                }
-                cuts.sort_unstable();
-                cuts.dedup();
-                cuts.windows(2).map(|pair| {
-                    let mut part = run.clone();
-                    part.len = pair[1] - pair[0];
-                    if hidden.iter().any(|range| range.start <= pair[0] && pair[1] <= range.end) {
-                        part.color.a = 0.;
+            runs = runs
+                .into_iter()
+                .flat_map(|run| {
+                    let start = offset;
+                    let end = start + run.len;
+                    offset = end;
+                    let mut cuts = vec![start, end];
+                    for range in &hidden {
+                        if range.start > start && range.start < end {
+                            cuts.push(range.start);
+                        }
+                        if range.end > start && range.end < end {
+                            cuts.push(range.end);
+                        }
                     }
-                    part
-                }).collect::<Vec<_>>()
-            }).collect();
+                    cuts.sort_unstable();
+                    cuts.dedup();
+                    cuts.windows(2)
+                        .map(|pair| {
+                            let mut part = run.clone();
+                            part.len = pair[1] - pair[0];
+                            if hidden
+                                .iter()
+                                .any(|range| range.start <= pair[0] && pair[1] <= range.end)
+                            {
+                                part.color.a = 0.;
+                            }
+                            part
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
         }
         if let Some(ghost) = &ghost {
             runs.push(TextRun {
@@ -2992,9 +3011,14 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
-            let positions: Vec<_> = input.chip_ranges().into_iter().filter_map(|(index, range)| {
-                line.position_for_index(range.start, window.line_height()).map(|position| (index, position))
-            }).collect();
+            let positions: Vec<_> = input
+                .chip_ranges()
+                .into_iter()
+                .filter_map(|(index, range)| {
+                    line.position_for_index(range.start, window.line_height())
+                        .map(|position| (index, position))
+                })
+                .collect();
             if input.chip_positions != positions {
                 input.chip_positions = positions;
                 let entity = _cx.entity();
@@ -3364,14 +3388,27 @@ impl Render for PromptInput {
                             ))
                             .text_color(Theme::global().TEXT)
                             .child(
-                                div().relative().child(TextElement { input: cx.entity() })
-                                    .children(self.chip_positions.iter().filter_map(|(index, position)| {
-                                        let image = self.attachments.get(*index)?.preview.clone();
-                                        Some(img(crate::image_cache::source(image))
-                                            .debug_selector(|| "composer-image-thumbnail".into())
-                                            .absolute().left(position.x).top(position.y + px(1.))
-                                            .size(px(14.)).rounded_sm().object_fit(gpui::ObjectFit::Cover))
-                                    }))
+                                div()
+                                    .relative()
+                                    .child(TextElement { input: cx.entity() })
+                                    .children(self.chip_positions.iter().filter_map(
+                                        |(index, position)| {
+                                            let image =
+                                                self.attachments.get(*index)?.preview.clone();
+                                            Some(
+                                                img(crate::image_cache::source(image))
+                                                    .debug_selector(|| {
+                                                        "composer-image-thumbnail".into()
+                                                    })
+                                                    .absolute()
+                                                    .left(position.x)
+                                                    .top(position.y + px(1.))
+                                                    .size(px(14.))
+                                                    .rounded_sm()
+                                                    .object_fit(gpui::ObjectFit::Cover),
+                                            )
+                                        },
+                                    )),
                             ),
                     ),
             )
@@ -3445,6 +3482,69 @@ mod tests {
             assert_eq!(input.content.as_ref(), "before after");
             assert!(input.attachments.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn composer_thumbnail_opens_its_image(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("before ".into(), cx);
+            input.selected_range = 7..7;
+            input.attach_image(crate::clipboard_image::ClipboardImage {
+                media_type: "image/png".into(),
+                bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                width: 1000, height: 600,
+            }, cx);
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.run_until_parked();
+        let thumbnail = vcx.debug_bounds("composer-image-thumbnail").expect("thumbnail is painted");
+        assert_eq!(thumbnail.size, size(px(14.), px(14.)));
+        assert!(vcx.debug_bounds("prompt-editor").unwrap().contains(&thumbnail.center()));
+        vcx.simulate_click(thumbnail.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_some()));
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn composer_image_modal_is_bounded_and_dismissible(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 1000,
+                    height: 600,
+                },
+                cx,
+            );
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let modal = vcx.debug_bounds("paste-image-preview-dialog").unwrap();
+        assert!(modal.size.width <= px(640.) && modal.size.height <= px(480.));
+        assert!((modal.center().x - px(400.)).abs() < px(1.));
+        assert!((modal.center().y - px(300.)).abs() < px(1.));
+        vcx.simulate_click(point(px(5.), px(5.)), Default::default());
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_none()));
+        input.update(vcx, |input, cx| {
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_none()));
     }
 
     #[gpui::test]

@@ -1013,7 +1013,19 @@ thread_local! {
 pub(crate) struct PromptImages {
     pub labels: Vec<String>,
     pub previews: Vec<Option<Arc<gpui::Image>>>,
-    pub on_click: std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>,
+    pub on_click: PromptImageClick,
+}
+
+type PromptImageClick = std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>;
+
+#[cfg(test)]
+thread_local! {
+    static PAINTED_PROMPT_THUMBNAILS: std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_painted_prompt_thumbnails() -> Vec<gpui::Bounds<gpui::Pixels>> {
+    PAINTED_PROMPT_THUMBNAILS.with(|painted| std::mem::take(&mut *painted.borrow_mut()))
 }
 
 /// Scope marker callbacks to this synchronous document render, restoring even
@@ -1129,7 +1141,7 @@ fn styled_line_layout(
                 let chip = HighlightStyle { background_color: Some(to_hsla(Theme::global().USER_BG)), ..Default::default() };
                 inline.highlights.push((range.clone(), chip));
                 let invisible = HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() };
-                inline.highlights.push((range.start..range.start + 2, invisible.clone()));
+                inline.highlights.push((range.start..range.start + 2, invisible));
                 inline.highlights.push((range.end - 1..range.end, invisible));
                 if let Some(Some(image)) = images.previews.get(index) {
                     thumbnails.push((range.start, image.clone()));
@@ -1224,7 +1236,13 @@ fn styled_line_layout(
                         let gpui::ImageSource::Custom(load) = crate::image_cache::source(image) else { continue };
                         if let Some(Ok(image)) = load(window, cx) {
                             let bounds = gpui::Bounds::new(position + gpui::point(px(0.), px(1.)), gpui::size(px(14.), px(14.)));
-                            let _ = window.paint_image(bounds, bounds, gpui::Corners::all(px(3.)), image, 0, false);
+                            let result = window.paint_image(bounds, bounds, gpui::Corners::all(px(3.)), image, 0, false);
+                            #[cfg(test)]
+                            if result.is_ok() {
+                                PAINTED_PROMPT_THUMBNAILS.with(|painted| painted.borrow_mut().push(bounds));
+                            }
+                            #[cfg(not(test))]
+                            let _ = result;
                         }
                     }
                 }).absolute().top_0().left_0().size_full()))

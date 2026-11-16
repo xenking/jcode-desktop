@@ -21,6 +21,37 @@ fn user_image_marker_is_the_only_preview_control(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
+async fn transcript_thumbnail_paints_decoded_image_in_the_marker(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("inline-image-painted".into(), None, None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        *panel.items = vec![Item::User("Look at [#image 1] here".into()), Item::Image(image_preview::fixture_image())];
+        cx.notify();
+    });
+    crate::markdown::take_painted_prompt_thumbnails();
+    let mut painted = Vec::new();
+    for _ in 0..128 {
+        panel.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        painted.extend(crate::markdown::take_painted_prompt_thumbnails());
+        if !painted.is_empty() { break; }
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded { std::task::Poll::Ready(()) } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }).await;
+    }
+    let thumbnail = painted.first().expect("decoded thumbnail must paint");
+    assert_eq!(thumbnail.size, gpui::size(px(14.), px(14.)));
+    let prompt = vcx.debug_bounds("prompt-content-0").unwrap();
+    assert!(prompt.contains(&thumbnail.center()), "thumbnail is inside the actual prompt");
+}
+
+#[gpui::test]
 fn user_image_markers_follow_submission_order_and_turn_boundaries(cx: &mut gpui::TestAppContext) {
     let panel = cx.new(|cx| Panel::new("image-order".into(), None, None, crate::harness::spawn_inert(), cx));
     panel.update(cx, |panel, _| {
@@ -121,6 +152,8 @@ fn user_image_without_marker_has_compact_fallback_preview(cx: &mut gpui::TestApp
     let chip = vcx
         .debug_bounds("transcript-user-image-chip")
         .expect("compact chip");
+    let thumbnail = vcx.debug_bounds("transcript-fallback-thumbnail").expect("fallback thumbnail");
+    assert_eq!(thumbnail.size, gpui::size(px(14.), px(14.)));
     assert!(chip.size.height < px(40.));
     vcx.simulate_click(chip.center(), Default::default());
     vcx.run_until_parked();
