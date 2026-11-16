@@ -114,16 +114,6 @@ impl StopNotice {
     }
 }
 
-/// The cause in plain words, unless it only restates the title.
-fn connection_lost_detail(reason: &str) -> String {
-    let cause = crate::friendly_error::summarize(reason);
-    if cause.starts_with("Lost connection") {
-        "The response may still be running.".into()
-    } else {
-        format!("{cause} The response may still be running.")
-    }
-}
-
 impl Panel {
     pub(super) fn record_cancel_requested(&mut self, cx: &mut Context<Self>) {
         self.record_stop(StopNotice::cancel_requested());
@@ -224,17 +214,8 @@ impl Panel {
     }
 
     pub(crate) fn connection_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
-        if self.activity_active() || !self.pending_users.is_empty() {
-            self.record_stop(StopNotice {
-                title: "Connection lost. Reconnecting…".into(),
-                detail: connection_lost_detail(reason),
-                provider_stop_reason: None,
-                failure: false,
-                provisional: true,
-                raw: Some(reason.to_owned()),
-                retry: AutoRetry::None,
-            });
-        }
+        // A reconnect is not evidence that the turn stopped. Keep streaming
+        // state and tool rows intact until the runtime confirms an outcome.
         self.status = format!("lost: {}", crate::friendly_error::summarize(reason));
         cx.notify();
     }
