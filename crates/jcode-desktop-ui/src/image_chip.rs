@@ -128,10 +128,11 @@ impl Element for PositionedChips {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.position = Position::Absolute;
-        style.size.width = relative(1.).into();
-        style.size.height = relative(1.).into();
+        let style = Style {
+            position: Position::Absolute,
+            size: size(relative(1.).into(), relative(1.).into()),
+            ..Default::default()
+        };
         (window.request_layout(style, [], cx), ())
     }
     fn prepaint(
@@ -150,15 +151,14 @@ impl Element for PositionedChips {
             ) else {
                 continue;
             };
-            if start.y != end.y {
-                if let Some(next) = self.layout.position_for_index(range.start + 1) {
-                    if next.y == end.y {
-                        start = gpui::point(
-                            next.x - (end.x - next.x) / (range.len() - 1) as f32,
-                            next.y,
-                        );
-                    }
-                }
+            if start.y != end.y
+                && let Some(next) = self.layout.position_for_index(range.start + 1)
+                && next.y == end.y
+            {
+                start = gpui::point(
+                    next.x - (end.x - next.x) / (range.len() - 1) as f32,
+                    next.y,
+                );
             }
             if start.y != end.y {
                 continue;

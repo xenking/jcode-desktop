@@ -8081,6 +8081,7 @@ impl Workspace {
                     ),
             );
         }
+        let mut send_mode_setting = None;
         if let Some(slot) = self.slots.get(self.active) {
             let after_yield = slot.panel.read(cx).default_send_after_yield();
             let mut choices = div().flex().gap_1();
@@ -8102,7 +8103,7 @@ impl Workspace {
                         .child(label),
                 );
             }
-            settings = settings.child(
+            send_mode_setting = Some(
                 div().flex_none().px_2().py_2().rounded_sm().bg(Theme::global().PANEL_BG)
                     .flex().flex_col().gap_1()
                     .child("Default send mode (current session)")
@@ -8145,6 +8146,7 @@ impl Workspace {
                         .child("Color palettes are in the Theme tab."),
                 )
             })
+            .children(send_mode_setting)
             .child(about)
             .into_any_element()
     }
@@ -16280,6 +16282,14 @@ mod tests {
         });
         vcx.run_until_parked();
         click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
+        let settings = vcx.debug_bounds("workspace-settings").unwrap();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: settings.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-600.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
         let after = vcx.debug_bounds("settings-send-after-yield").expect("settings choice");
         vcx.simulate_click(after.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
