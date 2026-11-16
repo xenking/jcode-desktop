@@ -6,6 +6,53 @@ use jcode_sdk::desktop_control::{
 include!("workspace_control_open_tests.rs");
 
 #[gpui::test]
+fn expand_tool_requires_exact_existing_call_and_is_idempotent(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w.slots[0].panel.update(cx, |p, _| p.control_test_tool());
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-a".into(),
+        };
+        let req = |selector: &str| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action: DesktopAction::ExpandTool {
+                target: target.clone(),
+                selector: selector.into(),
+                allow_user_window: false,
+            },
+        };
+        assert!(matches!(
+            w.handle_desktop_request(req("missing"), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(req("call-1"), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(req("call-1"), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert!(
+            w.slots[0].panel.read(cx).control_state(cx)["expanded_regions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "call-1")
+        );
+    });
+}
+
+#[gpui::test]
 fn state_targets_exact_window_and_session(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);

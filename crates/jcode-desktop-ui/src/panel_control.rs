@@ -2,6 +2,34 @@
 use super::*;
 
 impl Panel {
+    #[cfg(test)]
+    pub(crate) fn control_test_tool(&mut self) {
+        *self.items = vec![Item::Tool {
+            call_id: "call-1".into(),
+            name: "read".into(),
+            input: "{}".into(),
+            output: "result".into(),
+            done: true,
+            error: None,
+        }];
+    }
+    pub(crate) fn control_expand_tool(&mut self, call_id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(name) = self.items.iter().find_map(|item| match item {
+            Item::Tool {
+                call_id: id, name, ..
+            } if id == call_id => Some(name.as_str()),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let expanded = self.expanded_regions.contains(call_id)
+            ^ (name == "agentgrep" && crate::config::display().show_agentgrep_output);
+        if !expanded {
+            self.toggle_region(call_id, cx);
+        }
+        true
+    }
+
     pub(crate) fn control_state(&self, cx: &App) -> serde_json::Value {
         let ask = self.ask_card.as_ref().map(|card| {
             serde_json::json!({

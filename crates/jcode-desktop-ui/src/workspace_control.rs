@@ -172,6 +172,25 @@ impl Workspace {
                 input.update(cx, |input, cx| input.set_content(text, cx));
                 ok(json!({}))
             }
+            DesktopAction::ExpandTool {
+                target, selector, ..
+            } => {
+                let index = match self.control_target(&target, window, cx) {
+                    Ok(index) => index,
+                    Err(error) => return error,
+                };
+                if self.slots[index]
+                    .panel
+                    .update(cx, |panel, cx| panel.control_expand_tool(&selector, cx))
+                {
+                    ok(json!({"selector": selector, "expanded": true}))
+                } else {
+                    error(
+                        "selector_not_found",
+                        "tool call ID is not present in this session",
+                    )
+                }
+            }
             DesktopAction::Render {
                 target,
                 selector,
