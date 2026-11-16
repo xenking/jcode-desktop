@@ -3779,7 +3779,10 @@ impl Panel {
         let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
-            || matches!(self.items.last(), Some(Item::Error(_) | Item::RuntimeError { .. }))
+            || matches!(
+                self.items.last(),
+                Some(Item::Error(_) | Item::RuntimeError { .. })
+            )
         {
             MinimapSessionState::Error
         } else if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
@@ -4358,16 +4361,23 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let display = crate::config::display();
-        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }) {
+        if display.screenshot_mode
+            && matches!(
+                item,
+                Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }
+            )
+        {
             return div()
                 .px_1()
                 .text_size(px(11.))
                 .text_color(Theme::global().TEXT_DIM)
-                .child(if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
-                    "Error details hidden"
-                } else {
-                    "Background task"
-                })
+                .child(
+                    if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
+                        "Error details hidden"
+                    } else {
+                        "Background task"
+                    },
+                )
                 .into_any_element();
         }
         let notice_title = match item {
@@ -5131,7 +5141,9 @@ impl Panel {
                     .into_any_element()
             }
             Item::Error(message) => self.render_recovery_error(index, message, false, window, cx),
-            Item::RuntimeError { message, .. } => self.render_recovery_error(index, message, true, window, cx),
+            Item::RuntimeError { message, .. } => {
+                self.render_recovery_error(index, message, true, window, cx)
+            }
         }
     }
 
@@ -10228,6 +10240,94 @@ mod tests {
                 [Item::User(_), Item::Image(_)]
             ));
         });
+    }
+
+    #[gpui::test]
+    fn peer_prompt_paints_at_end_of_long_history(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.unwrap();
+        panel.update(vcx, |panel, cx| {
+            let messages = (0..40)
+                .map(|i| {
+                    serde_json::json!({
+                        "role": if i % 2 == 0 { "user" } else { "assistant" },
+                        "content": format!("previous message {i}")
+                    })
+                })
+                .collect::<Vec<_>>();
+            panel.load_history(serde_json::from_value(messages.into()).unwrap(), vec![], cx);
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.transcript_list.scroll_to_end();
+            panel.stick_to_bottom = true;
+            panel.apply(
+                &ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "давай делать".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ReasoningDelta {
+                    session_id: "session-a".into(),
+                    text: "thinking".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let bounds = vcx
+            .debug_bounds("user-prompt-40")
+            .expect("peer prompt paints at the bottom");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn peer_prompt_paints_in_workspace_after_previous_answer(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel.items.push(Item::Assistant("previous answer".into()));
+            panel.apply(
+                &ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "давай делать".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ReasoningDelta {
+                    session_id: "session-a".into(),
+                    text: "thinking".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let bounds = vcx
+            .debug_bounds("user-prompt-1")
+            .expect("peer prompt card paints");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     }
 
     #[gpui::test]
