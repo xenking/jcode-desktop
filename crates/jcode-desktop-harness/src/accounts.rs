@@ -54,6 +54,11 @@ pub struct BankedReset {
     /// Login the reset is pinned to. `None` is the default login.
     pub account_label: Option<String>,
     pub available_count: u64,
+    /// Number currently usable, absent for older CLI versions.
+    pub usable_count: Option<u64>,
+    pub expires_at: Option<String>,
+    pub cached_source: Option<String>,
+    pub session_reset_available: Option<bool>,
     /// The limit is actually enforced, so a reset helps right now.
     pub limit_reached: bool,
     /// RFC3339 time the next reset becomes available when none is left.
@@ -95,6 +100,12 @@ impl BankedReset {
             provider,
             account_label: text("account_label"),
             available_count: value.get("available_count")?.as_u64()?,
+            usable_count: value.get("usable_count").and_then(|v| v.as_u64()),
+            expires_at: text("expires_at"),
+            cached_source: text("cached_source"),
+            session_reset_available: value
+                .get("session_reset_available")
+                .and_then(|v| v.as_bool()),
             limit_reached: value
                 .get("limit_reached")
                 .and_then(|v| v.as_bool())
@@ -106,7 +117,9 @@ impl BankedReset {
     /// Worth offering: redeemable now. Availability can be inspected before
     /// limits bind, but neither provider's reset should be offered early.
     pub fn offerable(&self) -> bool {
-        self.available_count > 0 && self.limit_reached
+        self.session_reset_available
+            .unwrap_or(self.available_count > 0)
+            && self.limit_reached
     }
 
     /// Compact pill caption.
@@ -391,6 +404,10 @@ pub fn spawn() -> Feed {
                         provider: ResetProvider::Claude,
                         account_label: None,
                         available_count: 1,
+                        usable_count: None,
+                        expires_at: None,
+                        cached_source: None,
+                        session_reset_available: None,
                         limit_reached: true,
                         next_available_at: None,
                     }),
@@ -1013,6 +1030,10 @@ mod tests {
             provider: ResetProvider::Claude,
             account_label: Some("work".into()),
             available_count: 1,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: None,
         };
@@ -1021,6 +1042,19 @@ mod tests {
         assert!(reset.offerable());
         reset.available_count = 0;
         assert!(!reset.offerable());
+        reset.available_count = 2;
+        reset.limit_reached = true;
+        reset.session_reset_available = Some(false);
+        assert!(
+            !reset.offerable(),
+            "saved grants cannot offer a session reset"
+        );
+        reset.available_count = 0;
+        reset.session_reset_available = Some(true);
+        assert!(
+            reset.offerable(),
+            "session offer is independent of saved grants"
+        );
     }
 
     #[test]

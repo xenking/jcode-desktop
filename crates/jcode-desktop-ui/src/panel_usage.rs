@@ -242,6 +242,49 @@ pub(crate) struct QuotaChip {
 }
 
 /// Build the original limits card from the exact login represented by the chip.
+pub(super) fn banked_reset_label(reset: &crate::accounts::BankedReset) -> String {
+    if let Some(usable) = reset.usable_count {
+        let expiry = reset
+            .expires_at
+            .as_deref()
+            .map(|at| format!(" · expires in {}", jcode_base::usage::format_reset_time(at)))
+            .unwrap_or_default();
+        let source = reset
+            .cached_source
+            .as_deref()
+            .map(|s| format!(" · cached {s}"))
+            .unwrap_or_default();
+        return format!(
+            "{usable} usable / {} banked{expiry}{source}",
+            reset.available_count
+        );
+    }
+    if reset.provider == crate::accounts::ResetProvider::Claude
+        && let Some(available) = reset.session_reset_available
+    {
+        if available {
+            return "1 session reset available".into();
+        }
+        let next = reset
+            .next_available_at
+            .as_deref()
+            .map(|at| format!(" · next in {}", jcode_base::usage::format_reset_time(at)))
+            .unwrap_or_default();
+        return format!("0 session resets available{next}");
+    }
+    match reset.available_count {
+        1 => "1 reset banked".into(),
+        n if n > 1 => format!("{n} resets banked"),
+        _ => match reset.next_available_at.as_deref() {
+            Some(at) => format!(
+                "0 banked resets · next in {}",
+                jcode_base::usage::format_reset_time(at)
+            ),
+            None => "0 banked resets".into(),
+        },
+    }
+}
+
 pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
     let report = account.active_report();
     let method = serving_account_label(
@@ -260,12 +303,7 @@ pub(crate) fn quota_card(account: &Account, chip: &QuotaChip) -> LimitsTooltip {
         .and_then(|r| r.banked_reset.as_ref())
         .filter(|r| r.available_count > 0)
     {
-        let noun = if reset.available_count == 1 {
-            "reset"
-        } else {
-            "resets"
-        };
-        notes.push(format!("{} {noun} banked", reset.available_count));
+        notes.push(banked_reset_label(reset));
     }
     if chip.cached {
         notes.push("Cached usage".into());
@@ -784,12 +822,18 @@ mod tests {
         .unwrap();
         crate::accounts::merge_usage_for_tests(
             &mut accounts,
-            r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[["Account label","claude-otter"]],"banked_reset":{"provider":"claude","account_label":"claude-otter","available_count":2,"limit_reached":false}}]}"#,
+            r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[["Account label","claude-otter"]],"banked_reset":{"provider":"claude","account_label":"claude-otter","available_count":2,"usable_count":1,"cached_source":"OMP","expires_at":"2099-01-01T00:00:00Z","limit_reached":false}}]}"#,
         );
         let chip = quota_chips(&accounts).remove(0);
         let card = quota_card(&accounts[0], &chip);
         assert_eq!(card.method, "Anthropic · OAuth · claude-otter");
-        assert_eq!(card.notes, ["2 resets banked"]);
+        assert!(
+            card.notes.iter().any(|note| note.contains("1 usable / 2")
+                && note.contains("expires")
+                && note.contains("cached OMP")),
+            "{:?}",
+            card.notes
+        );
         let LimitsSummary::Limits(limits) = card.summary else {
             panic!("quota windows missing")
         };

@@ -428,6 +428,10 @@ pub(super) fn offline_data() -> AccountsData {
             provider,
             account_label: Some(label.into()),
             available_count: count,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached,
             next_available_at: next,
         })
@@ -666,17 +670,7 @@ fn icon_reset(color: gpui::Rgba) -> gpui::Div {
 
 /// Caption for a login's banked resets, e.g. "2 resets banked".
 pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
-    match (reset.provider, reset.available_count) {
-        (_, 1) => "1 reset banked".into(),
-        (_, n) if n > 1 => format!("{n} resets banked"),
-        _ => match reset.next_available_at.as_deref() {
-            Some(at) => format!(
-                "0 banked resets · next in {}",
-                jcode_base::usage::format_reset_time(at)
-            ),
-            None => "0 banked resets".into(),
-        },
-    }
+    super::super::usage::banked_reset_label(reset)
 }
 
 fn status_chip(label: &'static str, color: gpui::Rgba) -> gpui::Div {
@@ -1993,6 +1987,10 @@ mod tests {
             provider: ResetProvider::Claude,
             account_label: Some("claude-otter".into()),
             available_count: 0,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: None,
         });
@@ -2032,9 +2030,28 @@ mod tests {
             provider,
             account_label: None,
             available_count: count,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: next.map(str::to_owned),
         };
+        let partial = BankedReset {
+            usable_count: Some(1),
+            expires_at: Some("2099-01-01T00:00:00Z".into()),
+            ..reset(ResetProvider::Claude, 2, None)
+        };
+        let label = banked_reset_label(&partial);
+        assert!(
+            label.contains("1 usable / 2") && label.contains("expires"),
+            "{label}"
+        );
+        let session = BankedReset {
+            session_reset_available: Some(true),
+            ..reset(ResetProvider::Claude, 1, None)
+        };
+        assert_eq!(banked_reset_label(&session), "1 session reset available");
         assert_eq!(
             banked_reset_label(&reset(ResetProvider::OpenAi, 1, None)),
             "1 reset banked"
