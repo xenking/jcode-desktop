@@ -670,11 +670,16 @@ impl Panel {
     /// Drop the dim recognition preview. The final words replace it, either in
     /// the draft or in the chat.
     fn clear_voice_preview(&mut self, cx: &mut Context<Self>) {
-        let target = self.ask_voice_input().unwrap_or_else(|| self.input.clone());
-        target.update(cx, |input, cx| {
+        self.input.update(cx, |input, cx| {
             input.set_voice_preview(None, cx);
             input.set_voice_preview_hint(None, cx);
         });
+        if let Some(target) = self.ask_voice_input() {
+            target.update(cx, |input, cx| {
+                input.set_voice_preview(None, cx);
+                input.set_voice_preview_hint(None, cx);
+            });
+        }
     }
 
     /// `/dictate` with `backend = "command"` or an external command: the same
@@ -1272,6 +1277,55 @@ mod live_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_end_clears_composer_even_when_ask_target_changes(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "voice-ask".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.input.update(cx, |input, cx| input.set_voice_preview(Some(String::new()), cx));
+            let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+            panel.apply(&event, cx);
+            panel.apply_voice_event(NariEvent::Finished(Ok("answer".into())), cx);
+            assert!(!panel.voice_active());
+            assert!(panel.input.read(cx).voice_preview().is_none(), "composer preview must clear even if the active target changed");
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+    }
+
+    #[gpui::test]
+    fn voice_end_after_reconnect_clears_composer(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "voice-reconnect".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.input.update(cx, |input, cx| input.set_voice_preview(Some(String::new()), cx));
+            panel.connection_lost("runtime connection closed; reconnecting", cx);
+            let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-reconnect","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+            panel.apply(&event, cx);
+            panel.apply_voice_event(NariEvent::Finished(Ok("answer".into())), cx);
+            assert!(!panel.voice_active());
+            assert!(panel.input.read(cx).voice_preview().is_none());
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+    }
 
     #[gpui::test]
     fn voice_report_retains_actual_answers_and_keeps_dictation_text(cx: &mut gpui::TestAppContext) {
