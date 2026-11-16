@@ -39,6 +39,8 @@ def main():
             "JCODE_DESKTOP_CONTROL_TEST": "1", "JCODE_DESKTOP_CONTROL_DIR": str(root / "control"),
             "JCODE_DESKTOP_STATE": str(root / "desktop-state"), "LANG": "C.UTF-8",
         }
+        if "--ask" in sys.argv[2:]:
+            env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "ask"
         with open(root / "stderr", "w+") as log:
             proc = subprocess.Popen([str(binary), "--single-panel", "--new-process", "--no-hot-reload"], env=env, stdout=log, stderr=log)
             try:
@@ -63,6 +65,23 @@ def main():
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["status"] == "ok", state
                 assert state["result"]["panel"]["session_id"] == target["session_id"]
+                if "--ask" in sys.argv[2:]:
+                    for _ in range(60):
+                        state = request(endpoint, {"action": "state", "target": target})
+                        ask = state["result"]["panel"]["ask"]
+                        if ask and ask["option_selectors"]:
+                            break
+                        time.sleep(0.05)
+                    assert ask and ask["option_selectors"], state
+                    selector = ask["option_selectors"][1]
+                    denied = request(endpoint, {"action": "click", "target": target, "selector": selector})
+                    assert denied["status"] == "error", denied
+                    clicked = request(endpoint, {"action": "click", "target": target, "selector": selector, "allow_user_window": True})
+                    assert clicked["status"] == "ok", clicked
+                    state = request(endpoint, {"action": "state", "target": target})
+                    assert state["result"]["panel"]["ask"]["chosen"][0] == [1], state
+                    print("private Desktop socket ask selection passed")
+                    return
                 for _ in range(60):
                     state = request(endpoint, {"action": "state", "target": target})
                     rows = state["result"]["panel"]["visible_transcript_items"] or []

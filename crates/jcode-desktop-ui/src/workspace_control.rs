@@ -165,6 +165,28 @@ impl Workspace {
                         target,
                         allow_user_window,
                     }
+                } else if let Some(ask) = selector.strip_prefix("ask:") {
+                    if !allow_user_window {
+                        return error(
+                            "user_window_protected",
+                            "choosing an ask option changes focus and user selections; set allow_user_window to permit it",
+                        );
+                    }
+                    let index = match self.control_target(&target, window, cx) {
+                        Ok(index) => index,
+                        Err(error) => return error,
+                    };
+                    return if self.slots[index]
+                        .panel
+                        .update(cx, |panel, cx| panel.control_click_ask(ask, window, cx))
+                    {
+                        ok(json!({"selector": selector}))
+                    } else {
+                        error(
+                            "selector_not_found",
+                            "ask option is absent, stale, or not visible",
+                        )
+                    };
                 } else if let Some(call_id) = selector.strip_prefix("tool:") {
                     let index = match self.control_target(&target, window, cx) {
                         Ok(index) => index,
@@ -184,7 +206,7 @@ impl Workspace {
                 } else {
                     return error(
                         "selector_not_found",
-                        "supported selectors: composer.send, tool:<call_id>",
+                        "supported selectors: composer.send, tool:<call_id>, ask:<request_id>:<question>:<option>",
                     );
                 };
                 self.handle_desktop_request(

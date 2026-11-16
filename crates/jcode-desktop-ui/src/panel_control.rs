@@ -2,6 +2,42 @@
 use super::*;
 
 impl Panel {
+    pub(crate) fn control_click_ask(
+        &mut self,
+        selector: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((prefix, option)) = selector.rsplit_once(':') else {
+            return false;
+        };
+        let Some((request, question)) = prefix.rsplit_once(':') else {
+            return false;
+        };
+        let (Ok(question), Ok(option)) = (question.parse::<usize>(), option.parse::<usize>())
+        else {
+            return false;
+        };
+        let Some(card) = self.ask_card.as_mut() else {
+            return false;
+        };
+        if card.request_id != request
+            || card.submitting
+            || card.cursor_question != question
+            || card
+                .questions
+                .get(question)
+                .is_none_or(|q| option >= q.options.len())
+        {
+            return false;
+        }
+        card.cursor_option = option;
+        card.toggle(question, option);
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+        true
+    }
+
     pub(crate) fn control_element_bounds(
         &self,
         selector: &str,
@@ -44,6 +80,29 @@ impl Panel {
             }
         }
         found
+    }
+
+    #[cfg(test)]
+    pub(crate) fn control_test_ask(&mut self) {
+        self.ask_card = Some(crate::panel::ask::AskCard::new(
+            "request-1".into(),
+            vec![jcode_sdk::AskQuestion {
+                question: "Q?".into(),
+                header: None,
+                options: vec![
+                    jcode_sdk::AskOption {
+                        label: "A".into(),
+                        description: None,
+                    },
+                    jcode_sdk::AskOption {
+                        label: "B".into(),
+                        description: None,
+                    },
+                ],
+                multi_select: false,
+                allow_other: false,
+            }],
+        ));
     }
 
     #[cfg(test)]
@@ -143,6 +202,7 @@ impl Panel {
                 "cursor_option": card.cursor_option,
                 "submitting": card.submitting,
                 "error": card.submit_error,
+                "option_selectors": card.questions.get(card.cursor_question).map(|question| (0..question.options.len()).map(|option| format!("ask:{}:{}:{}", card.request_id, card.cursor_question, option)).collect::<Vec<_>>()).unwrap_or_default(),
             })
         });
         let workers = self

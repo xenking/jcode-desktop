@@ -1,4 +1,48 @@
 use super::*;
+
+#[gpui::test]
+fn click_ask_option_requires_permission_and_exact_request(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w.slots[0].panel.update(cx, |p, _| p.control_test_ask());
+        w
+    });
+    workspace.update_in(vcx, |w, window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-a".into(),
+        };
+        let click = |selector: &str, allow| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action: DesktopAction::Click {
+                target: target.clone(),
+                selector: selector.into(),
+                allow_user_window: allow,
+            },
+        };
+        assert!(matches!(
+            w.handle_desktop_request(click("ask:request-1:0:1", false), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(click("ask:wrong:0:1", true), window, cx),
+            DesktopResponse::Error { .. }
+        ));
+        assert!(matches!(
+            w.handle_desktop_request(click("ask:request-1:0:1", true), window, cx),
+            DesktopResponse::Ok { .. }
+        ));
+        assert_eq!(
+            w.slots[0].panel.read(cx).control_state(window, cx)["ask"]["chosen"],
+            serde_json::json!([[1]])
+        );
+    });
+}
 use jcode_sdk::desktop_control::{
     DESKTOP_CONTROL_VERSION, DesktopAction, DesktopRequest, DesktopResponse, DesktopTarget,
 };
