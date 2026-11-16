@@ -10308,20 +10308,26 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.load_history(vec![], vec![], cx);
             panel.items.push(Item::Assistant("previous answer".into()));
-            panel.apply(
-                &ApiEvent::PeerUserMessage {
+        });
+        workspace.update(vcx, |workspace, cx| {
+            for event in [
+                ApiEvent::PeerUserMessage {
                     session_id: "session-a".into(),
                     content: "давай делать".into(),
                 },
-                cx,
-            );
-            panel.apply(
-                &ApiEvent::ReasoningDelta {
+                ApiEvent::ReasoningDelta {
                     session_id: "session-a".into(),
                     text: "thinking".into(),
                 },
-                cx,
-            );
+            ] {
+                workspace.apply(
+                    crate::harness::Update::Event {
+                        session_id: "session-a".into(),
+                        event,
+                    },
+                    cx,
+                );
+            }
         });
         vcx.run_until_parked();
         let bounds = vcx
