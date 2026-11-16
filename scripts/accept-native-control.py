@@ -70,12 +70,9 @@ def main():
                 assert wrong["status"] == "error", wrong
                 png = root / "window.png"
                 rendered = request(endpoint, {"action": "render", "target": target, "selector": None, "path": str(png)})
-                if rendered["status"] == "ok":
-                    assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-                else:
-                    assert rendered["code"] == "render_failed" and not png.exists(), rendered
-                    print("macOS offscreen render unavailable")
-                print("private Desktop socket list/state/set_composer passed")
+                assert rendered["status"] == "ok", rendered
+                assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+                print("private Desktop socket list/state/set_composer/render passed")
             except BaseException:
                 log.flush()
                 log.seek(0)
