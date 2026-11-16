@@ -100,7 +100,7 @@ impl Panel {
             || !self.prompt_queue.pending_remote.is_empty()
     }
 
-    pub(super) fn has_visible_queued_prompts(&self) -> bool {
+    pub(crate) fn has_visible_queued_prompts(&self) -> bool {
         self.has_queued_prompts() || !self.prompt_queue.steered.is_empty()
     }
 
@@ -180,14 +180,19 @@ impl Panel {
         ];
         for index in 0..count {
             let sample = SAMPLES[index % SAMPLES.len()];
-            self.prompt_queue.steered.push(QueuedPrompt {
+            self.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
+                client_id: format!("screenshot-{round}-{index}"),
                 content: if round == 0 {
                     sample.to_string()
                 } else {
                     format!("{sample} (round {})", round + 1)
                 },
                 images: Vec::new(),
-                after_yield: false,
+                mode: if index % 2 == 0 {
+                    jcode_sdk::api::QueuedPromptMode::Steer
+                } else {
+                    jcode_sdk::api::QueuedPromptMode::AfterYield
+                },
             });
         }
     }

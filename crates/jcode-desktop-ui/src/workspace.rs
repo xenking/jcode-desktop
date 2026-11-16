@@ -1482,7 +1482,7 @@ impl Workspace {
                         this.update(cx, |workspace, cx| {
                             if let Some(slot) = workspace.slots.first() {
                                 slot.panel.update(cx, |panel, cx| {
-                                    if panel.steered_prompt_count() == 0 {
+                                    if !panel.has_visible_queued_prompts() {
                                         panel.seed_screenshot_queued(count, round);
                                         seeded = true;
                                         cx.notify();
