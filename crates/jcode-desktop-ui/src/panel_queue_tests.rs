@@ -65,7 +65,7 @@ fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAp
             .pending_remote
             .push(jcode_sdk::api::QueuedPrompt {
                 client_id: "restore-id".into(),
-                active_skill: None,
+                active_skill: Some("poteto-mode".into()),
                 content: "keep me".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
@@ -81,7 +81,7 @@ fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAp
         panel.apply(&event(json!({"ev":"queued_prompts", "prompts":[]})), cx);
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.client_id == "restore-id" && prompt.content == "keep me")
+        matches!(commands.try_recv(), Ok(Command::QueuePrompt { prompt, .. }) if prompt.client_id == "restore-id" && prompt.content == "keep me" && prompt.active_skill.as_deref() == Some("poteto-mode"))
     );
 }
 
