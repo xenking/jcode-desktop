@@ -226,8 +226,9 @@ pub(super) fn render_workers(
                 10.0,
                 theme.TEXT_FAINT,
             );
-            // The sidebar is one narrow column: the task, the model and what
-            // the worker is doing win the space. Spend stays one hover away.
+            // Unknown model prices are not free: fall back to the recorded
+            // token spend rather than inventing a dollar amount.
+            let spend = worker.cost_text().or_else(|| worker.tokens_text());
             div()
                 .id(gpui::SharedString::from(format!(
                     "sidebar-worker-{sidebar_index}-{index}"
@@ -336,6 +337,16 @@ pub(super) fn render_workers(
                                 .flex_none()
                                 .child(effort)
                         }))
+                }))
+                .children(spend.map(|spend| {
+                    div()
+                        .debug_selector(move || {
+                            format!("sidebar-worker-spend-{sidebar_index}-{index}")
+                        })
+                        .flex_none()
+                        .text_size(px(9.5))
+                        .text_color(theme.TEXT_FAINT)
+                        .child(spend)
                 }))
                 .child(
                     div()
@@ -902,6 +913,32 @@ mod tests {
 
     fn sel(text: String) -> &'static str {
         Box::leak(text.into_boxed_str())
+    }
+
+    #[gpui::test]
+    fn worker_row_shows_recorded_spend_even_when_zero(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            let mut worker = session("rose", Some("lead"));
+            worker.swarm_status = Some("completed".into());
+            w.sidebar_closed_sessions
+                .extend(["lead".into(), "rose".into()]);
+            w.sessions = vec![session("lead", None), worker];
+            w.worker_meta.insert(
+                "rose".into(),
+                jcode_sdk::WorkerMeta {
+                    model: Some("fake-model".into()),
+                    provider: Some("openai-compatible".into()),
+                    input_tokens: Some(0),
+                    output_tokens: Some(0),
+                    ..Default::default()
+                },
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-spend-0-0").is_some());
     }
 
     /// The rung rides beside the model on a nested worker row, the same circle
