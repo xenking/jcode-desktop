@@ -704,6 +704,20 @@ fn persist_value_with_header(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(path.with_extension("toml.lock"))?;
+    lock.lock()?;
     let mut text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -771,13 +785,6 @@ fn persist_value_with_header(
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
         }
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     if let Ok(metadata) = fs::metadata(path) {
         temporary
@@ -1370,6 +1377,50 @@ mod tests {
                 .theme,
             "neutral-light"
         );
+    }
+
+    #[test]
+    fn concurrent_preference_edits_keep_every_successful_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            format!("model = 'keep'\n# {}\n", "padding".repeat(16384)),
+        )
+        .unwrap();
+        let start = std::sync::Barrier::new(16);
+        std::thread::scope(|threads| {
+            let writers: Vec<_> = (0..16)
+                .map(|index| {
+                    let path = &path;
+                    let start = &start;
+                    threads.spawn(move || {
+                        start.wait();
+                        persist_value_at(
+                            path,
+                            false,
+                            "workspace",
+                            &format!("worker_{index}"),
+                            "true",
+                        )
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap().unwrap();
+            }
+        });
+
+        let text = fs::read_to_string(&path).unwrap();
+        let values: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(values["model"].as_str(), Some("keep"));
+        for index in 0..16 {
+            assert_eq!(
+                values["desktop"]["workspace"].get(format!("worker_{index}")),
+                Some(&toml::Value::Boolean(true)),
+                "successful update {index} was overwritten"
+            );
+        }
     }
 
     #[cfg(unix)]
