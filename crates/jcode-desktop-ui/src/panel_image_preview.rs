@@ -88,6 +88,13 @@ impl Panel {
         result: Result<String, String>,
         cx: &mut Context<Self>,
     ) {
+        if key == crate::harness::SESSION_IMAGE_LIST_KEY {
+            if self.image_pane_open {
+                super::image_pane::receive_session_image_list(&self.session_id, result);
+                cx.notify();
+            }
+            return;
+        }
         if self.history_image_requests.borrow().get(&key) != Some(&true) {
             return;
         }
@@ -132,6 +139,8 @@ impl Panel {
                 }
             }
         }
+        let selected = selected
+            .or_else(|| super::image_pane::gallery_loaded_image(&self.session_id, &key, &data));
         if let Some(image) = selected.filter(|image| open && image.preview.is_some()) {
             self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
             self.image_preview = Some(image);

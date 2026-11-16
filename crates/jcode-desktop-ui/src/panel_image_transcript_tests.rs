@@ -1,5 +1,28 @@
 use super::*;
 
+#[gpui::test]
+fn session_gallery_is_available_without_loaded_history_images(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("gallery-old-image".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| { panel.history_loaded = true; cx.notify(); });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("panel-images").is_some(), "gallery must be available even when the loaded page has no images");
+    let button = vcx.debug_bounds("panel-images").unwrap();
+    vcx.simulate_click(button.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::ListSessionImages { session_id }) if session_id == "gallery-old-image"));
+    let id = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let images = serde_json::json!([{ "image_id": id, "message_index": 4, "timestamp": "2026-01-01T00:00:00Z", "media_type": "image/png" }]).to_string();
+    panel.update(vcx, |panel, cx| panel.load_history_image(crate::harness::SESSION_IMAGE_LIST_KEY.into(), Ok(images), cx));
+    vcx.run_until_parked();
+    let image = vcx.debug_bounds("session-gallery-image-0").expect("image outside loaded history appears in gallery");
+    vcx.simulate_click(image.center(), Default::default());
+    assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryImage { key, .. }) if key == id));
+    panel.update(vcx, |panel, cx| panel.load_history_image(id.into(), Ok(image_preview::fixture_image().data), cx));
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()), "gallery image must open after fetching by ID");
+}
+
 fn image_marker_history_message() -> jcode_sdk::HistoryMessage {
     jcode_sdk::HistoryMessage {
         role: "user".into(), content: "text[#image 1]more".into(),

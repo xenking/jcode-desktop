@@ -17,6 +17,9 @@ use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInf
 
 pub use jcode_sdk::HistoryPage as BoundedHistoryPage;
 
+/// Internal key for a gallery metadata reply carried over the image update path.
+pub const SESSION_IMAGE_LIST_KEY: &str = "__session_image_list__";
+
 #[path = "harness_spawn.rs"]
 mod spawn_profile;
 
@@ -286,6 +289,9 @@ pub enum Command {
         session_id: String,
         key: String,
     },
+    ListSessionImages {
+        session_id: String,
+    },
     /// Drop a session's dedicated connection.
     Unwatch {
         session_id: String,
@@ -427,6 +433,7 @@ enum SessionCommand {
     GetCompactedHistory(usize),
     GetHistoryPage(String),
     GetHistoryImage(String),
+    ListSessionImages,
     TodoState,
     AckTodoFollowUp(jcode_sdk::todo::TodoEffects),
     AuthChanged(String),
@@ -1244,6 +1251,14 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::GetHistoryImage(key),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ListSessionImages { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ListSessionImages,
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2655,6 +2670,28 @@ fn session_worker_with_connector(
                         let _ = updates.send(Update::HistoryImage {
                             session_id: session_id.clone(),
                             key,
+                            result,
+                        });
+                    }
+                    SessionCommand::ListSessionImages => {
+                        let result = client
+                            .request(jcode_sdk::ApiRequest::ListSessionImages {
+                                session_id: real_id.to_string(),
+                            })
+                            .map_err(|error| error.to_string())
+                            .and_then(|frame| match frame.event {
+                                ApiEvent::SessionImages { session_id, images }
+                                    if session_id == real_id =>
+                                {
+                                    serde_json::to_string(&images)
+                                        .map_err(|error| error.to_string())
+                                }
+                                ApiEvent::Error { message, .. } => Err(message),
+                                _ => Err("Unexpected session images reply".into()),
+                            });
+                        let _ = updates.send(Update::HistoryImage {
+                            session_id: session_id.clone(),
+                            key: SESSION_IMAGE_LIST_KEY.into(),
                             result,
                         });
                     }

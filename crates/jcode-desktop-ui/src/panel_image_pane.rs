@@ -2,6 +2,49 @@
 //! pane mode replaces large inline previews with compact navigation links.
 use super::*;
 
+#[derive(Clone, serde::Deserialize)]
+struct GalleryImage {
+    image_id: String,
+    message_index: usize,
+    timestamp: Option<String>,
+    media_type: String,
+}
+
+thread_local! {
+    // GPUI panels live on the UI thread. Only metadata is retained here, never
+    // base64 payloads. Closing the pane discards its cached session list.
+    static GALLERIES: std::cell::RefCell<std::collections::HashMap<String, Result<Vec<GalleryImage>, String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub(super) fn receive_session_image_list(session_id: &str, result: Result<String, String>) {
+    let parsed = result.and_then(|json| serde_json::from_str(&json).map_err(|e| e.to_string()));
+    GALLERIES.with(|galleries| {
+        galleries.borrow_mut().insert(session_id.to_owned(), parsed);
+    });
+}
+
+pub(super) fn gallery_loaded_image(
+    session_id: &str,
+    image_id: &str,
+    data: &str,
+) -> Option<TranscriptImage> {
+    GALLERIES.with(|galleries| {
+        let galleries = galleries.borrow();
+        let image = galleries
+            .get(session_id)?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|image| image.image_id == image_id)?;
+        Some(TranscriptImage::new(
+            image.media_type.clone(),
+            data.to_owned(),
+            Some(format!("[#{image_id}]")),
+        ))
+    })
+}
+
 impl Panel {
     /// Match the submitted markers and user images in their original order.
     /// Images with no marker retain the fallback chip for older histories.
@@ -112,21 +155,24 @@ impl Panel {
 
     pub(super) fn set_image_pane_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.image_pane_open = open;
+        GALLERIES.with(|galleries| {
+            galleries.borrow_mut().remove(&self.session_id);
+        });
+        if open {
+            self.bridge.send(Command::ListSessionImages {
+                session_id: self.session_id.clone(),
+            });
+        }
         self.cancel_transcript_momentum();
         self.transcript_measurements.dirty = true;
         cx.notify();
     }
 
-    /// Icon-only toggle: the footer never shows an image count, and the
-    /// toggle only appears once the transcript has images to browse.
+    /// The gallery must also be reachable when images are on older pages.
     pub(super) fn render_image_pane_toggle(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let has_images = self.items.iter().any(|item| matches!(item, Item::Image(_)));
-        if !has_images && !self.image_pane_open {
-            return None;
-        }
         let theme = Theme::global();
         let color = if self.image_pane_open {
             theme.TEXT
@@ -203,6 +249,10 @@ impl Panel {
         let theme = Theme::global();
         let indices = self.session_image_indices();
         let selected = self.selected_session_image_index();
+        let gallery = GALLERIES.with(|galleries| galleries.borrow().get(&self.session_id).cloned());
+        let gallery_has_images = gallery
+            .as_ref()
+            .is_some_and(|result| result.as_ref().is_ok_and(|images| !images.is_empty()));
         let image = selected.and_then(|index| match &self.items[index] {
             Item::Image(image) => Some(image),
             _ => None,
@@ -239,7 +289,13 @@ impl Panel {
                             .truncate()
                             .text_size(px(13.))
                             .text_color(theme.TEXT)
-                            .child(format!("Session images · {}", indices.len())),
+                            .child(format!(
+                                "Session images · {}",
+                                gallery
+                                    .as_ref()
+                                    .and_then(|result| result.as_ref().ok())
+                                    .map_or(indices.len(), Vec::len)
+                            )),
                     )
                     .child(
                         div()
@@ -260,6 +316,57 @@ impl Panel {
                             })),
                     ),
             )
+            .when_some(gallery, |el, gallery| match gallery {
+                Ok(images) => el.child(
+                    div()
+                        .id("session-gallery-list")
+                        .debug_selector(|| "session-gallery-list".into())
+                        .flex_none()
+                        .max_h(px(140.))
+                        .w_full()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(images.into_iter().enumerate().map(|(index, image)| {
+                            let id = image.image_id.clone();
+                            let media_type = image.media_type.clone();
+                            let label = format!(
+                                "{} · message {} · {}",
+                                id,
+                                image.message_index + 1,
+                                image.timestamp.as_deref().unwrap_or("time unavailable")
+                            );
+                            div()
+                                .id(("session-gallery-image", index))
+                                .debug_selector(move || format!("session-gallery-image-{index}"))
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .truncate()
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT_DIM)
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.QUOTE_BG))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let image = TranscriptImage::new(
+                                        media_type.clone(),
+                                        format!("jcode-lazy:{id}"),
+                                        Some(format!("[#{id}]")),
+                                    );
+                                    this.open_image_preview(image, window, cx);
+                                    cx.stop_propagation();
+                                }))
+                        })),
+                ),
+                Err(error) => el.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(format!("Could not load session images: {error}")),
+                ),
+            })
             .when_some(image, |el, image| {
                 let preview_image = image.clone();
                 el.child(
@@ -371,8 +478,16 @@ impl Panel {
                         .gap_2()
                         .text_size(px(12.))
                         .text_color(theme.TEXT_DIM)
-                        .child("No images in this session yet")
-                        .child("Images read by the model and your attachments will appear here."),
+                        .child(if gallery_has_images {
+                            "Choose an image above"
+                        } else {
+                            "No images in the loaded transcript"
+                        })
+                        .child(if gallery_has_images {
+                            "Images from older messages can be opened by ID."
+                        } else {
+                            "Session images appear here when available."
+                        }),
                 )
             })
             .when(!indices.is_empty(), |el| {
