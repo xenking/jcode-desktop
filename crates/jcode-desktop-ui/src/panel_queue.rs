@@ -21,7 +21,7 @@ pub struct PromptQueue {
     /// Prompts sent mid-turn as steering. The runtime holds them until the
     /// model can see them, so they show above the composer, not in the
     /// transcript, until `soft_interrupt_injected` says they were delivered.
-    #[serde(skip)]
+    #[serde(default)]
     steered: Vec<QueuedPrompt>,
     /// Injection ids already observed on this connection, for replayed events.
     #[serde(skip)]

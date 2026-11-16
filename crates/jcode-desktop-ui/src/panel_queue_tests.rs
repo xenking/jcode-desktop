@@ -2,6 +2,26 @@ use super::*;
 use serde_json::json;
 
 #[gpui::test]
+fn unconfirmed_steer_survives_serialized_panel_snapshot(cx: &mut gpui::TestAppContext) {
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-persist".into(), None, None, crate::harness::spawn_inert(), cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    let snapshot = panel.update(cx, |panel, cx| {
+        panel.submit_or_queue("preserve this steer".into(), vec![], false, cx);
+        serde_json::to_vec(&panel.snapshot(cx)).unwrap()
+    });
+    let restored: PanelSnapshot = serde_json::from_slice(&snapshot).unwrap();
+    let other = cx.new(|cx| Panel::new("queue-persist".into(), None, None, crate::harness::spawn_inert(), cx));
+    other.update(cx, |panel, cx| {
+        panel.restore_snapshot(restored, cx);
+        assert_eq!(panel.steered_prompt_count(), 1, "unconfirmed steering must survive quit and relaunch");
+    });
+}
+
+#[gpui::test]
 fn external_steer_is_visible_live_and_after_history_reload(cx: &mut gpui::TestAppContext) {
     let panel = cx.new(|cx| {
         let mut panel = Panel::new(
