@@ -65,6 +65,24 @@ fn assert_draft(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) {
 }
 
 #[gpui::test]
+fn session_image_marker_labels_the_user_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = setup(cx);
+    let marker = "[#img_0123456789abcdef0123456789abcdef]";
+    panel.update(vcx, |panel, cx| {
+        let mut image = image_preview::fixture_image();
+        image.source = jcode_sdk::RenderedImageSource::UserInput;
+        *panel.items = vec![Item::User(format!("Inspect {marker}")), Item::Image(image)];
+        assert_eq!(panel.user_image_markers(0), vec![(1, marker.to_string())]);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("transcript-image-chip").expect("session ID chip");
+    vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
 fn image_pane_button_only_appears_when_transcript_has_images(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = setup(cx);
     assert!(vcx.debug_bounds("panel-images").is_some());

@@ -527,13 +527,17 @@ fn ensure_visible_chips(content: &mut String, attachments: &mut [Attachment]) {
 
 pub(crate) fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
     content
-        .match_indices("[#image ")
+        .match_indices("[#")
         .filter_map(|(start, _)| {
             let rest = &content[start..];
             let end = rest.find(']')?;
-            let digits = rest.get(8..end)?;
-            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-                .then_some(start..start + end + 1)
+            let marker = &rest[2..end];
+            let valid = marker.strip_prefix("image ").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            }) || marker.strip_prefix("img_").is_some_and(|hash| {
+                hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            valid.then_some(start..start + end + 1)
         })
         .collect()
 }
@@ -3413,6 +3417,19 @@ impl Focusable for PromptInput {
 mod tests {
     use super::*;
     use gpui::{TestAppContext, WindowOptions};
+
+    #[test]
+    fn session_image_marker_is_a_chip() {
+        let text = "before [#img_0123456789abcdef0123456789abcdef] after [#image 1]";
+        let markers: Vec<_> = image_marker_ranges(text)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
+        assert_eq!(
+            markers,
+            vec!["[#img_0123456789abcdef0123456789abcdef]", "[#image 1]"]
+        );
+    }
 
     #[gpui::test]
     fn image_paste_is_an_inline_chip_at_the_cursor_and_backspace_removes_it(

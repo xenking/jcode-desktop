@@ -9,13 +9,9 @@ impl Panel {
         let Some(Item::User(text)) = self.items.get(user_index) else {
             return Vec::new();
         };
-        let labels = text.match_indices("[#image ").filter_map(|(at, _)| {
-            let tail = &text[at..];
-            let end = tail.find(']')?;
-            let digits = &tail[8..end];
-            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-                .then(|| tail[..=end].to_string())
-        });
+        let labels = crate::input::image_marker_ranges(text)
+            .into_iter()
+            .map(|range| text[range].to_string());
         let images = self
             .items
             .iter()
@@ -50,15 +46,9 @@ impl Panel {
             matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
         }).count() + 1;
         let label = match self.items.get(start) {
-            Some(Item::User(text)) => text
-                .match_indices("[#image ")
-                .filter_map(|(at, _)| {
-                    let tail = &text[at..];
-                    let end = tail.find(']')?;
-                    let digits = &tail[8..end];
-                    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-                        .then(|| tail[..=end].to_string())
-                })
+            Some(Item::User(text)) => crate::input::image_marker_ranges(text)
+                .into_iter()
+                .map(|range| text[range].to_string())
                 .nth(number - 1),
             _ => None,
         }
