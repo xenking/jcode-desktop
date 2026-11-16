@@ -53,6 +53,15 @@ fn default_follow_up() -> bool {
 }
 
 impl Panel {
+    pub(crate) fn default_send_after_yield(&self) -> bool {
+        self.prompt_queue.default_after_yield
+    }
+
+    pub(crate) fn set_default_send_after_yield(&mut self, after_yield: bool, cx: &mut Context<Self>) {
+        self.prompt_queue.default_after_yield = after_yield;
+        cx.notify();
+    }
+
     pub(super) fn has_queued_prompts(&self) -> bool {
         !self.prompt_queue.prompts.is_empty()
             || !self.prompt_queue.remote.is_empty()
@@ -587,7 +596,7 @@ impl Panel {
     /// runtime as steering, then prompts held back until the turn ends.
     pub(super) fn render_prompt_queue(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let remote = self.render_remote_prompts(cx);
-        let steered = self.render_steered_prompts();
+        let steered = self.render_steered_prompts(cx);
         let waiting = self.render_waiting_prompts(cx);
         if remote.is_none() && steered.is_none() && waiting.is_none() {
             return None;
@@ -606,20 +615,39 @@ impl Panel {
         )
     }
 
+    fn render_queued_content(&self, content: &str, images: &[(String, String)], cx: &mut Context<Self>) -> gpui::AnyElement {
+        let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
+        let ranges = crate::input::image_marker_ranges(&flat);
+        let mut row = div().flex().items_center().min_w_0().overflow_hidden();
+        let mut offset = 0;
+        for (index, range) in ranges.iter().enumerate() {
+            row = row.child(flat[offset..range.start].to_owned());
+            let image = images.get(index).map(|(media, data)| TranscriptImage::new(media.clone(), data.clone(), None));
+            let mut chip = crate::image_chip::chip(image.as_ref().and_then(|image| image.preview.clone()), &flat[range.clone()], "queue-image-chip", "queue-image-thumbnail", "queue-image-label")
+                .id(("queue-image-chip", index)).flex_none().cursor_pointer();
+            if let Some(image) = image {
+                chip = chip.on_click(cx.listener(move |this, _, window, cx| this.open_image_preview(image.clone(), window, cx)));
+            }
+            row = row.child(chip);
+            offset = range.end;
+        }
+        row = row.child(flat[offset..].to_owned());
+        for (index, (media, data)) in images.iter().enumerate().skip(ranges.len()) {
+            let image = TranscriptImage::new(media.clone(), data.clone(), None);
+            row = row.child(crate::image_chip::chip(image.preview.clone(), &format!("[#image {}]", index + 1), "queue-image-chip", "queue-image-thumbnail", "queue-image-label")
+                .id(("queue-image-chip", index)).flex_none().cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| this.open_image_preview(image.clone(), window, cx))));
+        }
+        row.into_any_element()
+    }
+
     fn render_remote_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if !self.prompt_queue.remote_supported
-            || (!self.activity_active()
-                && self.prompt_queue.remote.is_empty()
-                && self.prompt_queue.pending_remote.is_empty())
+            || (self.prompt_queue.remote.is_empty() && self.prompt_queue.pending_remote.is_empty())
         {
             return None;
         }
         let theme = Theme::global();
-        let default = if self.prompt_queue.default_after_yield {
-            "Follow-up"
-        } else {
-            "Steer"
-        };
         let rows = self
             .prompt_queue
             .remote
@@ -634,6 +662,7 @@ impl Panel {
         Some(
             div()
                 .id("daemon-prompt-queue")
+                .debug_selector(|| "daemon-prompt-queue".into())
                 .flex_none()
                 .flex()
                 .flex_col()
@@ -644,18 +673,8 @@ impl Panel {
                 .bg(theme.TOOL_BG)
                 .text_size(px(12.))
                 .text_color(theme.TEXT_DIM)
-                .child(
-                    div()
-                        .id("queue-default-mode")
-                        .cursor_pointer()
-                        .child(format!("Default: {default} ▾"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.prompt_queue.default_after_yield =
-                                !this.prompt_queue.default_after_yield;
-                            cx.notify();
-                        })),
-                )
                 .children(rows.map(|(prompt, pending)| {
+                    let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
                     let id = prompt.client_id.clone();
                     let id2 = id.clone();
                     let retry = prompt.clone();
@@ -697,7 +716,7 @@ impl Panel {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .child(steered_preview(&prompt.content, prompt.images.len())),
+                                .child(preview),
                         )
                         .child(
                             div()
@@ -724,7 +743,7 @@ impl Panel {
     }
 
     /// Dim `queued ⏎ <text>` rows for prompts the runtime has not delivered.
-    fn render_steered_prompts(&self) -> Option<gpui::AnyElement> {
+    fn render_steered_prompts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let steered = &self.prompt_queue.steered;
         if steered.is_empty() {
             return None;
@@ -755,8 +774,9 @@ impl Panel {
                         .take(SHOWN)
                         .enumerate()
                         .map(|(index, prompt)| {
-                            let preview = steered_preview(&prompt.content, prompt.images.len());
+                            let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
                             div()
+                                .id(("steered-prompt", index))
                                 .debug_selector(move || format!("steered-prompt-{index}"))
                                 .flex()
                                 .flex_none()
@@ -828,12 +848,9 @@ impl Panel {
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .children(self.prompt_queue.prompts.iter().enumerate().map(
                             |(index, prompt)| {
-                                let label = if prompt.images.is_empty() {
-                                    prompt.content.clone()
-                                } else {
-                                    format!("{} · {} image(s)", prompt.content, prompt.images.len())
-                                };
+                                let label = self.render_queued_content(&prompt.content, &prompt.images, cx);
                                 div()
+                                    .id(("queued-prompt", index))
                                     .debug_selector(move || format!("queued-prompt-{index}"))
                                     .flex()
                                     .flex_none()
@@ -911,20 +928,6 @@ impl Panel {
                 .into_any_element(),
         )
     }
-}
-
-/// First characters of a steered prompt, on one line.
-fn steered_preview(content: &str, images: usize) -> String {
-    const CHARS: usize = 100;
-    let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut preview: String = flat.chars().take(CHARS).collect();
-    if flat.chars().count() > CHARS {
-        preview.push('…');
-    }
-    if images > 0 {
-        preview.push_str(&format!(" · {images} image(s)"));
-    }
-    preview
 }
 
 fn queue_action(

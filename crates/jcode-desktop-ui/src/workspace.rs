@@ -8081,6 +8081,34 @@ impl Workspace {
                     ),
             );
         }
+        if let Some(slot) = self.slots.get(self.active) {
+            let after_yield = slot.panel.read(cx).default_send_after_yield();
+            let mut choices = div().flex().gap_1();
+            for (id, label, value) in [
+                ("settings-send-steer", "Steer", false),
+                ("settings-send-after-yield", "After yield", true),
+            ] {
+                choices = choices.child(
+                    div().id(id).debug_selector(move || id.into())
+                        .px_2().py_1().rounded_sm().cursor_pointer()
+                        .text_color(if after_yield == value { Theme::global().ACCENT } else { Theme::global().TEXT_DIM })
+                        .when(after_yield == value, |el| el.bg(Theme::global().ACCENT_DIM))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            if let Some(slot) = this.slots.get(this.active) {
+                                slot.panel.update(cx, |panel, cx| panel.set_default_send_after_yield(value, cx));
+                            }
+                            cx.notify();
+                        }))
+                        .child(label),
+                );
+            }
+            settings = settings.child(
+                div().flex_none().px_2().py_2().rounded_sm().bg(Theme::global().PANEL_BG)
+                    .flex().flex_col().gap_1()
+                    .child("Default send mode (current session)")
+                    .child(choices),
+            );
+        }
         let applet_settings = self.render_applet_settings(cx);
         let about = self.render_about_settings(cx);
         settings
@@ -16241,6 +16269,38 @@ mod tests {
             cx.run_until_parked();
         }
         panic!("sidebar tab {selector} was not reachable");
+    }
+
+    #[gpui::test]
+    fn settings_default_send_mode_controls_active_panel(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("send-mode", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
+        let after = vcx.debug_bounds("settings-send-after-yield").expect("settings choice");
+        vcx.simulate_click(after.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).default_send_after_yield()));
+        let input = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
+        workspace.update(vcx, |w, cx| w.slots[w.active].panel.update(cx, |p, _| p.status = "running".into()));
+        vcx.update(|window, cx| {
+            let focus = input.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_input("settings decides this prompt");
+        vcx.simulate_keystrokes("enter");
+        workspace.read_with(vcx, |w, cx| {
+            let queue = serde_json::to_value(w.slots[w.active].panel.read(cx).snapshot(cx).prompt_queue).unwrap();
+            assert_eq!(queue["prompts"][0]["content"], "settings decides this prompt");
+            assert_eq!(queue["prompts"][0]["after_yield"], true);
+        });
+        let steer = vcx.debug_bounds("settings-send-steer").unwrap();
+        vcx.simulate_click(steer.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(!workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).default_send_after_yield()));
     }
 
     #[gpui::test]

@@ -88,6 +88,77 @@ fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn active_empty_queue_has_no_default_mode_label(cx: &mut gpui::TestAppContext) {
+    let (_panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("empty-queue".into(), None, None, crate::harness::spawn_inert(), cx);
+        panel.status = "running".into();
+        panel.prompt_queue.remote_supported = true;
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("queue-default-mode").is_none());
+    assert!(vcx.debug_bounds("daemon-prompt-queue").is_none());
+}
+
+#[gpui::test]
+fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-image".into(), None, None, crate::harness::spawn_inert(), cx);
+        panel.prompt_queue.waiting_for_connection = true;
+        let image = super::image_preview::fixture_image();
+        panel.prompt_queue.prompts.push(QueuedPrompt {
+            content: "Look [#image 1] here".into(),
+            images: vec![(image.media_type, image.data)],
+            after_yield: true,
+        });
+        panel
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("queue-image-chip").expect("image is a chip, not marker text");
+    assert!(vcx.debug_bounds("queue-image-thumbnail").is_some());
+    assert!(vcx.debug_bounds("queue-image-label").is_some());
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+}
+
+#[gpui::test]
+fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-image-paths".into(), None, None, crate::harness::spawn_inert(), cx);
+        panel.status = "running".into();
+        panel.prompt_queue.remote_supported = true;
+        let image = super::image_preview::fixture_image();
+        panel.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
+            client_id: "remote-image".into(),
+            content: "Look [#image 1]".into(),
+            images: vec![(image.media_type, image.data)],
+            mode: jcode_sdk::api::QueuedPromptMode::Steer,
+        });
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("queue-image-thumbnail").is_some());
+    let chip = vcx.debug_bounds("queue-image-chip").unwrap();
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+    panel.update(vcx, |panel, cx| {
+        let remote = panel.prompt_queue.remote.pop().unwrap();
+        panel.image_preview = None;
+        panel.prompt_queue.steered.push(QueuedPrompt { content: remote.content, images: remote.images, after_yield: false });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("steered-prompts").is_some());
+    assert!(vcx.debug_bounds("queue-image-thumbnail").is_some());
+    let chip = vcx.debug_bounds("queue-image-chip").unwrap();
+    vcx.simulate_click(chip.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+}
+
+#[gpui::test]
 fn daemon_queue_modes_and_pickup_are_not_duplicated(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| {
@@ -193,7 +264,7 @@ fn configurable_default_applies_to_active_turn_and_survives_restore(cx: &mut gpu
         let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
         panel.history_loaded = true;
         panel.status = "running".into();
-        panel.prompt_queue.default_after_yield = true;
+        panel.set_default_send_after_yield(true, cx);
         let saved = serde_json::to_string(&panel.prompt_queue).unwrap();
         panel.prompt_queue = serde_json::from_str(&saved).unwrap();
         panel
