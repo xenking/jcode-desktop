@@ -11,6 +11,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WorkerState {
     Running,
+    Stalled,
     Ready,
     Failed,
     Stopped,
@@ -27,6 +28,7 @@ impl WorkerState {
             .as_deref()
         {
             Some("running" | "working" | "active" | "busy") => Self::Running,
+            Some("stalled") => Self::Stalled,
             Some("ready" | "completed" | "done" | "idle") => Self::Ready,
             Some("failed" | "crashed" | "error") => Self::Failed,
             Some("stopped" | "cancelled" | "canceled") => Self::Stopped,
@@ -39,6 +41,7 @@ impl WorkerState {
     pub fn label(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Stalled => "stalled",
             Self::Ready => "ready",
             Self::Failed => "failed",
             Self::Stopped => "stopped",
@@ -61,7 +64,10 @@ impl WorkerState {
     /// Still part of the swarm's live work: running, queued or paused on a
     /// dependency. These count toward the composer indicator.
     pub fn is_live(self) -> bool {
-        matches!(self, Self::Running | Self::Queued | Self::Blocked)
+        matches!(
+            self,
+            Self::Running | Self::Stalled | Self::Queued | Self::Blocked
+        )
     }
 
     /// The status mark shown beside a worker. `None` when nothing is known,
@@ -71,7 +77,7 @@ impl WorkerState {
             Self::Running | Self::Queued => Some(Glyph::Spinner),
             Self::Ready | Self::Stopped => Some(Glyph::Check),
             Self::Failed => Some(Glyph::Cross),
-            Self::Blocked => Some(Glyph::Pause),
+            Self::Blocked | Self::Stalled => Some(Glyph::Pause),
             Self::Unknown => None,
         }
     }
@@ -559,7 +565,9 @@ impl SwarmTally {
                 WorkerState::Running => tally.running += 1,
                 // Queued behind a dependency and blocked on one read the same
                 // in the bar: neither is making progress yet.
-                WorkerState::Queued | WorkerState::Blocked => tally.waiting += 1,
+                WorkerState::Queued | WorkerState::Blocked | WorkerState::Stalled => {
+                    tally.waiting += 1
+                }
                 WorkerState::Ready | WorkerState::Failed | WorkerState::Stopped => tally.done += 1,
                 WorkerState::Unknown => {}
             }

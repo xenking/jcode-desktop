@@ -527,6 +527,39 @@ mod tests {
     }
 
     #[gpui::test]
+    fn stalled_worker_is_visible_in_the_live_swarm_list(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        std::fs::write(dir.path().join("swarm.json"), serde_json::json!({
+            "updated_at_unix_ms": now,
+            "members": [{"session_id":"session_rose_1_a", "status":"running", "stalled_secs":601, "report_back_to_session_id":"lead"}]
+        }).to_string()).unwrap();
+        let mut sessions: Vec<jcode_sdk::SessionInfo> =
+            serde_json::from_value(serde_json::json!([{
+                "session_id":"session_rose_1_a", "status":"idle"
+            }]))
+            .unwrap();
+        jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, dir.path());
+        let stalled = Worker::from_session(&sessions[0], None, now);
+        assert_eq!(stalled.state_text(), "stalled");
+        assert!(
+            stalled.state.is_live(),
+            "a stalled worker still belongs to the live swarm"
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![stalled], cx);
+            panel.swarm_list_open = true;
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list-state-0").is_some());
+        assert!(vcx.debug_bounds("composer-workers-count").is_some());
+    }
+
+    #[gpui::test]
     fn closing_the_last_live_worker_closes_the_list(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
