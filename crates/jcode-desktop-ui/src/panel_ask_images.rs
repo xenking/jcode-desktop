@@ -9,7 +9,7 @@ impl Panel {
         shown: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        self.render_ask_answer_part(call_id, shown, 0, true, cx)
+        self.render_ask_answer_part(call_id, shown, 0, true, None, cx)
     }
 
     pub(super) fn render_ask_answer_part(
@@ -18,6 +18,7 @@ impl Panel {
         shown: String,
         image_offset: usize,
         show_extras: bool,
+        selection: Option<(Entity<TextSelection>, String)>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let images: Vec<_> = self
@@ -49,8 +50,10 @@ impl Panel {
             })
             .collect();
         let display = crate::image_chip::mask_markers(&shown, ranges.iter().cloned());
-        let styled =
-            StyledText::new(display).with_highlights(ranges.iter().cloned().map(|range| {
+        let mut highlights: Vec<_> = ranges
+            .iter()
+            .cloned()
+            .map(|range| {
                 (
                     range,
                     HighlightStyle {
@@ -58,7 +61,14 @@ impl Panel {
                         ..Default::default()
                     },
                 )
-            }));
+            })
+            .collect();
+        if let Some((model, key)) = &selection
+            && let Some(highlight) = model.read(cx).highlight(key, shown.len())
+        {
+            highlights.push(highlight);
+        }
+        let styled = StyledText::new(display).with_highlights(highlights);
         let layout = styled.layout().clone();
         let chips = ranges
             .iter()
@@ -88,6 +98,11 @@ impl Panel {
                 }
             },
         );
+        let text = if let Some((model, key)) = selection {
+            text_selection::selectable(model, key, shown.clone(), layout.clone(), text, cx)
+        } else {
+            text.into_any_element()
+        };
         let extras = images
             .into_iter()
             .enumerate()

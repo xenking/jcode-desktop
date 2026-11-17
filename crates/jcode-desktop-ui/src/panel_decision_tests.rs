@@ -26,10 +26,15 @@ fn answered_ask_is_a_user_decision_not_a_tool_row(cx: &mut gpui::TestAppContext)
     panel.update(vcx, |panel, _| {
         assert_eq!(panel.transcript_render_rows()[0].role, Some("you"))
     });
-    let header = vcx.debug_bounds("decision-header").unwrap();
-    vcx.simulate_click(header.center(), Default::default());
-    vcx.run_until_parked();
     assert!(vcx.debug_bounds("decision-detail").is_some());
+    assert!(
+        vcx.debug_bounds("decision-question-Which database?")
+            .is_some()
+    );
+    assert!(
+        vcx.debug_bounds("decision-answer-✓ Postgres\nUser comment: reliable")
+            .is_some()
+    );
 }
 
 #[gpui::test]
@@ -59,4 +64,26 @@ fn history_restores_decision_and_counts_it_as_a_user_turn(cx: &mut gpui::TestApp
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("decision-card").is_some());
     assert!(vcx.debug_bounds("decision-choice").is_some());
+    assert!(vcx.debug_bounds("decision-question-Which?").is_some());
+    assert!(vcx.debug_bounds("decision-answer-✓ B").is_some());
+}
+
+#[gpui::test]
+fn long_answered_question_wraps_inside_card(cx: &mut gpui::TestAppContext) {
+    let question = "Which database should we use for the long term project and how should we migrate all existing records safely without interrupting users or losing any important data?";
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("decision-wrap".into(), None, None, crate::harness::spawn_inert(), cx);
+        *panel.items = vec![Item::Tool {
+            call_id: "wrap".into(), name: "ask".into(),
+            input: serde_json::json!({"questions":[{"question":question,"options":[{"label":"Postgres"}]}]}).to_string(),
+            output: format!("User answers:\n1. {question} -> Postgres"),
+            done: true, error: None,
+        }];
+        panel
+    });
+    vcx.run_until_parked();
+    let bounds = vcx.debug_bounds("decision-question-Which database should we use for the long term project and how should we migrate all existing records safely without interrupting users or losing any important data?").unwrap();
+    let card = vcx.debug_bounds("decision-card").unwrap();
+    assert!(bounds.size.height > px(25.), "question did not wrap: {bounds:?}");
+    assert!(bounds.right() <= card.right(), "question escapes card: {bounds:?} {card:?}");
 }

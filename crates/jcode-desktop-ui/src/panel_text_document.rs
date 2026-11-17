@@ -230,8 +230,15 @@ fn segments_with_regions(
             input,
             output,
             error,
+            done,
             ..
         } => {
+            if name == "ask" && *done {
+                return super::decision::selection_segments(index, input, output, error.as_deref())
+                    .into_iter()
+                    .map(|(key, text)| (key.into(), text.into()))
+                    .collect();
+            }
             push(format!("tool-name-{index}"), name.clone());
             push(
                 format!("tool-summary-{index}"),

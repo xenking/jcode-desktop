@@ -32,11 +32,7 @@ fn questions(input: &str, output: &str, error: Option<&str>) -> Vec<DecisionQues
                 .get("question")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Question");
-            let title = q
-                .get("header")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(full);
+            let title = full;
             let prefix = format!("{}. {} -> ", i + 1, full);
             let answer = shown
                 .find(&prefix)
@@ -66,6 +62,26 @@ fn questions(input: &str, output: &str, error: Option<&str>) -> Vec<DecisionQues
                 answer,
                 choices,
             }
+        })
+        .collect()
+}
+
+pub(super) fn selection_segments(
+    index: usize,
+    input: &str,
+    output: &str,
+    error: Option<&str>,
+) -> Vec<(String, String)> {
+    let is_answered = answered(output, error);
+    questions(input, output, error)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, entry)| {
+            let answer = marked_answer(&entry, is_answered);
+            [
+                (format!("decision-question-{index}-{i}"), entry.title),
+                (format!("decision-answer-{index}-{i}"), answer),
+            ]
         })
         .collect()
 }
@@ -101,7 +117,16 @@ fn marked_answer(entry: &DecisionQuestion, answered: bool) -> String {
                         .is_some_and(|tail| tail.starts_with(" (comment: "))
             });
             if selected {
-                format!("✓ {part}")
+                if let Some((label, comment)) = part.split_once(" (comment: ") {
+                    format!(
+                        "✓ {label}\nUser comment: {}",
+                        comment.strip_suffix(')').unwrap_or(comment)
+                    )
+                } else {
+                    format!("✓ {part}")
+                }
+            } else if let Some(other) = part.strip_prefix("Other: ") {
+                format!("User answer: {other}")
             } else {
                 part.to_owned()
             }
@@ -111,6 +136,7 @@ fn marked_answer(entry: &DecisionQuestion, answered: bool) -> String {
 }
 
 impl Panel {
+    #[expect(clippy::too_many_arguments, reason = "rendering needs decision data and GPUI context")]
     pub(super) fn render_decision(
         &self,
         index: usize,
@@ -118,40 +144,29 @@ impl Panel {
         input: &str,
         output: &str,
         error: Option<&str>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let entries = questions(input, output, error);
-        let expanded = self.expanded_regions.contains(call_id);
-        let toggle_key = call_id.to_string();
-        let keyboard_key = toggle_key.clone();
-        let focus = self
-            .swarm_row_focus
-            .borrow_mut()
-            .entry(call_id.to_string())
-            .or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone();
-        let click_focus = focus.clone();
         let answered = answered(output, error);
         let summary = if answered {
-            format!(
-                "{} question{} answered",
-                entries.len(),
-                if entries.len() == 1 { "" } else { "s" }
-            )
-        } else if output.to_lowercase().contains("declin") {
-            "Declined".into()
+            ""
+        } else if error.unwrap_or(output).to_lowercase().contains("declin") {
+            "Declined"
         } else if error.unwrap_or(output).to_lowercase().contains("timeout") {
-            "Timed out".into()
+            "Timed out"
         } else if error.unwrap_or(output).to_lowercase().contains("cancel") {
-            "Cancelled".into()
+            "Cancelled"
         } else {
-            "No response".into()
+            "No response"
         };
         let mut card = div()
             .id(("decision-card", index))
             .debug_selector(|| "decision-card".into())
             .flex()
             .flex_col()
+            .flex_1()
+            .min_w_0()
             .gap_1()
             .px_3()
             .py_2()
@@ -162,61 +177,76 @@ impl Panel {
                 div()
                     .id(("decision-header", index))
                     .debug_selector(|| "decision-header".into())
-                    .cursor_pointer()
                     .flex()
                     .gap_2()
                     .items_center()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Decision"))
-                    .child(div().text_color(Theme::global().TEXT_DIM).child(summary))
-                    .track_focus(&focus)
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "enter" && !event.is_held {
-                            this.toggle_region(&keyboard_key, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        window.focus(&click_focus, cx);
-                        this.toggle_region(&toggle_key, cx);
-                        cx.stop_propagation();
-                    })),
+                    .child(div().text_color(Theme::global().TEXT_DIM).child(summary)),
             );
-        if expanded {
+        {
             let count = entries.len();
             let mut image_offset = 0;
             for (i, entry) in entries.into_iter().enumerate() {
                 let marker_count = crate::input::image_marker_ranges(&entry.answer).len();
                 let answer = marked_answer(&entry, answered);
+                let question_selector = format!("decision-question-{}", entry.title);
+                let answer_selector = format!("decision-answer-{answer}");
+                let question = text_selection::plain(
+                    self.transcript_selection.clone(),
+                    format!("decision-question-{index}-{i}"),
+                    entry.title,
+                    window,
+                    cx,
+                );
+                let answer_element =
+                    if marker_count == 0 && self.ask_result_images(call_id).is_empty() {
+                        text_selection::plain(
+                            self.transcript_selection.clone(),
+                            format!("decision-answer-{index}-{i}"),
+                            answer,
+                            window,
+                            cx,
+                        )
+                    } else {
+                        self.render_ask_answer_part(
+                            call_id,
+                            answer,
+                            image_offset,
+                            i + 1 == count,
+                            Some((
+                                self.transcript_selection.clone(),
+                                format!("decision-answer-{index}-{i}"),
+                            )),
+                            cx,
+                        )
+                    };
                 card = card.child(
                     div()
                         .debug_selector(|| "decision-detail".into())
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(entry.title))
+                        .min_w_0()
                         .child(
                             div()
-                                .debug_selector(|| "decision-choice".into())
+                                .debug_selector(move || question_selector.clone())
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(question),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(move || answer_selector.clone())
+                                .min_w_0()
                                 .text_color(Theme::global().USER_ACCENT)
-                                .child(self.render_ask_answer_part(
-                                    call_id,
-                                    answer,
-                                    image_offset,
-                                    i + 1 == count,
-                                    cx,
-                                )),
+                                .child(
+                                    div()
+                                        .debug_selector(|| "decision-choice".into())
+                                        .child(answer_element),
+                                ),
                         ),
                 );
                 image_offset += marker_count;
             }
-        } else if let Some(entry) = entries.first() {
-            card = card.child(
-                div()
-                    .debug_selector(|| "decision-choice".into())
-                    .text_color(Theme::global().USER_ACCENT)
-                    .truncate()
-                    .child(marked_answer(entry, answered).replace('\n', "  ")),
-            );
         }
         div()
             .flex()
@@ -225,24 +255,21 @@ impl Panel {
             .min_w_0()
             .items_start()
             .gap(px(6.))
-            .when_some(
-                self.absolute_prompt_number(index),
-                |row, number| {
-                    row.child(
-                        div()
-                            .debug_selector(move || format!("decision-number-{number}"))
-                            .mt(px(4.))
-                            .px_2()
-                            .h(px(20.))
-                            .rounded_full()
-                            .bg(Theme::global().USER_BG)
-                            .text_size(px(10.))
-                            .line_height(px(20.))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(number.to_string()),
-                    )
-                },
-            )
+            .when_some(self.absolute_prompt_number(index), |row, number| {
+                row.child(
+                    div()
+                        .debug_selector(move || format!("decision-number-{number}"))
+                        .mt(px(4.))
+                        .px_2()
+                        .h(px(20.))
+                        .rounded_full()
+                        .bg(Theme::global().USER_BG)
+                        .text_size(px(10.))
+                        .line_height(px(20.))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(number.to_string()),
+                )
+            })
             .child(card)
             .into_any_element()
     }
@@ -257,10 +284,10 @@ mod tests {
         let input = r#"{"questions":[{"header":"Storage","question":"Which?","options":[{"label":"A"},{"label":"B"}]},{"question":"When?","options":[{"label":"Now"},{"label":"Later"}]}]}"#;
         let output = "User answers:\n1. Which? -> A (comment: first; second\nthird); B; Other: custom\n2. When? -> Later\n";
         let entries = questions(input, output, None);
-        assert_eq!(entries[0].title, "Storage");
+        assert_eq!(entries[0].title, "Which?");
         assert_eq!(
             marked_answer(&entries[0], true),
-            "✓ A (comment: first; second\nthird)\n✓ B\nOther: custom"
+            "✓ A\nUser comment: first; second\nthird\n✓ B\nUser answer: custom"
         );
         assert_eq!(marked_answer(&entries[1], true), "✓ Later");
         assert!(

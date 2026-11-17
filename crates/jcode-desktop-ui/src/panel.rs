@@ -4861,6 +4861,7 @@ impl Panel {
                         input,
                         output,
                         error.as_deref(),
+                        window,
                         cx,
                     );
                 }
@@ -11241,6 +11242,19 @@ mod fixture_for_panel_tests {
 /// real session through each case.
 fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     let fixture = fixture.map(str::to_owned);
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("decision") {
+        return vec![Item::Tool {
+            call_id: "decision-fixture".into(),
+            name: "ask".into(),
+            input: serde_json::json!({"questions": [
+                {"question": "Which database should we use for this long-term project, and why?", "options": [{"label": "Postgres (Recommended)"}, {"label": "SQLite"}]},
+                {"question": "When should we migrate?", "options": [{"label": "Now"}, {"label": "Later"}]}
+            ]}).to_string(),
+            output: "User answers:\n1. Which database should we use for this long-term project, and why? -> Postgres (Recommended) (comment: Reliable and familiar); Other: Keep a backup\n2. When should we migrate? -> Later\n".into(),
+            done: true,
+            error: None,
+        }];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("background-tasks") {
         return vec![
             Item::User("Run the checks in the background".into()),

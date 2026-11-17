@@ -122,6 +122,39 @@ fn drag_copy(vcx: &mut gpui::VisualTestContext, key: &'static str) -> String {
     drag_copy_between(vcx, key, key)
 }
 
+#[gpui::test]
+fn answered_decision_question_and_answer_are_selectable(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "decision-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        *panel.items = vec![Item::Tool {
+            call_id: "decision".into(),
+            name: "ask".into(),
+            input:
+                r#"{"questions":[{"question":"Which database?","options":[{"label":"Postgres"}]}]}"#
+                    .into(),
+            output: "User answers:\n1. Which database? -> Postgres (comment: reliable)".into(),
+            done: true,
+            error: None,
+        }];
+        panel
+    });
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-decision-question-0-0"),
+        "Which database?"
+    );
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-decision-answer-0-0"),
+        "✓ Postgres\nUser comment: reliable"
+    );
+}
+
 fn drag_copy_between(
     vcx: &mut gpui::VisualTestContext,
     first: &'static str,
