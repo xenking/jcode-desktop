@@ -82,13 +82,7 @@ impl Panel {
             .working_dir
             .as_deref()
             .filter(|dir| !screenshot_mode && !dir.is_empty())
-            .map(|dir| {
-                if remote_machine.is_some() {
-                    remote_location_label(dir)
-                } else {
-                    location_label(dir)
-                }
-            });
+            .map(|dir| (location_label(dir), dir.to_owned()));
         let can_switch_location = remote_machine.is_none() && self.offers_directory_switch();
         // Usage limits and status share the pill row, so the panel needs no
         // separate footer bar below the composer. The build label is gone from
@@ -226,7 +220,7 @@ impl Panel {
                             .whitespace_nowrap()
                             .child(machine)
                     }))
-                    .children(location.map(|(name, detail)| {
+                    .children(location.map(|(name, full_path)| {
                         div()
                             .id("composer-location")
                             .debug_selector(|| "composer-location".into())
@@ -241,12 +235,14 @@ impl Panel {
                             .whitespace_nowrap()
                             .text_size(px(11.5))
                             .rounded_full()
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| LocationTooltip(full_path.clone())).into()
+                            })
                             // The folder browser reads this computer's disk,
                             // so only local sessions offer the switch.
                             .when(can_switch_location, |el| {
                                 el.cursor_pointer()
                                     .hover(|el| el.bg(theme.USER_BG))
-                                    .tooltip(|_, cx| cx.new(|_| LocationTooltip).into())
                                     .on_click(cx.listener(|_, _, window, cx| {
                                         cx.stop_propagation();
                                         window.dispatch_action(
@@ -264,15 +260,6 @@ impl Panel {
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(name),
                             )
-                            .children(detail.map(|detail| {
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(10.5))
-                                    .font_family(theme.FONT_MONO)
-                                    .text_color(theme.TEXT_FAINT)
-                                    .child(detail)
-                            }))
                     })),
             );
         let strips = self.render_composer_applets(window, cx);
@@ -508,7 +495,7 @@ impl Panel {
 }
 
 /// A compact rounded pill, filled like the transcript's user prompt cards.
-struct LocationTooltip;
+struct LocationTooltip(String);
 
 impl Render for LocationTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -521,7 +508,7 @@ impl Render for LocationTooltip {
             .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
             .text_color(Theme::global().TEXT)
-            .child("Switch folder")
+            .child(self.0.clone())
     }
 }
 
@@ -627,54 +614,17 @@ pub(super) fn pretty_model_label(model: Option<&str>) -> String {
     }
 }
 
-/// Repo name (the last path component) plus its home-relative parent path.
-/// `/home/me/src/jcode` reads `jcode` then `~/src`. Windows paths split on
-/// either separator, so `C:\Users\me\src\jcode` reads `jcode` then `~\src`.
-pub(super) fn location_label(path: &str) -> (String, Option<String>) {
+/// Last path component. The full path is kept in the hover card.
+fn location_label(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
-        return ("/".into(), None);
+        return "/".into();
     }
-    if crate::platform_dirs::tilde(trimmed) == "~" {
-        return ("~".into(), None);
-    }
-    let (parent, name) = match trimmed.rsplit_once(['/', '\\']) {
-        Some((parent, name)) => (parent, name),
-        None => return (trimmed.into(), None),
+    let name = match trimmed.rsplit_once(['/', '\\']) {
+        Some((_, name)) => name,
+        None => return trimmed.into(),
     };
-    // `C:\` keeps its separator so the parent of `C:\repo` is not `C:`.
-    let parent = if parent.is_empty() {
-        "/".to_string()
-    } else if parent.ends_with(':') {
-        trimmed[..parent.len() + 1].to_string()
-    } else {
-        crate::platform_dirs::tilde(parent)
-    };
-    (name.to_string(), Some(parent))
-}
-
-/// Repo name plus its full parent path on another machine. The local `$HOME`
-/// says nothing about the remote user's home, so nothing is abbreviated
-/// except the managed cloud's own home directory.
-pub(super) fn remote_location_label(path: &str) -> (String, Option<String>) {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return ("/".into(), None);
-    }
-    let cloud_home = "/home/ec2-user";
-    if trimmed == cloud_home {
-        return ("~".into(), None);
-    }
-    let Some((parent, name)) = trimmed.rsplit_once('/') else {
-        return (trimmed.into(), None);
-    };
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let parent = match parent.strip_prefix(cloud_home) {
-        Some("") => "~".to_string(),
-        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
-        _ => parent.to_string(),
-    };
-    (name.to_string(), Some(parent))
+    name.to_string()
 }
 
 #[cfg(test)]
@@ -751,51 +701,37 @@ mod tests {
     }
 
     #[test]
-    fn remote_location_keeps_the_remote_path() {
-        assert_eq!(
-            remote_location_label("/home/ec2-user/workspaces"),
-            ("workspaces".into(), Some("~".into()))
-        );
-        assert_eq!(
-            remote_location_label("/home/ec2-user/workspaces/app/"),
-            ("app".into(), Some("~/workspaces".into()))
-        );
-        assert_eq!(
-            remote_location_label("/srv/app"),
-            ("app".into(), Some("/srv".into()))
-        );
-        assert_eq!(remote_location_label("/home/ec2-user"), ("~".into(), None));
-        assert_eq!(
-            remote_location_label("/home/ec2-userx/a"),
-            ("a".into(), Some("/home/ec2-userx".into()))
-        );
+    fn location_label_only_shows_the_last_component() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(location_label(&format!("{home}/jcode")), "jcode");
+        assert_eq!(location_label(&format!("{home}/src/jcode/")), "jcode");
+        assert_eq!(location_label(&home), home.rsplit('/').next().unwrap());
+        assert_eq!(location_label("/srv/app"), "app");
+        assert_eq!(location_label("/"), "/");
+        assert_eq!(location_label(r"D:\work\jcode\"), "jcode");
+        assert_eq!(location_label(r"C:\repo"), "repo");
     }
 
-    #[test]
-    fn location_label_splits_repo_name_from_parent() {
-        let home = std::env::var("HOME").unwrap();
-        assert_eq!(
-            location_label(&format!("{home}/jcode")),
-            ("jcode".into(), Some("~".into()))
-        );
-        assert_eq!(
-            location_label(&format!("{home}/src/jcode/")),
-            ("jcode".into(), Some("~/src".into()))
-        );
-        assert_eq!(location_label(&home), ("~".into(), None));
-        assert_eq!(
-            location_label("/srv/app"),
-            ("app".into(), Some("/srv".into()))
-        );
-        assert_eq!(location_label("/"), ("/".into(), None));
-        assert_eq!(
-            location_label(r"D:\work\jcode\"),
-            ("jcode".into(), Some(r"D:\work".into()))
-        );
-        assert_eq!(
-            location_label(r"C:\repo"),
-            ("repo".into(), Some(r"C:\".into()))
-        );
+    #[gpui::test]
+    fn composer_location_shows_basename_and_keeps_full_path_for_hover(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.working_dir = Some("/srv/projects/jcode".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let location = vcx
+            .debug_bounds("composer-location")
+            .expect("location visible");
+        assert_eq!(location_label("/srv/projects/jcode"), "jcode");
+        vcx.update(|window, cx| window.simulate_mouse_move(location.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-location-tooltip").is_some());
     }
 
     #[gpui::test]
