@@ -4108,10 +4108,8 @@ dependencies = [
  "fontdue",
  "jcode-message-types",
  "png 0.17.16",
- "serde",
  "serde_json",
  "thiserror 2.0.20",
- "tracing",
 ]
 
 [[package]]
@@ -4344,6 +4342,7 @@ dependencies = [
  "jcode-side-panel-types",
  "jcode-todo-policy",
  "jcode-usage-types",
+ "libc",
  "serde",
  "serde_json",
 ]
