@@ -168,11 +168,6 @@ impl Panel {
                     .items_center()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Decision"))
                     .child(div().text_color(Theme::global().TEXT_DIM).child(summary))
-                    .child(
-                        div()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if expanded { "▾" } else { "▸" }),
-                    )
                     .track_focus(&focus)
                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if event.keystroke.key == "enter" && !event.is_held {

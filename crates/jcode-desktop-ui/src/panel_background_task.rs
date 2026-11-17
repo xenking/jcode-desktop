@@ -1,25 +1,33 @@
-//! Text accompanying a background task completion.
+//! Presentation of background task completions.
 
-/// Keep the task identifier and status even with an older server that does not
-/// send the completion notice. A new server also supplies the bounded preview.
-pub(super) fn detail_text(task_id: &str, summary: &str, detail: Option<&str>) -> String {
-    let mut text = format!("Task: {task_id}\n{summary}");
-    if let Some(body) = detail.and_then(|text| text.split_once('\n').map(|(_, body)| body.trim()))
-        && !body.is_empty()
-    {
-        text.push_str("\n\n");
-        if let Some((before, preview)) = body.split_once("```text\n") {
-            if let Some((preview, after)) = preview.rsplit_once("\n```") {
-                text.push_str(before);
-                text.push_str("Output preview:\n");
-                text.push_str(preview);
-                text.push_str(after);
+pub(super) fn summary_parts(summary: &str) -> (String, Option<i32>) {
+    let mut exit_code = None;
+    let parts = summary
+        .split('·')
+        .map(str::trim)
+        .filter(|part| {
+            if let Some(code) = part
+                .strip_prefix("exit ")
+                .and_then(|n| n.parse::<i32>().ok())
+            {
+                exit_code = (code != 0).then_some(code);
+                false
             } else {
-                text.push_str(body);
+                !part.is_empty() && *part != "exit n/a"
             }
-        } else {
-            text.push_str(body);
-        }
+        })
+        .collect::<Vec<_>>();
+    (parts.join(" · "), exit_code)
+}
+
+pub(super) fn detail_text(_task_id: &str, _summary: &str, detail: Option<&str>) -> String {
+    let Some(detail) = detail else {
+        return String::new();
+    };
+    if let Some((_, rest)) = detail.split_once("```text\n")
+        && let Some((output, _)) = rest.rsplit_once("\n```")
+    {
+        return super::strip_ansi(output);
     }
-    text
+    String::new()
 }

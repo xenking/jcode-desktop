@@ -233,7 +233,10 @@ fn segments_with_regions(
             ..
         } => {
             push(format!("tool-name-{index}"), name.clone());
-            push(format!("tool-summary-{index}"), tool_summary_full(input));
+            push(
+                format!("tool-summary-{index}"),
+                tool_row_summary(name, input),
+            );
             if open.card {
                 let mut detail = tool_detail(name, input, output);
                 if let Some(error) = error {
@@ -267,10 +270,6 @@ fn segments_with_regions(
                     push(format!("tool-detail-{index}"), args);
                     push(format!("tool-bash-output-{index}"), result);
                 } else if let Some(result) = tool_output::background_output(name, output) {
-                    push(format!("tool-detail-{index}"), tool_detail(name, input, ""));
-                    for (field_index, line) in result.fields.into_iter().enumerate() {
-                        push(format!("tool-bg-field-{index}-{field_index}"), line);
-                    }
                     if let Some(preview) = result.preview {
                         push(format!("tool-bg-preview-{index}"), preview);
                     }
@@ -347,7 +346,10 @@ fn segments_with_regions(
             ..
         } => {
             push(format!("background-label-{index}"), label.clone());
-            push(format!("background-summary-{index}"), summary.clone());
+            push(
+                format!("background-summary-{index}"),
+                background_task::summary_parts(summary).0,
+            );
             if open.details {
                 push(
                     format!("background-detail-{index}"),

@@ -60,6 +60,16 @@ pub(super) fn bash_sections(
     input_value.get("command")?.as_str()?;
     let mut args = tool_detail(name, input, "");
     let mut result = strip_ansi(output);
+    let trimmed = result.trim_end_matches('\n');
+    if let Some((before, last)) = trimmed.rsplit_once('\n') {
+        if last.starts_with("--- Command finished with exit code: ") && last.ends_with(" ---") {
+            result = before.trim_end_matches('\n').to_owned();
+        }
+    } else if trimmed.starts_with("--- Command finished with exit code: ")
+        && trimmed.ends_with(" ---")
+    {
+        result.clear();
+    }
     if let Some(error) = error {
         if !result.is_empty() {
             result.push_str("\n\n");
@@ -290,7 +300,10 @@ fn argument_ranges(name: &str, input: &str, detail: &str) -> Vec<(Range<usize>, 
     }
     let mut offset = 0;
     let mut ranges = Vec::new();
-    for (key, value) in args {
+    for (key, value) in args
+        .into_iter()
+        .filter(|(key, _)| tool_argument_visible(key))
+    {
         let value = match value {
             serde_json::Value::String(text) => text,
             other => serde_json::to_string_pretty(&other).unwrap_or_default(),
@@ -384,7 +397,8 @@ mod tests {
         let detail = tool_detail("bash", input, "");
         let ranges = argument_ranges("bash", input, &detail);
         assert_eq!(&detail[ranges[0].0.clone()], "command:");
-        assert_eq!(&detail[ranges[1].0.clone()], "task_id:");
+        assert!(!detail.contains("task_id"));
+        assert_eq!(ranges.len(), 1);
     }
     #[test]
     fn background_parser_retains_fields_and_unfenced_preview() {

@@ -3370,6 +3370,53 @@ impl Panel {
                 data,
                 message,
             } => {
+                if *command == jcode_sdk::api::RuntimeCommand::BackgroundOutput {
+                    if let (Some(task_id), Some(output)) =
+                        (data["task_id"].as_str(), data["output"].as_str())
+                    {
+                        for item in self.items.iter_mut() {
+                            match item {
+                                Item::BackgroundTask {
+                                    task_id: id,
+                                    detail,
+                                    ..
+                                } if id == task_id => {
+                                    *detail = Some(format!(
+                                        "**Background task**\n\n```text\n{output}\n```"
+                                    ));
+                                }
+                                Item::Tool {
+                                    name,
+                                    input,
+                                    output: body,
+                                    ..
+                                } if name == "bg"
+                                    && serde_json::from_str::<serde_json::Value>(input)
+                                        .ok()
+                                        .and_then(|v| {
+                                            v.get("task_id")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_owned)
+                                        })
+                                        .as_deref()
+                                        == Some(task_id) =>
+                                {
+                                    let metadata = body
+                                        .split_once("\n\nOutput preview:\n")
+                                        .map(|(metadata, _)| metadata)
+                                        .unwrap_or(body.as_str());
+                                    *body = format!(
+                                        "{metadata}\n\nOutput preview:\n```text\n{output}\n```"
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        self.transcript_measurements.dirty = true;
+                        cx.notify();
+                    }
+                    return;
+                }
                 if *command == jcode_sdk::api::RuntimeCommand::Mode {
                     self.active_skill = data["pinned_skill"].as_str().map(str::to_owned);
                 }
@@ -4687,7 +4734,13 @@ impl Panel {
                 // label and summary when the user opens it.
                 let key = expandable::key::task(task_id);
                 let expanded = self.expanded_regions.contains(&key);
+                let (row_summary, exit_code) = background_task::summary_parts(summary);
                 let toggle_key = key.clone();
+                let background_task_id = task_id.clone();
+                let done_for_click = *done
+                    && detail
+                        .as_deref()
+                        .is_some_and(|value| value.contains("_Full output:_"));
                 div()
                     .flex()
                     .flex_col()
@@ -4708,6 +4761,9 @@ impl Panel {
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 cx.stop_propagation();
+                                if !this.expanded_regions.contains(&toggle_key) && done_for_click {
+                                    this.request_background_output(&background_task_id);
+                                }
                                 this.toggle_line(&toggle_key, cx);
                             }))
                             .child(crate::tool_icon::render_badge(
@@ -4725,13 +4781,22 @@ impl Panel {
                             )
                             .child(
                                 div()
-                                    .max_w(relative(0.3))
-                                    .min_w_0()
-                                    .truncate()
+                                    .flex_none()
                                     .text_size(px(11.0))
                                     .text_color(Theme::global().TEXT_FAINT)
-                                    .child(summary.clone()),
+                                    .child(row_summary),
                             )
+                            .when_some(exit_code, |el, code| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .px_2()
+                                        .rounded_full()
+                                        .bg(Theme::global().INLINE_CODE_BG)
+                                        .text_color(Theme::global().ERROR)
+                                        .child(format!("exit {code}")),
+                                )
+                            })
                             .when_some(percent.filter(|value| value.is_finite()), |el, percent| {
                                 el.child(
                                     div()
@@ -4749,18 +4814,7 @@ impl Panel {
                                         ),
                                 )
                             })
-                            .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
-                            .child({
-                                let key = key.clone();
-                                expandable::glyph_toggle(
-                                    format!("background-task-chevron-{index}").into(),
-                                    expanded,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_line(&key, cx);
-                                    }),
-                                )
-                            }),
+                            .children(tool_card_token_pill(detail.as_deref().unwrap_or(""))),
                     )
                     .when(expanded, |el| {
                         el.child(
@@ -4861,10 +4915,18 @@ impl Panel {
                         "running".into()
                     }
                 } else {
-                    tool_summary_full(input)
+                    tool_row_summary(name, input)
                 };
                 let toggle_key = call_id.clone();
+                let bg_task_for_click = if name == "bg" && *done {
+                    serde_json::from_str::<serde_json::Value>(input)
+                        .ok()
+                        .and_then(|v| v.get("task_id").and_then(|v| v.as_str()).map(str::to_owned))
+                } else {
+                    None
+                };
                 let keyboard_key = call_id.clone();
+                let bg_task_for_keyboard = bg_task_for_click.clone();
                 let row_focus = self
                     .swarm_row_focus
                     .borrow_mut()
@@ -4917,6 +4979,9 @@ impl Panel {
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, _, cx| {
                                     if event.keystroke.key == "enter" && !event.is_held {
+                                        if !this.expanded_regions.contains(&keyboard_key) && let Some(task_id) = &bg_task_for_keyboard {
+                                            this.request_background_output(task_id);
+                                        }
                                         this.toggle_region(&keyboard_key, cx);
                                         cx.stop_propagation();
                                     }
@@ -4924,6 +4989,9 @@ impl Panel {
                             ))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&click_focus, cx);
+                                if !this.expanded_regions.contains(&toggle_key) && let Some(task_id) = &bg_task_for_click {
+                                    this.request_background_output(task_id);
+                                }
                                 this.toggle_region(&toggle_key, cx);
                                 cx.stop_propagation();
                             }))
@@ -4949,6 +5017,11 @@ impl Panel {
                                         .text_color(Theme::global().TOOL_TEXT)
                                         .child(summary),
                                 )
+                            })
+                            .when_some(tool_output::background_output(name, output), |el, result| {
+                                el.when_some(tool_bg_status(name, output), |el, status| el.child(div().flex_none().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(status)))
+                                  .when_some(output.lines().find_map(|line| line.strip_prefix("Duration: ")), |el, duration| el.child(div().flex_none().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(duration.to_owned())))
+                                  .when_some(result.exit_code.filter(|code| *code != 0), |el, code| el.child(div().debug_selector(|| "tool-bg-exit-code".into()).flex_none().px_2().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(Theme::global().ERROR).child(format!("exit {code}"))))
                             })
                             .children(self.render_tool_clock(
                                 index,
@@ -5145,17 +5218,7 @@ impl Panel {
                                             div()
                                                 .flex()
                                                 .flex_col()
-                                                .when(name == "bg", |el| el.child(div().flex().flex_wrap().items_center().gap_2().mb_2()
-                                                    .when_some(tool_bg_status(name, output), |el, status| {
-                                                        let color = if status.eq_ignore_ascii_case("completed") { Theme::global().OK } else if status.eq_ignore_ascii_case("failed") { Theme::global().ERROR } else { Theme::global().WARN };
-                                                        el.child(div().debug_selector(|| "tool-detail-status".into()).px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(color).child(status))
-                                                    })
-                                                    .when_some(tool_output::background_output(name, output).and_then(|result| result.exit_code), |el, code| {
-                                                        el.child(div().debug_selector(|| "tool-bg-exit-code".into()).px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
-                                                    })
-                                                    .when_some(output.lines().find_map(|line| line.strip_prefix("Duration: ")), |el, duration| el.child(div().text_color(Theme::global().TEXT_FAINT).child(duration.to_owned())))
-                                                ))
-                                                .when_some(tool_output::bash_exit_code(name, output), |el, code| {
+                                                .when_some(tool_output::bash_exit_code(name, output).filter(|code| *code != 0), |el, code| {
                                                     el.child(div().debug_selector(|| "tool-detail-exit-code".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
                                                 })
                                                 .when(!*done && error.is_none() && self.has_running_tool(), |el| {
@@ -5187,13 +5250,7 @@ impl Panel {
                                                         .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
                                                         .into_any_element()
                                                 } else if let Some(result) = tool_output::background_output(name, output) {
-                                                    let args = tool_detail(name, input, "");
-                                                    let rows = result.fields.into_iter().enumerate().filter(|(_, line)| !line.is_empty()).map(|(field_index, line)| {
-                                                        div().min_w_0().text_color(Theme::global().TEXT_FAINT).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-field-{index}-{field_index}"), line, window, cx)).into_any_element()
-                                                    }).collect::<Vec<_>>();
                                                     div().flex().flex_col().gap_2()
-                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
-                                                        .child(div().debug_selector(|| "tool-bg-fields".into()).flex().flex_col().children(rows))
                                                         .when_some(result.preview, |el, preview| el.child(div().debug_selector(|| "tool-bg-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-preview-{index}"), preview, window, cx))))
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
@@ -5296,6 +5353,16 @@ impl Panel {
 
     /// Flip one disclosure region that has no animated detail: a notice body,
     /// a background task, a swarm line or an error card's raw message.
+    fn request_background_output(&self, task_id: &str) {
+        if !self.is_side_document() && self.preview_state.is_none() {
+            self.bridge.send(Command::RuntimeCommand {
+                session_id: self.session_id.clone(),
+                command: jcode_sdk::api::RuntimeCommand::BackgroundOutput,
+                args: vec![task_id.to_owned()],
+            });
+        }
+    }
+
     pub(super) fn toggle_line(&mut self, key: &str, cx: &mut Context<Self>) {
         if !self.expanded_regions.remove(key) {
             self.expanded_regions.insert(key.to_owned());
@@ -7794,12 +7861,33 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+fn tool_row_summary(name: &str, input: &str) -> String {
+    if name == "bg"
+        && serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|v| v.get("intent").and_then(|v| v.as_str()).map(str::to_owned))
+            .is_none()
+    {
+        "Background task".into()
+    } else {
+        tool_summary_full(input)
+    }
+}
+
+fn tool_argument_visible(key: &str) -> bool {
+    !matches!(
+        key,
+        "intent" | "label" | "id" | "task_id" | "call_id" | "session_id" | "request_id"
+    ) && !key.ends_with("_id")
+}
+
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
     let mut parts = Vec::new();
     if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
         let rows = arguments
             .into_iter()
+            .filter(|(key, _)| tool_argument_visible(key))
             .map(|(key, value)| {
                 let value = match value {
                     serde_json::Value::String(text) => text,

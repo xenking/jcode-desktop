@@ -6,27 +6,58 @@ use super::*;
 #[gpui::test]
 fn duplicate_background_completion_keeps_only_matching_full_result(cx: &mut gpui::TestAppContext) {
     let notice = |id: &str, preview: &str| Item::BackgroundTask {
-        task_id: id.into(), label: "Build".into(), summary: "completed · 2s · exit 0".into(),
-        detail: Some(format!("**Background task** `{id}`\n\n```text\n{preview}\n```")), percent: None, done: true,
+        task_id: id.into(),
+        label: "Build".into(),
+        summary: "completed · 2s · exit 0".into(),
+        detail: Some(format!(
+            "**Background task** `{id}`\n\n```text\n{preview}\n```"
+        )),
+        percent: None,
+        done: true,
     };
     let bg = Item::Tool {
         call_id: "bg-call".into(), name: "bg".into(), input: r#"{"action":"wait","task_id":"abc"}"#.into(),
         output: "Background task finished.\n\nTask: abc\nStatus: completed\nDuration: 2s\nExit code: 0\n\nOutput preview:\n```text\nhello\n```".into(), done: true, error: None,
     };
-    let (panel, vcx) = panel_with(cx, vec![notice("abc", "hello"), notice("other", "different"), notice("abc", "new output"), bg]);
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![
+            notice("abc", "hello"),
+            notice("other", "different"),
+            notice("abc", "new output"),
+            bg,
+        ],
+    );
     let rows = panel.read_with(vcx, |panel, _| panel.transcript_render_rows());
     assert_eq!(rows.len(), 3);
-    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(1))));
-    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(2))));
-    assert!(rows.iter().any(|row| matches!(&row.source, TranscriptRowSource::Settled(3))));
+    assert!(
+        rows.iter()
+            .any(|row| matches!(&row.source, TranscriptRowSource::Settled(1)))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(&row.source, TranscriptRowSource::Settled(2)))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(&row.source, TranscriptRowSource::Settled(3)))
+    );
 }
 
 #[gpui::test]
 fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
-        call_id: "edit-arguments".into(), name: "edit".into(), input: r#"{"file_path":"src/lib.rs","old_string":"before","new_string":"after"}"#.into(),
-        output: "Changed file".into(), done: true, error: None,
-    }]);
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "edit-arguments".into(),
+            name: "edit".into(),
+            input: r#"{"file_path":"src/lib.rs","old_string":"before","new_string":"after"}"#
+                .into(),
+            output: "Changed file".into(),
+            done: true,
+            error: None,
+        }],
+    );
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-argument-table").is_some());
     let text = document_text(&panel, vcx);
@@ -36,10 +67,17 @@ fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppCont
 
 #[gpui::test]
 fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
-        call_id: "json-nested".into(), name: "webfetch".into(), input: "{}".into(),
-        output: r#"{"outer":{"child":"secret"},"other":7}"#.into(), done: true, error: None,
-    }]);
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "json-nested".into(),
+            name: "webfetch".into(),
+            input: "{}".into(),
+            output: r#"{"outer":{"child":"secret"},"other":7}"#.into(),
+            done: true,
+            error: None,
+        }],
+    );
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-json-toggle-1").is_some());
     assert!(document_text(&panel, vcx).contains("secret"));
@@ -52,10 +90,17 @@ fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn markdown_tool_output_is_rendered_and_selectable(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
-        call_id: "markdown".into(), name: "webfetch".into(), input: r#"{"url":"example"}"#.into(),
-        output: "# Report\n\nA **useful** result.".into(), done: true, error: None,
-    }]);
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "markdown".into(),
+            name: "webfetch".into(),
+            input: r#"{"url":"example"}"#.into(),
+            output: "# Report\n\nA **useful** result.".into(),
+            done: true,
+            error: None,
+        }],
+    );
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail-markdown").is_some());
     let document = document_text(&panel, vcx);
@@ -65,10 +110,17 @@ fn markdown_tool_output_is_rendered_and_selectable(cx: &mut gpui::TestAppContext
 
 #[gpui::test]
 fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
-        call_id: "bash-status".into(), name: "bash".into(), input: r#"{"command":"false"}"#.into(),
-        output: "failed\n\n--- Command finished with exit code: 1 ---\n".into(), done: true, error: None,
-    }]);
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "bash-status".into(),
+            name: "bash".into(),
+            input: r#"{"command":"false"}"#.into(),
+            output: "failed\n\n--- Command finished with exit code: 1 ---\n".into(),
+            done: true,
+            error: None,
+        }],
+    );
     click(vcx, "tool-header");
     assert!(vcx.debug_bounds("tool-detail-exit-code").is_some());
     assert!(vcx.debug_bounds("tool-bash-command").is_some());
@@ -80,10 +132,30 @@ fn bash_result_displays_exit_badge(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn read_and_diff_use_selectable_syntax_rendering(cx: &mut gpui::TestAppContext) {
     for (name, input, output, selector) in [
-        ("read", r#"{"file_path":"lib.rs"}"#, "fn main() {}\n", "tool-detail-syntax-read"),
-        ("edit", "{}", "@@ -1 +1 @@\n-old\n+new\n", "tool-detail-syntax-diff"),
+        (
+            "read",
+            r#"{"file_path":"lib.rs"}"#,
+            "fn main() {}\n",
+            "tool-detail-syntax-read",
+        ),
+        (
+            "edit",
+            "{}",
+            "@@ -1 +1 @@\n-old\n+new\n",
+            "tool-detail-syntax-diff",
+        ),
     ] {
-        let (_, vcx) = panel_with(cx, vec![Item::Tool { call_id: name.into(), name: name.into(), input: input.into(), output: output.into(), done: true, error: None }]);
+        let (_, vcx) = panel_with(
+            cx,
+            vec![Item::Tool {
+                call_id: name.into(),
+                name: name.into(),
+                input: input.into(),
+                output: output.into(),
+                done: true,
+                error: None,
+            }],
+        );
         click(vcx, "tool-header");
         assert!(vcx.debug_bounds(selector).is_some(), "{name}");
         assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
@@ -96,13 +168,67 @@ fn background_completion_opens_output_preview(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| panel.apply(&ApiEvent::BackgroundProgress {
         session_id: "expandable".into(), task_id: "task-1".into(), label: "Build".into(),
         summary: "✓ completed · 2.0s · exit 0".into(),
-        detail: Some("**Background task** `task-1` · `Build` · ✓ completed · 2.0s · exit 0\n\n```text\nactual output tail\n```".into()),
+        detail: Some("**Background task** `task-1` · `Build` · ✓ completed · 2.0s · exit 0\n\n```text\nactual output tail\nlast complete log line\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"task-1\"`".into()),
         percent: None, done: true,
     }, cx));
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("background-task-chevron-0").is_none());
+    assert!(!document_text(&panel, vcx).contains("exit 0"));
     click(vcx, "background-task-expand");
     assert!(vcx.debug_bounds("background-task-output").is_some());
-    assert!(document_text(&panel, vcx).contains("actual output tail"));
+    let text = document_text(&panel, vcx);
+    assert!(text.contains("last complete log line"));
+    assert!(
+        !text.contains("Task:")
+            && !text.contains("Output preview")
+            && !text.contains("Full output")
+    );
+}
+
+#[gpui::test]
+fn background_full_output_replaces_truncated_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::BackgroundTask {
+        task_id: "task-1".into(), label: "Build".into(), summary: "✓ completed · 2s · exit 0".into(),
+        detail: Some("**Background task** `task-1`\n\n```text\n[Tr...\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"task-1\"`".into()),
+        percent: None, done: true,
+    }]);
+    click(vcx, "background-task-expand");
+    let output = format!("{}last full log line", "long output line\n".repeat(300));
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::RuntimeCommandResult {
+                session_id: "expandable".into(),
+                command: jcode_sdk::api::RuntimeCommand::BackgroundOutput,
+                data: serde_json::json!({"task_id": "task-1", "output": output}),
+                message: String::new(),
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    let text = document_text(&panel, vcx);
+    assert!(text.contains("last full log line"));
+    assert!(!text.contains("[Tr...") && !text.contains("Full output") && !text.contains("Task:"));
+    assert!(vcx.debug_bounds("background-task-output").is_some());
+}
+
+#[gpui::test]
+fn background_expand_requests_output_from_its_session(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("expandable".into(), None, None, bridge, cx);
+        *panel.items = vec![Item::BackgroundTask {
+            task_id: "task-1".into(), label: "Build".into(), summary: "✓ completed · 2s".into(),
+            detail: Some("**Background task** `task-1`\n\n```text\ntruncated...\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"task-1\"`".into()),
+            percent: None, done: true,
+        }];
+        panel
+    });
+    vcx.run_until_parked();
+    click(vcx, "background-task-expand");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::BackgroundOutput, args }) if session_id == "expandable" && args == ["task-1"])
+    );
 }
 
 #[gpui::test]
@@ -114,14 +240,46 @@ fn bg_result_shows_structured_details(cx: &mut gpui::TestAppContext) {
         done: true, error: None,
     }]);
     click(vcx, "tool-header");
-    assert!(vcx.debug_bounds("tool-detail-status").is_some());
-    assert!(vcx.debug_bounds("tool-bg-fields").is_some());
     assert!(vcx.debug_bounds("tool-bg-output-code").is_some());
-    assert!(vcx.debug_bounds("tool-bg-exit-code").is_some());
-    assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
+    assert!(vcx.debug_bounds("tool-bg-exit-code").is_none());
     let text = document_text(&panel, vcx);
-    assert!(text.contains("completed") && text.contains("task_id") && text.contains("hello"));
-    assert!(!text.contains("Tool call\n") && !text.contains("{\n"));
+    assert!(text.contains("hello"));
+    assert!(
+        !text.contains("Task:")
+            && !text.contains("task_id")
+            && !text.contains("Output preview")
+            && !text.contains("Full output")
+    );
+}
+
+#[gpui::test]
+fn bg_failed_row_loads_complete_output_without_metadata(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(cx, vec![Item::Tool {
+        call_id: "bg-failed".into(), name: "bg".into(),
+        input: r#"{"action":"wait","task_id":"abc"}"#.into(),
+        output: "Background task finished.\n\nTask: abc\nStatus: failed\nDuration: 2s\nExit code: 101\n\nOutput preview:\n```text\ntruncated...\n```".into(),
+        done: true, error: None,
+    }]);
+    assert!(vcx.debug_bounds("tool-bg-exit-code").is_some());
+    click(vcx, "tool-header");
+    let output = format!("{}last full line", "log line\n".repeat(300));
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::RuntimeCommandResult {
+                session_id: "expandable".into(),
+                command: jcode_sdk::api::RuntimeCommand::BackgroundOutput,
+                data: serde_json::json!({"task_id": "abc", "output": output}),
+                message: String::new(),
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    let text = document_text(&panel, vcx);
+    assert!(text.contains("last full line"));
+    assert!(
+        !text.contains("Task:") && !text.contains("Output preview") && !text.contains("task_id")
+    );
 }
 
 #[gpui::test]
@@ -485,22 +643,10 @@ fn background_task_disclosure_stays_in_header_at_narrow_and_wide_widths(
         for width in [400., 1200.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.)));
             vcx.run_until_parked();
-            let header = vcx
-                .debug_bounds("background-task-expand")
-                .expect("header");
-            let chevron = vcx
-                .debug_bounds("background-task-chevron-0")
-                .expect("chevron");
-            assert!(
-                chevron.top() >= header.top() && chevron.bottom() <= header.bottom(),
-                "width {width}: {header:?} {chevron:?}"
-            );
-            assert!(
-                chevron.left() > header.left(),
-                "chevron must follow the header: {header:?} {chevron:?}"
-            );
+            assert!(vcx.debug_bounds("background-task-expand").is_some());
+            assert!(vcx.debug_bounds("background-task-chevron-0").is_none());
         }
-        click(vcx, "background-task-chevron-0");
+        click(vcx, "background-task-expand");
         assert!(vcx.debug_bounds("background-task-card").is_some());
     }
 }
@@ -521,7 +667,7 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
         .debug_bounds("background-task-card")
         .expect("card paints")
         .size;
-    click(vcx, "background-task-chevron-0");
+    click(vcx, "background-task-expand");
     panel.read_with(&*vcx, |panel, _| {
         assert!(
             panel
@@ -540,7 +686,7 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
     // The document always carries the complete text.
     let text = document_text(&panel, vcx);
     assert!(text.contains("Rebuild the search index across every collection"));
-    click(vcx, "background-task-chevron-0");
+    click(vcx, "background-task-expand");
     assert_eq!(
         vcx.debug_bounds("background-task-card")
             .unwrap()

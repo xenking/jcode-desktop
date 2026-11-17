@@ -308,7 +308,7 @@ fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppConte
             task_id: "task".into(),
             label: "Run tests".into(),
             summary: "All tests passed".into(),
-            detail: None,
+            detail: Some("**Background task** `task`\n\n```text\nAll tests passed\n```".into()),
             percent: Some(100.),
             done: true,
         }];
@@ -317,7 +317,7 @@ fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppConte
     });
     assert_eq!(
         drag_copy(vcx, "selectable-text-background-detail-0"),
-        "Task: task\nAll tests passed"
+        "All tests passed"
     );
 }
 
