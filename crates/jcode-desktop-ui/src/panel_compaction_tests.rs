@@ -171,6 +171,51 @@ fn a_running_divider_is_replaced_by_the_completed_one(cx: &mut gpui::TestAppCont
     assert_eq!(rows[0].label(), "compacted · snapcompact · 180k→26k · 12s");
 }
 
+/// A cold-cache shake rewrites the prefix like a compaction, so the daemon
+/// sends it through the same divider event. It must land as one visible row
+/// instead of the request silently resending a full-price prompt.
+#[gpui::test]
+fn a_shake_after_a_reload_renders_its_own_divider(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("session-a", cx);
+        workspace
+    });
+    vcx.run_until_parked();
+    let panel = workspace
+        .read_with(vcx, |workspace, _| workspace.test_panel(0))
+        .expect("panel exists");
+
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::CompactionDivider {
+                session_id: "session-a".into(),
+                content: "compacted · shake · 409k→210k · 0.1s\n\ntrigger: shake_cache_expiry"
+                    .into(),
+                running: false,
+                method: Some("shake".into()),
+                trigger: Some("shake_cache_expiry".into()),
+                pre_tokens: Some(409_105),
+                post_tokens: Some(210_000),
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+
+    let rows = panel.read_with(vcx, |panel, _| compaction_rows(&panel.items));
+    assert_eq!(rows.len(), 1, "one shake, one divider: {rows:?}");
+    assert_eq!(rows[0].label(), "compacted · shake · 409k→210k · 0.1s");
+    assert_eq!(rows[0].state, CompactionState::Collapsed);
+    assert_eq!(
+        rows[0].detail(),
+        Some("trigger: shake_cache_expiry"),
+        "collapsed shake divider keeps its trigger detail"
+    );
+}
+
 #[gpui::test]
 fn completed_compaction_immediately_replaces_context_usage(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {

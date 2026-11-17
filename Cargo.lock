@@ -3999,6 +3999,7 @@ dependencies = [
 name = "jcode-base"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "base64",
@@ -4051,6 +4052,7 @@ dependencies = [
  "jcode-transport",
  "jcode-usage-types",
  "libc",
+ "memchr",
  "open",
  "proctitle",
  "rand 0.9.5",
