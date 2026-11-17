@@ -3,10 +3,6 @@ name: Automatic desktop release
 on:
   push:
     branches: [main]
-  schedule:
-    # Catch changes deferred by the quiet period, cooldown, or an active build.
-    # No sleeping runners, and no build at all if the inputs are unchanged.
-    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

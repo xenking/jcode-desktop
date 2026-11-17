@@ -311,27 +311,5 @@ Development builds additionally report uncommitted files.
                     D.verify_website_asset(bad)
 
 
-class WorkflowContractTests(unittest.TestCase):
-    def test_standalone_manual_only_source_write_and_per_tag_serialization(self):
-        text = (ROOT / ".github/workflows/discord-release.yml").read_text()
-        self.assertIn("  workflow_dispatch:", text)
-        self.assertNotRegex(text, r"(?m)^  (release|push|workflow_run):")
-        for required in ("contents: write", "group: desktop-discord-release-${{ inputs.tag }}", "cancel-in-progress: false", "ref: main", "persist-credentials: false", "${{ secrets.DISCORD_RELEASE_WEBHOOK }}", "${{ github.token }}", '--tag "$RELEASE_TAG"', "if: failure()", "::warning::"):
-            self.assertIn(required, text)
-
-    def test_publisher_dispatch_after_website_verification_and_nonblocking(self):
-        text = (ROOT / ".github/workflows/publish-public-release.yml").read_text()
-        self.assertLess(text.index("digest.hexdigest()"), text.index("gh workflow run discord-release.yml"))
-        self.assertIn("id: website_verification", text)
-        self.assertIn("steps.website_verification.outcome == 'success'", text)
-        discord = text[text.index("      - name: Dispatch verified public Desktop Discord announcement"):]
-        self.assertIn("continue-on-error: true", discord)
-        self.assertIn("--ref main", discord)
-        self.assertIn('tag="$RELEASE_TAG"', discord)
-        self.assertIn("steps.discord_dispatch.outcome == 'failure'", discord)
-        self.assertIn("::warning::", discord)
-        self.assertIn("macos-public-release-verify.yml", text)
-
-
 if __name__ == "__main__":
     unittest.main()

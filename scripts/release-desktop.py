@@ -31,8 +31,6 @@ spec.loader.exec_module(notes)
 BUILD = tuple(policy.BUILD_WORKFLOWS.values())
 DOWNSTREAM = {
     "publish-public-release.yml": "Publish",
-    "macos-public-release-verify.yml": "Accept",
-    "discord-release.yml": "Announce",
 }
 MANIFESTS = ("Cargo.toml", "crates/jcode-desktop-accounts-ui/Cargo.toml",
              "crates/jcode-desktop-api/Cargo.toml",
