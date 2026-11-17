@@ -1158,8 +1158,10 @@ mod tests {
     /// last-active stamp, so the row's clock follows the record.
     #[test]
     fn the_record_clock_wins_over_the_daemons_last_active_stamp() {
-        let mut meta = WorkerMeta::default();
-        meta.last_activity_ms = Some(1_000_000 + 25 * 60 * 1_000);
+        let meta = WorkerMeta {
+            last_activity_ms: Some(1_000_000 + 25 * 60 * 1_000),
+            ..WorkerMeta::default()
+        };
         let worker = with_meta("rose", Some("running"), meta);
         // `with_meta` ages against 1_000_000 + 26m, so the newer record is 1m.
         assert_eq!(worker.status_text(), "running 1m");

@@ -421,14 +421,18 @@ mod tests {
         let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../jcode-desktop-harness/src/fixtures");
         let identity = "session_ant_1794675020922_f6e720f45031cad8".to_string();
-        let meta = jcode_sdk::worker_meta_for(&fixtures.join("microbe_home"), &[identity.clone()]);
+        let meta = jcode_sdk::worker_meta_for(
+            &fixtures.join("microbe_home"),
+            std::slice::from_ref(&identity),
+        );
         assert_eq!(
             meta[&identity].model.as_deref(),
             Some("claude-opus-5-5"),
             "the fixture records are read from <home>/sessions"
         );
         let spent = "session_rose_1794717290730_574aea8d9f6adcc3".to_string();
-        let usage = jcode_sdk::worker_meta_for(&fixtures.join("usage_home"), &[spent.clone()]);
+        let usage =
+            jcode_sdk::worker_meta_for(&fixtures.join("usage_home"), std::slice::from_ref(&spent));
         assert!(
             usage[&spent].input_tokens.unwrap_or(0) > 0,
             "the usage fixture carries real token counts"
