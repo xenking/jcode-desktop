@@ -352,6 +352,10 @@ fn metered_cost(meta: &WorkerMeta) -> Option<f64> {
         return None;
     }
     let cost = jcode_base::model_pricing::lookup(&provider, model)?;
+    cost_for_worker(meta, cost)
+}
+
+fn cost_for_worker(meta: &WorkerMeta, cost: jcode_base::model_pricing::ModelCost) -> Option<f64> {
     let price = |per_mtok: f64| per_mtok / 1_000_000.0;
     let read = cost
         .cache_read_usd_per_mtok
@@ -359,7 +363,12 @@ fn metered_cost(meta: &WorkerMeta) -> Option<f64> {
     let write = cost
         .cache_write_usd_per_mtok
         .unwrap_or(cost.input_usd_per_mtok);
-    let total = meta.input_tokens.unwrap_or(0) as f64 * price(cost.input_usd_per_mtok)
+    let uncached = meta
+        .input_tokens
+        .unwrap_or(0)
+        .saturating_sub(meta.cache_read_tokens.unwrap_or(0))
+        .saturating_sub(meta.cache_creation_tokens.unwrap_or(0));
+    let total = uncached as f64 * price(cost.input_usd_per_mtok)
         + meta.output_tokens.unwrap_or(0) as f64 * price(cost.output_usd_per_mtok)
         + meta.cache_read_tokens.unwrap_or(0) as f64 * price(read)
         + meta.cache_creation_tokens.unwrap_or(0) as f64 * price(write);
@@ -1117,6 +1126,24 @@ mod tests {
 
     /// A subscription seat has no per-token price. Showing "$0.00" there
     /// would claim the work was free.
+    #[test]
+    fn opencode_go_cached_input_is_counted_once() {
+        let mut meta = record("deepseek-v4-pro", "opencode-go", None);
+        meta.input_tokens = Some(13_940_000);
+        meta.output_tokens = Some(80_000);
+        meta.cache_read_tokens = Some(13_570_000);
+        let price = jcode_base::model_pricing::ModelCost {
+            input_usd_per_mtok: 0.66,
+            output_usd_per_mtok: 1.98,
+            cache_read_usd_per_mtok: Some(0.0223),
+            cache_write_usd_per_mtok: None,
+        };
+        let cost = cost_for_worker(&meta, price).unwrap();
+        assert!((cost - 0.705211).abs() < 0.000001, "{cost}");
+        let worker = with_meta("buffalo", Some("running"), meta);
+        assert_eq!(worker.tokens_text().as_deref(), Some("↑13.9M ↓80k"));
+    }
+
     #[test]
     fn cost_is_shown_only_where_tokens_have_a_price() {
         let oauth = with_meta(
