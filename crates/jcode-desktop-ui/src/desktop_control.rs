@@ -170,12 +170,13 @@ mod unix {
                     "only transcript selector visibility is supported",
                 ));
             }
-            if waiters
+            #[allow(deprecated, reason = "try_update is newer than the supported MSRV")]
+            let admitted = waiters
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < 8).then_some(count + 1)
                 })
-                .is_err()
-            {
+                .is_ok();
+            if !admitted {
                 return Err(io::Error::other("too many concurrent desktop waits"));
             }
             let mut socket = match stream.try_clone() {

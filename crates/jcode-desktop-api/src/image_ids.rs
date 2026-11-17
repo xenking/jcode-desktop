@@ -36,11 +36,12 @@ impl ImageIds {
     }
 
     pub fn next(&self) -> ImageId {
-        ImageId(
-            self.0
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .expect("desktop image IDs exhausted"),
-        )
+        #[allow(deprecated, reason = "try_update is newer than the supported MSRV")]
+        let id = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("desktop image IDs exhausted");
+        ImageId(id)
     }
 }
 
