@@ -6967,12 +6967,14 @@ impl Workspace {
                                 let folded = folded_workers.get(&menu_session).copied().unwrap_or(0);
                                 let expanded_lines = this.expanded_lines.clone();
                                 list = list.child(sidebar_swarm::render_workers(
-                                    sidebar_index,
-                                    &menu_session,
+                                    sidebar_swarm::WorkerRowsLayout {
+                                        sidebar_index,
+                                        session_id: &menu_session,
+                                        under_checkout,
+                                        width: if this.compact_sidebar_open { SIDEBAR_WIDTH } else { this.sidebar_custom_width },
+                                    },
                                     workers,
                                     folded,
-                                    under_checkout,
-                                    if this.compact_sidebar_open { SIDEBAR_WIDTH } else { this.sidebar_custom_width },
                                     &mut this.swarm_marks,
                                     &expanded_lines,
                                     cx,

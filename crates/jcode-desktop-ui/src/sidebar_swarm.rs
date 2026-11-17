@@ -169,19 +169,29 @@ pub(super) fn finished_key(session_id: &str) -> String {
     format!("sidebar-finished:{session_id}")
 }
 
+pub(super) struct WorkerRowsLayout<'a> {
+    pub sidebar_index: usize,
+    pub session_id: &'a str,
+    pub under_checkout: bool,
+    pub width: f32,
+}
+
 /// Compact rows nested under a coordinator: status icon, animal, name and
 /// optional model/spend. The worker name has priority over secondary metadata.
 pub(super) fn render_workers(
-    sidebar_index: usize,
-    session_id: &str,
+    layout: WorkerRowsLayout<'_>,
     workers: &[(usize, crate::swarm_view::Worker)],
     folded: usize,
-    under_checkout: bool,
-    width: f32,
     marks: &mut crate::swarm_glyph::Marks,
     expanded_lines: &HashSet<String>,
     cx: &mut Context<Workspace>,
 ) -> gpui::AnyElement {
+    let WorkerRowsLayout {
+        sidebar_index,
+        session_id,
+        under_checkout,
+        width,
+    } = layout;
     let theme = Theme::global();
     let base = if under_checkout { 34.0 } else { 26.0 };
     let key = finished_key(session_id);
