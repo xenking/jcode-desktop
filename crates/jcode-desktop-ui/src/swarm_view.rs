@@ -1,6 +1,6 @@
 //! Coordinator view of its swarm: worker lifecycle states, the compact
 //! "workers running" indicator and the agent activity icon. Data comes from
-//! the daemon's durable state (swarm snapshots via `SessionInfo::swarm_status`)
+//! ordered daemon events reconciled into `SessionInfo::swarm_status`
 //! plus the worker's own record (`SessionInfo`'s worker table: model, effort,
 //! tokens, and what its newest message says it is doing), never from guesses
 //! based on the coordinator's transcript.
@@ -27,12 +27,12 @@ impl WorkerState {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("running" | "working" | "active" | "busy") => Self::Running,
+            Some("running" | "working" | "active" | "busy" | "bg") => Self::Running,
             Some("stalled") => Self::Stalled,
             Some("ready" | "completed" | "done" | "idle") => Self::Ready,
             Some("failed" | "crashed" | "error") => Self::Failed,
             Some("stopped" | "cancelled" | "canceled") => Self::Stopped,
-            Some("queued" | "spawned" | "spawning" | "pending") => Self::Queued,
+            Some("queued" | "spawned" | "spawning" | "starting" | "pending") => Self::Queued,
             Some("blocked") => Self::Blocked,
             _ => Self::Unknown,
         }
@@ -119,7 +119,7 @@ pub fn format_age(ms: u64) -> String {
 }
 
 /// Explicit daemon lifecycle statuses win over transcript activity. A worker
-/// without a snapshot stays unknown unless its persisted record shows it ended.
+/// without a snapshot is idle/stopped when its persisted record is Active.
 #[cfg(test)]
 pub fn worker_state(session: &SessionInfo) -> WorkerState {
     resolve_worker_state(session, None, 0)
@@ -136,6 +136,9 @@ pub fn resolve_worker_state(
         WorkerState::Unknown => match session.status.trim().to_ascii_lowercase().as_str() {
             "closed" => WorkerState::Ready,
             "crashed" | "error" => WorkerState::Failed,
+            "active" | "idle" | "attached" if session.parent_session_id.is_some() => {
+                WorkerState::Stopped
+            }
             _ => WorkerState::Unknown,
         },
         state => state,
@@ -165,8 +168,7 @@ pub struct Worker {
     pub state: WorkerState,
     /// Since the newest recorded activity, when known.
     pub age_ms: Option<u64>,
-    /// Animal emoji for the friendly name, so a row needs no room for the
-    /// name itself. The name stays in the tooltip.
+    /// Animal emoji beside the visible worker name.
     pub icon: Option<&'static str>,
     /// The worker's own record: model, effort, tokens and live phase.
     pub meta: WorkerMeta,
@@ -441,7 +443,7 @@ pub fn compact_model(model: &str) -> String {
         variants
             .iter()
             .find(|token| !token.chars().all(|c| c.is_ascii_digit()))
-            .map(|token| *token)
+            .copied()
             .unwrap_or("")
             .to_owned()
     } else {
@@ -501,7 +503,24 @@ pub fn workers_by_coordinator(
             now_ms,
         ));
     }
+    for workers in map.values_mut() {
+        workers.sort_by(|a, b| spawn_order(&a.session_id).cmp(&spawn_order(&b.session_id)));
+    }
     map
+}
+
+/// Spawn time is encoded in a daemon session id. Unlike activity timestamps,
+/// tokens, status and map iteration, this key never changes while work runs.
+pub fn spawn_order(session_id: &str) -> (u64, &str) {
+    let mut parts = session_id.rsplit('_');
+    let _nonce = parts.next();
+    (
+        parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .unwrap_or(u64::MAX),
+        session_id,
+    )
 }
 
 /// Finished workers kept visible under a coordinator. A long-running
@@ -509,33 +528,27 @@ pub fn workers_by_coordinator(
 /// an archive.
 pub const FINISHED_VISIBLE: usize = 3;
 
-/// Rows to show under a coordinator: every live worker, plus the most recent
-/// finished ones. Live workers come first, preserving recency within each
-/// partition. Returns how many finished were folded away.
-///
-/// Rows arrive in descending recency: `sidebar_session_order` sorts sessions
-/// newest first and `sidebar_swarm::groups` keeps that order, so the first
-/// finished row is the newest. The fold therefore drops the tail, never the
-/// head, or the workers that just finished are the first to disappear.
-pub fn visible_workers<T: Clone>(rows: &[T], state: impl Fn(&T) -> WorkerState) -> (Vec<T>, usize) {
-    let finished = rows
+/// Preserve spawn order while keeping every live worker and the latest few
+/// recently finished workers. Rows arrive oldest-spawn first.
+pub fn visible_workers<T: Clone>(rows: &[T], worker: impl Fn(&T) -> &Worker) -> (Vec<T>, usize) {
+    let recent_finished = rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| !state(row).is_live())
+        .rev()
+        .filter(|(_, row)| {
+            let worker = worker(row);
+            !worker.state.is_live() && worker.age_ms.is_none_or(|age| age < 3_600_000)
+        })
+        .take(FINISHED_VISIBLE)
         .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    let hidden = finished.len().saturating_sub(FINISHED_VISIBLE);
-    let mut shown = rows
+        .collect::<std::collections::HashSet<_>>();
+    let shown = rows
         .iter()
-        .filter(|row| state(row).is_live())
-        .cloned()
+        .enumerate()
+        .filter(|(index, row)| worker(row).state.is_live() || recent_finished.contains(index))
+        .map(|(_, row)| row.clone())
         .collect::<Vec<_>>();
-    shown.extend(
-        rows.iter()
-            .filter(|row| !state(row).is_live())
-            .take(FINISHED_VISIBLE)
-            .cloned(),
-    );
+    let hidden = rows.len().saturating_sub(shown.len());
     (shown, hidden)
 }
 
@@ -793,7 +806,8 @@ mod tests {
             worker("a", Some("blocked")).state.glyph(),
             Some(Glyph::Pause)
         );
-        assert_eq!(worker("a", None).state.glyph(), None);
+        assert_eq!(worker("a", None).state.glyph(), Some(Glyph::Check));
+        assert_eq!(WorkerState::Unknown.glyph(), None);
     }
 
     /// A worker missing from the swarm snapshot still shows how it ended,
@@ -807,7 +821,7 @@ mod tests {
         };
         assert_eq!(with_status("closed"), WorkerState::Ready);
         assert_eq!(with_status("crashed"), WorkerState::Failed);
-        assert_eq!(with_status("active"), WorkerState::Unknown);
+        assert_eq!(with_status("active"), WorkerState::Stopped);
         let mut listed = session("session_x_1_a", Some("lead"), Some("running"));
         listed.status = "closed".into();
         assert_eq!(worker_state(&listed), WorkerState::Running);
@@ -867,7 +881,7 @@ mod tests {
             resolve_worker_state(&s, Some(&meta), now),
             WorkerState::Stopped
         );
-        assert_eq!(worker_state(&s), WorkerState::Unknown);
+        assert_eq!(worker_state(&s), WorkerState::Stopped);
     }
 
     /// The sidebar rows from the report: kangaroo and hedgehog finished, the
@@ -944,21 +958,20 @@ mod tests {
 
     #[test]
     fn sidebar_keeps_live_workers_and_only_the_latest_finished() {
-        // The sidebar passes workers in `sidebar_session_order`, which is
-        // descending recency: index 0 is the newest worker.
-        let rows = ["fresh", "second", "third", "fourth", "oldest", "live"]
+        // Spawn order is stable, oldest first.
+        let rows = ["oldest", "fourth", "third", "second", "fresh", "live"]
             .into_iter()
             .zip(["ready", "ready", "failed", "ready", "ready", "running"])
             .map(|(name, status)| worker(name, Some(status)))
             .collect::<Vec<_>>();
-        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        let (shown, hidden) = visible_workers(&rows, |w| w);
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
         // The two oldest finished workers fold away; the newest three and the
         // live worker stay, in sidebar order.
-        assert_eq!(names, ["live", "fresh", "second", "third"]);
+        assert_eq!(names, ["third", "second", "fresh", "live"]);
         assert_eq!(hidden, 2);
         // Every live worker is visible however recent the finished ones are.
-        let (all, none) = visible_workers(&rows[..5], |w| w.state);
+        let (all, none) = visible_workers(&rows[..5], |w| w);
         assert_eq!((all.len(), none), (3, 2));
     }
 
@@ -969,20 +982,20 @@ mod tests {
         let mut rows = (0..10)
             .map(|n| worker(&format!("w{n}"), Some("ready")))
             .collect::<Vec<_>>();
-        // Newest first, the order the sidebar actually supplies.
-        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        // Oldest spawn first, the order the sidebar supplies.
+        let (shown, hidden) = visible_workers(&rows, |w| w);
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
         assert_eq!(
             names,
-            ["w0", "w1", "w2"],
+            ["w7", "w8", "w9"],
             "the newest finished workers stay"
         );
         assert_eq!(hidden, 7);
         // One running worker at the tail never displaces the newest finished.
         rows[9] = worker("live", Some("running"));
-        let (shown, hidden) = visible_workers(&rows, |w| w.state);
+        let (shown, hidden) = visible_workers(&rows, |w| w);
         let names = shown.iter().map(|w| w.name.as_str()).collect::<Vec<_>>();
-        assert_eq!(names, ["live", "w0", "w1", "w2"]);
+        assert_eq!(names, ["w6", "w7", "w8", "live"]);
         assert_eq!(hidden, 6);
     }
 

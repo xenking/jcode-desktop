@@ -29,6 +29,7 @@ pub(crate) enum Icon {
     Idle,
     Thinking,
     Tool,
+    Background,
     Waiting,
     /// The swarm: three connected nodes, the upstream sidebar's worker mark.
     Workers,
@@ -54,6 +55,7 @@ impl Icon {
             Self::Idle => icon!("idle"),
             Self::Thinking => icon!("thinking"),
             Self::Tool => icon!("tool"),
+            Self::Background => include_bytes!("../../../assets/icons/tools/bg.svg"),
             Self::Waiting => icon!("waiting"),
             Self::Workers => icon!("workers"),
             Self::Timer => icon!("timer"),

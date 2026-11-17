@@ -162,22 +162,22 @@ pub(super) fn layout_key(workers: &[(usize, crate::swarm_view::Worker)], folded:
 pub(super) fn visible(
     workers: &[(usize, crate::swarm_view::Worker)],
 ) -> (Vec<(usize, crate::swarm_view::Worker)>, usize) {
-    crate::swarm_view::visible_workers(workers, |(_, worker)| worker.state)
+    crate::swarm_view::visible_workers(workers, |(_, worker)| worker)
 }
 
 pub(super) fn finished_key(session_id: &str) -> String {
     format!("sidebar-finished:{session_id}")
 }
 
-/// Compact rows nested under a coordinator: status glyph, the worker's animal
-/// (its name is in the tooltip), task, model, spend and live state. Each row
-/// opens the worker's chat.
+/// Compact rows nested under a coordinator: status icon, animal, name and
+/// optional model/spend. The worker name has priority over secondary metadata.
 pub(super) fn render_workers(
     sidebar_index: usize,
     session_id: &str,
     workers: &[(usize, crate::swarm_view::Worker)],
     folded: usize,
     under_checkout: bool,
+    width: f32,
     marks: &mut crate::swarm_glyph::Marks,
     expanded_lines: &HashSet<String>,
     cx: &mut Context<Workspace>,
@@ -204,16 +204,28 @@ pub(super) fn render_workers(
                 .as_deref()
                 .is_some_and(|label| expandable::preview(label, expandable::LABEL).is_some());
             let mark = worker.state.glyph().map(|glyph| {
-                marks.element(
-                    &format!("worker:{}", worker.session_id),
-                    crate::swarm_glyph::Mark::glyph(glyph, 11.0),
-                    cx,
-                )
+                let mut mark = crate::swarm_glyph::Mark::glyph(glyph, 11.0);
+                if worker.state == crate::swarm_view::WorkerState::Running {
+                    if worker.meta.tool.as_deref() == Some("bg") {
+                        mark = crate::swarm_glyph::Mark::still(
+                            crate::swarm_glyph::Icon::Background,
+                            theme.ACCENT,
+                            11.0,
+                        );
+                    } else if worker.meta.phase == Some(jcode_sdk::WorkerPhase::Thinking) {
+                        mark = crate::swarm_glyph::Mark::activity(
+                            crate::swarm_view::Activity::Thinking,
+                            11.0,
+                        );
+                    }
+                }
+                mark
             });
-            let glyph_selector = worker
-                .state
-                .glyph()
-                .map(|glyph| format!("{glyph:?}").to_ascii_lowercase());
+            let glyph_selector = mark.map(|mark| format!("{:?}", mark.icon).to_ascii_lowercase());
+            let mark =
+                mark.map(|mark| marks.element(&format!("worker:{}", worker.session_id), mark, cx));
+            let identity_selector =
+                format!("sidebar-worker-identity-{index}-{}", worker.session_id);
             let tooltip = worker.tooltip();
             let tooltip_name = worker.name.clone();
             let model = worker.model_label();
@@ -228,7 +240,9 @@ pub(super) fn render_workers(
             );
             // Unknown model prices are not free: fall back to the recorded
             // token spend rather than inventing a dollar amount.
-            let spend = worker.cost_text().or_else(|| worker.tokens_text());
+            let spend = (width >= 360.0)
+                .then(|| worker.cost_text().or_else(|| worker.tokens_text()))
+                .flatten();
             div()
                 .id(gpui::SharedString::from(format!(
                     "sidebar-worker-{sidebar_index}-{index}"
@@ -283,23 +297,25 @@ pub(super) fn render_workers(
                     div()
                         .flex_none()
                         .text_size(px(11.0))
+                        .debug_selector(move || identity_selector.clone())
                         .children(worker.icon.map(|icon| icon.to_owned())),
                 )
-                .children(worker.label.clone().map(|label| {
+                .child({
                     div()
+                        .debug_selector(move || {
+                            format!("sidebar-worker-name-{sidebar_index}-{index}")
+                        })
                         .min_w_0()
-                        // The task is what the row is for; the model, tokens
-                        // and state keep their width, so the label takes the
-                        // rest instead of collapsing to nothing.
                         .flex_1()
                         .min_w(px(24.0))
                         .when(!expanded, |el| el.truncate())
                         .when(expanded, |el| el.max_w_full())
                         .text_color(theme.TEXT_FAINT)
-                        .child(label)
-                }))
-                // A worker with no task label keeps the trailing cells right.
-                .when(worker.label.is_none(), |el| el.child(div().flex_1()))
+                        .child(worker.name.clone())
+                        .when(expanded, |el| {
+                            el.children(worker.label.clone().map(|label| format!(" · {label}")))
+                        })
+                })
                 .when(label_truncated, |el| {
                     let key = toggle_key.clone();
                     el.child(expandable::glyph_toggle(
@@ -312,7 +328,7 @@ pub(super) fn render_workers(
                         }),
                     ))
                 })
-                .children(model.map(|model| {
+                .children(model.filter(|_| width >= 200.0 || expanded).map(|model| {
                     div()
                         .debug_selector(move || {
                             format!("sidebar-worker-model-{sidebar_index}-{index}")
@@ -348,19 +364,6 @@ pub(super) fn render_workers(
                         .text_color(theme.TEXT_FAINT)
                         .child(spend)
                 }))
-                .child(
-                    div()
-                        .debug_selector(move || {
-                            format!("sidebar-worker-state-{sidebar_index}-{index}")
-                        })
-                        .flex_none()
-                        .text_size(px(9.5))
-                        .text_color(theme.TEXT_FAINT)
-                        // The clock that used to read "running 26m" for every
-                        // worker is the composer's; this column is too narrow
-                        // for it and the state word is the part that differs.
-                        .child(worker.state_text()),
-                )
         }))
         .when(folded > 0, |el| {
             el.child(
@@ -920,6 +923,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
+            w.sidebar_custom_width = 400.0;
             let mut worker = session("rose", Some("lead"));
             worker.swarm_status = Some("completed".into());
             w.sidebar_closed_sessions
@@ -971,13 +975,8 @@ mod tests {
         let effort = vcx
             .debug_bounds("sidebar-worker-effort-0-0")
             .expect("the row shows its rung as a circle");
-        let state = vcx
-            .debug_bounds("sidebar-worker-state-0-0")
-            .expect("the row shows its state");
-        assert!(
-            model.left() < effort.left() && effort.right() <= state.left(),
-            "effort follows the model: {model:?} {effort:?} {state:?}"
-        );
+        assert!(model.left() < effort.left(), "effort follows the model");
+        assert!(vcx.debug_bounds("sidebar-worker-state-0-0").is_none());
     }
 
     /// A worker whose record names no effort keeps the row as it was.
@@ -1017,6 +1016,227 @@ mod tests {
         w.sessions = sessions;
         w.active = w.open_session(lead, cx);
         w.sync_swarm_strips(cx);
+    }
+
+    #[gpui::test]
+    fn worker_order_is_spawn_order_across_fifty_status_and_token_renders(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let ids = [
+            "session_parrot_1000_a",
+            "session_lizard_1001_b",
+            "session_gorilla_1002_c",
+        ];
+        workspace.update(vcx, |w, cx| {
+            lead_with_workers(w, cx, &ids.map(|id| (id, "running")))
+        });
+        for tick in 0..50 {
+            workspace.update(vcx, |w, cx| {
+                let mut sessions = w.sessions.clone();
+                for (index, id) in ids.iter().enumerate() {
+                    let s = sessions.iter_mut().find(|s| s.session_id == *id).unwrap();
+                    s.updated_at_ms = Some(swarm_now_ms() as i64 + ((tick + index) % 3) as i64);
+                    s.swarm_status = Some(
+                        if (tick + index) % 2 == 0 {
+                            "running"
+                        } else {
+                            "ready"
+                        }
+                        .into(),
+                    );
+                    w.worker_meta.insert(
+                        (*id).into(),
+                        jcode_sdk::WorkerMeta {
+                            input_tokens: Some((tick * 3 + index) as u64),
+                            ..Default::default()
+                        },
+                    );
+                }
+                w.apply(Update::Sessions { sessions }, cx);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            for (index, id) in ids.iter().enumerate() {
+                let selector = sel(format!("sidebar-worker-identity-{index}-{id}"));
+                assert!(
+                    vcx.debug_bounds(selector).is_some(),
+                    "spawn order changed on render {tick}, row {index}"
+                );
+                let glyph = if (tick + index) % 2 == 0 {
+                    "spinner"
+                } else {
+                    "check"
+                };
+                assert!(
+                    vcx.debug_bounds(sel(format!("sidebar-worker-glyph-0-{index}-{glyph}")))
+                        .is_some(),
+                    "render {tick} must show the new status, not a cached frame"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn compact_worker_rows_prioritize_names_and_hide_status_words_and_tokens(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            lead_with_workers(w, cx, &[("session_gorilla_1000_a", "running")]);
+            w.worker_meta.insert(
+                "session_gorilla_1000_a".into(),
+                jcode_sdk::WorkerMeta {
+                    model: Some("gpt-6.1-terra".into()),
+                    provider: Some("openai".into()),
+                    input_tokens: Some(56_000),
+                    output_tokens: Some(306),
+                    ..Default::default()
+                },
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-worker-name-0-0").is_some(),
+            "worker name is never replaced by whitespace"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-worker-state-0-0").is_none(),
+            "status is an icon, not a word"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-worker-spend-0-0").is_none(),
+            "narrow rows drop tokens before the name"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
+                .is_some()
+        );
+    }
+
+    #[gpui::test]
+    fn old_active_record_without_a_live_member_folds_as_finished_with_identity(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let id = "session_piglet_1794731711780_a";
+        workspace.update(vcx, |w, cx| {
+            lead_with_workers(w, cx, &[(id, "running")]);
+            let stale = w.sessions.iter_mut().find(|s| s.session_id == id).unwrap();
+            stale.swarm_status = None;
+            stale.status = "Active".into();
+            stale.updated_at_ms = Some(swarm_now_ms() as i64 - 7_200_000);
+            stale.last_active_at_ms = stale.updated_at_ms;
+            w.worker_meta.insert(
+                id.into(),
+                jcode_sdk::WorkerMeta {
+                    model: Some("deepseek-v4.1-flash".into()),
+                    provider: Some("opencode-go".into()),
+                    last_activity_ms: stale.updated_at_ms,
+                    ..Default::default()
+                },
+            );
+            w.sync_swarm_strips(cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-worker-0-0").is_none(),
+            "long-dead record is folded"
+        );
+        let folded = vcx
+            .debug_bounds("sidebar-workers-folded-0")
+            .expect("finished group");
+        vcx.simulate_click(folded.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-name-0-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-worker-model-0-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
+    }
+
+    #[gpui::test]
+    fn rapid_spawn_status_updates_keep_sidebar_and_composer_in_agreement(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let worker_id = "session_gorilla_3_c";
+        workspace.update(vcx, |w, cx| {
+            lead_with_workers(w, cx, &[(worker_id, "ready")]);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
+        let event = |status: &str, timestamp: u64| {
+            serde_json::from_value(serde_json::json!({
+                "ev": "swarm_status", "session_id": "lead", "updated_at_unix_ms": timestamp,
+                "members": [{"session_id": worker_id, "status": status,
+                    "parent_session_id": "lead", "agent_label": "worker"}]
+            }))
+            .expect("SDK must expose swarm status events")
+        };
+        workspace.update(vcx, |w, cx| {
+            for (status, timestamp) in [("ready", 1_000), ("running", 1_065), ("ready", 1_000)] {
+                w.apply(
+                    Update::Event {
+                        session_id: "lead".into(),
+                        event: event(status, timestamp),
+                    },
+                    cx,
+                );
+            }
+            // A slow poll may finish after the live event with the spawn-time snapshot.
+            let mut stale = w.sessions.clone();
+            stale
+                .iter_mut()
+                .find(|s| s.session_id == worker_id)
+                .unwrap()
+                .swarm_status = Some("ready".into());
+            w.apply(Update::Sessions { sessions: stale }, cx);
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            let panel = w.slots[w.active].panel.read(cx);
+            assert_eq!(panel.test_swarm_indicator_count(), 1);
+            assert_eq!(
+                w.sessions
+                    .iter()
+                    .find(|s| s.session_id == worker_id)
+                    .unwrap()
+                    .swarm_status
+                    .as_deref(),
+                Some("running")
+            );
+        });
+        assert!(
+            vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner")
+                .is_some()
+        );
+        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_none());
+        assert!(vcx.debug_bounds("composer-workers-count").is_some());
+        workspace.update(vcx, |w, cx| {
+            w.apply(
+                Update::Event {
+                    session_id: "lead".into(),
+                    event: event("ready", 1_100),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[w.active]
+                    .panel
+                    .read(cx)
+                    .test_swarm_indicator_count(),
+                0
+            );
+        });
+        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-check").is_some());
+        assert!(vcx.debug_bounds("composer-workers-count").is_none());
     }
 
     /// The text strip is gone: no "Waiting for N workers" line, no
@@ -1104,7 +1324,7 @@ mod tests {
         });
         vcx.run_until_parked();
         let lead = vcx.debug_bounds("sidebar-session-0").unwrap();
-        for (index, glyph) in ["spinner", "pause", "check", "cross"]
+        for (index, glyph) in ["spinner", "check", "cross", "pause"]
             .into_iter()
             .enumerate()
         {
@@ -1177,7 +1397,11 @@ mod tests {
             vcx.debug_bounds("sidebar-worker-0-4").is_none(),
             "second click collapses"
         );
-        assert!(vcx.debug_bounds("sidebar-worker-glyph-0-0-spinner").is_some(), "live worker is first even after many stopped workers");
+        assert!(
+            vcx.debug_bounds("sidebar-worker-glyph-0-3-spinner")
+                .is_some(),
+            "live worker remains visible at its stable spawn position"
+        );
     }
 
     #[gpui::test]
@@ -1211,10 +1435,18 @@ mod tests {
         });
         assert!(vcx.debug_bounds("pinned-todo-card").is_some());
         for status in ["in_progress", "pending", "completed", "cancelled"] {
-            assert!(vcx.debug_bounds(format!("pinned-todo-status-{status}").leak()).is_some(), "missing {status}");
+            assert!(
+                vcx.debug_bounds(format!("pinned-todo-status-{status}").leak())
+                    .is_some(),
+                "missing {status}"
+            );
         }
         for item in ["Ship", "Plan", "Build", "Skip"] {
-            assert!(vcx.debug_bounds(format!("pinned-todo-item-{item}").leak()).is_some(), "missing {item}");
+            assert!(
+                vcx.debug_bounds(format!("pinned-todo-item-{item}").leak())
+                    .is_some(),
+                "missing {item}"
+            );
         }
         let pill = vcx
             .debug_bounds(format!("sidebar-todos-{row}").leak())
@@ -1234,6 +1466,7 @@ mod tests {
     fn sidebar_row_and_composer_list_open_the_worker(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.simulate_resize(gpui::size(px(1200.), px(900.)));
         workspace.update(vcx, |w, cx| {
             lead_with_workers(
                 w,

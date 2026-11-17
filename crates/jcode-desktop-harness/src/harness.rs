@@ -3651,6 +3651,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
+        | ApiEvent::SwarmStatus { session_id, .. }
         | ApiEvent::ConnectionPhase { session_id, .. }
         | ApiEvent::ModelInfo { session_id, .. }
         | ApiEvent::Models { session_id, .. }
@@ -3671,6 +3672,20 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         return event;
     }
     match &mut event {
+        ApiEvent::SwarmStatus {
+            session_id,
+            members,
+            ..
+        } => {
+            *session_id = address.ui_id(session_id);
+            for member in members {
+                member.session_id = address.ui_id(&member.session_id);
+                member.parent_session_id = member
+                    .parent_session_id
+                    .as_deref()
+                    .map(|id| address.ui_id(id));
+            }
+        }
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
@@ -5093,6 +5108,40 @@ mod tests {
 #[cfg(test)]
 mod side_panel_routing_tests {
     use super::*;
+
+    #[test]
+    fn swarm_status_namespaces_members_and_preserves_daemon_order() {
+        let address = remote::SessionAddress::parse("ssh://example/lead").unwrap();
+        let event = namespace_event(
+            ApiEvent::SwarmStatus {
+                session_id: "lead".into(),
+                updated_at_unix_ms: 1_065,
+                members: vec![jcode_sdk::SwarmMemberInfo {
+                    session_id: "worker".into(),
+                    status: "running".into(),
+                    parent_session_id: Some("lead".into()),
+                    agent_label: Some("task".into()),
+                }],
+            },
+            &address,
+        );
+        assert_eq!(event_session_id(&event), Some("ssh://example/lead"));
+        let ApiEvent::SwarmStatus {
+            members,
+            updated_at_unix_ms,
+            ..
+        } = event
+        else {
+            panic!("wrong event")
+        };
+        assert_eq!(updated_at_unix_ms, 1_065);
+        assert_eq!(members[0].session_id, "ssh://example/worker");
+        assert_eq!(
+            members[0].parent_session_id.as_deref(),
+            Some("ssh://example/lead")
+        );
+        assert_eq!(members[0].status, "running");
+    }
 
     #[test]
     fn side_panel_events_keep_remote_session_namespace_and_content() {

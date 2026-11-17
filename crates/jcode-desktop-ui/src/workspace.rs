@@ -872,6 +872,7 @@ pub struct Workspace {
     /// its newest message shows it doing. Keyed by session id; the catalog
     /// entry itself carries none of this.
     worker_meta: HashMap<String, jcode_sdk::WorkerMeta>,
+    live_swarm_status: jcode_desktop_harness::swarm_status::LiveSwarmStatus,
     /// Past rows belong to this window only, never the durable session catalog.
     sidebar_closed_sessions: HashSet<String>,
     /// Sessions the shared daemon is running a turn for right now, from its
@@ -1218,6 +1219,7 @@ impl Workspace {
             coach_display_hint: None,
             sessions: Vec::new(),
             worker_meta: HashMap::new(),
+            live_swarm_status: Default::default(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
@@ -1695,6 +1697,7 @@ impl Workspace {
             coach_display_hint: None,
             sessions: Vec::new(),
             worker_meta: HashMap::new(),
+            live_swarm_status: Default::default(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: None,
@@ -2363,7 +2366,8 @@ impl Workspace {
                 // runtime has not sent an identity yet.
                 self.sync_swarm_strips(cx);
             }
-            Update::Sessions { sessions } => {
+            Update::Sessions { mut sessions } => {
+                self.live_swarm_status.merge(&mut sessions);
                 if self.pinned_working_dir.is_none()
                     && let Some(directory) = most_used_working_dir(&sessions)
                 {
@@ -2624,6 +2628,31 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if let jcode_sdk::ApiEvent::SwarmStatus {
+                    session_id: source,
+                    updated_at_unix_ms,
+                    members,
+                } = &event
+                {
+                    if self
+                        .live_swarm_status
+                        .apply(source, *updated_at_unix_ms, members)
+                    {
+                        let unknown_worker = members.iter().any(|member| {
+                            member.parent_session_id.is_some()
+                                && !self
+                                    .sessions
+                                    .iter()
+                                    .any(|session| session.session_id == member.session_id)
+                        });
+                        self.live_swarm_status.merge(&mut self.sessions);
+                        self.sync_swarm_strips(cx);
+                        if unknown_worker {
+                            self.bridge.send(Command::RefreshSessions);
+                        }
+                    }
+                    return true;
+                }
                 if self.route_side_question_event(&session_id, &event, cx) {
                     return true;
                 }
@@ -6191,8 +6220,10 @@ impl Workspace {
         // and the latest few finished, fold the rest into "+N finished".
         let mut folded_workers: HashMap<String, usize> = HashMap::new();
         for (root, workers) in nested_workers.iter_mut() {
-            // Keep live work first even when the finished section is expanded.
-            workers.sort_by_key(|(_, worker)| !worker.state.is_live());
+            workers.sort_by(|(_, a), (_, b)| {
+                crate::swarm_view::spawn_order(&a.session_id)
+                    .cmp(&crate::swarm_view::spawn_order(&b.session_id))
+            });
             let (shown, hidden) = sidebar_swarm::visible(workers);
             if !self
                 .expanded_lines
@@ -6941,6 +6972,7 @@ impl Workspace {
                                     workers,
                                     folded,
                                     under_checkout,
+                                    if this.compact_sidebar_open { SIDEBAR_WIDTH } else { this.sidebar_custom_width },
                                     &mut this.swarm_marks,
                                     &expanded_lines,
                                     cx,
@@ -7874,7 +7906,8 @@ impl Workspace {
                                 cx.new(|_| crate::panel::usage::RowsTooltip {
                                     title: tooltip.title.clone(),
                                     rows: tooltip.rows.clone(),
-                                }).into()
+                                })
+                                .into()
                             })
                             .when_some(label, |el, label| {
                                 el.child(
