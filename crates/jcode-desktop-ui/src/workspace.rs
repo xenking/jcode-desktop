@@ -79,6 +79,8 @@ mod sidebar_metadata;
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
+#[path = "sidebar_header.rs"]
+mod sidebar_header;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
 #[cfg(test)]
@@ -6173,13 +6175,14 @@ impl Workspace {
                 if !separate_checkout {
                     nested.insert(child.session.session_id.clone());
                 }
+                let running = worker.state == crate::swarm_view::WorkerState::Running;
                 nested_workers
                     .entry(root.clone())
                     .or_default()
                     .push((child.depth, worker));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if crate::swarm_view::worker_state(&child.session).is_active() {
+                if running {
                     entry.1 += 1;
                 }
             }
@@ -6661,7 +6664,10 @@ impl Workspace {
                             };
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
-                            let (agent_total, agent_working) = row.agents;
+                            let (_, agent_working) = row.agents;
+                            let running_workers = nested_workers.get(&session.session_id).into_iter().flatten()
+                                .filter(|(_, worker)| worker.state == crate::swarm_view::WorkerState::Running)
+                                .map(|(_, worker)| worker.clone()).collect::<Vec<_>>();
                             let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
                             let pin_id = session.session_id.clone();
@@ -6795,27 +6801,25 @@ impl Workspace {
                                                     None => container.child(title),
                                                 }
                                             })
-                                            .when(agent_total > 0, |row| row.child(
+                                            .when(agent_working > 0, |row| row.child(
                                                 div()
                                                     .id(("sidebar-agents", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-agents-{sidebar_index}"))
-                                                    .flex_none()
-                                                    .h(px(16.0))
-                                                    .px(px(6.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(3.0))
-                                                    .rounded_full()
-                                                    .bg(if agent_working > 0 { Theme::global().ACCENT_DIM } else { Theme::global().TOOL_BG })
-                                                    .text_size(px(9.0))
-                                                    .text_color(Theme::global().TEXT_DIM)
-                                                    .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(format!(
-                                                        "{agent_total} swarm agent{} in this checkout{}",
-                                                        if agent_total == 1 { "" } else { "s" },
-                                                        if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
-                                                    ).into())).into())
+                                                    .flex_none().h(px(16.0)).px(px(6.0))
+                                                    .flex().items_center().gap(px(3.0)).rounded_full()
+                                                    .bg(Theme::global().ACCENT_DIM)
+                                                    .text_size(px(9.0)).text_color(Theme::global().TEXT_DIM)
+                                                    .cursor_pointer()
+                                                    .tooltip(move |_, cx| cx.new(|_| sidebar_header::WorkersTooltip(running_workers.clone())).into())
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                        this.sidebar_gesture = None;
+                                                        this.sidebar_sessions_list.scroll_to(gpui::ListOffset { item_ix: sidebar_index, offset_in_item: px(0.0) });
+                                                        cx.notify();
+                                                    }))
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
-                                                    .child(agent_total.to_string()),
+                                                    .child(div().debug_selector(move || format!("sidebar-agents-count-{sidebar_index}-{agent_working}")).child(agent_working.to_string())),
                                             ))
                                             // Idle rows keep the pin visible when pinned. Hovering
                                             // swaps any spinner for the pin and close actions, so the
