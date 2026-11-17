@@ -79,8 +79,6 @@ mod sidebar_metadata;
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
-#[path = "sidebar_header.rs"]
-mod sidebar_header;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
 #[cfg(test)]
@@ -6175,14 +6173,13 @@ impl Workspace {
                 if !separate_checkout {
                     nested.insert(child.session.session_id.clone());
                 }
-                let running = worker.state == crate::swarm_view::WorkerState::Running;
                 nested_workers
                     .entry(root.clone())
                     .or_default()
                     .push((child.depth, worker));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if running {
+                if crate::swarm_view::worker_state(&child.session).is_active() {
                     entry.1 += 1;
                 }
             }
@@ -6664,10 +6661,7 @@ impl Workspace {
                             };
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
-                            let (_, agent_working) = row.agents;
-                            let running_workers = nested_workers.get(&session.session_id).into_iter().flatten()
-                                .filter(|(_, worker)| worker.state == crate::swarm_view::WorkerState::Running)
-                                .map(|(_, worker)| worker.clone()).collect::<Vec<_>>();
+                            let (agent_total, agent_working) = row.agents;
                             let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
                             let pin_id = session.session_id.clone();
@@ -6801,35 +6795,34 @@ impl Workspace {
                                                     None => container.child(title),
                                                 }
                                             })
-                                            .when(agent_working > 0, |row| row.child(
+                                            .when(agent_total > 0, |row| row.child(
                                                 div()
                                                     .id(("sidebar-agents", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-agents-{sidebar_index}"))
-                                                    .flex_none().h(px(16.0)).px(px(6.0))
-                                                    .flex().items_center().gap(px(3.0)).rounded_full()
-                                                    .bg(Theme::global().ACCENT_DIM)
-                                                    .text_size(px(9.0)).text_color(Theme::global().TEXT_DIM)
-                                                    .cursor_pointer()
-                                                    .tooltip(move |_, cx| {
-                                                        cx.new(|_| sidebar_header::WorkersTooltip(running_workers.clone())).into()
-                                                    })
-                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                        this.sidebar_gesture = None;
-                                                        this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
-                                                            item_ix: sidebar_index,
-                                                            offset_in_item: px(0.0),
-                                                        });
-                                                        cx.notify();
-                                                    }))
+                                                    .flex_none()
+                                                    .h(px(16.0))
+                                                    .px(px(6.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(3.0))
+                                                    .rounded_full()
+                                                    .bg(if agent_working > 0 { Theme::global().ACCENT_DIM } else { Theme::global().TOOL_BG })
+                                                    .text_size(px(9.0))
+                                                    .text_color(Theme::global().TEXT_DIM)
+                                                    .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(format!(
+                                                        "{agent_total} swarm agent{} in this checkout{}",
+                                                        if agent_total == 1 { "" } else { "s" },
+                                                        if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
+                                                    ).into())).into())
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
-                                                    .child(div().debug_selector(move || format!("sidebar-agents-count-{sidebar_index}-{agent_working}")).child(agent_working.to_string())),
+                                                    .child(agent_total.to_string()),
                                             ))
-                                            // Reserve the action slots even when hidden, so the badge never moves on hover.
-                                            .child(div().w(px(40.0)).h(px(18.0)).flex_none().flex().items_center().gap_1()
-                                                .child(div().size(px(18.0)).flex_none().flex().items_center().justify_center()
-                                                    .when(hovered || (pinned && !working), |slot| slot.child(
+                                            // Idle rows keep the pin visible when pinned. Hovering
+                                            // swaps any spinner for the pin and close actions, so the
+                                            // title can use the full width the rest of the time.
+                                            .when(hovered || (pinned && !working), |row| row
+                                                // Pinning is /save: pinned sessions sort to the top.
+                                                .child(
                                                     div()
                                                         .id(("sidebar-pin", sidebar_index))
                                                         .debug_selector(move || format!("sidebar-pin-{sidebar_index}"))
@@ -6863,25 +6856,31 @@ impl Workspace {
                                                             this.sidebar_gesture = None;
                                                             this.set_session_pinned(&pin_id, !pinned, cx);
                                                         })),
-                                                    )))
-                                                .child(div().size(px(18.0)).flex_none().flex().items_center().justify_center()
-                                                    .when_some(activity.filter(|_| !hovered), |slot, spinner| slot.child(
-                                                        div().debug_selector(move || format!("sidebar-session-spinner-{sidebar_index}")).child(spinner)
-                                                    ))
-                                                    .when(is_open && hovered, |slot| slot.child(
-                                                        div().id(("sidebar-close", sidebar_index))
-                                                            .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
-                                                            .size(px(18.0)).flex().items_center().justify_center()
-                                                            .rounded_full().cursor_pointer().hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                            .child("×")
-                                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                                window.prevent_default();
-                                                                cx.stop_propagation();
-                                                                this.sidebar_gesture = None;
-                                                                this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
-                                                            }))
-                                                    )))
+                                                )
+                                                // Last child: the hover close sits at the row's far right.
+                                                .when(is_open && hovered, |row| row.child(
+                                                    div().id(("sidebar-close", sidebar_index))
+                                                        .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
+                                                        .flex_none().size(px(18.0)).flex().items_center().justify_center().cursor_pointer().child("×")
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                            window.prevent_default();
+                                                            cx.stop_propagation();
+                                                            this.sidebar_gesture = None;
+                                                            this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
+                                                        }))
+                                                ))
                                             )
+                                            // Last child: the spinner sits at the row's far right.
+                                            .when_some(activity.filter(|_| !hovered), |row, spinner| {
+                                                row.child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("sidebar-session-spinner-{sidebar_index}")
+                                                        })
+                                                        .flex_none()
+                                                        .child(spinner),
+                                                )
+                                            })
                                     )
                                     .when(details.is_some() || todo_progress.is_some(), |row| {
                                         row.child(

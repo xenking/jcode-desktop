@@ -120,7 +120,6 @@ pub fn format_age(ms: u64) -> String {
 
 /// Explicit daemon lifecycle statuses win over transcript activity. A worker
 /// without a snapshot stays unknown unless its persisted record shows it ended.
-#[cfg(test)]
 pub fn worker_state(session: &SessionInfo) -> WorkerState {
     resolve_worker_state(session, None, 0)
 }
