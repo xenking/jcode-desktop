@@ -1251,15 +1251,12 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
         first.size.height >= px(24.),
         "rows must not shrink to fit the stack"
     );
-    let overflow = vcx.debug_bounds("queue-overflow-0").unwrap();
+    let recall = vcx.debug_bounds("recall-queued-prompt-0").unwrap();
     let delete = vcx.debug_bounds("remove-queued-prompt-0").unwrap();
     assert!(
-        delete.right() <= overflow.left() && overflow.right() <= items.right(),
+        recall.right() <= delete.left() && delete.right() <= items.right(),
         "long text must not push actions out"
     );
-    vcx.simulate_click(overflow.center(), gpui::Modifiers::default());
-    vcx.run_until_parked();
-    let recall = vcx.debug_bounds("recall-queued-prompt-0").unwrap();
     vcx.simulate_click(recall.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {

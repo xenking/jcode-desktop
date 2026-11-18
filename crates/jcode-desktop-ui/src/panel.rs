@@ -3346,6 +3346,7 @@ impl Panel {
         // `lost: …` banner must not outlive the outage.
         if self.status.starts_with("lost:") && !matches!(event, ApiEvent::Error { .. }) {
             self.status = "connected".into();
+            self.queue_reconnected(cx);
         }
         self.response_stats.observe(event, self.provider.as_deref());
         self.observe_activity_state(event);

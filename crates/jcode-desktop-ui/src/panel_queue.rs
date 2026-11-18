@@ -57,8 +57,11 @@ pub struct PromptQueue {
     pending_remote_history_counts: std::collections::HashMap<String, usize>,
     #[serde(default)]
     remote_failures: std::collections::HashMap<String, String>,
+    /// The user asked for "Send all now" while the session was reconnecting.
+    /// The intent survives the outage and runs as soon as the queue is back,
+    /// instead of leaving a permanent error on screen.
     #[serde(skip)]
-    send_now_error: Option<String>,
+    send_all_on_connect: bool,
     #[serde(skip)]
     send_now_generation: u64,
     #[serde(default)]
@@ -547,6 +550,7 @@ impl Panel {
             "ping me when the build is green",
         ];
         self.prompt_queue.remote_mutations_supported = true;
+        self.prompt_queue.remote_editing_supported = true;
         for index in 0..count {
             let sample = SAMPLES[index % SAMPLES.len()];
             self.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
@@ -659,6 +663,26 @@ impl Panel {
     }
 
     fn interrupt_all_queued_prompts(&mut self, cx: &mut Context<Self>) {
+        // A reconnect is transient, so an unavailable transport is not an
+        // error: remember the intent and deliver once the queue is back.
+        if self.is_pending_session() || self.queue_transport_lost() {
+            self.prompt_queue.send_all_on_connect = true;
+            cx.notify();
+            return;
+        }
+        // "Send all now" is an explicit resume of a stopped queue.
+        self.prompt_queue.paused = false;
+        // Local prompts must reach the daemon queue before the batch
+        // interrupt can name them.
+        if !self.prompt_queue.prompts.is_empty() {
+            self.send_queued_prompts(cx);
+        }
+        if !self.prompt_queue.prompts.is_empty() {
+            // Still held locally (history not loaded yet): finish on reconnect.
+            self.prompt_queue.send_all_on_connect = true;
+            cx.notify();
+            return;
+        }
         let mut ids = Vec::new();
         for prompt in self
             .prompt_queue
@@ -670,42 +694,41 @@ impl Panel {
                 ids.push(prompt.client_id.clone());
             }
         }
-        if ids.is_empty()
-            || !self.prompt_queue.prompts.is_empty()
-            || !self.prompt_queue.steered.is_empty()
-        {
-            self.prompt_queue.send_now_error = Some("Cannot send this queue now until the runtime reconnects and supports batch delivery.".into());
-        } else {
-            self.prompt_queue.send_now_error = None;
-            for id in &ids {
-                self.prompt_queue.remote_failures.remove(id);
-            }
-            self.prompt_queue.send_now_generation =
-                self.prompt_queue.send_now_generation.wrapping_add(1);
-            let generation = self.prompt_queue.send_now_generation;
-            let pending_ids = ids.clone();
-            self.bridge.send(Command::InterruptQueuedPrompts {
-                session_id: self.session_id.clone(),
-                ids,
-            });
-            cx.spawn(async move |panel, cx| {
-                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
-                let _ = panel.update(cx, |this, cx| {
-                    if this.prompt_queue.send_now_generation != generation { return; }
-                    let remaining: Vec<_> = pending_ids.iter().filter(|id| {
-                        !this.prompt_queue.delivered_ids.contains(*id)
-                            && !this.prompt_queue.remote_failures.contains_key(*id)
-                            && this.prompt_queue.remote.iter().chain(&this.prompt_queue.pending_remote).any(|p| &p.client_id == *id)
-                    }).cloned().collect();
-                    if !remaining.is_empty() {
-                        let reason = "Delivery is still blocked. Escalating cancellation; retry Send now if it remains queued.".to_string();
-                        for id in remaining { this.prompt_queue.remote_failures.insert(id, reason.clone()); }
-                        this.bridge.send(Command::Cancel { session_id: this.session_id.clone() });
-                        cx.notify();
-                    }
-                });
-            }).detach();
+        self.prompt_queue.send_all_on_connect = false;
+        if ids.is_empty() {
+            // Nothing daemon-owned to interrupt: a legacy runtime already got
+            // the prompts through the ordinary send above.
+            cx.notify();
+            return;
         }
+        for id in &ids {
+            self.prompt_queue.remote_failures.remove(id);
+        }
+        self.prompt_queue.send_now_generation =
+            self.prompt_queue.send_now_generation.wrapping_add(1);
+        let generation = self.prompt_queue.send_now_generation;
+        let pending_ids = ids.clone();
+        self.bridge.send(Command::InterruptQueuedPrompts {
+            session_id: self.session_id.clone(),
+            ids,
+        });
+        cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            let _ = panel.update(cx, |this, cx| {
+                if this.prompt_queue.send_now_generation != generation { return; }
+                let remaining: Vec<_> = pending_ids.iter().filter(|id| {
+                    !this.prompt_queue.delivered_ids.contains(*id)
+                        && !this.prompt_queue.remote_failures.contains_key(*id)
+                        && this.prompt_queue.remote.iter().chain(&this.prompt_queue.pending_remote).any(|p| &p.client_id == *id)
+                }).cloned().collect();
+                if !remaining.is_empty() {
+                    let reason = "Delivery is still blocked. Escalating cancellation; retry Send now if it remains queued.".to_string();
+                    for id in remaining { this.prompt_queue.remote_failures.insert(id, reason.clone()); }
+                    this.bridge.send(Command::Cancel { session_id: this.session_id.clone() });
+                    cx.notify();
+                }
+            });
+        }).detach();
         cx.notify();
     }
 
@@ -913,6 +936,8 @@ impl Panel {
                     }
                 }
                 self.sync_queued_edit_snapshot(cx);
+                // A fresh snapshot means the daemon is reachable again.
+                self.queue_reconnected(cx);
             }
             ApiEvent::SoftInterruptInjected {
                 client_ids,
@@ -1057,9 +1082,54 @@ impl Panel {
                 cx.defer(move |cx| {
                     let _ = panel.update(cx, |this, cx| this.send_queued_prompts(cx));
                 });
+                self.queue_reconnected(cx);
+            }
+            ApiEvent::SessionStatus { status, .. }
+                if matches!(status.as_str(), "connected" | "attached") =>
+            {
+                self.queue_reconnected(cx);
             }
             _ => {}
         }
+    }
+
+    /// The transport dropped. Prompts typed now are held for reconnect, and
+    /// sending is pointless until the session returns.
+    fn queue_transport_lost(&self) -> bool {
+        self.status.starts_with("lost:") || self.status.eq_ignore_ascii_case("disconnected")
+    }
+
+    /// True while the queue is held back by the connection rather than by the
+    /// user: a pending startup, a lost session, or prompts typed while the
+    /// runtime was still attaching.
+    pub(super) fn queue_waiting_for_connection(&self) -> bool {
+        self.prompt_queue.waiting_for_connection
+            || self.is_pending_session()
+            || self.queue_transport_lost()
+    }
+
+    /// A per-row queue action can reach the runtime now.
+    pub(super) fn queue_connection_ready(&self) -> bool {
+        !self.queue_waiting_for_connection()
+    }
+
+    /// The transport is back: release prompts typed during the outage and
+    /// finish a Send all now the user asked for while it was down. Nothing
+    /// here reports a failure, because a reconnect is expected to happen.
+    pub(super) fn queue_reconnected(&mut self, cx: &mut Context<Self>) {
+        self.prompt_queue.waiting_for_connection = false;
+        if self.prompt_queue.prompts.is_empty() && !self.prompt_queue.send_all_on_connect {
+            return;
+        }
+        let panel = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = panel.update(cx, |this, cx| {
+                this.send_queued_prompts(cx);
+                if std::mem::take(&mut this.prompt_queue.send_all_on_connect) {
+                    this.interrupt_all_queued_prompts(cx);
+                }
+            });
+        });
     }
 
     pub(super) fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
@@ -1069,7 +1139,11 @@ impl Panel {
             }
             return;
         }
-        if self.prompt_queue.paused || self.is_pending_session() || !self.history_loaded {
+        if self.prompt_queue.paused
+            || self.is_pending_session()
+            || !self.history_loaded
+            || self.queue_transport_lost()
+        {
             return;
         }
         if !self.prompt_queue.remote_supported
@@ -1247,33 +1321,6 @@ impl Panel {
         }
         row.into_any_element()
     }
-}
-
-fn queue_action(
-    id: &'static str,
-    index: usize,
-    icon: &'static [u8],
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let theme = Theme::global();
-    div()
-        .id((id, index))
-        .debug_selector(move || format!("{id}-{index}"))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(22.))
-        .rounded_full()
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.QUOTE_BG))
-        .child(
-            gpui::svg()
-                .data(icon)
-                .size(px(13.))
-                .text_color(theme.TEXT_DIM),
-        )
-        .on_click(on_click)
 }
 
 #[cfg(test)]
