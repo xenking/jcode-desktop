@@ -3812,6 +3812,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::ContextOccupancy { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
@@ -3870,6 +3871,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::ContextOccupancy { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
@@ -4994,6 +4996,18 @@ mod tests {
         };
         assert_eq!(event_session_id(&event), Some("other-session"));
         assert_ne!(event_session_id(&event), Some("this-session"));
+    }
+
+    /// The daemon replays occupancy right after an attach. Without a session
+    /// identity the event would reach whichever panel shares the connection and
+    /// paint another session's context ring.
+    #[test]
+    fn replayed_context_occupancy_is_scoped_to_its_session() {
+        let event = ApiEvent::ContextOccupancy {
+            session_id: "other-session".into(),
+            prompt_tokens: 41_000,
+        };
+        assert_eq!(event_session_id(&event), Some("other-session"));
     }
 
     /// Opt-in acceptance check against the real local runtime and configured

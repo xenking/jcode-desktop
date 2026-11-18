@@ -1078,6 +1078,36 @@ mod tests {
         vcx.run_until_parked();
     }
 
+    #[gpui::test]
+    fn replayed_context_occupancy_paints_the_meter_without_turn_usage(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("restored-context", cx);
+            workspace.test_panel(0).unwrap().update(cx, |panel, cx| {
+                panel.provider = Some("anthropic".into());
+                // The daemon replays this when the panel attaches after a
+                // restart, so the ring is filled before the next turn.
+                panel.apply(
+                    &ApiEvent::ContextOccupancy {
+                        session_id: "restored-context".into(),
+                        prompt_tokens: 41_000,
+                    },
+                    cx,
+                );
+                assert_eq!(panel.context_tokens, Some(41_000));
+                assert!(
+                    panel.response_stats.finish().is_none(),
+                    "a replayed snapshot must not claim a turn's usage"
+                );
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+    }
+
     #[test]
     fn footer_chips_show_opencode_go_windows_and_money_when_no_quota() {
         let mut accounts = crate::accounts::parse(

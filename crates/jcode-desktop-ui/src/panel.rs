@@ -3386,6 +3386,7 @@ impl Panel {
             ApiEvent::TextDelta { .. }
                 | ApiEvent::ReasoningDelta { .. }
                 | ApiEvent::TokenUsage { .. }
+                | ApiEvent::ContextOccupancy { .. }
                 | ApiEvent::ModelInfo { .. }
                 | ApiEvent::RuntimeInfo { .. }
                 | ApiEvent::SessionRenamed { .. }
@@ -3860,6 +3861,13 @@ impl Panel {
                         *cache_read_input,
                         *cache_creation_input,
                     ));
+            }
+            // The daemon replays the persisted prompt occupancy when a session
+            // attaches. It describes a request that completed before this
+            // attachment, so it is context state only: no turn stats, no cost,
+            // and no effect on the live stream counters.
+            ApiEvent::ContextOccupancy { prompt_tokens, .. } => {
+                self.context_tokens = Some(*prompt_tokens);
             }
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
