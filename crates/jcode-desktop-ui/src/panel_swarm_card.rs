@@ -310,6 +310,12 @@ impl Panel {
                                     div()
                                         .flex()
                                         .flex_col()
+                                        .child(
+                                            div()
+                                                .mb_2()
+                                                .text_color(theme.TEXT_FAINT)
+                                                .child(self.tool_timing_detail(call_id)),
+                                        )
                                         .text_size(px(12.0))
                                         .text_color(theme.TOOL_TEXT)
                                         .child(text_selection::plain(

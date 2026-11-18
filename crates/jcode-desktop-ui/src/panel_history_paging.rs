@@ -151,6 +151,12 @@ impl Panel {
             // Leave the cursor unchanged so a later scroll can retry.
             return;
         };
+        for (id, (start, finish, duration)) in super::history_tool_times(&messages) {
+            self.tool_wall_times.insert(id.clone(), (start, finish));
+            if let Some(duration) = duration {
+                self.tool_durations.insert(id, duration);
+            }
+        }
         let (mut expanded, new_times) = Self::history_items(messages, images);
         let Some(prefix_len) = paging.prefix_len(&expanded) else {
             // A rewind, clear, or changed snapshot must never duplicate or
@@ -247,6 +253,12 @@ impl Panel {
                 return;
             }
         };
+        for (id, (start, finish, duration)) in super::history_tool_times(&page.messages) {
+            self.tool_wall_times.insert(id.clone(), (start, finish));
+            if let Some(duration) = duration {
+                self.tool_durations.insert(id, duration);
+            }
+        }
         if let Some(mut recovery) = paging.recovery.take() {
             let (mut items, mut times) = Self::history_items(page.messages, page.images);
             let added = items.len();

@@ -136,7 +136,10 @@ fn marked_answer(entry: &DecisionQuestion, answered: bool) -> String {
 }
 
 impl Panel {
-    #[expect(clippy::too_many_arguments, reason = "rendering needs decision data and GPUI context")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs decision data and GPUI context"
+    )]
     pub(super) fn render_decision(
         &self,
         index: usize,
@@ -181,8 +184,15 @@ impl Panel {
                     .gap_2()
                     .items_center()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Decision"))
-                    .child(div().text_color(Theme::global().TEXT_DIM).child(summary)),
+                    .child(div().text_color(Theme::global().TEXT_DIM).child(summary))
+                    .children(self.render_tool_clock(index, call_id, true, cx)),
             );
+        card = card.child(
+            div()
+                .text_size(px(11.0))
+                .text_color(Theme::global().TEXT_FAINT)
+                .child(self.tool_timing_detail(call_id)),
+        );
         {
             let count = entries.len();
             let mut image_offset = 0;

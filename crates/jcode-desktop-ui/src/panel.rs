@@ -750,6 +750,7 @@ pub struct Panel {
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
+    tool_wall_times: HashMap<String, (Option<i64>, Option<i64>)>,
     /// A running tool's breathing veil and clock, each a leaf view that
     /// ticks on its own, so the transcript is not rebuilt 20 times a second
     /// while a tool runs. Filled while the transcript renders.
@@ -1269,6 +1270,7 @@ impl Panel {
             transcript_derived: None,
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
+            tool_wall_times: HashMap::new(),
             running_tool_tickers: Default::default(),
             superseded_drafts: Default::default(),
             terminal: None,
@@ -2996,13 +2998,7 @@ impl Panel {
                     }
                 }
                 "tool" => {
-                    if let Some(tool) = message.tool.filter(|tool| {
-                        tool.name == "ask"
-                            || matches!(
-                                tool.name.trim_start_matches("functions."),
-                                "swarm" | "memory"
-                            )
-                    }) {
+                    if let Some(tool) = message.tool {
                         if tool.name == "ask"
                             && let Some(at) = message.timestamp_ms
                         {
@@ -3053,6 +3049,15 @@ impl Panel {
                 .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
         );
         (items, user_times)
+    }
+
+    fn restore_tool_times(&mut self, messages: &[jcode_sdk::HistoryMessage]) {
+        for (id, (start, finish, duration)) in history_tool_times(messages) {
+            self.tool_wall_times.insert(id.clone(), (start, finish));
+            if let Some(duration) = duration {
+                self.tool_durations.insert(id, duration);
+            }
+        }
     }
 
     /// Record when the user prompt at `index` was sent.
@@ -3109,7 +3114,10 @@ impl Panel {
         let started = Instant::now();
         // Parse, render, and decode images off the UI thread.
         let request = cx.background_executor().spawn(async move {
-            loader().map(|(messages, images)| Self::history_items(messages, images))
+            loader().map(|(messages, images)| {
+                let times = history_tool_times(&messages);
+                (Self::history_items(messages, images), times)
+            })
         });
         self.provisional_task = Some(cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -3118,7 +3126,7 @@ impl Panel {
                 if std::mem::take(&mut panel.awaiting_persisted) {
                     cx.notify();
                 }
-                let Ok((items, user_times)) = result else {
+                let Ok(((items, user_times), tool_times)) = result else {
                     return;
                 };
                 if items.is_empty() || !panel.can_show_provisional() {
@@ -3131,6 +3139,12 @@ impl Panel {
                 );
                 panel.provisional_items = items.len();
                 panel.user_times = user_times;
+                for (id, (start, finish, duration)) in tool_times {
+                    panel.tool_wall_times.insert(id.clone(), (start, finish));
+                    if let Some(duration) = duration {
+                        panel.tool_durations.insert(id, duration);
+                    }
+                }
                 *panel.items = items;
                 panel.transcript_measurements.dirty = true;
                 if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
@@ -3206,6 +3220,7 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        self.restore_tool_times(&messages);
         if self.history_paging.is_none() {
             self.history_paging = history_paging::HistoryPaging::from_history(&messages);
             if self.history_loaded
@@ -3536,6 +3551,8 @@ impl Panel {
                 self.flush_streaming();
                 self.arriving_tools.insert(call_id.clone(), Instant::now());
                 self.tool_started.insert(call_id.clone(), Instant::now());
+                self.tool_wall_times
+                    .insert(call_id.clone(), (response_stats::now_ms(), None));
                 self.items.push(Item::Tool {
                     call_id: call_id.clone(),
                     name: name.clone(),
@@ -3550,6 +3567,15 @@ impl Panel {
                     input.push_str(delta);
                 }
             }
+            ApiEvent::ToolExec { call_id, .. } => {
+                self.tool_started.insert(call_id.clone(), Instant::now());
+                self.tool_wall_times
+                    .insert(call_id.clone(), (response_stats::now_ms(), None));
+                let key = format!("clock:{call_id}");
+                self.running_tool_tickers
+                    .get_mut()
+                    .retain(|existing| existing != key);
+            }
             ApiEvent::ToolDone {
                 call_id,
                 name,
@@ -3557,6 +3583,10 @@ impl Panel {
                 error,
                 ..
             } => {
+                self.tool_wall_times
+                    .entry(call_id.clone())
+                    .or_insert((None, None))
+                    .1 = response_stats::now_ms();
                 let completed_ask = self
                     .ask_card
                     .as_ref()
@@ -4575,14 +4605,22 @@ impl Panel {
             .flex_none()
             .text_size(px(11.0))
             .text_color(Theme::global().TEXT_FAINT);
+        let start = self
+            .tool_wall_times
+            .get(call_id)
+            .and_then(|(start, _)| *start)
+            .and_then(tool_clock_label);
         if finished {
-            let duration = self.tool_durations.get(call_id)?;
-            // Instant tools need no badge.
-            (duration.as_millis() >= 1_000).then(|| {
-                clock
-                    .child(format_tool_elapsed(*duration))
-                    .into_any_element()
-            })
+            let duration = self
+                .tool_durations
+                .get(call_id)
+                .map(|duration| format_tool_elapsed(*duration));
+            let label = [start, duration]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            (!label.is_empty()).then(|| clock.child(label).into_any_element())
         } else {
             let started = *self.tool_started.get(call_id)?;
             let _ = index;
@@ -4596,8 +4634,35 @@ impl Panel {
                 },
                 cx,
             );
-            Some(clock.child(ticker).into_any_element())
+            Some(
+                clock
+                    .children(start.map(|start| format!("{start} · ")))
+                    .child(ticker)
+                    .into_any_element(),
+            )
         }
+    }
+
+    fn tool_timing_detail(&self, call_id: &str) -> String {
+        let (start, finish) = self
+            .tool_wall_times
+            .get(call_id)
+            .copied()
+            .unwrap_or_default();
+        let start = start
+            .and_then(tool_clock_label)
+            .unwrap_or_else(|| "unknown".into());
+        let finish = finish
+            .and_then(tool_clock_label)
+            .unwrap_or_else(|| "unknown".into());
+        let duration = self
+            .tool_durations
+            .get(call_id)
+            .copied()
+            .or_else(|| self.tool_started.get(call_id).map(Instant::elapsed))
+            .map(format_tool_elapsed)
+            .unwrap_or_else(|| "unknown".into());
+        format!("Started at: {start}   Finished at: {finish}   Duration: {duration}")
     }
 
     fn render_item(
@@ -5310,6 +5375,7 @@ impl Panel {
                                             div()
                                                 .flex()
                                                 .flex_col()
+                                                .child(div().debug_selector(|| "tool-timing-detail".into()).mb_2().text_color(Theme::global().TEXT_FAINT).child(self.tool_timing_detail(&call_id)))
                                                 .when_some(tool_output::bash_exit_code(name, output).filter(|code| *code != 0), |el, code| {
                                                     el.child(div().debug_selector(|| "tool-detail-exit-code".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
                                                 })
@@ -8073,7 +8139,7 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
     if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
         let rows = arguments
             .into_iter()
-            .filter(|(key, _)| tool_argument_visible(key))
+            .filter(|(key, value)| tool_argument_visible(key) && !value.is_null())
             .map(|(key, value)| {
                 let value = match value {
                     serde_json::Value::String(text) => text,
@@ -8104,6 +8170,67 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
         parts.push(output);
     }
     parts.join("\n\n")
+}
+
+type HistoryToolTimes = HashMap<String, (Option<i64>, Option<i64>, Option<Duration>)>;
+
+fn history_tool_times(messages: &[jcode_sdk::HistoryMessage]) -> HistoryToolTimes {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let tool = message.tool.as_ref()?;
+            let finish = message.timestamp_ms;
+            let duration = tool.duration_ms.map(Duration::from_millis);
+            let start = finish
+                .zip(tool.duration_ms.and_then(|ms| i64::try_from(ms).ok()))
+                .and_then(|(finish, duration)| finish.checked_sub(duration));
+            Some((tool.id.clone(), (start, finish, duration)))
+        })
+        .collect()
+}
+
+fn tool_clock_label(ms: i64) -> Option<String> {
+    use chrono::TimeZone;
+    Some(
+        chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()?
+            .format("%H:%M:%S")
+            .to_string(),
+    )
+}
+
+#[test]
+fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
+    let detail = tool_detail(
+        "bash",
+        r#"{"command":"pwd","notify":null,"wake":false,"timeout":0}"#,
+        "",
+    );
+    assert!(detail.contains("command: pwd"));
+    assert!(detail.contains("wake: false"));
+    assert!(detail.contains("timeout: 0"));
+    assert!(!detail.contains("notify"));
+}
+
+#[test]
+fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
+    let rows: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
+        {"role":"tool", "content":"", "timestamp_ms":20000,
+         "tool":{"id":"a", "name":"bash", "input":{}, "duration_ms":7000}},
+        {"role":"tool", "content":"", "timestamp_ms":30000,
+         "tool":{"id":"b", "name":"read", "input":{}}}
+    ]))
+    .unwrap();
+    let (items, _) = Panel::history_items(rows.clone(), Vec::new());
+    assert!(matches!(&items[0], Item::Tool { name, .. } if name == "bash"));
+    assert!(matches!(&items[1], Item::Tool { name, .. } if name == "read"));
+    let times = history_tool_times(&rows);
+    assert_eq!(
+        times.get("a"),
+        Some(&(Some(13000), Some(20000), Some(Duration::from_secs(7))))
+    );
+    assert_eq!(times.get("b"), Some(&(None, Some(30000), None)));
 }
 
 fn tool_bg_status(name: &str, output: &str) -> Option<String> {
