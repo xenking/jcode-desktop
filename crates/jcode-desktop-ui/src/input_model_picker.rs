@@ -525,7 +525,15 @@ impl PromptInput {
                                     on_change(&this.content, cx);
                                 }
                             } else {
-                                this.set_content(suggestion.value.clone(), cx);
+                                let (draft, cursor) =
+                                    this.draft_with_command(&suggestion.value);
+                                this.set_content(draft, cx);
+                                if let Some(cursor) = cursor {
+                                    this.selected_range = cursor..cursor;
+                                    // The popup has done its job: the click
+                                    // sends the whole sentence, not a menu.
+                                    this.accepted_command = Some(this.content.clone());
+                                }
                                 // Search may also match a longer model name. Click must
                                 // submit this exact route, not the first substring match.
                                 this.command_selection = this

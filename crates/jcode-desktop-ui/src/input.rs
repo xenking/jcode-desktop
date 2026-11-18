@@ -1036,10 +1036,7 @@ impl PromptInput {
         {
             return false;
         }
-        let value = row.value.clone();
-        let cursor = self
-            .embedded_command_span()
-            .map(|(_, _, end)| value.len() - (self.content.len() - end));
+        let (value, cursor) = self.draft_with_command(&row.value);
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.set_content(value, cx);
@@ -1404,17 +1401,22 @@ impl PromptInput {
                         };
                     }
                 }
-                if let Some((start, _, end)) = embedded {
-                    suggestion.value = format!(
-                        "{}{}{}",
-                        &self.content[..start],
-                        suggestion.value,
-                        &self.content[end..]
-                    );
-                }
                 suggestion
             })
             .collect()
+    }
+
+    /// The draft after accepting command `value`, and where the caret lands.
+    /// A command typed mid-sentence replaces only its own token, so the text
+    /// around it survives and the caret sits right after the command.
+    pub(super) fn draft_with_command(&self, value: &str) -> (String, Option<usize>) {
+        match self.embedded_command_span() {
+            Some((start, _, end)) => {
+                let draft = format!("{}{}{}", &self.content[..start], value, &self.content[end..]);
+                (draft, Some(start + value.len()))
+            }
+            None => (value.to_string(), None),
+        }
     }
 
     fn embedded_command_span(&self) -> Option<(usize, usize, usize)> {
@@ -1554,9 +1556,7 @@ impl PromptInput {
                 accepted_command_submission(&suggestions, self.command_selection)
             {
                 if self.picker_prefix.is_none() {
-                    let cursor = self
-                        .embedded_command_span()
-                        .map(|(_, _, end)| accepted.len() - (self.content.len() - end));
+                    let (accepted, cursor) = self.draft_with_command(&accepted);
                     self.undo.push(self.edit_snapshot());
                     self.redo.clear();
                     self.set_content(accepted, cx);
@@ -4563,12 +4563,11 @@ mod tests {
         cx.simulate_input(*window, "fix this /eff");
         window
             .update(cx, |input, _, _| {
-                assert!(
-                    input
-                        .command_suggestions()
-                        .iter()
-                        .any(|row| row.value.contains("/effort"))
-                );
+                let rows = input.command_suggestions();
+                assert!(rows.iter().any(|row| row.value == "/effort"));
+                // A row names the command only. Echoing the surrounding draft
+                // made every row read as the user's own sentence.
+                assert!(rows.iter().all(|row| !row.value.contains("fix this")));
             })
             .unwrap();
         cx.simulate_keystrokes(*window, "tab");
