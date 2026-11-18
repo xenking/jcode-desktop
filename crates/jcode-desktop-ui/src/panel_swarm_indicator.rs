@@ -238,7 +238,7 @@ impl Panel {
                 .flex_none()
                 .px_2()
                 .gap_1()
-                .when(open, |el| el.bg(theme.USER_BG).text_color(theme.TEXT))
+                .when(open, |el| el.bg(theme.chip_active_background()).text_color(theme.TEXT))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::usage::RowsTooltip {
                         title: "Workers".into(),

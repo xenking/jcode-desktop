@@ -5,7 +5,10 @@
 //! ring on the left, and the publish button plus the location (repo or
 //! directory) on the right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
-//! prompt cards, so nothing reads as a folder tab.
+//! prompt cards, so nothing reads as a folder tab, but they are filled with a
+//! lift of the pane surface: prompt paper is only a few steps away from the
+//! focused pane's background in several palettes, and a pill that vanishes on
+//! the pane you are typing in is not a pill.
 use super::*;
 
 /// Pill height.
@@ -242,7 +245,7 @@ impl Panel {
                             // so only local sessions offer the switch.
                             .when(can_switch_location, |el| {
                                 el.cursor_pointer()
-                                    .hover(|el| el.bg(theme.USER_BG))
+                                    .hover(|el| el.bg(theme.chip_active_background()))
                                     .on_click(cx.listener(|_, _, window, cx| {
                                         cx.stop_propagation();
                                         window.dispatch_action(
@@ -591,13 +594,13 @@ pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .gap_1p5()
         .rounded_full()
-        .bg(theme.prompt_background(usize::MAX))
+        .bg(theme.chip_background())
         .text_size(px(10.5))
         .font_family(theme.FONT_MONO)
         .text_color(theme.TEXT_DIM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|el| el.text_color(theme.TEXT).bg(theme.USER_BG))
+        .hover(|el| el.text_color(theme.TEXT).bg(theme.chip_active_background()))
 }
 
 /// `claude-opus-4-8` reads `Opus 4.8`. The provider already appears in the
@@ -793,6 +796,48 @@ mod tests {
                     input.right() - location.right() < px(12.),
                     "location hugs the right edge at {width}: {location:?} {input:?}"
                 );
+            }
+        }
+    }
+
+    /// The model pill keeps the same padding and the same place whether its
+    /// pane owns focus or not. Only the fill used to change, and once that fill
+    /// matched the focused pane's background the label looked flush with the
+    /// row's edge, as if the padding had gone. Pin the inset in both states so
+    /// a later fill change cannot hide the padding again.
+    #[gpui::test]
+    fn the_model_pill_keeps_its_inset_when_the_pane_loses_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.provider = Some("openai".into());
+            panel.model = Some("gpt-6.2-sol".into());
+            panel.reasoning_effort = Some("high".into());
+            cx.notify();
+        });
+        let mut focused_inset = None;
+        for focused in [true, false] {
+            panel.update(vcx, |panel, cx| {
+                panel.set_surface_focused(focused, cx);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let pill = vcx.debug_bounds("panel-model").expect("model pill");
+            let name = vcx
+                .debug_bounds("panel-model-name")
+                .expect("model name");
+            assert!(
+                name.left() - pill.left() >= px(9.),
+                "focused={focused}: the label keeps its left padding: {name:?} in {pill:?}"
+            );
+            assert!(
+                pill.right() - name.right() >= px(9.),
+                "focused={focused}: the label keeps its right padding: {name:?} in {pill:?}"
+            );
+            match focused_inset {
+                None => focused_inset = Some(pill.left()),
+                Some(left) => assert_eq!(pill.left(), left, "the row does not move with focus"),
             }
         }
     }

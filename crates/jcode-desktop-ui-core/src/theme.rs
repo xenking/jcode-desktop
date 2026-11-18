@@ -108,6 +108,23 @@ impl Theme {
         self.TEXT_DIM
     }
 
+    /// Fill for a small control chip, such as the composer's pills. A chip
+    /// sits on the pane surface, which is PANEL_BG while the pane owns focus
+    /// and the brighter HEADER_BG while it does not, so one opaque paper sits
+    /// a different distance from each. In the ristretto palette the focused
+    /// pane is 4/255 away from USER_BG: the same pill read on an idle pane and
+    /// disappeared on the focused one. Lifting the surface by a fixed share of
+    /// the theme's own ink keeps the step on either surface, and on light
+    /// palettes it recesses the chip instead of inverting the palette.
+    pub fn chip_background(&self) -> Rgba {
+        self.TEXT.opacity(0.12)
+    }
+
+    /// Stronger lift for a chip under the pointer, or opened by it.
+    pub fn chip_active_background(&self) -> Rgba {
+        self.TEXT.opacity(0.2)
+    }
+
     /// Raised paper for the active pane, recessed backing for its neighbors.
     /// Use palette roles rather than dimming the entire pane so transcript text,
     /// code, images, and controls retain their original contrast and opacity.
@@ -1379,6 +1396,31 @@ mod tests {
                     (theme.PANEL_BG.r, theme.PANEL_BG.g, theme.PANEL_BG.b)
                 );
                 assert_eq!(theme.PANEL_BG.a, alpha, "window paper stays translucent");
+            }
+        }
+    }
+
+    /// Composer pills are chips on the pane surface, and that surface is
+    /// PANEL_BG while the pane owns focus but the brighter HEADER_BG while it
+    /// does not. The pill used prompt paper, which sits only a few steps from
+    /// PANEL_BG in several palettes (ristretto: 4/255), so one pill read fine
+    /// on an idle pane and vanished on the focused one. The chip keeps its
+    /// step on both surfaces.
+    #[test]
+    fn composer_chips_lift_off_focused_and_idle_panes() {
+        for (preset, theme) in ThemePreset::ALL.iter().zip(themes()) {
+            let chip = theme.chip_background();
+            for (surface, label) in [
+                (painted(theme, theme.PANEL_BG), "focused pane"),
+                (painted(theme, theme.HEADER_BG), "idle pane"),
+            ] {
+                let fill = over(chip, surface);
+                assert!(
+                    contrast(fill, surface) >= 1.15,
+                    "{} chip on the {label} is only {}:1",
+                    preset.id(),
+                    contrast(fill, surface)
+                );
             }
         }
     }
