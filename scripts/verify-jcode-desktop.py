@@ -27,6 +27,8 @@ SPEC = importlib.util.spec_from_file_location("accept_native_control", REPO / "s
 NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
 ACTIONS = ("list", "state", "open_session", "set_composer", "send", "press_key", "search", "click", "expand_tool", "wait_for")
+SWARM_JOURNEYS = ("swarm-sidebar", "swarm-status")
+SWARM_WORKER = "swarm-fixture-0"
 SCHEMA = 1
 
 
@@ -95,6 +97,21 @@ def environment(profile, control):
         "JCODE_NO_TELEMETRY": "1",
     })
     return env
+
+
+def seed_swarm_worktrees(profile, env):
+    lead = profile / "coordinator"
+    worker = profile / "worker"
+
+    def git(*args):
+        subprocess.run(["git", *args], env=env, cwd=profile, check=True,
+                       capture_output=True, timeout=10)
+
+    git("init", "-b", "main", str(lead))
+    git("-C", str(lead), "-c", "user.name=Desktop Fixture", "-c",
+        "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Fixture root")
+    git("-C", str(lead), "worktree", "add", "-b", "worker", str(worker))
+    return lead, worker
 
 
 def read_manifest(run):
@@ -166,9 +183,16 @@ class Instance:
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
+        modes = ["--single-panel"]
+        if self.manifest["fixture"] == "swarm-worktree":
+            lead, worker = seed_swarm_worktrees(self.profile, env)
+            env.update(JCODE_DESKTOP_WORKING_DIR=str(lead),
+                       JCODE_DESKTOP_CONTROL_SWARM_WORKTREE=str(worker),
+                       JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
+            modes = []
         save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline transcript/session fixtures; no daemon, bridge, provider, model inference or OS input injection"})
         with (self.run / "desktop.log").open("w") as log:
-            self.process = subprocess.Popen([self.manifest["binary"], "--single-panel", "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
+            self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
         self.manifest["desktop_pid"] = self.process.pid
         save(self.run / "run.json", self.manifest)
         deadline = time.monotonic() + 40
@@ -263,6 +287,8 @@ class Instance:
         if any((self.run / f"{name}-{suffix}").exists() for suffix in ("before.json", "before.png", "after.json", "after.png", "proof.json")):
             raise RuntimeError("journey evidence already exists; launch a fresh run")
         self.doctor()
+        if name in SWARM_JOURNEYS:
+            return self.swarm_journey(name)
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -303,6 +329,51 @@ class Instance:
         save(self.run / f"{name}-after.json", after)
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
+        save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def swarm_journey(self, name):
+        def open_panels(state):
+            return [panel for row in state["navigation"]["rows"]
+                    for panel in row["panels"] if not panel["closing"]]
+
+        listing = self.drive("list")
+        lead_id = self.target["session_id"]
+        sessions = {session["session_id"]: session for session in listing["sessions"]}
+        lead, worker = sessions.get(lead_id, {}), sessions.get(SWARM_WORKER, {})
+        if (self.manifest["fixture"] != "swarm-worktree"
+                or worker.get("parent_session_id") != lead_id
+                or worker.get("swarm_status") != "working"
+                or lead.get("working_dir") != str(self.profile / "coordinator")
+                or worker.get("working_dir") != str(self.profile / "worker")):
+            raise RuntimeError("journey requires the swarm-worktree fixture")
+        if any(panel["session"] == SWARM_WORKER for panel in open_panels(listing)):
+            raise RuntimeError("worker must not already be open; launch a fresh run")
+
+        def click(selector):
+            self.drive("click", {"selector": selector})
+
+        if name == "swarm-status":
+            click("swarm-status")
+        before = self.drive("state")
+        if name == "swarm-status" and not before["panel"]["workers_open"]:
+            raise RuntimeError("status pill did not open the worker list")
+        save(self.run / f"{name}-before.json", before)
+        first = self.screenshot(f"{name}-before.png")
+
+        click(f"{'sidebar' if name == 'swarm-sidebar' else 'status'}-worker:{SWARM_WORKER}")
+        after = self.drive("state")
+        workers = [panel for panel in open_panels(after) if panel["session"] == SWARM_WORKER]
+        if len(workers) != 1 or not workers[0]["focused"]:
+            raise RuntimeError("click did not open and focus exactly one worker panel")
+        if name == "swarm-status" and after["panel"]["workers_open"]:
+            raise RuntimeError("worker activation did not dismiss the status list")
+        save(self.run / f"{name}-after.json", self.drive("state", session=SWARM_WORKER))
+        last = self.screenshot(f"{name}-after.png")
+        if first["sha256"] == last["sha256"]:
+            raise RuntimeError("worker click produced no screenshot change")
+        report = {"journey": name, "passed": True, "before": first, "after": last,
+                  "scope": "GPUI pointer dispatch; real Git worktrees with offline swarm records"}
         save(self.run / f"{name}-proof.json", report)
         return report
 
@@ -469,11 +540,11 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree"), default="expandable")
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search"))
+            group.add_argument("--journey", choices=("tools", "composer", "search", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

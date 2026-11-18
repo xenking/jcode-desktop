@@ -37,6 +37,7 @@ are separate.
 | --- | --- | --- |
 | [Chat](chat.md) | Composer, Enter, Send | macOS draft + semantic submission, Linux native first-prompt input |
 | [Sessions](sessions.md) | Alt+R, /resume, sidebar history | macOS search, Linux native search/select/resume |
+| [Swarm workers](swarm.md) | Nested sidebar row, composer status list | macOS GPUI pointer dispatch with separate Git worktrees and offline swarm records |
 | [Workspace](workspace.md) | Tabs, panel shortcuts, four workspaces | Linux real-daemon native navigation, macOS control gap |
 | [Transcript and review](transcript.md) | Tool token button, Review metadata | macOS semantic tool toggle, Linux hit testing/diff review |
 | [Terminal](terminal.md) | Cmd/Super+T, shell input | Linux real-shell PTY acceptance, macOS control gap |

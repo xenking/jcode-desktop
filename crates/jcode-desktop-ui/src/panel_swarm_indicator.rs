@@ -238,7 +238,9 @@ impl Panel {
                 .flex_none()
                 .px_2()
                 .gap_1()
-                .when(open, |el| el.bg(theme.chip_active_background()).text_color(theme.TEXT))
+                .when(open, |el| {
+                    el.bg(theme.chip_active_background()).text_color(theme.TEXT)
+                })
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::usage::RowsTooltip {
                         title: "Workers".into(),
@@ -251,6 +253,10 @@ impl Panel {
                     this.swarm_list_open = !this.swarm_list_open;
                     cx.notify();
                 }))
+                .children(crate::swarm_control_targets::marker(
+                    || "swarm-status".into(),
+                    || Some(self.session_id.clone()),
+                ))
                 .child(cluster)
                 .children(count)
                 .children(wait)
@@ -337,6 +343,10 @@ impl Panel {
                         cx.emit(OpenSwarmWorker(id.clone()));
                         cx.notify();
                     }))
+                    .children(crate::swarm_control_targets::marker(
+                        || format!("status-worker:{}", worker.session_id),
+                        || Some(self.session_id.clone()),
+                    ))
                     .child(div().flex_none().size(px(11.0)).children(mark))
                     .child(
                         div()

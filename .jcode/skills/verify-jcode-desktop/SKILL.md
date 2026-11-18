@@ -104,6 +104,13 @@ come from `panel.ask.option_selectors`. Row selectors include a revision and mus
 be reread after transcript changes. `wait_for` accepts 1..5000 ms here, matching
 the imported transport timeout. `press_key` supports only Enter and Escape.
 
+For swarm navigation, `click` accepts `sidebar-worker:<session_id>`,
+`swarm-status` (the coordinator's composer pill), and `status-worker:<session_id>`
+(a worker in the open list). Target the coordinator for the pill and its list.
+These selectors dispatch pointer events in the private GPUI window and reject
+missing or ambiguous targets. They are disabled in the user's app. See
+[the swarm worktree journeys](features/swarm.md).
+
 The helper supplies target IDs and permits mutations only in its own hidden
 window. `--session ID` targets another already-open private session.
 `open_session` forces `background_panel` in the owned window, never `new_window`.

@@ -1322,12 +1322,18 @@ impl Workspace {
                 cx,
             );
         } else if harness::screenshot_mode() {
+            let worktree_fixture = crate::swarm_control_targets::enabled()
+                .then(|| std::env::var("JCODE_DESKTOP_CONTROL_SWARM_WORKTREE").ok())
+                .flatten();
             let session = jcode_sdk::SessionInfo {
                 user_connected: false,
                 session_id: "screenshot-fixture".into(),
                 // Keep this longer than the sidebar to exercise single-line ellipsis.
                 title: Some("Review markdown rendering with a very long session title".into()),
-                working_dir: Some("/workspace/example".into()),
+                working_dir: worktree_fixture
+                    .as_ref()
+                    .and_then(|_| std::env::var("JCODE_DESKTOP_WORKING_DIR").ok())
+                    .or_else(|| Some("/workspace/example".into())),
                 status: "idle".into(),
                 transcript_bytes: None,
                 saved: false,
@@ -1381,6 +1387,11 @@ impl Workspace {
                 {
                     let mut child = workspace.sessions[0].clone();
                     child.session_id = format!("swarm-fixture-{index}");
+                    if index == 0
+                        && let Some(directory) = &worktree_fixture
+                    {
+                        child.working_dir = Some(directory.clone());
+                    }
                     child.parent_session_id = Some("screenshot-fixture".into());
                     child.agent_label = Some(label.into());
                     child.swarm_status = Some(status.into());
@@ -1405,6 +1416,9 @@ impl Workspace {
                     );
                     workspace.sessions.push(child);
                 }
+            }
+            if worktree_fixture.is_some() {
+                workspace.sync_swarm_strips(cx);
             }
             if let Ok(effort) = std::env::var("JCODE_DESKTOP_SCREENSHOT_BAR") {
                 // Hand the swarm fixture's workers to the bar now; the strips
