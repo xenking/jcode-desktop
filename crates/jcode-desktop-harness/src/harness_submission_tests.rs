@@ -86,7 +86,14 @@ mod socket_tests {
     }
 
     impl Worker {
-        fn new(mut on_send: impl FnMut(&ApiRequest) -> Vec<ApiEvent> + Send + 'static) -> Self {
+        fn new(on_send: impl FnMut(&ApiRequest) -> Vec<ApiEvent> + Send + 'static) -> Self {
+            Self::with_attachments(true, on_send)
+        }
+
+        fn with_attachments(
+            supports_attachments: bool,
+            mut on_send: impl FnMut(&ApiRequest) -> Vec<ApiEvent> + Send + 'static,
+        ) -> Self {
             let (client_socket, server_socket) = UnixStream::pair().unwrap();
             let mut reader = BufReader::new(server_socket.try_clone().unwrap());
             let writer = Arc::new(Mutex::new(server_socket));
@@ -99,10 +106,14 @@ mod socket_tests {
                             runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "submission-regression".into(),
-                            capabilities: vec![
-                                "queued_prompt_editing".into(),
-                                "skill_message_v1".into(),
-                            ],
+                            capabilities: ["queued_prompt_editing", "skill_message_v1"]
+                                .into_iter()
+                                .chain(
+                                    supports_attachments
+                                        .then_some(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY),
+                                )
+                                .map(str::to_owned)
+                                .collect(),
                         },
                         ApiRequest::GetHistory { .. } => ApiEvent::History {
                             session_id: "s1".into(),
@@ -226,6 +237,9 @@ mod socket_tests {
                     "worker did not emit expected update"
                 );
                 if let Ok(update) = self.updates.try_recv() {
+                    if matches(&update) {
+                        return;
+                    }
                     assert!(
                         !matches!(
                             update,
@@ -237,9 +251,6 @@ mod socket_tests {
                         ),
                         "unexpected error: {update:?}"
                     );
-                    if matches(&update) {
-                        return;
-                    }
                 } else {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -294,6 +305,26 @@ mod socket_tests {
 
     fn images() -> Vec<(String, String)> {
         vec![("image/png".into(), "same-image-payload".into())]
+    }
+
+    #[test]
+    fn old_bridge_does_not_receive_a_prompt_it_would_strip() {
+        let worker = Worker::with_attachments(false, |_| vec![]);
+        worker
+            .commands
+            .send(SessionCommand::Send {
+                content: "do not send without the attachment".into(),
+                images: vec![],
+                attachments: vec![jcode_sdk::api::Attachment::PastedText {
+                    text: "payload".into(),
+                }],
+            })
+            .unwrap();
+        worker.wait_for(|update| matches!(update, Update::SendFailed { reason, .. } if reason.contains("cannot receive file attachments")));
+        worker.send("plain prompt", vec![]);
+        assert!(
+            matches!(worker.request(), ApiRequest::SendMessage { content, .. } if content == "plain prompt")
+        );
     }
 
     #[test]

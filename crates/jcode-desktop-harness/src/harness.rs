@@ -2949,6 +2949,14 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::QueuePrompt(prompt) => {
+                        if let Some(reason) = unsupported_attachments(&client, &prompt.attachments) {
+                            let _ = updates.send(Update::QueuePromptFailed {
+                                session_id: session_id.clone(),
+                                client_id: prompt.client_id,
+                                reason,
+                            });
+                            continue;
+                        }
                         recovery.supersede();
                         if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
                             send_retry_phase(&updates, &session_id, String::new());
@@ -3001,7 +3009,9 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments) => {
-                        let result = if client.supports("queued_prompt_editing") {
+                        let result = if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                            Err(reason)
+                        } else if client.supports("queued_prompt_editing") {
                             client
                                 .edit_queued_prompt_with_attachments(
                                     real_id,
@@ -3097,6 +3107,10 @@ fn session_worker_with_connector(
                         attachments,
                         skill,
                     } => {
+                        if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                            let _ = updates.send(Update::SendFailed { session_id: session_id.clone(), reason });
+                            continue;
+                        }
                         if !client.supports("skill_message_v1") {
                             let _ = updates.send(Update::SendFailed {
                                 session_id: session_id.clone(),
@@ -3146,6 +3160,10 @@ fn session_worker_with_connector(
                         images,
                         attachments,
                     } => {
+                        if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                            let _ = updates.send(Update::SendFailed { session_id: session_id.clone(), reason });
+                            continue;
+                        }
                         recovery.supersede();
                         // New input starts its own request and retry budget.
                         if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
@@ -3935,6 +3953,14 @@ pub fn collection_reminder(session_id: &str) -> Option<String> {
     jcode_sdk::collections::load()
         .ok()?
         .instructions_for(session_id)
+}
+
+fn unsupported_attachments(
+    client: &JcodeClient,
+    attachments: &[jcode_sdk::api::Attachment],
+) -> Option<String> {
+    (!attachments.is_empty() && !client.supports(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY))
+        .then(|| "This runtime cannot receive file attachments. Update the runtime and reconnect.".into())
 }
 
 fn queue_wrong_session_retry(
