@@ -87,10 +87,12 @@ impl Panel {
         match (key, alt) {
             ("up", true) if index > 0 => {
                 self.prompt_queue.prompts.swap(index, index - 1);
+                self.local_queue_swapped(index, index - 1);
                 self.prompt_queue.card_menu = Some(format!("local-{}", index - 1));
             }
             ("down", true) if index + 1 < self.prompt_queue.prompts.len() => {
                 self.prompt_queue.prompts.swap(index, index + 1);
+                self.local_queue_swapped(index, index + 1);
                 self.prompt_queue.card_menu = Some(format!("local-{}", index + 1));
             }
             ("up" | "down", true) => {}
@@ -123,9 +125,16 @@ impl Panel {
             && queue.steered.is_empty()
             && queue.remote.is_empty()
             && queue.pending_remote.is_empty()
+            && queue.queued_edit.is_none()
         {
             return None;
         }
+        // A daemon message that left the queue mid-edit (delivered, or the
+        // save was rejected) keeps its editor, so the edited text stays.
+        let orphan_edit = queue.queued_edit.as_ref().filter(|edit| {
+            matches!(&edit.target, QueueEditTarget::Remote(id)
+                if !queue.remote.iter().any(|prompt| &prompt.client_id == id))
+        });
         let theme = Theme::global();
         Some(
             div()
@@ -151,9 +160,20 @@ impl Panel {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .max_h(px(144.))
+                        // An open editor needs room for the whole message;
+                        // the card scrolls beyond that.
+                        .max_h(px(if queue.queued_edit.is_some() { 360. } else { 144. }))
                         .overflow_y_scroll()
+                        .track_scroll(&self.queue_items_scroll)
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .when_some(orphan_edit, |el, edit| {
+                            el.child(self.queue_edit_row(
+                                edit,
+                                "queued-prompt-edit-orphan".into(),
+                                "queue-edit-orphan".into(),
+                                cx,
+                            ))
+                        })
                         .when(
                             !queue.remote.is_empty() || !queue.pending_remote.is_empty(),
                             |el| {
@@ -277,6 +297,19 @@ impl Panel {
         prompt: &QueuedPrompt,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if let Some(edit) = self
+            .prompt_queue
+            .queued_edit
+            .as_ref()
+            .filter(|edit| edit.target == QueueEditTarget::Local(index))
+        {
+            return self.queue_edit_row(
+                edit,
+                SharedString::from(format!("queued-prompt-edit-{index}")),
+                format!("queued-prompt-{index}"),
+                cx,
+            );
+        }
         let key = format!("local-{index}");
         let expanded = self.prompt_queue.card_expanded.as_deref() == Some(&key);
         let selected = self.prompt_queue.card_menu.as_deref() == Some(&key);
@@ -383,7 +416,7 @@ impl Panel {
                         selected,
                         cx.listener(move |this, _, window, cx| {
                             this.prompt_queue.card_menu = None;
-                            this.recall_queued_prompt(index, window, cx);
+                            this.edit_local_queued_prompt(index, window, cx);
                             cx.stop_propagation();
                         }),
                     ))
@@ -408,6 +441,12 @@ impl Panel {
                         cx.listener(move |this, _, _, cx| {
                             if index < this.prompt_queue.prompts.len() {
                                 this.prompt_queue.prompts.remove(index);
+                                if this.local_edit_index() == Some(index) {
+                                    this.prompt_queue.queued_edit = None;
+                                    this.send_queued_prompts(cx);
+                                } else {
+                                    this.local_queue_removed(index);
+                                }
                             }
                             this.prompt_queue.card_menu = None;
                             this.prompt_queue.card_expanded = None;
@@ -480,6 +519,21 @@ impl Panel {
         let pending = index.is_none();
         let theme = Theme::global();
         let id = prompt.client_id.clone();
+        let row_index = index.unwrap_or(0);
+        if !pending
+            && let Some(edit) = self
+                .prompt_queue
+                .queued_edit
+                .as_ref()
+                .filter(|edit| matches!(&edit.target, QueueEditTarget::Remote(edit_id) if *edit_id == id))
+        {
+            return self.queue_edit_row(
+                edit,
+                SharedString::from(format!("daemon-queued-edit-{id}")),
+                format!("remote-queue-row-{row_index}"),
+                cx,
+            );
+        }
         let key = format!("remote-{id}");
         let expanded = self.prompt_queue.card_expanded.as_deref() == Some(&key);
         let selected = self.prompt_queue.card_menu.as_deref() == Some(&key);
@@ -498,9 +552,11 @@ impl Panel {
             jcode_sdk::api::QueuedPromptMode::AfterYield => jcode_sdk::api::QueuedPromptMode::Steer,
         };
         let group: SharedString = format!("queue-row-remote-{id}").into();
-        let row_index = index.unwrap_or(0);
         div()
             .id(SharedString::from(format!("daemon-queued-{id}")))
+            .when(!pending, |el| {
+                el.debug_selector(move || format!("remote-queue-row-{row_index}"))
+            })
             .group(group.clone())
             .flex()
             .flex_col()
@@ -639,7 +695,6 @@ impl Panel {
                             cx.listener(move |this, _, window, cx| {
                                 this.prompt_queue.card_menu = None;
                                 this.begin_queued_prompt_edit(index.unwrap_or(0), window, cx);
-                                this.focus_input(window, cx);
                                 cx.stop_propagation();
                             }),
                         ))
@@ -693,6 +748,117 @@ impl Panel {
             .when_some(
                 self.prompt_queue.remote_failures.get(&id).cloned(),
                 |el, reason| el.child(div().px_2().text_color(theme.ERROR).child(reason)),
+            )
+            .into_any_element()
+    }
+}
+
+impl Panel {
+    /// A queued message open for editing, drawn in its own row: the full
+    /// message in an editor with its attachments as chips, then Save and
+    /// Cancel. The composer below is not involved.
+    fn queue_edit_row(
+        &self,
+        edit: &QueuedPromptEditState,
+        id: SharedString,
+        selector: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let input = edit.input.clone();
+        let drop_input = input.clone();
+        let (note, save_label) = match edit.phase {
+            QueueEditPhase::Editing => (None, "Save"),
+            QueueEditPhase::Saving => (None, "Saving\u{2026}"),
+            QueueEditPhase::Recovered(note) => (Some(note), "Queue as new"),
+        };
+        let saving = edit.phase == QueueEditPhase::Saving;
+        let can_requeue = !matches!(edit.phase, QueueEditPhase::Recovered(_))
+            || (self.queue_connection_ready() && self.prompt_queue.remote_supported);
+        div()
+            .id(id)
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap_1()
+            .min_w_0()
+            .px_1()
+            .py_1()
+            .rounded_xl()
+            .bg(theme.QUOTE_BG)
+            .anchor_scroll(Some(self.queue_edit_anchor.clone()))
+            // Files dropped on the row attach to this message, not the composer.
+            .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.bg(Theme::global().SELECTION))
+            .on_drop(move |paths: &gpui::ExternalPaths, window, cx| {
+                let paths = paths.paths().to_vec();
+                let input = drop_input.clone();
+                window.defer(cx, move |window, cx| {
+                    input.update(cx, |input, cx| input.drop_files(&paths, window, cx));
+                });
+            })
+            .child(
+                div()
+                    .debug_selector(|| "queue-edit-input".into())
+                    .w_full()
+                    .min_w_0()
+                    .child(input),
+            )
+            .when_some(note, |el, note| {
+                el.child(
+                    div()
+                        .debug_selector(|| "queue-edit-note".into())
+                        .px_3()
+                        .text_size(px(11.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(note),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .px_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(theme.TEXT_FAINT)
+                            .child("Enter to save \u{b7} Esc to cancel"),
+                    )
+                    .child(queue_pill(
+                        "queue-edit-cancel",
+                        "Cancel",
+                        cx.listener(|this, _, window, cx| {
+                            this.cancel_queued_prompt_edit(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .id("queue-edit-save")
+                            .debug_selector(|| "queue-edit-save".into())
+                            .flex_none()
+                            .h(px(22.))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .text_size(px(11.))
+                            .bg(theme.ACCENT)
+                            .text_color(theme.BG)
+                            .when(saving || !can_requeue, |el| el.opacity(0.6))
+                            .when(!saving && can_requeue, |el| el.cursor_pointer())
+                            .child(save_label)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_queued_prompt_edit(window, cx);
+                                cx.stop_propagation();
+                            })),
+                    ),
             )
             .into_any_element()
     }

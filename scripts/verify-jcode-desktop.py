@@ -192,6 +192,8 @@ class Instance:
             modes = []
         if self.manifest.get("queued"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
+        if self.manifest.get("queue_edit"):
+            env["JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT"] = "1"
         save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline transcript/session fixtures; no daemon, bridge, provider, model inference or OS input injection"})
         with (self.run / "desktop.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
@@ -508,7 +510,8 @@ def launch(args):
                 "supervisor_socket": str(scratch / "supervisor.sock"), "token": secrets.token_hex(32),
                 "binary": str(binary), "binary_sha256": digest(binary), "version": version,
                 "sources": sources, "build": command, "fixture": args.fixture,
-                "queued": args.queued,
+                "queued": max(args.queued, 2 if args.queue_edit else 0),
+                "queue_edit": args.queue_edit,
                 "lifetime_seconds": args.lifetime}
     owner = scratch / ".owner"
     owner.write_text(manifest["token"])
@@ -546,6 +549,8 @@ def main():
             child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
+            child.add_argument("--queue-edit", action="store_true",
+                               help="open the first queued prompt in its inline editor, with a screenshot and files (implies --queued 2)")
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)

@@ -36,14 +36,17 @@ fn queue_card_actions_delete_and_edit(cx: &mut gpui::TestAppContext) {
     let delete = vcx.debug_bounds("remove-queued-prompt-0").unwrap().center();
     vcx.simulate_click(delete, Default::default());
     vcx.run_until_parked();
-    panel.read_with(vcx, |p, _| assert_eq!(p.prompt_queue.prompts.len(), 1));
+    panel.update(vcx, |p, cx| {
+        p.input.update(cx, |input, cx| input.set_content("my draft".into(), cx));
+    });
     let edit = vcx.debug_bounds("recall-queued-prompt-0").unwrap().center();
     vcx.simulate_click(edit, Default::default());
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {
-        assert!(p.prompt_queue.prompts.is_empty());
-        assert_eq!(p.input.read(cx).content, "second queued message");
+        assert_eq!(p.prompt_queue.prompts.len(), 1);
+        assert_eq!(p.input.read(cx).content, "my draft");
     });
+    assert!(vcx.debug_bounds("queue-edit-input").is_some());
 }
 
 #[gpui::test]
@@ -101,8 +104,7 @@ fn queue_card_remote_actions_wait_for_confirmation(cx: &mut gpui::TestAppContext
     vcx.run_until_parked();
     let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap().center();
     vcx.simulate_click(edit, Default::default());
-    // Edit holds the prompt on the daemon and loads it into the composer; it
-    // never removes it, so a turn that ends mid-edit cannot lose the slot.
+    // Edit holds the prompt in its original slot, not in the composer.
     let held = std::iter::from_fn(|| commands.try_recv().ok()).find_map(|command| match command {
         Command::SetQueuedPromptEditing {
             prompt_id,
@@ -116,8 +118,13 @@ fn queue_card_remote_actions_wait_for_confirmation(cx: &mut gpui::TestAppContext
     assert_eq!(held.as_deref(), Some(first.client_id.as_str()));
     panel.read_with(vcx, |p, cx| {
         assert_eq!(p.prompt_queue.remote.len(), 2, "the queue keeps the held prompt");
-        assert_eq!(p.input.read(cx).content.as_ref(), first.content);
+        assert!(p.input.read(cx).content.is_empty());
     });
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds("remote-queue-row-0").unwrap();
+    let editor = vcx.debug_bounds("queue-edit-input").unwrap();
+    assert!(row.left() <= editor.left() && row.right() >= editor.right());
+    assert!(row.top() <= editor.top() && row.bottom() >= editor.bottom());
     panel.update_in(vcx, |p, window, cx| p.cancel_queued_prompt_edit(window, cx));
     vcx.run_until_parked();
     assert!(
@@ -224,7 +231,7 @@ fn queue_card_scrolls_and_expands_long_text(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn queue_card_matches_composer_and_never_blocks_the_transcript(cx: &mut gpui::TestAppContext) {
-    let (panel, vcx) = cx.add_window_view(|_, cx| {
+    let (_panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
             "queue-surface".into(),
             None,
@@ -294,9 +301,10 @@ fn queue_row_edit_is_inline_without_an_overflow_menu(cx: &mut gpui::TestAppConte
     vcx.simulate_click(edit, Default::default());
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {
-        assert_eq!(p.prompt_queue.prompts.len(), 1);
-        assert_eq!(p.input.read(cx).content, "first queued message");
+        assert_eq!(p.prompt_queue.prompts.len(), 2, "Edit never takes the message out of the queue");
+        assert!(p.input.read(cx).content.is_empty(), "the composer is not involved");
     });
+    assert!(vcx.debug_bounds("queue-edit-input").is_some());
 }
 
 #[gpui::test]

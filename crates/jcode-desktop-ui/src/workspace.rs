@@ -1490,6 +1490,10 @@ impl Workspace {
                 // Re-seed on a timer: the offline demo turn ends, and its
                 // turn_done drains the queue, so a one-shot seed would show the
                 // rows for a frame and then hand them to the transcript.
+                // `JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT=1` also opens the first
+                // row in its inline editor, with a screenshot and files.
+                let queue_edit =
+                    std::env::var("JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT").as_deref() == Ok("1");
                 workspace.queued_fixture = Some(cx.spawn(async move |this, cx| {
                     let executor = cx.background_executor().clone();
                     let mut round = 0usize;
@@ -1500,6 +1504,9 @@ impl Workspace {
                                 slot.panel.update(cx, |panel, cx| {
                                     if !panel.has_visible_queued_prompts() {
                                         panel.seed_screenshot_queued(count, round);
+                                        if queue_edit {
+                                            panel.seed_screenshot_queue_edit(cx);
+                                        }
                                         seeded = true;
                                         cx.notify();
                                     }
@@ -4515,6 +4522,10 @@ impl Workspace {
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
+        // An open queue edit must not keep the daemon from delivering it.
+        self.slots[closed]
+            .panel
+            .update(cx, |panel, _| panel.release_queue_edit_hold());
         if session_id != "terminal"
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_side_document()

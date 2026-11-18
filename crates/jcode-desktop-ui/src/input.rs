@@ -211,6 +211,7 @@ pub struct PromptInput {
     attachment_preview: Option<paste_preview::Preview>,
     preview_panel_bounds: paste_preview::MeasuredBounds,
     file_attachments_enabled: bool,
+    queue_editor: bool,
     #[allow(clippy::type_complexity)]
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, Vec<SubmittedFile>, bool, &mut Window, &mut App)>,
     #[allow(clippy::type_complexity)]
@@ -464,7 +465,26 @@ enum AttachmentPayload {
         preview: Arc<gpui::Image>,
     },
     Text(Arc<str>),
+    Queued { source: QueuedAttachment, preview: Option<FileImage>, replacement: String },
     File { path: std::path::PathBuf, image: Option<FileImage>, file: SubmittedFile },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum QueuedAttachment {
+    Image(String, String),
+    File(jcode_sdk::api::Attachment),
+}
+
+impl QueuedAttachment {
+    fn preview(&self) -> Option<FileImage> {
+        let (mime, data) = match self {
+            Self::Image(mime, data) => (mime, data),
+            Self::File(jcode_sdk::api::Attachment::File { mime, data: Some(data), .. }) => (mime, data),
+            Self::File(_) => return None,
+        };
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+        Some(FileImage { media_type: mime.clone(), encoded: data.clone().into(), preview: preview_image(mime, bytes)? })
+    }
 }
 
 #[derive(Clone)]
@@ -483,6 +503,8 @@ struct SavedFile {
 
 const FILE_MEDIA_TYPE: &str = "application/x-jcode-file-reference";
 
+const QUEUED_MEDIA_TYPE: &str = "application/x-jcode-queued-attachment";
+
 const SNIPPET_MEDIA_TYPE: &str = "application/x-jcode-pasted-text";
 
 impl Attachment {
@@ -493,6 +515,10 @@ impl Attachment {
                 encoded,
                 ..
             } => (media_type.clone(), encoded.to_string()),
+            AttachmentPayload::Queued { source, replacement, .. } => (
+                QUEUED_MEDIA_TYPE.to_string(),
+                base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&(source, replacement)).expect("queued attachment snapshot")),
+            ),
             AttachmentPayload::Text(text) => (
                 SNIPPET_MEDIA_TYPE.to_string(),
                 base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
@@ -561,6 +587,9 @@ fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> 
                 .ok()?;
             let payload = if attachment.media_type == SNIPPET_MEDIA_TYPE {
                 AttachmentPayload::Text(String::from_utf8(bytes).ok()?.into())
+            } else if attachment.media_type == QUEUED_MEDIA_TYPE {
+                let (source, replacement): (QueuedAttachment, String) = serde_json::from_slice(&bytes).ok()?;
+                AttachmentPayload::Queued { preview: source.preview(), source, replacement }
             } else if attachment.media_type == FILE_MEDIA_TYPE {
                 let saved: SavedFile = serde_json::from_slice(&bytes).ok()?;
                 let image = match saved.image {
@@ -872,6 +901,7 @@ impl PromptInput {
             attachment_preview: None,
             preview_panel_bounds: Default::default(),
             file_attachments_enabled: true,
+            queue_editor: false,
             on_submit: Box::new(on_submit),
             on_change: None,
             on_overlay_cancel: None,
@@ -907,6 +937,146 @@ impl PromptInput {
             motion: Default::default(),
             ghost: None,
         }
+    }
+
+    /// An editor for one queued message, embedded in its queue row. It shows
+    /// the message exactly as queued, with its images, files and pasted text
+    /// as chips, and never submits by itself: the queue saves it in place.
+    pub(crate) fn queued_editor(
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut input = Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _| {});
+        input.queue_editor = true;
+        input.command_completion = false;
+        let mut text = content;
+        let markers: Vec<String> = image_marker_ranges(&text)
+            .into_iter()
+            .map(|range| text[range].to_string())
+            .collect();
+        let mut chips: Vec<(String, QueuedAttachment, String)> = Vec::new();
+        let mut appended: Vec<(String, QueuedAttachment)> = Vec::new();
+        for (index, (mime, data)) in images.into_iter().enumerate() {
+            let source = QueuedAttachment::Image(mime, data);
+            match markers.get(index) {
+                Some(marker) if !chips.iter().any(|(label, ..)| label == marker) => {
+                    chips.push((marker.clone(), source, marker.clone()));
+                }
+                _ => appended.push(("[#image 1]".into(), source)),
+            }
+        }
+        for attachment in attachments {
+            let base = match &attachment {
+                jcode_sdk::api::Attachment::File { name, size, .. } => {
+                    format!("[#{}, {size} B]", name.replace(['[', ']', '\n', '\r'], " "))
+                }
+                jcode_sdk::api::Attachment::PastedText { text } => {
+                    format!("[Pasted text, {} chars]", text.encode_utf16().count())
+                }
+                jcode_sdk::api::Attachment::Unknown => "[#attachment]".into(),
+            };
+            appended.push((base, QueuedAttachment::File(attachment)));
+        }
+        // Attachments the message text does not name get a chip at the end.
+        // Saving removes that chip and the space before it again, so an
+        // untouched message round-trips byte for byte.
+        for (base, source) in appended {
+            let label = (1..)
+                .map(|n| match (n, base.strip_prefix("[#image ")) {
+                    (_, Some(_)) => format!("[#image {n}]"),
+                    (1, None) => base.clone(),
+                    (n, None) => format!("{} #{n}]", &base[..base.len() - 1]),
+                })
+                .find(|label| !text.contains(label.as_str()) && !chips.iter().any(|(used, ..)| used == label))
+                .expect("an unused chip label");
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&label);
+            chips.push((label, source, String::new()));
+        }
+        input.attachments = chips
+            .into_iter()
+            .map(|(label, source, replacement)| Attachment {
+                label: label.into(),
+                payload: AttachmentPayload::Queued { preview: source.preview(), source, replacement },
+            })
+            .collect();
+        input.set_content(text, cx);
+        input
+    }
+
+    /// What a queue editor saves: its text, then every image and attachment it
+    /// still shows. Attachments the user did not touch go back exactly as they
+    /// were queued, whether inline bytes or a path on the runtime's machine.
+    pub(crate) fn queued_edit_payload(
+        &self,
+    ) -> (String, Vec<(String, String)>, Vec<jcode_sdk::api::Attachment>) {
+        let mut located: Vec<_> = self
+            .attachments
+            .iter()
+            .map(|attachment| (self.chip_range(attachment), attachment))
+            .collect();
+        located.sort_by_key(|(range, _)| range.as_ref().map_or(usize::MAX, |range| range.start));
+        let mut images = Vec::new();
+        let mut files = Vec::new();
+        let mut edits = Vec::new();
+        for (range, attachment) in located {
+            let replacement = match &attachment.payload {
+                AttachmentPayload::Queued { source, replacement, .. } => {
+                    match source {
+                        QueuedAttachment::Image(mime, data) => images.push((mime.clone(), data.clone())),
+                        QueuedAttachment::File(file) => files.push(file.clone()),
+                    }
+                    (replacement.as_str() != attachment.label.as_ref()).then(|| replacement.clone())
+                }
+                AttachmentPayload::Image { media_type, encoded, .. } => {
+                    images.push((media_type.clone(), encoded.to_string()));
+                    None
+                }
+                AttachmentPayload::Text(text) => Some(text.to_string()),
+                AttachmentPayload::File { path, file, .. } => {
+                    files.push(jcode_sdk::api::Attachment::File {
+                        name: file.name.clone(),
+                        mime: file.mime.clone(),
+                        size: file.size,
+                        data: Some(file.data.clone()),
+                        path: None,
+                    });
+                    Some(if path.as_os_str().is_empty() {
+                        String::new()
+                    } else {
+                        file_drop::path_text(std::slice::from_ref(path))
+                    })
+                }
+            };
+            if let (Some(range), Some(replacement)) = (range, replacement) {
+                edits.push((range, replacement));
+            }
+        }
+        let mut content = self.content.to_string();
+        for (range, replacement) in edits.into_iter().rev() {
+            let start = if replacement.is_empty() && content[..range.start].ends_with(' ') {
+                range.start - 1
+            } else {
+                range.start
+            };
+            content.replace_range(start..range.end, &replacement);
+        }
+        (content, images, files)
+    }
+
+    /// A preview dialog is open over this field, so Esc closes it first.
+    pub(crate) fn has_open_preview(&self) -> bool {
+        self.attachment_preview.is_some()
+    }
+
+    /// Test hook: laid-out line count and how far the editor can scroll.
+    #[cfg(test)]
+    pub(crate) fn editor_layout(&self) -> (usize, Pixels) {
+        (self.visual_line_count, self.editor_scroll.max_offset().y)
     }
 
     pub(crate) fn with_empty_submit(mut self) -> Self {
@@ -1577,7 +1747,7 @@ impl PromptInput {
     }
 
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.submission_enabled {
+        if !self.submission_enabled || self.queue_editor {
             return;
         }
         if self.pending_session
@@ -1696,6 +1866,8 @@ impl PromptInput {
                         replacements.push((range, output, String::new()));
                     }
                 }
+                // Only queue editors hold these, and they never submit.
+                AttachmentPayload::Queued { .. } => {}
                 AttachmentPayload::Text(text) => {
                     if let Some(range) = range {
                         replacements.push((range, Some(text.to_string()), text.to_string()));
@@ -1889,6 +2061,7 @@ impl PromptInput {
     fn attach_pasted_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
         let mut attached_size: u64 = self.attachments.iter().filter_map(|attachment| match &attachment.payload {
             AttachmentPayload::File { file, .. } => Some(file.size),
+            AttachmentPayload::Queued { source: QueuedAttachment::File(jcode_sdk::api::Attachment::File { size, .. }), .. } => Some(*size),
             _ => None,
         }).sum();
         for path in paths {
@@ -2542,23 +2715,6 @@ impl PromptInput {
             format!("{draft}\n\n{recalled}")
         };
         self.set_content(merged, cx);
-    }
-
-    /// Show a daemon queued prompt exactly, replacing the composer instead of
-    /// appending. Used when walking the queue with Up/Down so one prompt is
-    /// never merged into another.
-    pub(crate) fn show_queued_prompt(
-        &mut self,
-        content: &str,
-        images: Vec<(String, String)>,
-        cx: &mut Context<Self>,
-    ) {
-        self.attachments.clear();
-        self.marked_range = None;
-        self.attachment_preview = None;
-        self.content = "".into();
-        self.recall_prompt(content, images, cx);
-        self.history_index = None;
     }
 
     pub(crate) fn control_revision(&self) -> u64 {
@@ -3549,7 +3705,12 @@ impl Render for PromptInput {
             });
             self.ime_log_focus_subscriptions = Some(vec![focus, blur]);
         }
-        let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
+        // A queued-message editor shows the whole message before it scrolls.
+        let editor_height = if self.queue_editor {
+            (f32::from(window.viewport_size().height) * 0.4).clamp(28., 280.)
+        } else {
+            (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.)
+        };
         let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
@@ -3836,7 +3997,7 @@ impl Render for PromptInput {
                                                             ..
                                                         } => Some(preview.clone()),
                                                         AttachmentPayload::Text(_) => None,
-                                                        AttachmentPayload::File { image, .. } => image.as_ref().map(|image| image.preview.clone()),
+                                                        AttachmentPayload::File { image, .. } | AttachmentPayload::Queued { preview: image, .. } => image.as_ref().map(|image| image.preview.clone()),
                                                     },
                                                     &attachment.label,
                                                     "composer-image-chip",

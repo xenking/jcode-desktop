@@ -37,15 +37,8 @@ pub struct PromptQueue {
     remote_mutations_supported: bool,
     #[serde(skip)]
     remote_removing: std::collections::HashSet<String>,
-    /// Daemon prompt currently loaded into the composer for in-place editing.
-    /// It stays queued (position and mode intact) but the daemon holds it so
-    /// it cannot be delivered while the user edits it.
     #[serde(skip)]
     queued_edit: Option<QueuedPromptEditState>,
-    /// A save whose outcome has not landed yet, so a rejection can put the
-    /// edited text back instead of losing it.
-    #[serde(skip)]
-    queued_edit_pending: Option<QueuedPromptEditSave>,
     #[serde(skip)]
     remote_editing_supported: bool,
     #[serde(default)]
@@ -108,21 +101,41 @@ fn default_follow_up() -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct QueuedPromptEditState {
-    index: usize,
-    prompt_id: String,
-    draft: crate::input::PromptInputSnapshot,
-    active_skill: Option<String>,
+enum QueueEditTarget {
+    Local(usize),
+    Remote(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QueueEditPhase {
+    Editing,
+    Saving,
+    /// The daemon could not take the edit. The text stays in the editor with
+    /// this neutral note, so nothing typed is lost.
+    Recovered(&'static str),
+}
+
+/// One queued message open for editing inside its own queue row.
 #[derive(Clone, Debug, PartialEq)]
-struct QueuedPromptEditSave {
-    prompt_id: String,
-    content: String,
-    images: Vec<(String, String)>,
-    files: Vec<crate::input::SubmittedFile>,
-    draft: crate::input::PromptInputSnapshot,
+struct QueuedPromptEditState {
+    target: QueueEditTarget,
+    input: Entity<PromptInput>,
+    phase: QueueEditPhase,
     active_skill: Option<String>,
+    after_yield: bool,
+}
+
+/// Files a local queue entry can hold: every attachment with inline bytes.
+fn captured_files(attachments: &[jcode_sdk::api::Attachment]) -> Vec<crate::input::SubmittedFile> {
+    attachments
+        .iter()
+        .filter_map(|attachment| match attachment {
+            jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), .. } => {
+                Some(crate::input::SubmittedFile { name: name.clone(), mime: mime.clone(), size: *size, data: data.clone() })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 impl Panel {
@@ -140,243 +153,299 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn queued_edit_active(&self) -> bool {
-        self.prompt_queue.queued_edit.is_some()
+    /// The inline queue editor has keyboard focus.
+    pub(super) fn queue_editor_focused(&self, window: &Window, cx: &App) -> bool {
+        self.prompt_queue
+            .queued_edit
+            .as_ref()
+            .is_some_and(|edit| edit.input.read(cx).focus_handle.is_focused(window))
     }
 
-    /// Load a daemon-queued prompt into the composer for in-place editing.
-    /// Clicking Edit on a queue card uses the same path as Up recall.
-    pub(super) fn begin_queued_prompt_edit(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.load_queued_prompt_edit(index, window, cx);
+    /// Esc in the inline editor first closes an attachment preview it opened.
+    pub(super) fn queue_editor_has_preview(&self, cx: &App) -> bool {
+        self.prompt_queue
+            .queued_edit
+            .as_ref()
+            .is_some_and(|edit| edit.input.read(cx).has_open_preview())
     }
 
-    /// Up with an empty composer recalls the newest daemon-queued prompt for
-    /// editing; while editing, Up walks towards older queued prompts.
-    pub(super) fn queue_recall_prev(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if let Some(edit) = self.prompt_queue.queued_edit.as_ref() {
-            if edit.index == 0 {
-                // Past the oldest queued prompt: give the draft back and let
-                // ordinary prompt history take this Up.
-                self.cancel_queued_prompt_edit(window, cx);
-                return false;
-            }
-            let index = edit.index - 1;
-            self.load_queued_prompt_edit(index, window, cx);
-            return true;
-        }
-        if !self.prompt_queue.remote_editing_supported || self.prompt_queue.remote.is_empty() {
+    /// Up in an empty composer opens the newest queued message for editing in
+    /// its own row. The composer keeps focus-free and its draft untouched.
+    pub(super) fn queue_recall_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.prompt_queue.queued_edit.is_some()
+            || !self.input.read(cx).focus_handle.is_focused(window)
+            || !self.input.read(cx).content.trim().is_empty()
+        {
             return false;
         }
-        if !self.input.read(cx).content.trim().is_empty() {
+        if !self.prompt_queue.prompts.is_empty() {
+            self.edit_local_queued_prompt(self.prompt_queue.prompts.len() - 1, window, cx);
+        } else if self.prompt_queue.remote_editing_supported && !self.prompt_queue.remote.is_empty() {
+            self.begin_queued_prompt_edit(self.prompt_queue.remote.len() - 1, window, cx);
+        } else {
             return false;
         }
-        let index = self.prompt_queue.remote.len() - 1;
-        self.load_queued_prompt_edit(index, window, cx);
         true
     }
 
-    /// Down while editing walks towards newer queued prompts, then restores
-    /// the draft and hands the key back to normal prompt history.
-    pub(super) fn queue_recall_next(
+    /// Open a daemon-queued message for editing in its row. The daemon holds
+    /// it so it cannot be delivered mid-edit; it keeps its slot and mode.
+    pub(super) fn begin_queued_prompt_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt_queue.remote.get(index).cloned() else { return };
+        let after_yield = prompt.mode == jcode_sdk::api::QueuedPromptMode::AfterYield;
+        self.open_queue_editor(
+            QueueEditTarget::Remote(prompt.client_id),
+            (prompt.content, prompt.images, prompt.attachments),
+            (prompt.active_skill, after_yield),
+            Some(window),
+            cx,
+        );
+    }
+
+    /// Open a locally held message for editing in its row. It stays in the
+    /// queue at the same index; the local queue waits until the edit ends.
+    pub(super) fn edit_local_queued_prompt(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt_queue.prompts.get(index).cloned() else { return };
+        self.open_queue_editor(
+            QueueEditTarget::Local(index),
+            (prompt.content, prompt.images, wire_attachments(&prompt.files)),
+            (prompt.active_skill, prompt.after_yield),
+            Some(window),
+            cx,
+        );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn open_queue_editor(
         &mut self,
-        window: &mut Window,
+        target: QueueEditTarget,
+        (content, images, attachments): (String, Vec<(String, String)>, Vec<jcode_sdk::api::Attachment>),
+        (active_skill, after_yield): (Option<String>, bool),
+        window: Option<&mut Window>,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(index) = self
+    ) {
+        if self.prompt_queue.queued_edit.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| PromptInput::queued_editor(content, images, attachments, cx));
+        if let Some(window) = window {
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            // Bring the row into the card's view once it has been laid out.
+            let reveal = self.queue_edit_anchor.clone();
+            window.on_next_frame(move |window, cx| reveal.scroll_to(window, cx));
+        }
+        if let QueueEditTarget::Remote(prompt_id) = &target {
+            self.set_queue_edit_hold(prompt_id, true);
+        }
+        self.prompt_queue.card_menu = None;
+        self.prompt_queue.card_expanded = None;
+        self.prompt_queue.queued_edit = Some(QueuedPromptEditState {
+            target,
+            input,
+            phase: QueueEditPhase::Editing,
+            active_skill,
+            after_yield,
+        });
+        cx.notify();
+    }
+
+    /// Enter or Save: replace the message in place. A daemon row keeps its
+    /// slot, mode and skill; a local row is replaced at the same index.
+    pub(super) fn save_queued_prompt_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.prompt_queue.queued_edit.as_mut() else { return };
+        if matches!(edit.phase, QueueEditPhase::Recovered(_)) {
+            self.requeue_recovered_edit(window, cx);
+            return;
+        }
+        if edit.phase != QueueEditPhase::Editing {
+            return;
+        }
+        let (content, images, attachments) = edit.input.read(cx).queued_edit_payload();
+        if content.trim().is_empty() && images.is_empty() && attachments.is_empty() {
+            return;
+        }
+        match edit.target.clone() {
+            QueueEditTarget::Remote(prompt_id) => {
+                edit.phase = QueueEditPhase::Saving;
+                self.bridge.send(Command::EditQueuedPrompt {
+                    session_id: self.session_id.clone(),
+                    prompt_id,
+                    content,
+                    images,
+                    attachments,
+                });
+            }
+            QueueEditTarget::Local(index) => {
+                self.prompt_queue.queued_edit = None;
+                if let Some(prompt) = self.prompt_queue.prompts.get_mut(index) {
+                    prompt.content = content;
+                    prompt.images = images;
+                    // Local entries carry their bytes, as do files pasted into
+                    // the editor, so every attachment converts.
+                    prompt.files = captured_files(&attachments);
+                }
+                self.resume_local_queue_after_edit(cx);
+            }
+        }
+        self.focus_input(window, cx);
+        cx.notify();
+    }
+
+    /// Esc or Cancel: leave the row exactly as it was and release the hold.
+    pub(super) fn cancel_queued_prompt_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(edit) = self
             .prompt_queue
             .queued_edit
-            .as_ref()
-            .map(|edit| edit.index)
+            .take_if(|edit| edit.phase != QueueEditPhase::Saving)
         else {
             return false;
         };
-        if index + 1 < self.prompt_queue.remote.len() {
-            self.load_queued_prompt_edit(index + 1, window, cx);
-        } else {
-            self.cancel_queued_prompt_edit(window, cx);
+        match edit.target {
+            QueueEditTarget::Remote(id) if edit.phase == QueueEditPhase::Editing => {
+                self.set_queue_edit_hold(&id, false)
+            }
+            QueueEditTarget::Remote(_) => {}
+            QueueEditTarget::Local(_) => self.resume_local_queue_after_edit(cx),
         }
-        true
-    }
-
-    /// Enter while editing: replace the queued prompt in place.
-    pub(super) fn save_queued_prompt_edit(
-        &mut self,
-        content: String,
-        images: Vec<(String, String)>,
-        files: Vec<crate::input::SubmittedFile>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(edit) = self.prompt_queue.queued_edit.take() else {
-            return false;
-        };
-        self.prompt_queue.queued_edit_pending = Some(QueuedPromptEditSave {
-            prompt_id: edit.prompt_id.clone(),
-            content: content.clone(),
-            images: images.clone(),
-            files: files.clone(),
-            draft: edit.draft,
-            active_skill: edit.active_skill.clone(),
-        });
-        self.active_skill = edit.active_skill;
-        self.bridge.send(Command::EditQueuedPrompt {
-            session_id: self.session_id.clone(),
-            prompt_id: edit.prompt_id,
-            content,
-            images,
-            attachments: wire_attachments(&files),
-        });
-        cx.notify();
-        true
-    }
-
-    /// Esc while editing: release the daemon hold and restore the draft.
-    pub(super) fn cancel_queued_prompt_edit(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(edit) = self.prompt_queue.queued_edit.take() else {
-            return false;
-        };
-        self.bridge.send(Command::SetQueuedPromptEditing {
-            session_id: self.session_id.clone(),
-            prompt_id: edit.prompt_id,
-            editing: false,
-        });
-        self.input
-            .update(cx, |input, cx| input.restore(edit.draft, cx));
-        self.active_skill = edit.active_skill;
         self.focus_input(window, cx);
         cx.notify();
         true
     }
 
-    /// Outcome of an in-place edit. A rejection restores the edited text so it
-    /// is never lost.
+    /// The edited message could not replace the queued one (it was already
+    /// delivered, or the save failed). Queue the edited text as a new message.
+    fn requeue_recovered_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.queue_connection_ready() || !self.prompt_queue.remote_supported {
+            return;
+        }
+        let Some(edit) = self.prompt_queue.queued_edit.take() else { return };
+        let (content, images, attachments) = edit.input.read(cx).queued_edit_payload();
+        if content.trim().is_empty() && images.is_empty() && attachments.is_empty() {
+            self.prompt_queue.queued_edit = Some(edit);
+            return;
+        }
+        self.send_remote_prompt_with_attachments(content, images, attachments, edit.after_yield, edit.active_skill, cx);
+        self.focus_input(window, cx);
+    }
+
+    fn set_queue_edit_hold(&self, prompt_id: &str, editing: bool) {
+        self.bridge.send(Command::SetQueuedPromptEditing {
+            session_id: self.session_id.clone(),
+            prompt_id: prompt_id.to_owned(),
+            editing,
+        });
+    }
+
+    /// The panel is closing: let the daemon deliver the message again.
+    pub(crate) fn release_queue_edit_hold(&mut self) {
+        if let Some(edit) = self.prompt_queue.queued_edit.take()
+            && let QueueEditTarget::Remote(id) = edit.target
+            && edit.phase == QueueEditPhase::Editing
+        {
+            self.set_queue_edit_hold(&id, false);
+        }
+    }
+
+    fn resume_local_queue_after_edit(&mut self, cx: &mut Context<Self>) {
+        self.send_queued_prompts(cx);
+        if std::mem::take(&mut self.prompt_queue.send_all_on_connect) {
+            self.interrupt_all_queued_prompts(cx);
+        }
+    }
+
+    fn local_edit_index(&self) -> Option<usize> {
+        match self.prompt_queue.queued_edit.as_ref()?.target {
+            QueueEditTarget::Local(index) => Some(index),
+            QueueEditTarget::Remote(_) => None,
+        }
+    }
+
+    /// Keep a local edit pointing at the same message after another local
+    /// message left the queue.
+    fn local_queue_removed(&mut self, removed: usize) {
+        if let Some(QueuedPromptEditState { target: QueueEditTarget::Local(index), .. }) =
+            self.prompt_queue.queued_edit.as_mut()
+            && removed < *index
+        {
+            *index -= 1;
+        }
+    }
+
+    fn local_queue_swapped(&mut self, a: usize, b: usize) {
+        if let Some(QueuedPromptEditState { target: QueueEditTarget::Local(index), .. }) =
+            self.prompt_queue.queued_edit.as_mut()
+        {
+            if *index == a {
+                *index = b;
+            } else if *index == b {
+                *index = a;
+            }
+        }
+    }
+
+    /// Outcome of saving a daemon row. A rejection keeps the edited text in
+    /// the row with a neutral note instead of losing it.
     pub(crate) fn queued_prompt_edited(
         &mut self,
         prompt_id: &str,
         result: Result<jcode_sdk::api::QueuedPromptEditOutcome, String>,
         cx: &mut Context<Self>,
     ) {
-        let pending = self
-            .prompt_queue
-            .queued_edit_pending
-            .take_if(|save| save.prompt_id == prompt_id);
+        use jcode_sdk::api::QueuedPromptEditOutcome::*;
+        let Some(edit) = self.prompt_queue.queued_edit.as_mut().filter(|edit| {
+            edit.phase == QueueEditPhase::Saving
+                && matches!(&edit.target, QueueEditTarget::Remote(id) if id == prompt_id)
+        }) else {
+            return;
+        };
         match result {
-            Ok(jcode_sdk::api::QueuedPromptEditOutcome::Edited) => {}
-            Ok(outcome) => {
-                self.items.push(Item::Error(format!(
-                    "Could not save queued message: {outcome:?}"
-                )));
-                if let Some(save) = pending {
-                    self.restore_rejected_queue_edit(save, cx);
-                }
+            Ok(Edited) => self.prompt_queue.queued_edit = None,
+            Ok(InFlight | AlreadyDelivered) => {
+                edit.phase = QueueEditPhase::Recovered(
+                    "This message was already sent, so it was not changed. Your edits are still here.",
+                )
             }
-            Err(reason) => {
-                self.items.push(Item::Error(format!(
-                    "Queue edit could not be confirmed: {reason}. The text is back in the composer; check whether the original was delivered before sending it again."
-                )));
-                if let Some(save) = pending {
-                    self.restore_rejected_queue_edit(save, cx);
-                }
+            Ok(NotFound) => {
+                edit.phase = QueueEditPhase::Recovered(
+                    "This message is no longer in the queue. Your edits are still here.",
+                )
+            }
+            Err(_) => {
+                edit.phase = QueueEditPhase::Recovered(
+                    "The change could not be confirmed. Your edits are still here.",
+                );
+                // The hold may still be in place if the request never landed.
+                self.set_queue_edit_hold(prompt_id, false);
             }
         }
         cx.notify();
     }
 
-    fn restore_rejected_queue_edit(&mut self, save: QueuedPromptEditSave, cx: &mut Context<Self>) {
-        self.active_skill = save.active_skill;
-        self.input.update(cx, |input, cx| {
-            input.restore(save.draft, cx);
-            input.show_queued_prompt(&save.content, save.images, cx);
-            input.append_queued_files(save.files, cx);
-        });
-    }
-
-    fn load_queued_prompt_edit(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(prompt) = self.prompt_queue.remote.get(index).cloned() else {
-            return;
-        };
-        let Some(files) = restorable_files(&prompt.attachments) else {
-            self.items.push(Item::Error("This queued message has attachments that cannot be edited here; it remains queued.".into()));
-            cx.notify();
-            return;
-        };
-        // Switching items keeps the draft captured when editing began and
-        // moves the daemon hold to the newly selected prompt.
-        let (draft, active_skill) = match self.prompt_queue.queued_edit.take() {
-            Some(previous) => {
-                self.bridge.send(Command::SetQueuedPromptEditing {
-                    session_id: self.session_id.clone(),
-                    prompt_id: previous.prompt_id,
-                    editing: false,
-                });
-                (previous.draft, previous.active_skill)
-            }
-            None => (self.input.read(cx).snapshot(), self.active_skill.clone()),
-        };
-        self.active_skill = prompt.active_skill.clone();
-        self.input.update(cx, |input, cx| {
-            input.show_queued_prompt(&prompt.content, prompt.images.clone(), cx);
-            input.append_queued_files(files, cx);
-        });
-        self.prompt_queue.queued_edit = Some(QueuedPromptEditState {
-            index,
-            prompt_id: prompt.client_id.clone(),
-            draft,
-            active_skill,
-        });
-        self.bridge.send(Command::SetQueuedPromptEditing {
-            session_id: self.session_id.clone(),
-            prompt_id: prompt.client_id,
-            editing: true,
-        });
-        self.focus_input(window, cx);
-        cx.notify();
-    }
-
-    /// Keep the edit target pointing at the same prompt after a queue
-    /// snapshot, and give the draft back if the daemon no longer owns it.
+    /// Keep an open editor consistent with a fresh daemon snapshot: re-take a
+    /// hold the daemon dropped with a lost connection, and keep the text with
+    /// a note if the message left the queue before the edit was saved.
     fn sync_queued_edit_snapshot(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.prompt_queue.queued_edit.as_ref() else {
+        let Some(QueuedPromptEditState { target: QueueEditTarget::Remote(id), phase, .. }) =
+            self.prompt_queue.queued_edit.as_mut()
+        else {
             return;
         };
-        if let Some(index) = self
-            .prompt_queue
-            .remote
-            .iter()
-            .position(|prompt| prompt.client_id == edit.prompt_id)
-        {
-            if let Some(edit) = self.prompt_queue.queued_edit.as_mut() {
-                edit.index = index;
-            }
+        if *phase != QueueEditPhase::Editing {
             return;
         }
-        let Some(edit) = self.prompt_queue.queued_edit.take() else {
-            return;
-        };
-        self.input
-            .update(cx, |input, cx| input.restore(edit.draft, cx));
-        self.active_skill = edit.active_skill;
-        self.items.push(Item::Error(
-            "The queued prompt you were editing is no longer queued. Draft restored; check the conversation before sending it again.".into(),
-        ));
-        cx.notify();
+        match self.prompt_queue.remote.iter().find(|prompt| &prompt.client_id == id) {
+            Some(prompt) if !prompt.editing => {
+                let id = id.clone();
+                self.set_queue_edit_hold(&id, true);
+            }
+            Some(_) => {}
+            None => {
+                *phase = QueueEditPhase::Recovered(
+                    "This message was sent before your edit. Your edits are still here.",
+                );
+                cx.notify();
+            }
+        }
     }
 
     pub(crate) fn queue_removal_settled(
@@ -624,6 +693,41 @@ impl Panel {
         }
     }
 
+    /// Screenshot fixture: open the first seeded row in its inline editor,
+    /// with a multi-line message, a screenshot, a file sent by path and a
+    /// file sent inline, as a user would see it while editing.
+    pub(crate) fn seed_screenshot_queue_edit(&mut self, cx: &mut Context<Self>) {
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAABgAAAAQCAIAAACDRijCAAAAKElEQVR42mN4tioADbnlnUBDxKhhGMYGkacNU81wNmg0HY2mIyoYBADRwYUfM0edPAAAAABJRU5ErkJggg==";
+        let Some(prompt) = self.prompt_queue.remote.first_mut() else { return };
+        prompt.content = "Compare the layout in [#image 1] with the spec, then:\n- fix the spacing in the header\n- keep the footer as it is\n- check the log for the crash".into();
+        prompt.images = vec![("image/png".into(), PNG.into())];
+        prompt.attachments = vec![
+            jcode_sdk::api::Attachment::File {
+                name: "crash.log".into(),
+                mime: "text/plain".into(),
+                size: 48_213,
+                data: None,
+                path: Some("/tmp/crash.log".into()),
+            },
+            jcode_sdk::api::Attachment::File {
+                name: "spec.md".into(),
+                mime: "text/markdown".into(),
+                size: 11,
+                data: Some("IyBTcGVjCgpPSwo=".into()),
+                path: None,
+            },
+        ];
+        let prompt = prompt.clone();
+        let after_yield = prompt.mode == jcode_sdk::api::QueuedPromptMode::AfterYield;
+        self.open_queue_editor(
+            QueueEditTarget::Remote(prompt.client_id),
+            (prompt.content, prompt.images, prompt.attachments),
+            (prompt.active_skill, after_yield),
+            None,
+            cx,
+        );
+    }
+
     pub(super) fn pause_queue_for_stop(&mut self) {
         self.prompt_queue.paused = true;
         self.prompt_queue.resume_after_retry = false;
@@ -808,6 +912,18 @@ impl Panel {
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.send_remote_prompt_with_attachments(content, images, wire_attachments(&files), after_yield, active_skill, cx);
+    }
+
+    fn send_remote_prompt_with_attachments(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+        after_yield: bool,
+        active_skill: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.activity_active() {
             self.prompt_queue.paused = false;
             self.prompt_queue.auto_poke.start(self.items.len());
@@ -829,7 +945,7 @@ impl Panel {
             client_id: id,
             content,
             images,
-            attachments: wire_attachments(&files),
+            attachments,
             mode: if after_yield {
                 jcode_sdk::api::QueuedPromptMode::AfterYield
             } else {
@@ -1217,6 +1333,11 @@ impl Panel {
     }
 
     pub(super) fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
+        // A message open for editing keeps its place: the local queue waits
+        // until the edit is saved or cancelled, then resumes.
+        if self.local_edit_index().is_some() {
+            return;
+        }
         if self.prompt_queue.prompts.is_empty() {
             if !self.is_pending_session() && self.history_loaded {
                 self.prompt_queue.waiting_for_connection = false;
@@ -1315,32 +1436,13 @@ impl Panel {
         if index >= self.prompt_queue.prompts.len()
             || self.is_pending_session()
             || self.prompt_queue.waiting_for_connection
+            || self.local_edit_index() == Some(index)
         {
             return;
         }
         let prompt = self.prompt_queue.prompts.remove(index);
+        self.local_queue_removed(index);
         self.send_prompt_with_skill_files(prompt.content, prompt.images, prompt.files, prompt.active_skill, cx);
-        cx.notify();
-    }
-
-    /// Move one queued prompt back into the composer for editing.
-    pub(super) fn recall_queued_prompt(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if index >= self.prompt_queue.prompts.len() {
-            return;
-        }
-        let prompt = self.prompt_queue.prompts.remove(index);
-        self.active_skill = prompt.active_skill;
-        self.input.update(cx, |input, cx| {
-            input.recall_prompt(&prompt.content, prompt.images, cx);
-            input.append_queued_files(prompt.files, cx);
-        });
-        let focus = self.input.read(cx).focus_handle.clone();
-        window.focus(&focus, cx);
         cx.notify();
     }
 

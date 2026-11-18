@@ -1308,18 +1308,18 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
     vcx.simulate_click(recall.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {
-        assert_eq!(p.prompt_queue.prompts.len(), 11);
+        assert_eq!(p.prompt_queue.prompts.len(), 12, "Edit keeps the message queued");
         assert!(
             p.prompt_queue.prompts[0]
                 .content
-                .starts_with("Follow-up 1:")
+                .starts_with("Follow-up 0:")
         );
         assert!(
-            p.input.read(cx).content.starts_with("Follow-up 0:"),
-            "recall puts the prompt back in the composer"
+            p.input.read(cx).content.is_empty(),
+            "the message is edited in its row, not in the composer"
         );
     });
-    // The recalled prompt may grow the composer. Scrolling must not move it.
+    // The open editor may grow the card. Scrolling must not move the composer.
     let input = vcx.debug_bounds("prompt-input").unwrap();
     vcx.simulate_event(gpui::ScrollWheelEvent {
         position: items.center(),
@@ -1639,135 +1639,360 @@ fn drain_commands(commands: &std::sync::mpsc::Receiver<Command>) -> Vec<Command>
     drained
 }
 
-#[gpui::test]
-fn queued_edit_up_recalls_and_enter_saves_in_place(cx: &mut gpui::TestAppContext) {
-    use jcode_sdk::api::QueuedPromptMode;
+/// A panel with daemon queue editing, its composer wired and focused.
+fn queue_edit_panel(
+    cx: &mut gpui::TestAppContext,
+    prompts: Vec<jcode_sdk::api::QueuedPrompt>,
+) -> (
+    Entity<Panel>,
+    &mut gpui::VisualTestContext,
+    std::sync::mpsc::Receiver<Command>,
+) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new("queue-edit".into(), None, None, bridge, cx);
         panel.history_loaded = true;
+        panel.startup_layout = None;
+        panel.status = "running".into();
+        panel.items.push(Item::User("initial".into()));
         panel.prompt_queue.remote_supported = true;
+        panel.prompt_queue.remote_mutations_supported = true;
         panel.prompt_queue.remote_editing_supported = true;
-        panel.prompt_queue.remote = vec![
-            editing_test_prompt("p1", "first queued", QueuedPromptMode::Steer),
-            editing_test_prompt("p2", "second queued", QueuedPromptMode::AfterYield),
-        ];
+        panel.prompt_queue.remote = prompts;
         panel
     });
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(900.), px(700.)));
     vcx.update(|window, cx| {
         Panel::connect_input(&panel, cx);
         let handle = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
     });
-    vcx.simulate_keystrokes("up");
-    assert_eq!(
-        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-        "second queued",
-        "Up loads the last queued prompt"
-    );
-    assert!(
-        drain_commands(&commands).iter().any(|command| matches!(
-            command,
-            Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p2"
-        )),
-        "recalling a queued prompt holds it on the daemon"
-    );
-    vcx.simulate_keystrokes("up");
-    assert_eq!(
-        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-        "first queued",
-        "a second Up walks to the earlier queued prompt"
-    );
-    let commands_after_walk = drain_commands(&commands);
-    assert!(commands_after_walk.iter().any(|command| matches!(
-        command,
-        Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p1"
-    )));
-    vcx.simulate_input(" edited");
-    vcx.simulate_keystrokes("enter");
-    let mut saved = false;
-    for command in drain_commands(&commands) {
-        if let Command::EditQueuedPrompt {
-            prompt_id, content, ..
-        } = &command
-        {
-            assert_eq!(prompt_id, "p1");
-            assert_eq!(content, "first queued edited");
-            saved = true;
-        }
-        assert!(
-            !matches!(&command, Command::QueuePrompt { .. }),
-            "saving an edit must never append a new queue item"
-        );
-    }
-    assert!(saved, "Enter saves the edit in place");
+    vcx.run_until_parked();
+    (panel, vcx, commands)
+}
+
+fn edit_input(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> Entity<PromptInput> {
     panel.read_with(vcx, |panel, _| {
-        assert_eq!(
-            panel
-                .prompt_queue
-                .remote
-                .iter()
-                .map(|prompt| prompt.client_id.as_str())
-                .collect::<Vec<_>>(),
-            ["p1", "p2"],
-            "queue order is unchanged while editing"
-        );
-        assert_eq!(
-            panel.prompt_queue.remote[0].mode,
-            QueuedPromptMode::Steer,
-            "editing keeps the delivery mode"
-        );
-        assert_eq!(
-            panel.prompt_queue.remote[1].mode,
-            QueuedPromptMode::AfterYield
-        );
-    });
+        panel.prompt_queue.queued_edit.as_ref().expect("an open queue editor").input.clone()
+    })
 }
 
 #[gpui::test]
-fn queued_edit_esc_restores_the_draft(cx: &mut gpui::TestAppContext) {
+fn daemon_row_edit_opens_in_place_and_leaves_the_composer_alone(cx: &mut gpui::TestAppContext) {
     use jcode_sdk::api::QueuedPromptMode;
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("p1", "first queued", QueuedPromptMode::Steer),
+            editing_test_prompt("p2", "second queued", QueuedPromptMode::AfterYield),
+        ],
+    );
+    panel.update(vcx, |p, cx| p.input.update(cx, |input, cx| input.set_content("my draft".into(), cx)));
+    let edit = vcx.debug_bounds("remote-queue-edit-1").expect("Edit on the second row").center();
+    vcx.simulate_click(edit, Default::default());
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds("remote-queue-row-1").expect("the edited row");
+    let editor = vcx.debug_bounds("queue-edit-input").expect("the editor is in the row");
+    assert!(row.left() <= editor.left() && row.right() >= editor.right(), "{row:?} {editor:?}");
+    assert!(row.top() <= editor.top() && row.bottom() >= editor.bottom(), "{row:?} {editor:?}");
+    let composer = vcx.debug_bounds("composer").unwrap();
+    assert!(editor.bottom() <= composer.top(), "the editor is in the queue, above the composer");
+    let input = edit_input(&panel, vcx);
+    assert_eq!(input.read_with(vcx, |input, _| input.content.to_string()), "second queued");
+    assert!(vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
+    panel.read_with(vcx, |p, cx| {
+        assert_eq!(p.input.read(cx).content, "my draft", "the composer draft is untouched");
+        assert_eq!(p.prompt_queue.remote.len(), 2);
+    });
+    let sent = drain_commands(&commands);
+    assert!(sent.iter().any(|command| matches!(
+        command,
+        Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p2"
+    )), "the daemon holds the message while it is edited");
+    assert!(!sent.iter().any(|command| matches!(command, Command::RemoveQueuedPrompt { .. })));
+    vcx.simulate_input(" now");
+    vcx.simulate_keystrokes("enter");
+    let saved = drain_commands(&commands);
+    assert!(saved.iter().any(|command| matches!(
+        command,
+        Command::EditQueuedPrompt { prompt_id, content, .. }
+            if prompt_id == "p2" && content == "second queued now"
+    )), "Enter saves in place");
+    assert!(!saved.iter().any(|command| matches!(command, Command::QueuePrompt { .. } | Command::Send { .. })));
+    panel.update(vcx, |p, cx| {
+        p.queued_prompt_edited("p2", Ok(jcode_sdk::api::QueuedPromptEditOutcome::Edited), cx)
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |p, cx| {
+        assert!(p.prompt_queue.queued_edit.is_none(), "a confirmed save closes the editor");
+        assert_eq!(p.input.read(cx).content, "my draft");
+    });
+    assert!(vcx.debug_bounds("queue-edit-input").is_none());
+}
+
+#[gpui::test]
+fn up_in_an_empty_composer_edits_the_newest_row_in_place(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("p1", "first queued", QueuedPromptMode::Steer),
+            editing_test_prompt("p2", "second queued", QueuedPromptMode::AfterYield),
+        ],
+    );
+    vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    let input = edit_input(&panel, vcx);
+    assert_eq!(input.read_with(vcx, |input, _| input.content.to_string()), "second queued");
+    assert!(vcx.debug_bounds("remote-queue-row-1").is_some());
+    panel.read_with(vcx, |p, cx| assert!(p.input.read(cx).content.is_empty()));
+    assert!(drain_commands(&commands).iter().any(|command| matches!(
+        command,
+        Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p2"
+    )));
+}
+
+#[gpui::test]
+fn local_row_edit_keeps_queue_order_and_never_merges_into_the_draft(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("queue-edit-esc".into(), None, None, bridge, cx);
+        let mut panel = Panel::new("queue-local-edit".into(), None, None, bridge, cx);
         panel.history_loaded = true;
-        panel.prompt_queue.remote_supported = true;
-        panel.prompt_queue.remote_editing_supported = true;
-        panel.prompt_queue.remote = vec![editing_test_prompt(
-            "p1",
-            "original queued text",
-            QueuedPromptMode::Steer,
-        )];
+        panel.startup_layout = None;
+        panel.status = "running".into();
+        panel.items.push(Item::User("initial".into()));
+        panel.submit_or_queue("first queued message".into(), vec![], true, cx);
+        panel.submit_or_queue("second queued message".into(), vec![], true, cx);
+        panel.submit_or_queue("third queued message".into(), vec![], true, cx);
         panel
     });
-    vcx.update(|window, cx| {
-        Panel::connect_input(&panel, cx);
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
-        window.focus(&handle, cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(900.), px(700.)));
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+    vcx.run_until_parked();
+    panel.update(vcx, |p, cx| p.input.update(cx, |input, cx| input.set_content("my draft".into(), cx)));
+    let edit = vcx.debug_bounds("recall-queued-prompt-1").unwrap().center();
+    vcx.simulate_click(edit, Default::default());
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds("queued-prompt-1").expect("the edited row");
+    let editor = vcx.debug_bounds("queue-edit-input").expect("editor in the row");
+    assert!(row.top() <= editor.top() && row.bottom() >= editor.bottom());
+    vcx.simulate_input(" edited");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    panel.read_with(vcx, |p, cx| {
+        let contents: Vec<_> = p.prompt_queue.prompts.iter().map(|prompt| prompt.content.as_str()).collect();
+        assert_eq!(contents, ["first queued message", "second queued message edited", "third queued message"]);
+        assert_eq!(p.input.read(cx).content, "my draft", "nothing merged into the draft");
+        assert!(p.prompt_queue.queued_edit.is_none());
     });
+    assert!(
+        !drain_commands(&commands).iter().any(|command| matches!(command, Command::Send { .. } | Command::QueuePrompt { .. })),
+        "saving a local edit sends nothing by itself"
+    );
+}
+
+#[gpui::test]
+fn queued_images_and_files_survive_a_save_byte_for_byte(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::{Attachment, QueuedPromptMode};
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    let mut prompt = editing_test_prompt("p1", "look at [#image 1] then the logs", QueuedPromptMode::AfterYield);
+    prompt.images = vec![
+        ("image/png".into(), PNG.into()),
+        ("image/png".into(), format!("{PNG}AA")),
+    ];
+    prompt.attachments = vec![
+        Attachment::File {
+            name: "notes.txt".into(),
+            mime: "text/plain".into(),
+            size: 3,
+            data: Some("YWJj".into()),
+            path: None,
+        },
+        Attachment::File {
+            name: "big.log".into(),
+            mime: "text/plain".into(),
+            size: 7_000_000,
+            data: None,
+            path: Some("/var/log/big.log".into()),
+        },
+        Attachment::PastedText { text: "pasted\nblock".into() },
+    ];
+    let original = prompt.clone();
+    let (panel, vcx, commands) = queue_edit_panel(cx, vec![prompt]);
+    let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap().center();
+    vcx.simulate_click(edit, Default::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("composer-image-thumbnail").is_some(), "queued screenshots show as thumbnails");
+    let input = edit_input(&panel, vcx);
+    let shown = input.read_with(vcx, |input, _| input.content.to_string());
+    assert!(shown.contains("[#notes.txt, 3 B]") && shown.contains("[#big.log, 7000000 B]"), "{shown}");
+    // Untouched: the save carries exactly what was queued.
+    let (content, images, attachments) = input.read_with(vcx, |input, _| input.queued_edit_payload());
+    assert_eq!(content, original.content);
+    assert_eq!(images, original.images);
+    assert_eq!(attachments, original.attachments);
+    // Edit only the text: every image and attachment goes back on the wire.
+    vcx.simulate_keystrokes("end");
+    vcx.simulate_input("!");
+    vcx.simulate_keystrokes("enter");
+    let saved = drain_commands(&commands).into_iter().find_map(|command| match command {
+        Command::EditQueuedPrompt { content, images, attachments, .. } => Some((content, images, attachments)),
+        _ => None,
+    }).expect("Enter saves");
+    assert_eq!(saved.0, format!("{}!", original.content));
+    assert_eq!(saved.1, original.images, "images unchanged on the wire");
+    assert_eq!(saved.2, original.attachments, "path-based and inline files unchanged on the wire");
+}
+
+#[gpui::test]
+fn removing_an_attachment_chip_drops_only_that_attachment(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::{Attachment, QueuedPromptMode};
+    let mut prompt = editing_test_prompt("p1", "read these", QueuedPromptMode::Steer);
+    prompt.attachments = vec![
+        Attachment::File { name: "a.txt".into(), mime: "text/plain".into(), size: 1, data: Some("YQ==".into()), path: None },
+        Attachment::File { name: "b.txt".into(), mime: "text/plain".into(), size: 1, data: None, path: Some("/tmp/b.txt".into()) },
+    ];
+    let (panel, vcx, commands) = queue_edit_panel(cx, vec![prompt]);
     vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    // The caret sits after the last chip; Backspace removes that chip whole.
+    vcx.simulate_keystrokes("end backspace enter");
+    let _ = panel;
+    let attachments = drain_commands(&commands).into_iter().find_map(|command| match command {
+        Command::EditQueuedPrompt { content, attachments, .. } => {
+            assert_eq!(content.trim_end(), "read these");
+            Some(attachments)
+        }
+        _ => None,
+    }).expect("saved");
+    assert_eq!(attachments.len(), 1);
+    assert!(matches!(&attachments[0], Attachment::File { name, .. } if name == "a.txt"));
+}
+
+#[gpui::test]
+fn escape_cancels_without_changes_and_releases_the_hold(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", "original queued text", QueuedPromptMode::Steer)],
+    );
+    panel.update(vcx, |p, cx| p.input.update(cx, |input, cx| input.set_content("my draft".into(), cx)));
+    let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap().center();
+    vcx.simulate_click(edit, Default::default());
+    vcx.run_until_parked();
     vcx.simulate_input(" changed");
-    assert_eq!(
-        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-        "original queued text changed"
-    );
+    drain_commands(&commands);
     vcx.simulate_keystrokes("escape");
-    assert_eq!(
-        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-        "",
-        "Esc restores the pre-edit draft"
-    );
+    vcx.run_until_parked();
     let released = drain_commands(&commands);
     assert!(released.iter().any(|command| matches!(
         command,
         Command::SetQueuedPromptEditing { prompt_id, editing: false, .. } if prompt_id == "p1"
-    )));
-    assert!(
-        !released
-            .iter()
-            .any(|command| matches!(command, Command::EditQueuedPrompt { .. })),
-        "Esc must not save anything"
+    )), "Esc releases the daemon hold");
+    assert!(!released.iter().any(|command| matches!(command, Command::EditQueuedPrompt { .. })), "Esc saves nothing");
+    panel.read_with(vcx, |p, cx| {
+        assert!(p.prompt_queue.queued_edit.is_none());
+        assert_eq!(p.prompt_queue.remote[0].content, "original queued text");
+        assert_eq!(p.input.read(cx).content, "my draft");
+    });
+    assert!(vcx.debug_bounds("queue-edit-input").is_none());
+    assert!(vcx.debug_bounds("remote-queue-row-0").is_some());
+}
+
+#[gpui::test]
+fn cancel_pill_and_panel_close_release_the_hold(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", "queued", QueuedPromptMode::Steer)],
     );
+    vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    let cancel = vcx.debug_bounds("queue-edit-cancel").expect("Cancel pill").center();
+    vcx.simulate_click(cancel, Default::default());
+    vcx.run_until_parked();
+    assert!(drain_commands(&commands).iter().any(|command| matches!(command, Command::SetQueuedPromptEditing { editing: false, .. })));
+    panel.read_with(vcx, |p, _| assert!(p.prompt_queue.queued_edit.is_none()));
+    let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap().center();
+    vcx.simulate_click(edit, Default::default());
+    vcx.run_until_parked();
+    drain_commands(&commands);
+    panel.update(vcx, |p, _| p.release_queue_edit_hold());
+    assert!(drain_commands(&commands).iter().any(|command| matches!(command, Command::SetQueuedPromptEditing { editing: false, .. })));
+}
+
+#[gpui::test]
+fn long_multiline_message_is_fully_visible_in_the_editor(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    let long = (1..=6).map(|n| format!("line {n} of a queued message")).collect::<Vec<_>>().join("\n");
+    let (panel, vcx, _commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", &long, QueuedPromptMode::Steer)],
+    );
+    vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    vcx.run_until_parked();
+    let input = edit_input(&panel, vcx);
+    let content = input.read_with(vcx, |input, _| input.content.to_string());
+    assert_eq!(content, long, "the editor holds the whole message");
+    let (lines, overflow) = input.read_with(vcx, |input, _| input.editor_layout());
+    assert!(lines >= 6, "every line is laid out, got {lines}");
+    assert_eq!(overflow, px(0.), "six lines fit without scrolling the editor");
+    let field = vcx.debug_bounds("queue-edit-input").unwrap();
+    let card = vcx.debug_bounds("prompt-queue-items").unwrap();
+    assert!(card.top() <= field.top() && card.bottom() >= field.bottom(), "the whole editor is in view: {card:?} {field:?}");
+}
+
+#[gpui::test]
+fn rejected_save_keeps_the_edited_text_with_a_note(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::{QueuedPromptEditOutcome, QueuedPromptMode};
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", "queued", QueuedPromptMode::Steer)],
+    );
+    vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    vcx.simulate_input(" with my edits");
+    vcx.simulate_keystrokes("enter");
+    assert!(drain_commands(&commands).iter().any(|command| matches!(command, Command::EditQueuedPrompt { .. })));
+    // The daemon delivered the message before the save reached it.
+    panel.update(vcx, |p, cx| {
+        p.prompt_queue.remote.clear();
+        p.queued_prompt_edited("p1", Ok(QueuedPromptEditOutcome::AlreadyDelivered), cx);
+    });
+    vcx.run_until_parked();
+    let input = edit_input(&panel, vcx);
+    assert_eq!(input.read_with(vcx, |input, _| input.content.to_string()), "queued with my edits");
+    assert!(vcx.debug_bounds("queue-edit-input").is_some(), "the editor stays visible");
+    assert!(vcx.debug_bounds("queue-edit-note").is_some(), "with a neutral note");
+    panel.read_with(vcx, |p, _| {
+        assert!(!p.items.iter().any(|item| matches!(item, Item::Error(_))), "no red error for a race");
+    });
+    // Esc dismisses it; nothing is sent again by itself.
+    vcx.update(|window, cx| window.focus(&input.read(cx).focus_handle.clone(), cx));
+    vcx.simulate_keystrokes("escape");
+    assert!(!drain_commands(&commands).iter().any(|command| matches!(command, Command::QueuePrompt { .. })));
+}
+
+#[gpui::test]
+fn a_message_delivered_mid_edit_keeps_the_edited_text(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    let (panel, vcx, _commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", "queued", QueuedPromptMode::Steer)],
+    );
+    vcx.simulate_keystrokes("up");
+    vcx.run_until_parked();
+    vcx.simulate_input(" typed");
+    panel.update(vcx, |p, cx| {
+        p.apply(&event(json!({"ev":"queued_prompts", "prompts": []})), cx);
+    });
+    vcx.run_until_parked();
+    let input = edit_input(&panel, vcx);
+    assert_eq!(input.read_with(vcx, |input, _| input.content.to_string()), "queued typed");
+    assert!(vcx.debug_bounds("queue-edit-note").is_some());
 }
