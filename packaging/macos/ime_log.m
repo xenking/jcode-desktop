@@ -6,12 +6,28 @@
 #import <fcntl.h>
 #import <unistd.h>
 
+// Declared locally instead of importing Carbon.h, whose legacy Point/Rect
+// typedefs collide with AppKit. Read-only: the host never selects a source.
+typedef struct __TISInputSource *TISInputSourceRef;
+extern TISInputSourceRef TISCopyCurrentKeyboardInputSource(void);
+extern const void *TISGetInputSourceProperty(TISInputSourceRef source, CFStringRef property);
+extern CFStringRef kTISPropertyInputSourceID;
+
 static int log_fd = -1;
 static IMP original_insert, original_mark, original_unmark, original_command;
 static IMP original_activate, original_deactivate, original_discard;
+static IMP original_key_down, original_flags_changed;
 
-static void record(NSString *event, id object) {
-    if (log_fd < 0) return;
+static NSString *current_input_source(void) {
+    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+    if (!source) return @"unknown";
+    const void *property = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+    NSString *identifier = property ? [NSString stringWithString:(__bridge NSString *)property] : @"unknown";
+    CFRelease(source);
+    return identifier;
+}
+
+static NSString *utc_timestamp(void) {
     static NSDateFormatter *formatter;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -20,13 +36,39 @@ static void record(NSString *event, id object) {
         formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
         formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
     });
+    return [formatter stringFromDate:[NSDate date]];
+}
+static void record(NSString *event, id object) {
+    if (log_fd < 0) return;
     NSWindow *window = NSApp.keyWindow;
     NSString *line = [NSString stringWithFormat:@"%@ pid=%d %@ object=%p key_window=%p first_responder=%p modifiers=0x%lx\n",
-                      [formatter stringFromDate:[NSDate date]], getpid(), event,
+                      utc_timestamp(), getpid(), event,
                       (__bridge void *)object, (__bridge void *)window,
                       (__bridge void *)window.firstResponder, (unsigned long)[NSEvent modifierFlags]];
     const char *bytes = line.UTF8String;
     if (bytes) (void)write(log_fd, bytes, strlen(bytes));
+}
+static void record_key(NSString *event, NSEvent *nativeEvent) {
+    if (log_fd < 0) return;
+    NSWindow *window = NSApp.keyWindow;
+    // Key codes and modifiers only: enough to correlate an input-source
+    // change with Shift or a modifier chord, never the character typed.
+    NSString *line = [NSString stringWithFormat:@"%@ pid=%d %@ keycode=%d source=%@ modifiers=0x%lx key_window=%p first_responder=%p\n",
+                      utc_timestamp(), getpid(), event,
+                      nativeEvent.keyCode, current_input_source(),
+                      (unsigned long)nativeEvent.modifierFlags,
+                      (__bridge void *)window,
+                      (__bridge void *)window.firstResponder];
+    const char *bytes = line.UTF8String;
+    if (bytes) (void)write(log_fd, bytes, strlen(bytes));
+}
+static void key_down(id self, SEL selector, id event) {
+    record_key(@"key-down", event);
+    ((void (*)(id, SEL, id))original_key_down)(self, selector, event);
+}
+static void flags_changed(id self, SEL selector, id event) {
+    record_key(@"flags-changed", event);
+    ((void (*)(id, SEL, id))original_flags_changed)(self, selector, event);
 }
 static void insert_text(id self, SEL selector, id text, NSRange replacement) {
     record(@"insertText", self);
@@ -74,6 +116,10 @@ static void install_view_hooks(void) {
     hook(view, @selector(setMarkedText:selectedRange:replacementRange:), (IMP)set_marked, &original_mark);
     hook(view, @selector(unmarkText), (IMP)unmark, &original_unmark);
     hook(view, @selector(doCommandBySelector:), (IMP)command, &original_command);
+    // Modifier edges (Shift down/up) and key codes are the missing link when
+    // an input source reverts: they show whether the reset followed Shift.
+    hook(view, @selector(keyDown:), (IMP)key_down, &original_key_down);
+    hook(view, @selector(flagsChanged:), (IMP)flags_changed, &original_flags_changed);
     installed = YES;
     record(@"view-hooks-installed", nil);
 }

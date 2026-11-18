@@ -99,4 +99,6 @@ fn main() {
         ime_object.display()
     );
     println!("cargo:rustc-link-lib=framework=AppKit");
+    // The opt-in recorder reads the selected input source (TIS*) from Carbon.
+    println!("cargo:rustc-link-lib=framework=Carbon");
 }
