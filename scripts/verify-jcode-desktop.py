@@ -190,6 +190,8 @@ class Instance:
                        JCODE_DESKTOP_CONTROL_SWARM_WORKTREE=str(worker),
                        JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
             modes = []
+        if self.manifest.get("queued"):
+            env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline transcript/session fixtures; no daemon, bridge, provider, model inference or OS input injection"})
         with (self.run / "desktop.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
@@ -506,6 +508,7 @@ def launch(args):
                 "supervisor_socket": str(scratch / "supervisor.sock"), "token": secrets.token_hex(32),
                 "binary": str(binary), "binary_sha256": digest(binary), "version": version,
                 "sources": sources, "build": command, "fixture": args.fixture,
+                "queued": args.queued,
                 "lifetime_seconds": args.lifetime}
     owner = scratch / ".owner"
     owner.write_text(manifest["token"])
@@ -541,6 +544,8 @@ def main():
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
             child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree"), default="expandable")
+            child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
+                               help="seed N queued prompts above the composer")
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)

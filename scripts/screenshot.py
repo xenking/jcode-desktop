@@ -125,6 +125,8 @@ def main():
                         help="choose the isolated transcript fixture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
+    parser.add_argument("--queued", type=int, default=0,
+                        help="seed N queued prompts above the first panel's composer")
     parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "voice-timeout", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
     parser.add_argument("--preview-interact", action="store_true",
@@ -486,6 +488,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.queued > 0:
+            env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(args.queued)
         if args.panel_transcripts:
             env["JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS"] = args.panel_transcripts
         if args.panel_titles:

@@ -1153,6 +1153,8 @@ impl Panel {
             });
         }
         let activity_owner = cx.entity();
+        let (fixture_tool_durations, fixture_tool_wall_times) =
+            demo_tool_times(fixture.as_deref());
         Self {
             session_id,
             title: display_title.into(),
@@ -1269,8 +1271,8 @@ impl Panel {
             applet_rows_version: 0,
             transcript_derived: None,
             tool_started: HashMap::new(),
-            tool_durations: HashMap::new(),
-            tool_wall_times: HashMap::new(),
+            tool_durations: fixture_tool_durations,
+            tool_wall_times: fixture_tool_wall_times,
             running_tool_tickers: Default::default(),
             superseded_drafts: Default::default(),
             terminal: None,
@@ -11563,6 +11565,37 @@ mod fixture_for_panel_tests {
         );
         assert_eq!(fixture_for_panel("screenshot-fixture-1", None, None), None);
     }
+}
+
+/// Screenshot fixture timings, so captures show the real tool clock labels
+/// instead of "unknown". The release check finished, the cleanup was refused
+/// instantly.
+type DemoToolTimes = (
+    HashMap<String, Duration>,
+    HashMap<String, (Option<i64>, Option<i64>)>,
+);
+
+fn demo_tool_times(fixture: Option<&str>) -> DemoToolTimes {
+    let mut durations = HashMap::new();
+    let mut wall = HashMap::new();
+    if !crate::harness::screenshot_mode() || fixture != Some("expandable") {
+        return (durations, wall);
+    }
+    let Some(now) = response_stats::now_ms() else {
+        return (durations, wall);
+    };
+    for (call_id, ago_ms, ran_ms) in [
+        ("expandable-title", 95_000_i64, 83_400_u64),
+        ("expandable-error", 9_000, 40),
+    ] {
+        let start = now - ago_ms;
+        durations.insert(call_id.to_string(), Duration::from_millis(ran_ms));
+        wall.insert(
+            call_id.to_string(),
+            (Some(start), Some(start + ran_ms as i64)),
+        );
+    }
+    (durations, wall)
 }
 
 /// `JCODE_DESKTOP_DEMO_TRANSCRIPT=1` seeds one panel with a sample of every
