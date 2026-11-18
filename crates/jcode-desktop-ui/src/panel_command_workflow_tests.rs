@@ -390,6 +390,7 @@ fn workflows_dispatch_expanded_prompts_and_preserve_arguments(cx: &mut gpui::Tes
             session_id,
             content,
             images,
+            ..
         } = commands.try_recv().unwrap()
         else {
             panic!("{name} did not dispatch a prompt");

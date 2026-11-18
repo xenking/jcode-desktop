@@ -264,7 +264,7 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     assert!(commands.try_recv().is_err(), "send waits for history");
     panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images }) if session_id == "ready" && content == "first secon[#image 1]" && images.len() == 1)
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. }) if session_id == "ready" && content == "first secon[#image 1]" && images.len() == 1)
     );
 }
 

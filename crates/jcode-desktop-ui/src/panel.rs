@@ -1064,6 +1064,7 @@ impl Panel {
                         session_id: send_session.clone(),
                         content,
                         images,
+                        attachments: Vec::new(),
                     });
                 },
             )
@@ -2059,18 +2060,26 @@ impl Panel {
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
             this.input = cx.new(|cx| {
-                PromptInput::new_with_queue(
+                PromptInput::new_with_queue_files(
                     cx,
                     "Type something…",
-                    move |content, images, queued, _window, app| {
+                    move |content, images, files, queued, _window, app| {
                         // A queued prompt loaded with Up is saved back into its
                         // original queue slot, never appended as a new one.
                         if let Some(panel) = weak.upgrade()
                             && panel.read(app).queued_edit_active()
                         {
                             panel.update(app, |this, cx| {
-                                this.save_queued_prompt_edit(content, images, cx);
+                                this.save_queued_prompt_edit(content, images, files, cx);
                             });
+                            return;
+                        }
+                        if !files.is_empty() {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update(app, |this, cx| {
+                                    this.submit_or_queue_with_files(content, images, files, queued, cx);
+                                });
+                            }
                             return;
                         }
                         if images.is_empty()
@@ -2911,6 +2920,7 @@ impl Panel {
             session_id: self.session_id.clone(),
             content: prompt.to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
         let index = self.items.len();
         self.items.push(Item::User(prompt.to_string()));
@@ -10790,7 +10800,7 @@ mod tests {
         vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
-            Ok(Command::Send { session_id, content, images })
+            Ok(Command::Send { session_id, content, images, .. })
                 if session_id == "session-a" && content == "hello jcode" && images.is_empty()
         ));
 

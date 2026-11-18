@@ -284,6 +284,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Send {
             content: "remote prompt".into(),
             images: vec![("image/png".into(), "bytes".into())],
+            attachments: vec![],
         })
         .unwrap();
     assert!(
@@ -298,6 +299,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Send {
             content: "steering".into(),
             images: vec![],
+            attachments: vec![],
         })
         .unwrap();
     assert!(

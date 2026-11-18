@@ -92,6 +92,7 @@ impl Workspace {
             session_id,
             content: publish::session_prompt(&root),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
     }
 }

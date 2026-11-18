@@ -167,7 +167,7 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
                     "mixed coding request must not navigate"
                 );
                 assert!(
-                    matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+                    matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
                     if session_id == "voice-live-recording-only" && content == transcript && images.is_empty()),
                     "recording bridge must receive only the spoken coding request"
                 );

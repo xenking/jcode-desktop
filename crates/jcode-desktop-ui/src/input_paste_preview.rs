@@ -11,7 +11,10 @@ pub(super) struct Preview {
 
 impl Preview {
     pub fn new(index: usize) -> Self {
-        Self { index, dimensions: std::cell::OnceCell::new() }
+        Self {
+            index,
+            dimensions: std::cell::OnceCell::new(),
+        }
     }
 }
 
@@ -37,9 +40,16 @@ impl PromptInput {
         let preview = self.attachment_preview.as_ref()?;
         let index = preview.index;
         let attachment = self.attachments.get(index)?;
-        let image = attachment.preview.clone();
+        let (image, encoded) = match &attachment.payload {
+            AttachmentPayload::Image { preview, encoded, .. } => (preview, encoded),
+            AttachmentPayload::File { image: Some(image), .. } => (&image.preview, &image.encoded),
+            _ => return None,
+        };
+        let image = image.clone();
         let viewport = window.viewport_size();
-        let dimensions = *preview.dimensions.get_or_init(|| crate::image_modal::dimensions(&attachment.encoded));
+        let dimensions = *preview
+            .dimensions
+            .get_or_init(|| crate::image_modal::dimensions(encoded));
         let dialog_size = crate::image_modal::dialog_size(viewport, dimensions);
         let dialog = div()
             .id("paste-image-preview-dialog")
@@ -108,8 +118,11 @@ impl PromptInput {
         let overlay = div()
             .id("paste-image-preview")
             .debug_selector(|| "paste-image-preview".into())
-            .w(viewport.width).h(viewport.height)
-            .flex().items_center().justify_center()
+            .w(viewport.width)
+            .h(viewport.height)
+            .flex()
+            .items_center()
+            .justify_center()
             .bg(gpui::black().opacity(0.6))
             .occlude()
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())

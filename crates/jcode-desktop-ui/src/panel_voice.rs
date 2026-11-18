@@ -1399,7 +1399,7 @@ mod tests {
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
         });
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+            matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
             if session_id == "voice-agent" && *content == tag::wrap("debug this failure") && images.is_empty())
         );
         assert!(

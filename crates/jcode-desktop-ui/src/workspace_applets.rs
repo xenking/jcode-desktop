@@ -334,6 +334,7 @@ impl Workspace {
                             session_id,
                             content: prompt,
                             images: Vec::new(),
+                            attachments: Vec::new(),
                         }),
                         None => {}
                     }

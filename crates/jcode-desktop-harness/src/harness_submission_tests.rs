@@ -13,9 +13,13 @@ fn busy_error() -> ApiEvent {
 #[test]
 fn busy_recovery_retains_images_and_never_replays_twice() {
     let images = vec![("image/png".into(), "original image bytes".into())];
+    let attachments = vec![jcode_sdk::api::Attachment::PastedText {
+        text: "original snippet".into(),
+    }];
     let mut unaccepted = VecDeque::from([SessionCommand::Send {
         content: "look at this".into(),
         images: images.clone(),
+        attachments: attachments.clone(),
     }]);
     let mut pending = VecDeque::from([SessionCommand::Cancel]);
     assert!(recover_async_busy(
@@ -29,8 +33,8 @@ fn busy_recovery_retains_images_and_never_replays_twice() {
         &mut pending
     ));
     assert!(
-        matches!(pending.pop_front(), Some(SessionCommand::Send { content, images: actual })
-        if content == "look at this" && actual == images)
+        matches!(pending.pop_front(), Some(SessionCommand::Send { content, images: actual, attachments: actual_attachments })
+        if content == "look at this" && actual == images && actual_attachments == attachments)
     );
     assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
 }
@@ -40,6 +44,7 @@ fn ordinary_errors_do_not_trigger_busy_recovery() {
     let mut unaccepted = VecDeque::from([SessionCommand::Send {
         content: "prompt".into(),
         images: vec![],
+        attachments: vec![],
     }]);
     let mut pending = VecDeque::new();
     let event = ApiEvent::Error {
@@ -94,7 +99,10 @@ mod socket_tests {
                             runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "submission-regression".into(),
-                            capabilities: vec![],
+                            capabilities: vec![
+                                "queued_prompt_editing".into(),
+                                "skill_message_v1".into(),
+                            ],
                         },
                         ApiRequest::GetHistory { .. } => ApiEvent::History {
                             session_id: "s1".into(),
@@ -110,7 +118,7 @@ mod socket_tests {
                             auth_method: None,
                             account_label: None,
                         },
-                        ApiRequest::SendMessage { .. } => {
+                        ApiRequest::SendMessage { .. } | ApiRequest::SendSkillMessage { .. } => {
                             let events = on_send(&frame.request);
                             request_tx.send(frame.request).unwrap();
                             for event in events {
@@ -136,6 +144,10 @@ mod socket_tests {
                                 .into_iter()
                                 .next()
                                 .unwrap_or(ApiEvent::Ok)
+                        }
+                        ApiRequest::EditQueuedPrompt { .. } => {
+                            request_tx.send(frame.request.clone()).unwrap();
+                            ApiEvent::Ok
                         }
                         _ => ApiEvent::Ok,
                     };
@@ -187,6 +199,7 @@ mod socket_tests {
                 .send(SessionCommand::Send {
                     content: content.into(),
                     images,
+                    attachments: vec![],
                 })
                 .unwrap();
         }
@@ -253,6 +266,7 @@ mod socket_tests {
                 client_id: "failed-id".into(),
                 content: "keep me".into(),
                 images: vec![],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
                 editing: false,
             }))
@@ -280,6 +294,140 @@ mod socket_tests {
 
     fn images() -> Vec<(String, String)> {
         vec![("image/png".into(), "same-image-payload".into())]
+    }
+
+    #[test]
+    fn send_preserves_file_and_pasted_text_attachments_over_socket() {
+        let worker = Worker::new(|_| vec![]);
+        let attachments = vec![
+            jcode_sdk::api::Attachment::File {
+                name: "x.rs".into(),
+                mime: "text/plain".into(),
+                size: 3,
+                data: Some("YWJj".into()),
+                path: None,
+            },
+            jcode_sdk::api::Attachment::PastedText {
+                text: "snippet".into(),
+            },
+        ];
+        worker
+            .commands
+            .send(SessionCommand::Send {
+                content: "review".into(),
+                images: vec![],
+                attachments: attachments.clone(),
+            })
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::SendMessage { attachments: actual, .. }
+            if actual == attachments)
+        );
+    }
+
+    #[test]
+    fn queued_and_edited_prompts_preserve_attachments_over_socket() {
+        let worker = Worker::new(|_| vec![]);
+        let attachments = vec![jcode_sdk::api::Attachment::PastedText {
+            text: "queued snippet".into(),
+        }];
+        worker
+            .commands
+            .send(SessionCommand::QueuePrompt(jcode_sdk::api::QueuedPrompt {
+                active_skill: None,
+                client_id: "q1".into(),
+                content: "queued".into(),
+                images: vec![],
+                attachments: attachments.clone(),
+                mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                editing: false,
+            }))
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::QueuePrompt { attachments: actual, .. }
+            if actual == attachments)
+        );
+        worker
+            .commands
+            .send(SessionCommand::EditQueuedPrompt(
+                "q1".into(),
+                "edited".into(),
+                vec![],
+                attachments.clone(),
+            ))
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::EditQueuedPrompt { attachments: actual, .. }
+            if actual == attachments)
+        );
+    }
+
+    #[test]
+    fn history_replay_preserves_attachment_metadata_over_socket() {
+        let worker = Worker::new(|_| vec![]);
+        let attachments = serde_json::json!([
+            {"type":"file", "name":"x.rs", "mime":"text/plain", "size":3},
+            {"type":"pasted_text", "text":"snippet"}
+        ]);
+        let event: ApiEvent = serde_json::from_value(serde_json::json!({
+            "ev":"history", "session_id":"s1", "messages":[{
+                "role":"user", "content":"review", "attachments":attachments
+            }]
+        }))
+        .unwrap();
+        worker.event(event);
+        worker.wait_for(|update| match update {
+            Update::Event {
+                event: ApiEvent::History { messages, .. },
+                ..
+            } => messages.iter().any(|message| {
+                message.content == "review"
+                    && serde_json::to_value(&message.attachments).unwrap() == attachments
+            }),
+            _ => false,
+        });
+    }
+
+    #[test]
+    fn busy_send_queues_attachments_as_steering() {
+        let worker = Worker::new(|_| vec![]);
+        worker.send("first", vec![]);
+        assert!(matches!(worker.request(), ApiRequest::SendMessage { .. }));
+        let attachments = vec![jcode_sdk::api::Attachment::PastedText {
+            text: "follow-up".into(),
+        }];
+        worker
+            .commands
+            .send(SessionCommand::Send {
+                content: "steer".into(),
+                images: vec![],
+                attachments: attachments.clone(),
+            })
+            .unwrap();
+        assert!(matches!(worker.request(), ApiRequest::QueuePrompt {
+            content, attachments: actual, mode: jcode_sdk::api::QueuedPromptMode::Steer, ..
+        } if content == "steer" && actual == attachments));
+    }
+
+    #[test]
+    fn skill_send_preserves_attachments_over_socket() {
+        let worker = Worker::new(|_| vec![]);
+        let attachments = vec![jcode_sdk::api::Attachment::PastedText {
+            text: "skill snippet".into(),
+        }];
+        worker
+            .commands
+            .send(SessionCommand::SendSkill {
+                content: "review".into(),
+                images: vec![],
+                attachments: attachments.clone(),
+                skill: "review".into(),
+            })
+            .unwrap();
+        assert!(
+            matches!(worker.request(), ApiRequest::SendSkillMessage { attachments: actual, .. }
+            if actual == attachments)
+        );
     }
 
     fn assert_steering(

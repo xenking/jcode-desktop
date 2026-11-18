@@ -77,9 +77,30 @@ struct QueuedPrompt {
     content: String,
     images: Vec<(String, String)>,
     #[serde(default)]
+    files: Vec<crate::input::SubmittedFile>,
+    #[serde(default)]
     active_skill: Option<String>,
     #[serde(default = "default_follow_up")]
     after_yield: bool,
+}
+
+fn wire_attachments(files: &[crate::input::SubmittedFile]) -> Vec<jcode_sdk::api::Attachment> {
+    files.iter().map(|file| jcode_sdk::api::Attachment::File {
+        name: file.name.clone(),
+        mime: file.mime.clone(),
+        size: file.size,
+        data: Some(file.data.clone()),
+        path: None,
+    }).collect()
+}
+
+fn restorable_files(attachments: &[jcode_sdk::api::Attachment]) -> Option<Vec<crate::input::SubmittedFile>> {
+    attachments.iter().map(|attachment| match attachment {
+        jcode_sdk::api::Attachment::File { name, mime, size, data: Some(data), path: None } => Some(crate::input::SubmittedFile {
+            name: name.clone(), mime: mime.clone(), size: *size, data: data.clone(),
+        }),
+        _ => None,
+    }).collect()
 }
 
 fn default_follow_up() -> bool {
@@ -99,6 +120,7 @@ struct QueuedPromptEditSave {
     prompt_id: String,
     content: String,
     images: Vec<(String, String)>,
+    files: Vec<crate::input::SubmittedFile>,
     draft: crate::input::PromptInputSnapshot,
     active_skill: Option<String>,
 }
@@ -190,6 +212,7 @@ impl Panel {
         &mut self,
         content: String,
         images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(edit) = self.prompt_queue.queued_edit.take() else {
@@ -199,6 +222,7 @@ impl Panel {
             prompt_id: edit.prompt_id.clone(),
             content: content.clone(),
             images: images.clone(),
+            files: files.clone(),
             draft: edit.draft,
             active_skill: edit.active_skill.clone(),
         });
@@ -208,6 +232,7 @@ impl Panel {
             prompt_id: edit.prompt_id,
             content,
             images,
+            attachments: wire_attachments(&files),
         });
         cx.notify();
         true
@@ -274,6 +299,7 @@ impl Panel {
         self.input.update(cx, |input, cx| {
             input.restore(save.draft, cx);
             input.show_queued_prompt(&save.content, save.images, cx);
+            input.append_queued_files(save.files, cx);
         });
     }
 
@@ -284,6 +310,11 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         let Some(prompt) = self.prompt_queue.remote.get(index).cloned() else {
+            return;
+        };
+        let Some(files) = restorable_files(&prompt.attachments) else {
+            self.items.push(Item::Error("This queued message has attachments that cannot be edited here; it remains queued.".into()));
+            cx.notify();
             return;
         };
         // Switching items keeps the draft captured when editing began and
@@ -302,6 +333,7 @@ impl Panel {
         self.active_skill = prompt.active_skill.clone();
         self.input.update(cx, |input, cx| {
             input.show_queued_prompt(&prompt.content, prompt.images.clone(), cx);
+            input.append_queued_files(files, cx);
         });
         self.prompt_queue.queued_edit = Some(QueuedPromptEditState {
             index,
@@ -355,6 +387,18 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.prompt_queue.remote_removing.remove(&prompt.client_id);
+        let files = if edit {
+            match restorable_files(&prompt.attachments) {
+                Some(files) => files,
+                None => {
+                    self.items.push(Item::Error("The queued message contains unsupported attachments and could not be restored. Check the conversation before retrying.".into()));
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
         match result {
             Ok(jcode_sdk::api::QueuedPromptRemovalOutcome::Removed) => {
                 self.prompt_queue
@@ -363,7 +407,8 @@ impl Panel {
                 if edit {
                     self.active_skill = prompt.active_skill.clone();
                     self.input.update(cx, |input, cx| {
-                        input.recall_prompt(&prompt.content, prompt.images, cx)
+                        input.recall_prompt(&prompt.content, prompt.images, cx);
+                        input.append_queued_files(files, cx);
                     });
                 }
             }
@@ -374,7 +419,8 @@ impl Panel {
                 if edit {
                     self.active_skill = prompt.active_skill.clone();
                     self.input.update(cx, |input, cx| {
-                        input.recall_prompt(&prompt.content, prompt.images, cx)
+                        input.recall_prompt(&prompt.content, prompt.images, cx);
+                        input.append_queued_files(files, cx);
                     });
                     self.items.push(Item::Error(format!("Queue removal could not be confirmed: {reason}. A copy is in the composer; check whether the original was delivered before sending.")));
                 } else {
@@ -393,6 +439,11 @@ impl Panel {
         edit: bool,
         cx: &mut Context<Self>,
     ) {
+        if edit && restorable_files(&prompt.attachments).is_none() {
+            self.items.push(Item::Error("This queued message has attachments that cannot be edited here; it remains queued.".into()));
+            cx.notify();
+            return;
+        }
         if self.prompt_queue.remote_mutations_supported
             && self
                 .prompt_queue
@@ -562,6 +613,7 @@ impl Panel {
                     format!("{sample} (round {})", round + 1)
                 },
                 images: Vec::new(),
+                attachments: Vec::new(),
                 mode: if index % 2 == 0 {
                     jcode_sdk::api::QueuedPromptMode::Steer
                 } else {
@@ -586,6 +638,17 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
+        self.submit_or_queue_with_files(content, images, Vec::new(), queued, cx);
+    }
+
+    pub(crate) fn submit_or_queue_with_files(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
+        queued: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_skill.is_some() && !self.prompt_queue.remote_supported {
             if !self.is_pending_session()
                 && self.history_loaded
@@ -594,11 +657,12 @@ impl Panel {
                 && !self.has_visible_queued_prompts()
                 && !self.prompt_queue.waiting_for_connection
             {
-                self.send_composer_prompt(content, images, cx);
+                self.send_composer_prompt_with_files(content, images, files, cx);
             } else {
                 self.prompt_queue.prompts.push(QueuedPrompt {
                     content,
                     images,
+                    files,
                     active_skill: self.active_skill.clone(),
                     after_yield: true,
                 });
@@ -609,16 +673,17 @@ impl Panel {
             return;
         }
         if !queued && self.has_visible_queued_prompts() {
-            if !content.trim().is_empty() || !images.is_empty() {
+            if !content.trim().is_empty() || !images.is_empty() || !files.is_empty() {
                 if self.prompt_queue.remote_supported
                     && !self.is_pending_session()
                     && !self.prompt_queue.waiting_for_connection
                 {
-                    self.send_remote_prompt(content, images, true, self.active_skill.clone(), cx);
+                    self.send_remote_prompt_with_files(content, images, files, true, self.active_skill.clone(), cx);
                 } else {
                     self.prompt_queue.prompts.push(QueuedPrompt {
                         content,
                         images,
+                        files,
                         active_skill: self.active_skill.clone(),
                         after_yield: true,
                     });
@@ -631,9 +696,10 @@ impl Panel {
             && !self.is_pending_session()
             && !self.prompt_queue.waiting_for_connection
         {
-            self.send_remote_prompt(
+            self.send_remote_prompt_with_files(
                 content,
                 images,
+                files,
                 queued || self.prompt_queue.default_after_yield,
                 self.active_skill.clone(),
                 cx,
@@ -651,13 +717,14 @@ impl Panel {
             self.prompt_queue.prompts.push(QueuedPrompt {
                 content,
                 images,
+                files,
                 active_skill: self.active_skill.clone(),
                 after_yield: queued || self.prompt_queue.default_after_yield,
             });
             self.prompt_queue.paused = false;
             self.send_queued_prompts(cx);
         } else {
-            self.send_composer_prompt(content, images, cx);
+            self.send_composer_prompt_with_files(content, images, files, cx);
         }
         cx.notify();
     }
@@ -740,6 +807,18 @@ impl Panel {
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.send_remote_prompt_with_files(content, images, Vec::new(), after_yield, active_skill, cx);
+    }
+
+    fn send_remote_prompt_with_files(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
+        after_yield: bool,
+        active_skill: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.activity_active() {
             self.prompt_queue.paused = false;
             self.prompt_queue.auto_poke.start(self.items.len());
@@ -761,6 +840,7 @@ impl Panel {
             client_id: id,
             content,
             images,
+            attachments: wire_attachments(&files),
             mode: if after_yield {
                 jcode_sdk::api::QueuedPromptMode::AfterYield
             } else {
@@ -785,17 +865,18 @@ impl Panel {
         cx.notify();
     }
 
-    fn send_composer_prompt(
+    fn send_composer_prompt_with_files(
         &mut self,
         content: String,
         images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
         cx: &mut Context<Self>,
     ) {
         self.prompt_queue.paused = false;
         // A new prompt means the user has moved on from what they searched for.
         self.search_terms.clear();
         self.prompt_queue.auto_poke.start(self.items.len());
-        self.send_prompt(content, images, cx);
+        self.send_prompt_with_skill_files(content, images, files, self.active_skill.clone(), cx);
     }
 
     pub(super) fn send_prompt(
@@ -814,12 +895,24 @@ impl Panel {
         active_skill: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.send_prompt_with_skill_files(content, images, Vec::new(), active_skill, cx);
+    }
+
+    fn send_prompt_with_skill_files(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
+        active_skill: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let steering = self.send_is_steering();
         if let Some(skill) = active_skill {
             self.bridge.send(Command::SendSkill {
                 session_id: self.session_id.clone(),
                 content: content.clone(),
                 images: images.clone(),
+                attachments: wire_attachments(&files),
                 skill,
             });
         } else {
@@ -827,6 +920,7 @@ impl Panel {
                 session_id: self.session_id.clone(),
                 content: content.clone(),
                 images: images.clone(),
+                attachments: wire_attachments(&files),
             });
         }
         self.prepare_prompt(&content);
@@ -836,6 +930,7 @@ impl Panel {
             self.prompt_queue.steered.push(QueuedPrompt {
                 content,
                 images,
+                files,
                 active_skill: None,
                 after_yield: false,
             });
@@ -1163,7 +1258,7 @@ impl Panel {
             self.prompt_queue.waiting_for_connection = false;
             self.prompt_queue.paused = false;
             self.prompt_queue.auto_poke.start(self.items.len());
-            self.send_prompt_with_skill(prompt.content, prompt.images, prompt.active_skill, cx);
+            self.send_prompt_with_skill_files(prompt.content, prompt.images, prompt.files, prompt.active_skill, cx);
             cx.notify();
             return;
         }
@@ -1181,9 +1276,10 @@ impl Panel {
             // Preserve independent follow-up turns when the daemon owns the
             // queue, including prompts typed before the session attached.
             for prompt in prompts {
-                self.send_remote_prompt(
+                self.send_remote_prompt_with_files(
                     prompt.content,
                     prompt.images,
+                    prompt.files,
                     prompt.after_yield,
                     prompt.active_skill,
                     cx,
@@ -1199,10 +1295,15 @@ impl Panel {
             .map(|p| p.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let images = prompts.into_iter().flat_map(|p| p.images).collect();
+        let mut images = Vec::new();
+        let mut files = Vec::new();
+        for prompt in prompts {
+            images.extend(prompt.images);
+            files.extend(prompt.files);
+        }
         self.prompt_queue.paused = false;
         self.prompt_queue.auto_poke.start(self.items.len());
-        self.send_prompt_with_skill(content, images, None, cx);
+        self.send_prompt_with_skill_files(content, images, files, None, cx);
         cx.notify();
     }
 
@@ -1229,7 +1330,7 @@ impl Panel {
             return;
         }
         let prompt = self.prompt_queue.prompts.remove(index);
-        self.send_prompt_with_skill(prompt.content, prompt.images, prompt.active_skill, cx);
+        self.send_prompt_with_skill_files(prompt.content, prompt.images, prompt.files, prompt.active_skill, cx);
         cx.notify();
     }
 
@@ -1246,7 +1347,8 @@ impl Panel {
         let prompt = self.prompt_queue.prompts.remove(index);
         self.active_skill = prompt.active_skill;
         self.input.update(cx, |input, cx| {
-            input.recall_prompt(&prompt.content, prompt.images, cx)
+            input.recall_prompt(&prompt.content, prompt.images, cx);
+            input.append_queued_files(prompt.files, cx);
         });
         let focus = self.input.read(cx).focus_handle.clone();
         window.focus(&focus, cx);

@@ -2504,6 +2504,7 @@ impl Workspace {
                                 session_id,
                                 content: HELP_SESSION_PROMPT.into(),
                                 images: Vec::new(),
+                                attachments: Vec::new(),
                             });
                         }
                     } else {

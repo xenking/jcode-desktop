@@ -68,6 +68,7 @@ fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAp
                 active_skill: Some("poteto-mode".into()),
                 content: "keep me".into(),
                 images: vec![],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
                 editing: false,
             });
@@ -100,6 +101,7 @@ fn pending_remote_steer_does_not_offer_retry_before_failure(cx: &mut gpui::TestA
                 active_skill: None,
                 content: "pending".into(),
                 images: vec![],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
                 editing: false,
             });
@@ -313,7 +315,7 @@ fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppConte
     });
     panel.update(cx, |panel, cx| {
         panel.prompt_queue.pending_remote.push(jcode_sdk::api::QueuedPrompt {
-            client_id: "known".into(), active_skill: None, content: "local".into(), images: vec![],
+            client_id: "known".into(), active_skill: None, content: "local".into(), images: vec![], attachments: vec![],
             mode: jcode_sdk::api::QueuedPromptMode::Steer, editing: false,
         });
         panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"local\n\nexternal", "point":"D", "client_ids":["known", "foreign"]})), cx);
@@ -356,6 +358,7 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
             content: "Look [#image 1] here".into(),
             active_skill: None,
             images: vec![(image.media_type, image.data)],
+            files: vec![],
             after_yield: true,
         });
         panel
@@ -392,6 +395,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
                 active_skill: None,
                 content: "Look [#image 1]".into(),
                 images: vec![(image.media_type, image.data)],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
                 editing: false,
             });
@@ -410,6 +414,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
             content: remote.content,
             active_skill: None,
             images: remote.images,
+            files: vec![],
             after_yield: false,
         });
         cx.notify();
@@ -421,6 +426,45 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
     vcx.simulate_click(chip.center(), Default::default());
     vcx.run_until_parked();
     assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+}
+
+#[test]
+fn queue_edit_rejects_unrestorable_attachments() {
+    let attachment = jcode_sdk::api::Attachment::PastedText { text: "must not disappear".into() };
+    assert!(restorable_files(&[attachment]).is_none());
+}
+
+#[gpui::test]
+fn queued_file_reaches_daemon_without_losing_bytes(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-file".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel.prompt_queue.remote_supported = true;
+        panel
+    });
+    panel.update(cx, |panel, cx| {
+        panel.submit_or_queue_with_files(
+            "Read notes".into(),
+            vec![],
+            vec![crate::input::SubmittedFile {
+                name: "notes.txt".into(),
+                mime: "text/plain".into(),
+                size: 3,
+                data: "YWJj".into(),
+            }],
+            true,
+            cx,
+        );
+    });
+    let prompt = match commands.try_recv().unwrap() {
+        Command::QueuePrompt { prompt, .. } => prompt,
+        _ => panic!("expected queued prompt"),
+    };
+    let prompt = serde_json::to_value(prompt).unwrap();
+    assert_eq!(prompt["attachments"][0]["name"], "notes.txt");
+    assert_eq!(prompt["attachments"][0]["data"], "YWJj");
 }
 
 #[gpui::test]
@@ -505,12 +549,14 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
                 content: "one".into(),
                 active_skill: None,
                 images: vec![],
+                files: vec![],
                 after_yield: true,
             },
             QueuedPrompt {
                 content: "two".into(),
                 active_skill: None,
                 images: vec![],
+                files: vec![],
                 after_yield: true,
             },
         ];
@@ -587,6 +633,7 @@ fn retry_after_reload_does_not_duplicate_delivered_history(cx: &mut gpui::TestAp
                 active_skill: None,
                 content: "already delivered".into(),
                 images: vec![],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
                 editing: false,
             });
@@ -614,6 +661,7 @@ fn retry_keeps_a_new_prompt_identical_to_older_history(cx: &mut gpui::TestAppCon
                 active_skill: None,
                 content: "repeat".into(),
                 images: vec![],
+                attachments: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
                 editing: false,
             });
@@ -1057,7 +1105,7 @@ fn startup_enter_and_ctrl_enter_queue_until_attached_history_ready(cx: &mut gpui
         p.send_queued_prompts(cx);
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
         if session_id == "session-ready" && content == "first startup prompt\n\nsecond startup prompt" && images.is_empty())
     );
     assert!(commands.try_recv().is_err(), "readiness cannot send twice");
@@ -1089,7 +1137,7 @@ fn startup_queue_preserves_images_through_snapshot_and_waits_for_identity(
         p.send_queued_prompts(cx);
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images: actual })
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images: actual, .. })
         if session_id == "local-recovery" && content == "with attachment" && actual == images)
     );
     assert!(commands.try_recv().is_err());
@@ -1577,6 +1625,7 @@ fn editing_test_prompt(
         active_skill: None,
         content: content.into(),
         images: vec![],
+        attachments: vec![],
         mode,
         editing: false,
     }

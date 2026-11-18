@@ -319,11 +319,13 @@ pub enum Command {
         session_id: String,
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
     },
     SendSkill {
         session_id: String,
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
         skill: String,
     },
     QueuePrompt {
@@ -347,6 +349,7 @@ pub enum Command {
         prompt_id: String,
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
     },
     ReorderQueuedPrompts {
         session_id: String,
@@ -494,16 +497,23 @@ enum SessionCommand {
     Send {
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
     },
     SendSkill {
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
         skill: String,
     },
     QueuePrompt(jcode_sdk::api::QueuedPrompt),
     RemoveQueuedPrompt(jcode_sdk::api::QueuedPrompt, bool),
     SetQueuedPromptEditing(String, bool),
-    EditQueuedPrompt(String, String, Vec<(String, String)>),
+    EditQueuedPrompt(
+        String,
+        String,
+        Vec<(String, String)>,
+        Vec<jcode_sdk::api::Attachment>,
+    ),
     ReorderQueuedPrompts(Vec<String>),
     SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
     InterruptQueuedPrompt(String),
@@ -1283,6 +1293,7 @@ fn run_with_transports(
                 let _ = worker.send(SessionCommand::Send {
                     content: prompt,
                     images: vec![],
+                    attachments: vec![],
                 });
                 if let Some(old) = workers.insert(session_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
@@ -1379,8 +1390,13 @@ fn run_with_transports(
                 session_id,
                 content,
                 images,
+                attachments,
             } => {
-                let command = SessionCommand::Send { content, images };
+                let command = SessionCommand::Send {
+                    content,
+                    images,
+                    attachments,
+                };
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
@@ -1389,11 +1405,13 @@ fn run_with_transports(
                 session_id,
                 content,
                 images,
+                attachments,
                 skill,
             } => {
                 let command = SessionCommand::SendSkill {
                     content,
                     images,
+                    attachments,
                     skill,
                 };
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
@@ -1437,11 +1455,12 @@ fn run_with_transports(
                 prompt_id,
                 content,
                 images,
+                attachments,
             } => {
                 send_to_session_worker(
                     &mut workers,
                     session_id,
-                    SessionCommand::EditQueuedPrompt(prompt_id, content, images),
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2981,15 +3000,16 @@ fn session_worker_with_connector(
                             });
                         }
                     }
-                    SessionCommand::EditQueuedPrompt(prompt_id, content, images) => {
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments) => {
                         let result = if client.supports("queued_prompt_editing") {
                             client
-                                .edit_queued_prompt(
+                                .edit_queued_prompt_with_attachments(
                                     real_id,
                                     "jcode-desktop",
                                     &prompt_id,
                                     content,
                                     images,
+                                    attachments,
                                 )
                                 .map_err(|error| error.to_string())
                         } else {
@@ -3074,6 +3094,7 @@ fn session_worker_with_connector(
                     SessionCommand::SendSkill {
                         content,
                         images,
+                        attachments,
                         skill,
                     } => {
                         if !client.supports("skill_message_v1") {
@@ -3091,17 +3112,19 @@ fn session_worker_with_connector(
                             continue;
                         }
                         let reminder = collection_reminder(&session_id);
-                        match client.send_skill_message(
-                            real_id,
-                            &content,
-                            &skill,
-                            images.clone(),
-                            reminder.as_deref(),
-                        ) {
+                        match client.notify(jcode_sdk::api::ApiRequest::SendSkillMessage {
+                            session_id: real_id.to_owned(),
+                            content: content.clone(),
+                            active_skill: skill.clone(),
+                            images: images.clone(),
+                            attachments: attachments.clone(),
+                            system_reminder: reminder,
+                        }) {
                             Ok(()) => {
                                 unaccepted_sends.push_back(SessionCommand::SendSkill {
                                     content,
                                     images,
+                                    attachments,
                                     skill,
                                 });
                                 let _ = updates.send(Update::MessageSubmitted {
@@ -3118,7 +3141,11 @@ fn session_worker_with_connector(
                             }
                         }
                     }
-                    SessionCommand::Send { content, images } => {
+                    SessionCommand::Send {
+                        content,
+                        images,
+                        attachments,
+                    } => {
                         recovery.supersede();
                         // New input starts its own request and retry budget.
                         if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
@@ -3126,22 +3153,52 @@ fn session_worker_with_connector(
                         }
                         let retry_content = content.clone();
                         let retry_images = images.clone();
+                        let retry_attachments = attachments.clone();
                         // Only one ordinary send can await acceptance. An old
                         // idle event must not let another send overwrite it.
                         let steering = turn_active || !unaccepted_sends.is_empty();
-                        let result = if steering {
+                        let result = if steering && !attachments.is_empty() {
+                            static NEXT_STEER_ID: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(0);
+                            let sequence =
+                                NEXT_STEER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let time = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            client.queue_prompt(
+                                real_id,
+                                jcode_sdk::api::QueuedPrompt {
+                                    client_id: format!(
+                                        "desktop-steer-{}-{time}-{sequence}",
+                                        std::process::id()
+                                    ),
+                                    content: content.clone(),
+                                    images,
+                                    attachments,
+                                    mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                                    active_skill: None,
+                                    editing: false,
+                                },
+                            )
+                        } else if steering {
                             client.soft_interrupt_with_images(real_id, &content, images, true)
                         } else {
                             // Collection instructions ride along hidden on every
                             // new turn, read fresh so edits apply immediately.
                             let reminder = collection_reminder(&session_id);
-                            client.send_message_with_reminder(
-                                real_id,
-                                &content,
+                            client.notify(jcode_sdk::api::ApiRequest::SendMessage {
+                                session_id: real_id.to_owned(),
+                                content: content.clone(),
                                 images,
-                                reminder.as_deref(),
-                                None,
-                            )
+                                attachments,
+                                system_reminder: reminder
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_owned),
+                                no_reply: false,
+                            })
                         };
                         if let Err(error) = result {
                             // A daemon reload can briefly hand this SDK socket
@@ -3155,6 +3212,7 @@ fn session_worker_with_connector(
                                 &mut pending,
                                 retry_content,
                                 retry_images,
+                                retry_attachments,
                             ) {
                                 lost("session connection changed; reconnecting".into());
                                 continue 'reconnect;
@@ -3172,6 +3230,7 @@ fn session_worker_with_connector(
                                 unaccepted_sends.push_back(SessionCommand::Send {
                                     content: retry_content,
                                     images: retry_images,
+                                    attachments: retry_attachments,
                                 });
                             }
                             let _ = updates.send(Update::MessageSubmitted {
@@ -3883,11 +3942,16 @@ fn queue_wrong_session_retry(
     pending: &mut VecDeque<SessionCommand>,
     content: String,
     images: Vec<(String, String)>,
+    attachments: Vec<jcode_sdk::api::Attachment>,
 ) -> bool {
     if !is_wrong_session_attachment_error(error) {
         return false;
     }
-    pending.push_front(SessionCommand::Send { content, images });
+    pending.push_front(SessionCommand::Send {
+        content,
+        images,
+        attachments,
+    });
     true
 }
 
@@ -4845,10 +4909,12 @@ mod tests {
             &mut pending,
             "original prompt".into(),
             images.clone(),
+            vec![],
         ));
         let Some(SessionCommand::Send {
             content,
             images: queued_images,
+            ..
         }) = pending.pop_front()
         else {
             panic!("original send was not queued for retry");
@@ -4860,6 +4926,7 @@ mod tests {
             "ordinary provider error",
             &mut pending,
             "must not retry".into(),
+            Vec::new(),
             Vec::new(),
         ));
         assert!(pending.is_empty());
@@ -4875,6 +4942,7 @@ mod tests {
         let mut unaccepted = VecDeque::from([SessionCommand::Send {
             content: "hi".into(),
             images: images.clone(),
+            attachments: vec![],
         }]);
         let mut pending = VecDeque::new();
 
@@ -4886,7 +4954,7 @@ mod tests {
         assert!(unaccepted.is_empty());
         assert!(matches!(
             pending.pop_front(),
-            Some(SessionCommand::Send { content, images: queued })
+            Some(SessionCommand::Send { content, images: queued, .. })
                 if content == "hi" && queued == images
         ));
     }
@@ -4957,6 +5025,7 @@ mod tests {
             session_id: session_id.clone(),
             content: "Reply with exactly JCODE_DESKTOP_OK and nothing else.".into(),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
 
         let mut accepted = false;
@@ -4997,6 +5066,7 @@ mod tests {
             SessionCommand::Send {
                 content: "hello".into(),
                 images: vec![],
+                attachments: vec![],
             },
             |_| tx.clone(),
         );
@@ -5023,6 +5093,7 @@ mod tests {
             SessionCommand::Send {
                 content: "do not drop me".into(),
                 images: vec![],
+                attachments: vec![],
             },
             |_| {
                 starts += 1;
@@ -5043,6 +5114,7 @@ mod tests {
         tx.send(SessionCommand::Send {
             content: "hi".into(),
             images: vec![("image/png".into(), "cG5n".into())],
+            attachments: vec![],
         })
         .unwrap();
         tx.send(SessionCommand::Cancel).unwrap();
@@ -5052,7 +5124,7 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert!(matches!(
             pending.pop_front(),
-            Some(SessionCommand::Send { content, images })
+            Some(SessionCommand::Send { content, images, .. })
                 if content == "hi" && images == [("image/png".into(), "cG5n".into())]
         ));
         assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));

@@ -486,6 +486,7 @@ fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
             session_id: id("send"),
             content: "hello".into(),
             images: vec![],
+            attachments: vec![],
         },
         Command::SetModel {
             session_id: id("model"),
