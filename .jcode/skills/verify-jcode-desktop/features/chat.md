@@ -43,3 +43,9 @@ is an offline fixture, not a provider-connected session.
 - Queueing, attachments, commands and retry need separate journeys in
   `scripts/screenshot.py` and `scripts/accept-startup-submit.py`. A draft pass
   does not cover them. Missing data is a failed precondition.
+- Queued-message editing: `launch --queue-edit` seeds two daemon-queued rows and
+  opens the first in its inline editor, with a screenshot, a path-based file and
+  an inline file. Capture after the row settles (about 3 s): the first frames
+  lay out one line, and image thumbnails load asynchronously. Wire behavior
+  (byte-for-byte `EditQueuedPrompt`, hold release) is pinned by GPUI tests in
+  `panel_queue_tests.rs`, not by this screenshot.
