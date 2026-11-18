@@ -4749,6 +4749,13 @@ impl Panel {
                 let key = expandable::key::task(task_id);
                 let expanded = self.expanded_regions.contains(&key);
                 let (row_summary, exit_code) = background_task::summary_parts(summary);
+                // Collapsed, the row is one line: a multi-line progress
+                // summary shows its first line, the rest when opened.
+                let row_summary = if expanded {
+                    row_summary
+                } else {
+                    row_summary.lines().next().unwrap_or_default().to_owned()
+                };
                 let toggle_key = key.clone();
                 let background_task_id = task_id.clone();
                 let done_for_click = *done
@@ -4796,6 +4803,7 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
+                                    .when(!expanded, |el| el.max_w(relative(0.6)).min_w_0().truncate())
                                     .text_size(px(11.0))
                                     .text_color(Theme::global().TEXT_FAINT)
                                     .child(row_summary),

@@ -94,6 +94,7 @@ fn queue_card_remote_actions_wait_for_confirmation(cx: &mut gpui::TestAppContext
         panel.status = "running".into();
         panel.items.push(Item::User("initial".into()));
         panel.seed_screenshot_queued(2, 0);
+        panel.prompt_queue.remote_editing_supported = true;
         panel
     });
     let handle = vcx.update(|window, _| window.window_handle());
@@ -107,32 +108,32 @@ fn queue_card_remote_actions_wait_for_confirmation(cx: &mut gpui::TestAppContext
     vcx.run_until_parked();
     let edit = vcx.debug_bounds("remote-queue-edit-0").unwrap().center();
     vcx.simulate_click(edit, Default::default());
-    let prompt = match commands.try_recv().unwrap() {
-        Command::RemoveQueuedPrompt {
-            prompt, edit: true, ..
-        } => prompt,
-        _ => panic!("unexpected command"),
-    };
+    // Edit holds the prompt on the daemon and loads it into the composer; it
+    // never removes it, so a turn that ends mid-edit cannot lose the slot.
+    let held = std::iter::from_fn(|| commands.try_recv().ok()).find_map(|command| match command {
+        Command::SetQueuedPromptEditing {
+            prompt_id,
+            editing: true,
+            ..
+        } => Some(prompt_id),
+        Command::RemoveQueuedPrompt { .. } => panic!("Edit must not remove the queued prompt"),
+        _ => None,
+    });
+    let first = panel.read_with(vcx, |p, _| p.prompt_queue.remote[0].clone());
+    assert_eq!(held.as_deref(), Some(first.client_id.as_str()));
     panel.read_with(vcx, |p, cx| {
-        assert_eq!(p.prompt_queue.remote.len(), 2);
-        assert!(p.input.read(cx).content.is_empty());
+        assert_eq!(p.prompt_queue.remote.len(), 2, "the queue keeps the held prompt");
+        assert_eq!(p.input.read(cx).content.as_ref(), first.content);
     });
-    panel.update(vcx, |p, cx| {
-        p.queue_removal_settled(
-            prompt,
-            true,
-            Ok(jcode_sdk::api::QueuedPromptRemovalOutcome::Removed),
-            cx,
-        )
-    });
-    panel.read_with(vcx, |p, cx| {
-        assert_eq!(p.prompt_queue.remote.len(), 1);
-        assert_eq!(
-            p.input.read(cx).content,
-            "also update the changelog before you finish"
-        );
-    });
+    panel.update_in(vcx, |p, window, cx| p.cancel_queued_prompt_edit(window, cx));
     vcx.run_until_parked();
+    assert!(
+        std::iter::from_fn(|| commands.try_recv().ok()).any(|command| matches!(
+            command,
+            Command::SetQueuedPromptEditing { editing: false, .. }
+        )),
+        "cancelling releases the daemon hold"
+    );
     let delete = vcx.debug_bounds("remote-queue-delete").unwrap().center();
     vcx.simulate_click(delete, Default::default());
     assert!(matches!(
