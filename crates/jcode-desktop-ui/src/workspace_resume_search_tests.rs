@@ -1,9 +1,11 @@
-//! The global search screen owns the window while it is open.
+//! Session search is the session picker: Cmd+Shift+F and the sidebar
+//! magnifier open the same screen as `/resume`.
 //!
 //! The row/selection/debounce logic is tested in `jcode-desktop-model`; these
-//! tests prove the wiring a model test cannot: that the screen replaces the
+//! tests prove the wiring a model test cannot: that the picker replaces the
 //! workspace instead of floating over it, that the sidebar magnifier opens it,
-//! and that Escape and the keybinding behave the way the hint text claims.
+//! that its field keeps the keyboard, that message hits appear under their
+//! session, and that opening one marks the query in the opened session.
 
 use super::*;
 
@@ -27,18 +29,18 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
         .debug_bounds("workspace-canvas")
         .expect("canvas rendered");
     assert!(
-        vcx.debug_bounds("global-search-screen").is_none(),
+        vcx.debug_bounds("resume-panel").is_none(),
         "the screen is closed until asked for"
     );
 
     workspace.update_in(vcx, |w, window, cx| {
-        w.open_search_screen(&GlobalSearch, window, cx);
-        assert!(w.search_screen_open());
+        w.open_session_search(&GlobalSearch, window, cx);
+        assert!(w.resume_open());
     });
     vcx.run_until_parked();
 
     let screen = vcx
-        .debug_bounds("global-search-screen")
+        .debug_bounds("resume-panel")
         .expect("the search screen rendered");
     assert!(
         vcx.debug_bounds("workspace-canvas").is_none(),
@@ -50,11 +52,11 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
         "screen {screen:?} must fill the {canvas:?} the canvas had"
     );
     assert!(
-        vcx.debug_bounds("global-search-input").is_some(),
+        vcx.debug_bounds("resume-search").is_some(),
         "the single query field is focused chrome, not a popover trigger"
     );
     assert!(
-        vcx.debug_bounds("global-search-results").is_some(),
+        vcx.debug_bounds("resume-results").is_some(),
         "the results list is present before the first query"
     );
     vcx.simulate_input("query");
@@ -68,7 +70,7 @@ fn search_screen_takes_the_whole_window_and_escape_restores_the_workspace(
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(
-        !workspace.read_with(vcx, |w, _| w.search_screen_open()),
+        !workspace.read_with(vcx, |w, _| w.resume_open()),
         "escape closes the screen"
     );
     assert!(
@@ -111,7 +113,7 @@ fn sidebar_search_remains_clickable_during_ask(cx: &mut gpui::TestAppContext) {
         .unwrap();
     vcx.simulate_click(button.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert!(workspace.read_with(vcx, |w, _| w.search_screen_open()));
+    assert!(workspace.read_with(vcx, |w, _| w.resume_open()));
 }
 
 #[gpui::test]
@@ -129,11 +131,11 @@ fn sidebar_magnifier_opens_the_search_screen(cx: &mut gpui::TestAppContext) {
         .debug_bounds("sidebar-search-icon")
         .or_else(|| vcx.debug_bounds("sidebar-search"))
         .expect("the sidebar renders a magnifier");
-    assert!(!workspace.read_with(vcx, |w, _| w.search_screen_open()));
+    assert!(!workspace.read_with(vcx, |w, _| w.resume_open()));
     vcx.simulate_click(button.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
-        workspace.read_with(vcx, |w, _| w.search_screen_open()),
+        workspace.read_with(vcx, |w, _| w.resume_open()),
         "clicking the magnifier opens global search"
     );
 }
@@ -151,7 +153,7 @@ fn typing_into_the_search_screen_reaches_the_query_field(cx: &mut gpui::TestAppC
     });
     vcx.run_until_parked();
     workspace.update_in(vcx, |w, window, cx| {
-        w.open_search_screen(&GlobalSearch, window, cx);
+        w.open_session_search(&GlobalSearch, window, cx);
     });
     vcx.run_until_parked();
 
@@ -159,9 +161,9 @@ fn typing_into_the_search_screen_reaches_the_query_field(cx: &mut gpui::TestAppC
     vcx.run_until_parked();
 
     let typed = workspace.read_with(vcx, |w, cx| {
-        w.search_screen
+        w.resume
             .as_ref()
-            .map(|state| state.input.read(cx).content.to_string())
+            .map(|state| state.search.read(cx).content.to_string())
             .unwrap_or_default()
     });
     assert_eq!(
@@ -172,16 +174,16 @@ fn typing_into_the_search_screen_reaches_the_query_field(cx: &mut gpui::TestAppC
 
 fn search_query(workspace: &gpui::Entity<Workspace>, cx: &mut gpui::VisualTestContext) -> String {
     workspace.read_with(cx, |w, cx| {
-        w.search_screen
+        w.resume
             .as_ref()
-            .map(|state| state.input.read(cx).content.to_string())
+            .map(|state| state.search.read(cx).content.to_string())
             .unwrap_or_default()
     })
 }
 
 fn open_search(workspace: &gpui::Entity<Workspace>, vcx: &mut gpui::VisualTestContext) {
     workspace.update_in(vcx, |w, window, cx| {
-        w.open_search_screen(&GlobalSearch, window, cx);
+        w.open_session_search(&GlobalSearch, window, cx);
     });
     vcx.run_until_parked();
 }
@@ -201,7 +203,7 @@ fn clicking_the_search_chrome_keeps_the_query_field_typing(cx: &mut gpui::TestAp
     open_search(&workspace, &mut vcx);
 
     let list = vcx
-        .debug_bounds("global-search-results")
+        .debug_bounds("resume-results")
         .expect("the results area is on screen");
     // Empty results area: part of the screen, but not part of the field. This
     // click used to hand focus to the workspace handle the root tracks.
@@ -246,7 +248,7 @@ fn focusing_the_active_panel_while_searching_keeps_the_query_field_typing(
         "the search field keeps the keyboard while the screen is open"
     );
     assert!(
-        workspace.read_with(vcx, |w, _| w.search_screen_open()),
+        workspace.read_with(vcx, |w, _| w.resume_open()),
         "regaining focus must not close or replace the screen"
     );
 }
@@ -265,14 +267,121 @@ fn the_search_heading_clears_the_titlebar_inset(cx: &mut gpui::TestAppContext) {
     open_search(&workspace, &mut vcx);
 
     let screen = vcx
-        .debug_bounds("global-search-screen")
+        .debug_bounds("resume-panel")
         .expect("the search screen rendered");
     let title = vcx
-        .debug_bounds("global-search-title")
+        .debug_bounds("resume-title")
         .expect("the heading rendered");
     let inset = content_top_inset(false, false);
     assert!(
         title.top() >= screen.top() + px(inset),
         "heading {title:?} must sit below the {inset}px titlebar inset inside {screen:?}"
+    );
+}
+
+fn hit(
+    session_id: &str,
+    role: jcode_sdk::SessionSearchRole,
+    snippet: &str,
+) -> jcode_sdk::SessionSearchHit {
+    let start = snippet.find("walrus").unwrap_or_default() as u32;
+    jcode_sdk::SessionSearchHit {
+        session_id: session_id.into(),
+        title: "Zoo notes".into(),
+        role,
+        model: None,
+        snippet: snippet.into(),
+        highlights: vec![jcode_sdk::SessionSearchHighlight {
+            start,
+            end: start + 6,
+        }],
+        timestamp_ms: 1,
+        message_id: None,
+    }
+}
+
+/// Typing sends the query to the daemon after the debounce, the reply lists
+/// message hits under their session, and Enter on a hit opens that session
+/// with the query marked in its transcript.
+#[gpui::test]
+fn message_hits_list_under_their_session_and_open_marked(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.set_test_bridge(bridge);
+        w.push_test_panel("chat", cx);
+        w.sessions = vec![
+            tests::session_info("s_zoo", Some("Zoo notes")),
+            tests::session_info("s_other", Some("Other work")),
+        ];
+        w
+    });
+    vcx.run_until_parked();
+    open_search(&workspace, vcx);
+    vcx.simulate_input("walrus");
+    vcx.executor()
+        .advance_clock(crate::global_search::DEBOUNCE + std::time::Duration::from_millis(10));
+    vcx.run_until_parked();
+    let generation = std::iter::from_fn(|| commands.try_recv().ok())
+        .find_map(|command| match command {
+            Command::SearchSessions { query, generation } if query == "walrus" => Some(generation),
+            _ => None,
+        })
+        .expect("the debounced query reaches the daemon");
+
+    workspace.update(vcx, |w, cx| {
+        w.apply_session_search(
+            "walrus".into(),
+            generation,
+            Ok(jcode_sdk::SessionSearchResults {
+                query: "walrus".into(),
+                titles: vec![],
+                messages: vec![
+                    hit(
+                        "s_zoo",
+                        jcode_sdk::SessionSearchRole::User,
+                        "where is the walrus now",
+                    ),
+                    hit(
+                        "s_zoo",
+                        jcode_sdk::SessionSearchRole::Assistant,
+                        "the walrus sleeps",
+                    ),
+                ],
+                indexed_sessions: 2,
+                truncated: false,
+            }),
+            3.0,
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    // Only the matching session is listed, with both hits under it.
+    assert!(vcx.debug_bounds("resume-row-0").is_some());
+    assert!(
+        vcx.debug_bounds("resume-row-1").is_none(),
+        "the unrelated session is filtered out"
+    );
+    assert!(vcx.debug_bounds("resume-hit-0-0").is_some());
+    assert!(vcx.debug_bounds("resume-hit-0-1").is_some());
+
+    // Down from the session row selects its first hit; Enter opens it.
+    vcx.simulate_keystrokes("down");
+    vcx.run_until_parked();
+    let selected_hit =
+        workspace.read_with(vcx, |w, _| w.resume.as_ref().and_then(|s| s.selected_hit));
+    assert_eq!(selected_hit, Some(0));
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(!workspace.read_with(vcx, |w, _| w.resume_open()));
+    let (session, terms) = workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[w.active].panel.read(cx);
+        (panel.session_id.clone(), panel.search_terms.clone())
+    });
+    assert_eq!(session, "s_zoo");
+    assert_eq!(
+        terms,
+        vec!["walrus".to_string()],
+        "the opened session marks the query"
     );
 }

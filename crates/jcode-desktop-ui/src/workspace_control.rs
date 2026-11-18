@@ -147,7 +147,7 @@ impl Workspace {
                 };
                 let panel = self.slots[index].panel.read(cx);
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.search_screen.is_some(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
+                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
                 )
             }
             DesktopAction::Search {
@@ -164,7 +164,7 @@ impl Workspace {
                         "search changes window focus; set allow_user_window to permit it",
                     );
                 }
-                self.control_search(&query, window, cx);
+                self.search_sessions_for(&query, window, cx);
                 ok(json!({"query":query}))
             }
             DesktopAction::Click {
@@ -245,10 +245,10 @@ impl Workspace {
                             "closing search changes window focus; set allow_user_window to permit it",
                         );
                     }
-                    if self.search_screen.is_none() {
+                    if !self.resume_open() {
                         return error("not_open", "search is not open");
                     }
-                    self.close_search_screen(window, cx);
+                    self.close_session_search(window, cx);
                     return ok(json!({"search_open": false}));
                 }
                 if !key.eq_ignore_ascii_case("enter") && !key.eq_ignore_ascii_case("return") {

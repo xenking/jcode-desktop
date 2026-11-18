@@ -1,8 +1,14 @@
-//! A transient, keyboard-first session browser. It never becomes a runtime slot.
+//! A transient, keyboard-first session browser and search. It never becomes a
+//! runtime slot.
+//!
+//! One screen answers both "which session do I want back" and "where did I
+//! talk about X": typing filters sessions by title, folder and ID locally, and
+//! asks the daemon's full-text index for matching messages. Message hits are
+//! listed under their session, the preview scrolls to the selected hit with
+//! the query marked, and opening a hit lands the session on that message.
 use super::*;
-use crate::resume_content_search as content_search;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::global_search::{self, Effect, PickRow};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) enum Filter {
@@ -46,15 +52,21 @@ pub(super) struct State {
     /// markers. Refreshed off the UI thread while the picker is open.
     streaming: HashSet<String>,
     _presence_task: Option<gpui::Task<()>>,
-    /// Transcript keyword hits for `content_query`, with an excerpt each.
-    content_hits: content_search::Hits,
-    content_query: Option<String>,
-    content_cancel: Arc<AtomicBool>,
-    content_task: Option<gpui::Task<()>>,
+    /// The selected message hit inside `selected`, if a hit row is selected.
+    pub(super) selected_hit: Option<usize>,
+    /// Conversation search through the daemon's full-text index.
+    daemon: global_search::Search,
+    _debounce: Option<gpui::Task<()>>,
+    /// The row the preview was last scrolled to, so it scrolls once per
+    /// selection instead of fighting the user's own scrolling.
+    preview_revealed: Option<PickRow>,
 }
 
-/// Let typing settle before scanning every stored transcript.
-const CONTENT_SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
+/// How long an opened session's transcript is polled for the message to
+/// reveal. History arrives asynchronously; this covers a slow daemon without
+/// leaving a timer running forever.
+const REVEAL_WINDOW: Duration = Duration::from_secs(6);
+const REVEAL_INTERVAL: Duration = Duration::from_millis(60);
 
 const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
 
@@ -125,12 +137,13 @@ fn pasted_session_id(query: &str) -> Option<String> {
     .then(|| id.to_owned())
 }
 
+/// `content` lists sessions the conversation search matched, best first.
 fn filtered_sessions(
     mut sessions: Vec<jcode_sdk::SessionInfo>,
     query: &str,
     filter: Filter,
     working: &HashSet<String>,
-    content: &content_search::Hits,
+    content: &[String],
 ) -> Vec<jcode_sdk::SessionInfo> {
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut metadata_hits = HashSet::new();
@@ -160,14 +173,28 @@ fn filtered_sessions(
                 metadata_hits.insert(session.session_id.clone());
                 true
             } else {
-                content.contains_key(&session.session_id)
+                content.contains(&session.session_id)
             }
     });
-    // Title, folder, and ID matches outrank sessions found only by transcript.
+    let rank = |id: &str| {
+        content
+            .iter()
+            .position(|hit| hit == id)
+            .unwrap_or(usize::MAX)
+    };
+    // Title, folder, and ID matches outrank sessions found only by transcript,
+    // which keep the index's relevance order.
     sessions.sort_by(|a, b| {
         metadata_hits
             .contains(&b.session_id)
             .cmp(&metadata_hits.contains(&a.session_id))
+            .then_with(|| {
+                if metadata_hits.contains(&a.session_id) {
+                    std::cmp::Ordering::Equal
+                } else {
+                    rank(&a.session_id).cmp(&rank(&b.session_id))
+                }
+            })
             .then_with(|| b.saved.cmp(&a.saved))
             .then_with(|| {
                 b.last_active_at_ms
@@ -216,11 +243,11 @@ impl Workspace {
                 state
                     .search
                     .update(cx, |input, cx| input.restore(search, cx));
-                state.query = query;
+                state.query = query.clone();
                 state.selected = selected;
                 state.filter = filter;
                 state.start_on_close = start_on_close;
-                self.refresh_resume_content(cx);
+                self.resume_query_changed(&query, cx);
             }
             None | Some(Snapshot::Legacy)
                 if resume_requested
@@ -269,6 +296,32 @@ impl Workspace {
                 });
             }
         }
+        // A conversation match can name a session the loaded catalog does not
+        // hold yet. It is still a real stored session, so list it.
+        if let Some(state) = &self.resume {
+            for (session_id, title) in state.daemon.matched_sessions() {
+                if !sessions.iter().any(|s| s.session_id == session_id) {
+                    sessions.push(jcode_sdk::SessionInfo {
+                        user_connected: false,
+                        title: (!title.trim().is_empty()).then_some(title),
+                        session_id,
+                        working_dir: None,
+                        status: "idle".into(),
+                        transcript_bytes: None,
+                        saved: false,
+                        updated_at_ms: None,
+                        last_active_at_ms: None,
+                        archived: false,
+                        archived_at_ms: None,
+                        save_label: None,
+                        parent_session_id: None,
+                        agent_label: None,
+                        swarm_status: None,
+                        edit_stats: None,
+                    });
+                }
+            }
+        }
         sessions
     }
 
@@ -302,69 +355,167 @@ impl Workspace {
         let Some(state) = &self.resume else {
             return Vec::new();
         };
+        let content: Vec<String> = state
+            .daemon
+            .matched_sessions()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         filtered_sessions(
             self.resume_sessions(cx),
             &state.query,
             state.filter,
             &self.resume_working(cx),
-            state
-                .content_query
-                .as_ref()
-                .filter(|query| **query == state.query)
-                .map(|_| &state.content_hits)
-                .unwrap_or(&content_search::Hits::new()),
+            &content,
         )
     }
 
-    /// Whether the transcript scan for the current query is still running.
-    fn resume_content_pending(&self) -> bool {
-        self.resume.as_ref().is_some_and(|state| {
-            !content_search::query_words(&state.query).is_empty()
-                && state.content_query.as_ref() != Some(&state.query)
+    /// Every list row: each matching session, then its message hits.
+    fn resume_rows(&self, matches: &[jcode_sdk::SessionInfo]) -> Vec<PickRow> {
+        let Some(state) = &self.resume else {
+            return Vec::new();
+        };
+        let ids: Vec<String> = matches.iter().map(|s| s.session_id.clone()).collect();
+        state.daemon.rows(&ids)
+    }
+
+    fn resume_selected_row(&self) -> Option<PickRow> {
+        let state = self.resume.as_ref()?;
+        let session_id = state.selected.clone()?;
+        Some(match state.selected_hit {
+            Some(hit) => PickRow::Hit { session_id, hit },
+            None => PickRow::Session(session_id),
         })
     }
 
-    /// Restart the transcript scan for the current query, cancelling the
-    /// previous one. Results only apply while the query is unchanged.
-    fn refresh_resume_content(&mut self, cx: &mut Context<Self>) {
+    fn set_resume_selection(&mut self, row: Option<PickRow>) {
+        if let Some(state) = &mut self.resume {
+            state.selected_hit = row.as_ref().and_then(PickRow::hit);
+            state.selected = row.map(|row| row.session_id().to_owned());
+        }
+    }
+
+    /// Apply new query text: the local filter reacts at once, the
+    /// conversation search after the debounce.
+    fn resume_query_changed(&mut self, query: &str, cx: &mut Context<Self>) {
         let Some(state) = self.resume.as_mut() else {
             return;
         };
-        state.content_cancel.store(true, Ordering::Relaxed);
-        state.content_task = None;
-        let words = content_search::query_words(&state.query);
-        let dir = (!cfg!(test)).then(content_search::sessions_dir).flatten();
-        let (false, Some(dir)) = (words.is_empty(), dir) else {
-            state.content_hits.clear();
-            state.content_query = Some(state.query.clone());
-            return;
-        };
-        let cancel = Arc::new(AtomicBool::new(false));
-        state.content_cancel = cancel.clone();
-        let query = state.query.clone();
-        state.content_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(CONTENT_SEARCH_DEBOUNCE)
-                .await;
-            let scan_cancel = cancel.clone();
-            let Some(hits) = cx
-                .background_executor()
-                .spawn(async move { content_search::scan(&dir, &words, &scan_cancel) })
-                .await
-            else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                if let Some(state) = this.resume.as_mut()
-                    && state.query == query
-                    && !cancel.load(Ordering::Relaxed)
-                {
-                    state.content_hits = hits;
-                    state.content_query = Some(query);
-                    cx.notify();
+        let generation = match state.daemon.set_query(query) {
+            Effect::Cleared => {
+                if state.daemon.status() == global_search::Status::Idle {
+                    state._debounce = None;
                 }
+                return;
+            }
+            Effect::Debounce(generation) => generation,
+        };
+        // A pasted session ID opens directly; it is not a conversation query.
+        if pasted_session_id(query).is_some() {
+            state._debounce = None;
+            return;
+        }
+        // Each keystroke replaces the pending timer, so only the last one sends.
+        state._debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(global_search::DEBOUNCE)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(state) = this.resume.as_mut() else {
+                    return;
+                };
+                if !state.daemon.mark_sent(generation) {
+                    return;
+                }
+                let query = state.daemon.query().to_string();
+                cx.notify();
+                this.bridge
+                    .send(Command::SearchSessions { query, generation });
             });
         }));
+    }
+
+    pub(super) fn apply_session_search(
+        &mut self,
+        _query: String,
+        generation: u64,
+        result: Result<jcode_sdk::SessionSearchResults, String>,
+        elapsed_ms: f64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.resume.as_mut() else {
+            return;
+        };
+        let applied = match result {
+            Ok(results) => {
+                state
+                    .daemon
+                    .apply_results(generation, convert_results(results), elapsed_ms)
+            }
+            Err(error) => state.daemon.apply_error(generation, error),
+        };
+        if applied {
+            // New hits reshape the list; the best match is the natural start.
+            state.selected = None;
+            state.selected_hit = None;
+            state.preview_revealed = None;
+            state.scroll.scroll_to_item(0);
+            cx.notify();
+        }
+    }
+
+    /// Mark the query in a transcript panel and scroll it to `row`'s message.
+    fn reveal_in_preview(&mut self, panel: &Entity<Panel>, cx: &mut Context<Self>) {
+        let Some(state) = self.resume.as_ref() else {
+            return;
+        };
+        let terms = global_search::query_terms(&state.query);
+        let row = self.resume_selected_row();
+        let needle = row.as_ref().and_then(|row| state.daemon.reveal_for(row));
+        let already = state.preview_revealed == row;
+        panel.update(cx, |panel, cx| {
+            if panel.search_terms != terms {
+                panel.search_terms = terms;
+                cx.notify();
+            }
+        });
+        if already {
+            return;
+        }
+        let revealed = match needle {
+            Some(needle) => panel.update(cx, |panel, cx| panel.reveal_transcript_text(&needle, cx)),
+            // A session without message hits previews from its newest message.
+            None => true,
+        };
+        if revealed && let Some(state) = self.resume.as_mut() {
+            state.preview_revealed = row;
+        }
+    }
+
+    /// Poll the opened transcript until the searched message appears, then
+    /// scroll to it. Opened sessions load history asynchronously, so the
+    /// first frames have nothing to scroll to.
+    fn reveal_after_load(&mut self, needle: String, cx: &mut Context<Self>) {
+        let Some(panel) = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.clone())
+            .filter(|panel| !panel.read(cx).is_startup_draft())
+        else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            let deadline = Instant::now() + REVEAL_WINDOW;
+            loop {
+                let revealed =
+                    panel.update(cx, |panel, cx| panel.reveal_transcript_text(&needle, cx));
+                if revealed || Instant::now() >= deadline {
+                    return;
+                }
+                cx.background_executor().timer(REVEAL_INTERVAL).await;
+            }
+        })
+        .detach();
     }
 
     /// Poll the daemon's streaming markers while the picker stays open.
@@ -411,7 +562,7 @@ impl Workspace {
         let search = cx.new(|cx| {
             PromptInput::new(
                 cx,
-                "Search sessions by title, folder, ID, or conversation…",
+                "Search sessions and conversations…",
                 move |_, _, window, app| {
                     let _ = submit.update(app, |this, cx| this.resume_selected(window, cx));
                 },
@@ -421,9 +572,11 @@ impl Workspace {
                     if let Some(state) = &mut this.resume {
                         state.query = query.to_owned();
                         state.selected = None;
+                        state.selected_hit = None;
+                        state.preview_revealed = None;
                         state.scroll.scroll_to_item(0);
                     }
-                    this.refresh_resume_content(cx);
+                    this.resume_query_changed(query, cx);
                     cx.notify();
                 });
             })
@@ -442,16 +595,66 @@ impl Workspace {
             preview_task: None,
             streaming: HashSet::new(),
             _presence_task: None,
-            content_hits: content_search::Hits::new(),
-            content_query: None,
-            content_cancel: Arc::new(AtomicBool::new(false)),
-            content_task: None,
+            selected_hit: None,
+            daemon: global_search::Search::new(),
+            _debounce: None,
+            preview_revealed: None,
         });
         let presence = Self::watch_resume_presence(cx);
         if let Some(state) = self.resume.as_mut() {
             state._presence_task = Some(presence);
         }
         cx.notify();
+    }
+
+    /// Cmd+Shift+F and the sidebar magnifier: the session picker, with its
+    /// query field ready for a conversation search.
+    pub(super) fn open_session_search(
+        &mut self,
+        _: &GlobalSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_resume(&OpenResume, window, cx);
+    }
+
+    /// Open the picker already searching `query`, as if it had been typed.
+    pub(crate) fn search_sessions_for(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_resume(&OpenResume, window, cx);
+        if let Some(state) = &self.resume {
+            state
+                .search
+                .update(cx, |input, cx| input.set_content(query.to_owned(), cx));
+        }
+        if let Some(state) = &mut self.resume {
+            state.query = query.to_owned();
+            state.selected = None;
+            state.selected_hit = None;
+        }
+        self.resume_query_changed(query, cx);
+        cx.notify();
+    }
+
+    pub(super) fn resume_open(&self) -> bool {
+        self.resume.is_some()
+    }
+
+    pub(super) fn control_search_state(&self, cx: &App) -> Option<serde_json::Value> {
+        self.resume.as_ref().map(|state| {
+            serde_json::json!({
+                "query": state.search.read(cx).snapshot().content,
+                "status": state.daemon.status_line(),
+            })
+        })
+    }
+
+    pub(super) fn close_session_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_resume(window, cx);
     }
 
     fn close_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -490,8 +693,30 @@ impl Workspace {
         else {
             return;
         };
-        self.resume = None;
+        let row = self
+            .resume_selected_row()
+            .filter(|row| row.session_id() == session.session_id)
+            .unwrap_or_else(|| PickRow::Session(session.session_id.clone()));
+        let state = self.resume.take();
+        let reveal = state
+            .as_ref()
+            .and_then(|state| state.daemon.reveal_for(&row));
+        let terms = state
+            .as_ref()
+            .map(|state| global_search::query_terms(&state.query))
+            .unwrap_or_default();
         self.resume_session(session, window, cx);
+        // The searched words stay marked in the opened session until the user
+        // sends the next prompt, and the matching message is scrolled to.
+        if let Some(needle) = reveal {
+            if let Some(slot) = self.slots.get(self.active) {
+                slot.panel.update(cx, |panel, cx| {
+                    panel.search_terms = terms;
+                    cx.notify();
+                });
+            }
+            self.reveal_after_load(needle, cx);
+        }
     }
 
     /// Open a session named on the command line. The catalog has not loaded
@@ -582,33 +807,50 @@ impl Workspace {
 
     fn move_resume_selection(&mut self, key: &str, cx: &mut Context<Self>) {
         let matches = self.resume_matches(cx);
-        if let Some(state) = &mut self.resume {
-            let current = matches
-                .iter()
-                .position(|s| Some(&s.session_id) == state.selected.as_ref())
-                .unwrap_or(0);
-            let next = match key {
-                "up" => current.saturating_sub(1),
-                "pageup" => current.saturating_sub(8),
-                "pagedown" => (current + 8).min(matches.len().saturating_sub(1)),
-                _ => (current + 1).min(matches.len().saturating_sub(1)),
-            };
-            state.selected = matches.get(next).map(|s| s.session_id.clone());
-            state.scroll.scroll_to_item(next);
-            cx.notify();
+        let rows = self.resume_rows(&matches);
+        let current = self
+            .resume_selected_row()
+            .filter(|row| rows.contains(row))
+            .or_else(|| rows.first().cloned());
+        let delta = match key {
+            "up" => -1,
+            "pageup" => -8,
+            "pagedown" => 8,
+            _ => 1,
+        };
+        let next = global_search::step(&rows, current.as_ref(), delta);
+        let index = next
+            .as_ref()
+            .and_then(|next| rows.iter().position(|row| row == next));
+        self.set_resume_selection(next);
+        if let (Some(state), Some(index)) = (&self.resume, index) {
+            state.scroll.scroll_to_item(index);
         }
+        cx.notify();
     }
 
     fn set_resume_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
         if let Some(state) = &mut self.resume {
             state.filter = filter;
             state.selected = None;
+            state.selected_hit = None;
             state.scroll.scroll_to_item(0);
         }
         cx.notify();
     }
 
-    pub(super) fn render_resume(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn render_resume(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // A screen that replaces the canvas owns the keyboard: a panel that
+        // cannot be seen must not hold focus, or every keystroke is lost.
+        if let Some(state) = &self.resume
+            && !state.search.focus_handle(cx).is_focused(window)
+        {
+            window.focus(&state.search.focus_handle(cx), cx);
+        }
         let matches = self.resume_matches(cx);
         let working = self.resume_working(cx);
         let open_activity = self.resume_open_activity(cx);
@@ -637,37 +879,103 @@ impl Workspace {
             .iter()
             .filter(|session| liveness(session) == Liveness::Working)
             .count();
-        let content_pending = self.resume_content_pending();
+        let list_rows = self.resume_rows(&matches);
+        let selected_row = self.resume_selected_row();
         let state = self.resume.as_mut().expect("resume picker is open");
-        let excerpts = if state.content_query.as_ref() == Some(&state.query) {
-            state.content_hits.clone()
-        } else {
-            content_search::Hits::new()
-        };
+        let content_pending = state.daemon.pending();
+        let search_status = state.daemon.status_line();
+        let terms = global_search::query_terms(&state.query);
         // The session catalog arrives asynchronously after a reload. Do not
         // discard the restored selection while only local slots are available.
         if (state.selected.is_none() || !self.sessions.is_empty())
-            && !matches
-                .iter()
-                .any(|s| Some(&s.session_id) == state.selected.as_ref())
+            && !selected_row
+                .as_ref()
+                .is_some_and(|row| list_rows.contains(row))
         {
-            state.selected = matches.first().map(|s| s.session_id.clone());
+            let first = list_rows.first().cloned();
+            state.selected_hit = first.as_ref().and_then(PickRow::hit);
+            state.selected = first.map(|row| row.session_id().to_owned());
         }
         let selected = state.selected.clone();
+        let selected_hit = state.selected_hit;
         let search = state.search.clone();
         let scroll = state.scroll.clone();
         let filter = state.filter;
+        let hits: Vec<Option<global_search::SearchHit>> = list_rows
+            .iter()
+            .map(|row| row.hit().and_then(|hit| state.daemon.message(hit).cloned()))
+            .collect();
         self.load_resume_preview(selected.as_deref(), cx);
+        if let Some(Some(Ok(panel))) = self.resume.as_ref().map(|state| state.preview.clone()) {
+            self.reveal_in_preview(&panel, cx);
+        }
         let theme = Theme::global();
         let mut rows = div()
             .id("resume-results")
+            .debug_selector(|| "resume-results".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&scroll);
-        for (index, session) in matches.iter().enumerate() {
+        let mut session_index = 0usize;
+        for (row_index, row) in list_rows.iter().enumerate() {
+            if let PickRow::Hit { session_id, hit } = row {
+                let Some(data) = hits[row_index].clone() else {
+                    continue;
+                };
+                let is_selected =
+                    selected.as_deref() == Some(session_id.as_str()) && selected_hit == Some(*hit);
+                let owner = session_index.saturating_sub(1);
+                let click = row.clone();
+                rows = rows.child(
+                    div()
+                        .id(("resume-hit", row_index))
+                        .debug_selector(move || format!("resume-hit-{owner}-{hit}"))
+                        .ml_6()
+                        .mr_1()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .rounded_full()
+                        .when(is_selected, |el| el.bg(theme.TOOL_BG))
+                        .hover(|el| el.bg(theme.TOOL_BG))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.set_resume_selection(Some(click.clone()));
+                            this.resume_selected(window, cx);
+                        }))
+                        .child(hit_badge(&data, theme))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(12.0))
+                                .text_color(theme.TEXT_DIM)
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(highlighted_snippet(&data, theme)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(11.0))
+                                .text_color(theme.TEXT_FAINT)
+                                .whitespace_nowrap()
+                                .child(global_search::time_label(data.timestamp_ms, now_ms())),
+                        ),
+                );
+                continue;
+            }
+            let Some(session) = matches.iter().find(|s| s.session_id == row.session_id()) else {
+                continue;
+            };
+            let index = session_index;
+            session_index += 1;
             let id = session.session_id.clone();
-            let is_selected = selected.as_ref() == Some(&id);
+            let is_selected = selected.as_ref() == Some(&id) && selected_hit.is_none();
             let (icon, title) = sidebar_session_title(session);
             let saved_marker = match session.save_label.as_deref() {
                 Some(label) if session.saved => format!("★ {label} · "),
@@ -688,7 +996,7 @@ impl Workspace {
             );
             let badge =
                 resume_liveness_badge(live, open_spinners.get(&session.session_id).cloned(), index);
-            let excerpt = excerpts.get(&session.session_id).cloned();
+            let title = highlighted_text(format!("{icon} {title}"), &terms, theme);
             rows = rows.child(
                 div()
                     .id(("resume-row", index))
@@ -700,9 +1008,7 @@ impl Workspace {
                     .when(is_selected, |el| el.bg(theme.TOOL_BG))
                     .hover(|el| el.bg(theme.TOOL_BG))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(state) = &mut this.resume {
-                            state.selected = Some(id.clone());
-                        }
+                        this.set_resume_selection(Some(PickRow::Session(id.clone())));
                         this.resume_selected(window, cx);
                     }))
                     .child(
@@ -710,13 +1016,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_ellipsis()
-                                    .child(format!("{icon} {title}")),
-                            )
+                            .child(div().flex_1().min_w_0().text_ellipsis().child(title))
                             .children(badge),
                     )
                     .child(
@@ -737,15 +1037,7 @@ impl Workspace {
                             .text_size(px(11.0))
                             .text_color(theme.TEXT_FAINT)
                             .child(metadata),
-                    )
-                    .children(excerpt.map(|excerpt| {
-                        div()
-                            .debug_selector(move || format!("resume-row-excerpt-{index}"))
-                            .text_size(px(11.0))
-                            .text_color(theme.TEXT_DIM)
-                            .text_ellipsis()
-                            .child(excerpt)
-                    })),
+                    ),
             );
         }
         if matches.is_empty() {
@@ -841,10 +1133,27 @@ impl Workspace {
         } else {
             preview = preview.child("Select a session to see its details.");
         }
+        let status = {
+            let sessions = match matches.len() {
+                1 => "1 session".to_string(),
+                count => format!("{count} sessions"),
+            };
+            let working = (working_count > 0).then(|| format!("{working_count} working"));
+            [Some(sessions), working, search_status]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
         div()
             .debug_selector(|| "resume-panel".into())
             .size_full()
-            .p_4()
+            .px_4()
+            .pb_4()
+            // The picker replaces the canvas, so nothing above it reserves the
+            // macOS titlebar: without this the heading sits under the traffic
+            // lights.
+            .pt(px(content_top_inset(false, window.is_fullscreen()) + 16.0))
             .flex()
             .flex_col()
             .gap_3()
@@ -853,6 +1162,16 @@ impl Workspace {
             .font_family(theme.FONT_UI)
             .text_size(px(14.0))
             .track_focus(&self.focus_handle)
+            // Clicking the chrome (padding, counts, list background) must keep
+            // typing alive instead of handing focus to the workspace.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if let Some(state) = &this.resume {
+                        window.focus(&state.search.focus_handle(cx), cx);
+                    }
+                }),
+            )
             .capture_key_down(cx.listener(Self::resume_key_down))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 this.close_resume(window, cx);
@@ -875,16 +1194,22 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_size(px(22.0)).child("Resume session"))
+                    .child(
+                        div()
+                            .debug_selector(|| "resume-title".into())
+                            .text_size(px(22.0))
+                            .child("Sessions"),
+                    )
                     .child(
                         div()
                             .id("resume-close")
                             .debug_selector(|| "resume-close".into())
                             .cursor_pointer()
                             .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .hover(|el| el.bg(theme.TOOL_BG))
+                            .py_1()
+                            .rounded_full()
+                            .bg(theme.TOOL_BG)
+                            .hover(|el| el.bg(theme.INPUT_BG))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_resume(window, cx)),
                             )
@@ -913,8 +1238,9 @@ impl Workspace {
                                 .id(id)
                                 .px_3()
                                 .py_1()
-                                .rounded_md()
+                                .rounded_full()
                                 .cursor_pointer()
+                                .hover(|el| el.bg(theme.TOOL_BG))
                                 .when(value == filter, |el| el.bg(theme.TOOL_BG))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_resume_filter(value, cx)
@@ -922,13 +1248,12 @@ impl Workspace {
                                 .child(label)
                         }),
                     )
-                    .child(div().text_color(theme.TEXT_DIM).child(if content_pending {
-                        format!("{} sessions · searching conversations…", matches.len())
-                    } else if working_count > 0 {
-                        format!("{} sessions · {working_count} working", matches.len())
-                    } else {
-                        format!("{} sessions", matches.len())
-                    })),
+                    .child(
+                        div()
+                            .debug_selector(|| "resume-status".into())
+                            .text_color(theme.TEXT_DIM)
+                            .child(status),
+                    ),
             )
             .child(
                 div()
@@ -946,9 +1271,11 @@ impl Workspace {
                     )
                     .child(preview),
             )
-            .child(div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(
-                "↑ ↓ Navigate   Page Up / Down   Enter Resume   Esc Back   Ctrl+1/2/3/4 Filters",
-            ))
+            .child(
+                div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(
+                    "↑ ↓ Sessions and matches   Enter Open   Esc Back   Ctrl+1/2/3/4 Filters",
+                ),
+            )
     }
 
     fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {
@@ -959,6 +1286,7 @@ impl Workspace {
         }
         state.preview_id = Some(id.to_owned());
         state.preview = None;
+        state.preview_revealed = None;
         let id = id.to_owned();
         let requested_id = id.clone();
         let request = cx
@@ -1007,6 +1335,116 @@ impl Workspace {
             self.sessions.push(session);
         }
     }
+}
+
+fn convert_results(results: jcode_sdk::SessionSearchResults) -> global_search::Results {
+    global_search::Results {
+        query: results.query,
+        titles: results.titles.into_iter().map(convert_hit).collect(),
+        messages: results.messages.into_iter().map(convert_hit).collect(),
+        indexed_sessions: results.indexed_sessions,
+        truncated: results.truncated,
+    }
+}
+
+fn convert_hit(hit: jcode_sdk::SessionSearchHit) -> global_search::SearchHit {
+    use global_search::{Highlight, Role};
+    // One visual line per hit, with the highlight offsets recomputed for the
+    // windowed text the row actually draws.
+    let highlights: Vec<Highlight> = hit
+        .highlights
+        .into_iter()
+        .map(|highlight| Highlight {
+            start: highlight.start,
+            end: highlight.end,
+        })
+        .collect();
+    let (snippet, highlights) = global_search::window_snippet(&hit.snippet, &highlights);
+    global_search::SearchHit {
+        session_id: hit.session_id,
+        title: hit.title,
+        role: match hit.role {
+            jcode_sdk::SessionSearchRole::Title => Role::Title,
+            jcode_sdk::SessionSearchRole::User => Role::User,
+            jcode_sdk::SessionSearchRole::Assistant => Role::Assistant,
+        },
+        model: hit.model,
+        snippet,
+        highlights,
+        timestamp_ms: hit.timestamp_ms,
+        message_id: hit.message_id,
+    }
+}
+
+/// Who a hit came from: "You", or the model that wrote the answer.
+fn hit_badge(hit: &global_search::SearchHit, theme: &crate::theme::Theme) -> gpui::AnyElement {
+    let color = match hit.role {
+        global_search::Role::Assistant => theme.ACCENT,
+        _ => theme.TEXT,
+    };
+    div()
+        .flex_none()
+        .px_2()
+        .rounded_full()
+        .bg(theme.INPUT_BG)
+        .text_size(px(10.0))
+        .text_color(color)
+        .child(hit.badge())
+        .into_any_element()
+}
+
+/// A hit's one-line snippet with the daemon's match ranges marked.
+fn highlighted_snippet(
+    hit: &global_search::SearchHit,
+    theme: &crate::theme::Theme,
+) -> gpui::AnyElement {
+    // Highlights are character offsets; styled text wants byte ranges.
+    let byte_at = |chars: u32| {
+        hit.snippet
+            .char_indices()
+            .nth(chars as usize)
+            .map_or(hit.snippet.len(), |(at, _)| at)
+    };
+    let ranges = hit
+        .highlights
+        .iter()
+        .map(|highlight| byte_at(highlight.start)..byte_at(highlight.end))
+        .filter(|range| range.start < range.end)
+        .collect::<Vec<_>>();
+    styled_matches(hit.snippet.clone(), ranges, theme)
+}
+
+/// `text` with every occurrence of the query's words marked.
+fn highlighted_text(
+    text: String,
+    terms: &[String],
+    theme: &crate::theme::Theme,
+) -> gpui::AnyElement {
+    let ranges = global_search::term_ranges(&text, terms);
+    styled_matches(text, ranges, theme)
+}
+
+fn styled_matches(
+    text: String,
+    mut ranges: Vec<std::ops::Range<usize>>,
+    theme: &crate::theme::Theme,
+) -> gpui::AnyElement {
+    ranges.sort_by_key(|range| range.start);
+    ranges.dedup_by(|next, previous| next.start < previous.end);
+    let style = gpui::HighlightStyle {
+        color: Some(theme.TEXT.into()),
+        ..crate::markdown::search_match_style()
+    };
+    gpui::StyledText::new(text)
+        .with_highlights(ranges.into_iter().map(|range| (range, style)))
+        .into_any_element()
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
 }
 
 type PreviewHistory = (
@@ -1297,7 +1735,7 @@ mod tests {
             "investor work",
             Filter::All,
             &HashSet::new(),
-            &Default::default(),
+            &[],
         );
         assert_eq!(
             matches
@@ -1316,25 +1754,12 @@ mod tests {
         let sessions = vec![alpha.clone(), beta];
         for query in ["  RÉSUMÉ   client ", "alpha-123", "PLANNER"] {
             assert_eq!(
-                filtered_sessions(
-                    sessions.clone(),
-                    query,
-                    Filter::All,
-                    &HashSet::new(),
-                    &Default::default()
-                ),
+                filtered_sessions(sessions.clone(), query, Filter::All, &HashSet::new(), &[]),
                 vec![alpha.clone()]
             );
         }
         assert!(
-            filtered_sessions(
-                sessions,
-                "not-found",
-                Filter::All,
-                &HashSet::new(),
-                &Default::default()
-            )
-            .is_empty()
+            filtered_sessions(sessions, "not-found", Filter::All, &HashSet::new(), &[]).is_empty()
         );
     }
 
@@ -1352,33 +1777,15 @@ mod tests {
         archived.archived = true;
         let sessions = vec![duplicate, saved.clone(), archived, running.clone()];
         assert_eq!(
-            filtered_sessions(
-                sessions.clone(),
-                "",
-                Filter::All,
-                &HashSet::new(),
-                &Default::default()
-            ),
+            filtered_sessions(sessions.clone(), "", Filter::All, &HashSet::new(), &[]),
             vec![saved.clone(), running.clone()]
         );
         assert_eq!(
-            filtered_sessions(
-                sessions.clone(),
-                "",
-                Filter::Active,
-                &HashSet::new(),
-                &Default::default()
-            ),
+            filtered_sessions(sessions.clone(), "", Filter::Active, &HashSet::new(), &[]),
             vec![running]
         );
         assert_eq!(
-            filtered_sessions(
-                sessions,
-                "",
-                Filter::Saved,
-                &HashSet::new(),
-                &Default::default()
-            ),
+            filtered_sessions(sessions, "", Filter::Saved, &HashSet::new(), &[]),
             vec![saved]
         );
         assert!(is_resume_command(" /session \n"));
@@ -1399,7 +1806,7 @@ mod tests {
                 "",
                 Filter::Active,
                 &working,
-                &Default::default()
+                &[]
             ),
             vec![streaming]
         );
@@ -1412,16 +1819,22 @@ mod tests {
         let mut transcript = session_info("transcript", Some("Unrelated title"));
         transcript.updated_at_ms = Some(50);
         let other = session_info("other", Some("Other"));
-        let content = content_search::Hits::from([
-            (
-                "transcript".to_string(),
-                "…fix the kubernetes rollout…".to_string(),
-            ),
-            ("titled".to_string(), "…kubernetes…".to_string()),
-        ]);
-        let ids = |content: &content_search::Hits| {
+        let mut second = session_info("second", Some("Unrelated too"));
+        second.updated_at_ms = Some(99);
+        // The index's relevance order, not recency, ranks transcript-only hits.
+        let content = vec![
+            "transcript".to_string(),
+            "second".to_string(),
+            "titled".to_string(),
+        ];
+        let ids = |content: &[String]| {
             filtered_sessions(
-                vec![other.clone(), transcript.clone(), titled.clone()],
+                vec![
+                    other.clone(),
+                    second.clone(),
+                    transcript.clone(),
+                    titled.clone(),
+                ],
                 "kubernetes",
                 Filter::All,
                 &HashSet::new(),
@@ -1431,8 +1844,8 @@ mod tests {
             .map(|s| s.session_id)
             .collect::<Vec<_>>()
         };
-        assert_eq!(ids(&content), vec!["titled", "transcript"]);
-        assert_eq!(ids(&Default::default()), vec!["titled"]);
+        assert_eq!(ids(&content), vec!["titled", "transcript", "second"]);
+        assert_eq!(ids(&[]), vec!["titled"]);
     }
 
     #[gpui::test]

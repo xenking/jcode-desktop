@@ -43,7 +43,6 @@ pub mod preview_state;
 mod provider_mark;
 mod publish;
 mod restart_spawn;
-mod resume_content_search;
 mod sound_events;
 mod sounds;
 mod swarm_glyph;
@@ -358,7 +357,7 @@ unsafe extern "C-unwind" fn activate(
             // `JCODE_DESKTOP_SCREENSHOT_SEARCH=<query>`: the screenshot harness
             // needs the results screen populated without a keyboard or a daemon.
             if fixture && let Ok(query) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SEARCH") {
-                workspace.open_search_for_screenshot(&query, window, cx);
+                workspace.search_sessions_for(&query, window, cx);
             }
             // `JCODE_DESKTOP_SCREENSHOT_PNG=<path>`: render the settled frame
             // through the window's own renderer into a PNG and quit. Unlike

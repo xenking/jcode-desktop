@@ -240,7 +240,7 @@ fn search_requires_explicit_permission_and_sets_query(cx: &mut gpui::TestAppCont
             w.handle_desktop_request(req(false), window, cx),
             DesktopResponse::Error { .. }
         ));
-        assert!(!w.search_screen_open());
+        assert!(!w.resume_open());
         assert!(matches!(
             w.handle_desktop_request(req(true), window, cx),
             DesktopResponse::Ok { .. }
@@ -270,12 +270,12 @@ fn search_requires_explicit_permission_and_sets_query(cx: &mut gpui::TestAppCont
             w.handle_desktop_request(escape(false), window, cx),
             DesktopResponse::Error { .. }
         ));
-        assert!(w.search_screen_open());
+        assert!(w.resume_open());
         assert!(matches!(
             w.handle_desktop_request(escape(true), window, cx),
             DesktopResponse::Ok { .. }
         ));
-        assert!(!w.search_screen_open());
+        assert!(!w.resume_open());
     });
 }
 

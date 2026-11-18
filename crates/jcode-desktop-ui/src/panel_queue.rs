@@ -769,6 +769,8 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.prompt_queue.paused = false;
+        // A new prompt means the user has moved on from what they searched for.
+        self.search_terms.clear();
         self.prompt_queue.auto_poke.start(self.items.len());
         self.send_prompt(content, images, cx);
     }

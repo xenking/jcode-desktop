@@ -775,6 +775,9 @@ pub struct Panel {
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
     pub(crate) transcript_only: bool,
+    /// Words from the session search that opened (or is previewing) this
+    /// transcript, marked wherever they occur until the user sends a prompt.
+    pub(crate) search_terms: Vec<String>,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
 }
@@ -1276,6 +1279,7 @@ impl Panel {
             picker_search: None,
             focus_pending: false,
             transcript_only: false,
+            search_terms: Vec::new(),
             login: None,
             available_models: Vec::new(),
         }
@@ -6126,14 +6130,17 @@ impl Render for Panel {
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let element = panel.render_item(
-                                    row.index,
-                                    item,
-                                    row.show_label,
-                                    response_viewport_height,
-                                    window,
-                                    cx,
-                                );
+                                let terms = panel.search_terms.clone();
+                                let element = markdown::with_search_terms(&terms, || {
+                                    panel.render_item(
+                                        row.index,
+                                        item,
+                                        row.show_label,
+                                        response_viewport_height,
+                                        window,
+                                        cx,
+                                    )
+                                });
                                 div()
                                     .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()

@@ -196,7 +196,7 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
                 state_check("resume-launch-opens-standalone-picker", picker)
                 # Narrow rows ellipsize the beta title, so assert the rendered preview instead.
                 capture(evidence / "single-panel-startup.png",
-                        ("Resume session", TITLE, "Please recover the standalone conversation",
+                        ("Sessions", TITLE, "Please recover the standalone conversation",
                          "conversation preview"), ("Loading conversation",))
             key("Escape")
             time.sleep(.3)
@@ -228,7 +228,7 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
                 wait_generation(2)
                 state_check("reload-preserves-picker", picker)
             picker_png = output.with_name(output.stem + "-single-picker.png") if single else output
-            capture(picker_png, ("Resume session", TITLE, BETA))
+            capture(picker_png, ("Sessions", TITLE, BETA))
             type_text("Resume acceptance")
             capture(evidence / f"{name}-preview-alpha.png", ("Alpha conversation preview", "rendered with the chat panel"))
             key("Down")

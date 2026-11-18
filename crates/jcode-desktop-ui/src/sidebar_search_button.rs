@@ -48,7 +48,7 @@ impl Workspace {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     window.prevent_default();
-                    this.open_search_screen(&GlobalSearch, window, cx)
+                    this.open_session_search(&GlobalSearch, window, cx)
                 }),
             )
             .child(search_icon(12.0, theme.TEXT_DIM))
@@ -77,7 +77,7 @@ impl Workspace {
                 cx.listener(|this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.open_search_screen(&GlobalSearch, window, cx)
+                    this.open_session_search(&GlobalSearch, window, cx)
                 }),
             )
             .child(search_icon(13.0, theme.TEXT))

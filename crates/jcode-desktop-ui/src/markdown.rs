@@ -1007,6 +1007,11 @@ thread_local! {
         const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
     static PROMPT_IMAGES: std::cell::RefCell<Option<PromptImages>> =
         const { std::cell::RefCell::new(None) };
+    /// Search terms to mark in the document being rendered: the picker's
+    /// query, so the words that matched stand out in its preview and in the
+    /// session it opened.
+    static SEARCH_TERMS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     #[cfg(test)]
     static PAINTED_PROMPT_TEXT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -1044,6 +1049,42 @@ pub(crate) fn with_prompt_images<R>(images: PromptImages, render: impl FnOnce() 
     let previous = PROMPT_IMAGES.with(|slot| slot.replace(Some(images)));
     let _restore = Restore(previous);
     render()
+}
+
+/// Render `f` with every occurrence of `terms` marked as a search match.
+pub(crate) fn with_search_terms<R>(terms: &[String], render: impl FnOnce() -> R) -> R {
+    if terms.is_empty() {
+        return render();
+    }
+    struct Restore(Vec<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SEARCH_TERMS.with(|slot| *slot.borrow_mut() = std::mem::take(&mut self.0));
+        }
+    }
+    let previous = SEARCH_TERMS.with(|slot| slot.replace(terms.to_vec()));
+    let _restore = Restore(previous);
+    render()
+}
+
+/// The match style: a tinted background under the word, readable on both
+/// prose and code, and distinct from the text selection colour.
+pub(crate) fn search_match_style() -> HighlightStyle {
+    let accent = Theme::global().ACCENT;
+    HighlightStyle {
+        background_color: Some(to_hsla(gpui::Rgba { a: 0.32, ..accent })),
+        ..Default::default()
+    }
+}
+
+fn search_highlights(text: &str) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    SEARCH_TERMS.with(|terms| {
+        let terms = terms.borrow();
+        crate::global_search::term_ranges(text, &terms)
+            .into_iter()
+            .map(|range| (range, search_match_style()))
+            .collect()
+    })
 }
 
 /// Render `f` with the trailing block of its markdown fading in.
@@ -1147,6 +1188,7 @@ fn styled_line_layout(
     }
     let mut highlights = std::mem::take(&mut inline.highlights);
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
+    highlights.extend(search_highlights(&inline.plain));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }

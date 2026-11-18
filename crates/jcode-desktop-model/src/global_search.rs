@@ -1,18 +1,15 @@
-//! Global search across every stored session: screen state and hit layout.
+//! Search across every stored session, as the session picker uses it.
 //!
-//! The screen is a full-height view, not a popover, so its state is more than a
-//! string and a list. It owns the query, the debounce generation, the results,
-//! the flattened row list the keyboard walks, and the selection. Keeping that
-//! here (GPUI-free) means the whole interaction can be tested without a window:
-//! typing, debouncing, out-of-order replies, section order, grouping and what
-//! Enter opens are all plain functions over this type.
+//! The picker (`/resume`, Cmd+Shift+F, the sidebar magnifier) is one screen:
+//! a session list with a live preview. Typing filters the list by title and
+//! folder locally and asks the daemon's full-text index for matching messages.
+//! This module owns the daemon half (query, debounce generation, stale-reply
+//! dropping, status line) and the row layout that interleaves message hits
+//! under the session they belong to, so all of it is tested without a window.
 //!
-//! Layout rules the rows encode:
-//! - `Titles` section first: a title match is the session itself, not a line
-//!   inside it, and burying it under transcript hits makes recall worse.
-//! - `Messages` section second, grouped by session, sessions ordered by their
-//!   best-ranked hit. A group starts collapsed and its header toggles it open,
-//!   so one busy session cannot bury the others.
+//! Layout rules:
+//! - a session row comes first, then up to [`HITS_PER_SESSION`] of its message
+//!   hits, so one busy session cannot bury the others;
 //! - every hit is exactly one visual line: the snippet is whitespace-collapsed
 //!   and windowed around the first match, and the window is recomputed with the
 //!   highlight offsets so the emphasis stays on the words it belongs to.
@@ -146,73 +143,58 @@ pub enum Status {
     Failed,
 }
 
-/// A row in the rendered list. Headers are separators, not targets.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Row {
-    Section(&'static str),
-    Group {
-        session_id: String,
-        title: String,
-        /// How many hits this session contributed, so a collapsed row still
-        /// says how much is behind it.
-        count: usize,
-        expanded: bool,
-    },
-    Hit {
-        /// Index into the section's hit vector.
-        hit: usize,
-        /// Where the hit lives, so a row can be resolved to its data.
-        role: Role,
-    },
-}
+/// Message hits listed under one session row. More than this is a sign to
+/// refine the query, and the preview already shows the session itself.
+pub const HITS_PER_SESSION: usize = 3;
 
-impl Row {
-    /// Groups and hits are both reachable: Enter on a group opens it, Enter on
-    /// a hit opens the session.
-    pub fn is_selectable(&self) -> bool {
-        !matches!(self, Self::Section(_))
-    }
-}
-
-/// What Enter on the current row should do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpenTarget {
-    pub session_id: String,
-    /// Text to reveal in the opened transcript. `None` for a title hit, which
-    /// opens at the session's normal position.
-    pub reveal: Option<String>,
-}
-
-/// The screen's whole state.
+/// The daemon half of the picker's search.
 #[derive(Debug, Default)]
-pub struct Screen {
+pub struct Search {
     query: String,
     /// Identifies the newest query; replies carry the value they answered.
     generation: u64,
-    /// Generation whose reply is outstanding, if any.
-    awaiting: Option<u64>,
     status: Status,
     results: Option<Results>,
-    rows: Vec<Row>,
-    /// Sessions whose group the user has opened. Collapsed is the default: a
-    /// query that matches ten messages in one session should not push every
-    /// other session off the screen.
-    expanded: std::collections::HashSet<String>,
-    /// Index into `rows` of the selected row.
-    selected: Option<usize>,
     error: Option<String>,
+    elapsed_ms: Option<f64>,
 }
 
 /// What a query change obliges the caller to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Nothing to send: the query is blank, so the results are cleared.
+    /// Nothing to send: the query is blank or unchanged.
     Cleared,
-    /// Send `Screen::pending_query()` after `Screen::debounce()`.
+    /// Send `Search::pending_query()` after [`DEBOUNCE`].
     Debounce(u64),
 }
 
-impl Screen {
+/// One row of the picker list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PickRow {
+    Session(String),
+    /// `hit` indexes [`Results::messages`].
+    Hit {
+        session_id: String,
+        hit: usize,
+    },
+}
+
+impl PickRow {
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::Session(id) | Self::Hit { session_id: id, .. } => id,
+        }
+    }
+
+    pub fn hit(&self) -> Option<usize> {
+        match self {
+            Self::Session(_) => None,
+            Self::Hit { hit, .. } => Some(*hit),
+        }
+    }
+}
+
+impl Search {
     pub fn new() -> Self {
         Self::default()
     }
@@ -225,30 +207,17 @@ impl Screen {
         self.status
     }
 
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
-    }
-
+    /// Results that answer the current query. Results for an older query are
+    /// kept on screen while the next one is debounced, so the list does not
+    /// blank on every keystroke.
     pub fn results(&self) -> Option<&Results> {
         self.results.as_ref()
-    }
-
-    pub fn rows(&self) -> &[Row] {
-        &self.rows
-    }
-
-    pub fn selected(&self) -> Option<usize> {
-        self.selected
     }
 
     /// The query a pending debounce should send, and the generation it must
     /// carry so a late reply can be recognised as stale.
     pub fn pending_query(&self) -> (&str, u64) {
         (&self.query, self.generation)
-    }
-
-    pub fn debounce(&self) -> Duration {
-        DEBOUNCE
     }
 
     /// Apply a keystroke's worth of query text.
@@ -259,18 +228,13 @@ impl Screen {
         self.query = query.to_string();
         self.generation += 1;
         self.error = None;
-        if query.trim().is_empty() {
-            self.awaiting = None;
+        if query_terms(query).is_empty() {
             self.status = Status::Idle;
             self.results = None;
-            self.rows.clear();
-            self.selected = None;
+            self.elapsed_ms = None;
             return Effect::Cleared;
         }
         self.status = Status::Waiting;
-        // Keep the previous results on screen while the new query is debounced:
-        // a list that blanks on every keystroke flickers, and the user is still
-        // reading the old rows.
         Effect::Debounce(self.generation)
     }
 
@@ -280,155 +244,118 @@ impl Screen {
         if generation != self.generation {
             return false;
         }
-        self.awaiting = Some(generation);
         self.status = Status::Searching;
         true
     }
 
-    /// Apply a daemon reply. Stale replies are dropped, which is the whole
-    /// point of the generation: threads finish out of order.
-    pub fn apply_results(&mut self, generation: u64, results: Results) -> bool {
-        if generation != self.generation {
+    /// Apply a daemon reply. Stale replies are dropped: threads finish out of
+    /// order, and only the newest query is worth showing.
+    pub fn apply_results(&mut self, generation: u64, results: Results, elapsed_ms: f64) -> bool {
+        if generation != self.generation || self.status == Status::Idle {
             return false;
         }
-        self.awaiting = None;
         self.status = Status::Ready;
         self.error = None;
-        self.expanded.clear();
-        self.rows = layout(&results, &self.expanded);
         self.results = Some(results);
-        self.selected = self.rows.iter().position(Row::is_selectable);
+        self.elapsed_ms = Some(elapsed_ms);
         true
     }
 
     pub fn apply_error(&mut self, generation: u64, error: String) -> bool {
-        if generation != self.generation {
+        if generation != self.generation || self.status == Status::Idle {
             return false;
         }
-        self.awaiting = None;
         self.status = Status::Failed;
         self.error = Some(error);
-        self.rows.clear();
-        self.selected = None;
+        self.results = None;
         true
     }
 
-    /// Move the selection by `delta` selectable rows, clamped at both ends.
-    pub fn move_selection(&mut self, delta: isize) {
-        let selectable: Vec<usize> = self
-            .rows
+    /// Whether the conversation half of the search is still outstanding.
+    pub fn pending(&self) -> bool {
+        matches!(self.status, Status::Waiting | Status::Searching)
+    }
+
+    /// Sessions the daemon matched, by title or by message, best rank first,
+    /// with the title it reported.
+    pub fn matched_sessions(&self) -> Vec<(String, String)> {
+        let Some(results) = &self.results else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        results
+            .titles
             .iter()
-            .enumerate()
-            .filter(|(_, row)| row.is_selectable())
-            .map(|(index, _)| index)
-            .collect();
-        if selectable.is_empty() {
-            self.selected = None;
-            return;
-        }
-        let current = self
-            .selected
-            .and_then(|selected| selectable.iter().position(|row| *row == selected));
-        let next = match (current, delta.cmp(&0)) {
-            (Some(current), std::cmp::Ordering::Less) => {
-                current.saturating_sub(delta.unsigned_abs())
-            }
-            (Some(current), std::cmp::Ordering::Greater) => {
-                (current + delta as usize).min(selectable.len() - 1)
-            }
-            (None, std::cmp::Ordering::Less) => selectable.len() - 1,
-            (None, _) => 0,
-            (Some(current), std::cmp::Ordering::Equal) => current,
-        };
-        self.selected = Some(selectable[next]);
+            .chain(&results.messages)
+            .filter(|hit| seen.insert(hit.session_id.clone()))
+            .map(|hit| (hit.session_id.clone(), hit.title.clone()))
+            .collect()
     }
 
-    /// Select a row directly (a click).
-    pub fn select_row(&mut self, index: usize) {
-        if self.rows.get(index).is_some_and(Row::is_selectable) {
-            self.selected = Some(index);
-        }
-    }
-
-    /// Whether the selected row is a session header (Enter then expands it
-    /// instead of opening a session).
-    pub fn selected_group(&self) -> Option<String> {
-        let row = self.rows.get(self.selected?)?;
-        match row {
-            Row::Group { session_id, .. } => Some(session_id.clone()),
-            _ => None,
-        }
-    }
-
-    /// Open or close one session's group. Returns false when `index` is not a
-    /// group.
-    pub fn toggle_group(&mut self, index: usize) -> bool {
-        let Some(Row::Group { session_id, .. }) = self.rows.get(index).cloned() else {
-            return false;
-        };
-        if !self.expanded.remove(&session_id) {
-            self.expanded.insert(session_id.clone());
-        }
-        let Some(results) = self.results.clone() else {
-            return true;
-        };
-        self.rows = layout(&results, &self.expanded);
-        // The header survives the re-layout, so keep the caret on it rather
-        // than on whatever row happens to occupy the old index.
-        self.selected = self
-            .rows
+    /// Message hits for one session, in rank order, with their indices.
+    pub fn session_hits(&self, session_id: &str) -> Vec<(usize, &SearchHit)> {
+        self.results
             .iter()
-            .position(|row| matches!(row, Row::Group { session_id: id, .. } if *id == session_id));
-        true
+            .flat_map(|results| results.messages.iter().enumerate())
+            .filter(|(_, hit)| hit.session_id == session_id)
+            .collect()
     }
 
-    /// Resolve the selected row to its hit data.
-    pub fn selected_hit(&self) -> Option<&SearchHit> {
-        let results = self.results.as_ref()?;
-        let row = self.rows.get(self.selected?)?;
-        let Row::Hit { hit, role } = row else {
-            return None;
-        };
-        match role {
-            Role::Title => results.titles.get(*hit),
-            Role::User | Role::Assistant => results.messages.get(*hit),
+    pub fn message(&self, hit: usize) -> Option<&SearchHit> {
+        self.results.as_ref()?.messages.get(hit)
+    }
+
+    /// The picker list: each session, then its first message hits.
+    pub fn rows(&self, sessions: &[String]) -> Vec<PickRow> {
+        let mut rows = Vec::with_capacity(sessions.len());
+        for session_id in sessions {
+            rows.push(PickRow::Session(session_id.clone()));
+            for (hit, _) in self
+                .session_hits(session_id)
+                .into_iter()
+                .take(HITS_PER_SESSION)
+            {
+                rows.push(PickRow::Hit {
+                    session_id: session_id.clone(),
+                    hit,
+                });
+            }
         }
+        rows
     }
 
-    /// What Enter or a click on the selected row opens.
-    pub fn open_target(&self) -> Option<OpenTarget> {
-        let hit = self.selected_hit()?;
-        Some(OpenTarget {
-            session_id: hit.session_id.clone(),
-            reveal: (hit.role != Role::Title).then(|| reveal_needle(hit)),
-        })
+    /// What opening `row` should scroll to: the hit itself, or for a session
+    /// row its best hit, so Enter always lands on the conversation that
+    /// matched rather than on the newest message.
+    pub fn reveal_for(&self, row: &PickRow) -> Option<String> {
+        let hit = match row.hit() {
+            Some(hit) => self.message(hit)?,
+            None => self.session_hits(row.session_id()).first()?.1,
+        };
+        Some(reveal_needle(hit))
     }
 
-    /// The status line for the current state.
-    pub fn status_line(&self) -> String {
+    /// The status line's search half, or `None` when no search is running.
+    pub fn status_line(&self) -> Option<String> {
         match self.status {
-            Status::Idle => "Search every session's titles and messages".into(),
-            Status::Waiting => "…".into(),
-            Status::Searching => "Searching…".into(),
-            Status::Failed => self
-                .error
-                .clone()
-                .unwrap_or_else(|| "Search failed".to_string()),
+            Status::Idle => None,
+            Status::Waiting | Status::Searching => Some("searching conversations…".into()),
+            Status::Failed => Some(format!(
+                "conversation search unavailable: {}",
+                self.error.as_deref().unwrap_or("unknown error")
+            )),
             Status::Ready => {
-                let Some(results) = &self.results else {
-                    return String::new();
-                };
-                if results.is_empty() {
-                    return format!("No matches in {} sessions", results.indexed_sessions);
-                }
+                let results = self.results.as_ref()?;
+                let count = results.messages.len();
                 let more = if results.truncated { "+" } else { "" };
-                format!(
-                    "{}{more} title{} · {}{more} message{}",
-                    results.titles.len(),
-                    plural(results.titles.len()),
-                    results.messages.len(),
-                    plural(results.messages.len())
-                )
+                let elapsed = self
+                    .elapsed_ms
+                    .map(|ms| format!(" · {ms:.0}ms"))
+                    .unwrap_or_default();
+                Some(format!(
+                    "{count}{more} matching message{}{elapsed}",
+                    plural(count)
+                ))
             }
         }
     }
@@ -438,58 +365,87 @@ fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
-/// Build the rendered rows: titles, then message hits grouped by session.
-fn layout(results: &Results, expanded: &std::collections::HashSet<String>) -> Vec<Row> {
-    let mut rows = Vec::new();
-    if !results.titles.is_empty() {
-        rows.push(Row::Section("Titles"));
-        for index in 0..results.titles.len() {
-            rows.push(Row::Hit {
-                hit: index,
-                role: Role::Title,
-            });
+/// Move a selection by `delta` rows, clamped at both ends. A selection that
+/// left the list starts over at the first row.
+pub fn step(rows: &[PickRow], current: Option<&PickRow>, delta: isize) -> Option<PickRow> {
+    if rows.is_empty() {
+        return None;
+    }
+    let index = current
+        .and_then(|current| rows.iter().position(|row| row == current))
+        .map_or(0, |index| {
+            index.saturating_add_signed(delta).min(rows.len() - 1)
+        });
+    rows.get(index).cloned()
+}
+
+/// The words of a query worth highlighting: FTS syntax stripped, and single
+/// characters dropped because they match nearly everything.
+pub fn query_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for word in query.split_whitespace() {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+        let word = fold(word);
+        if word.chars().count() >= 2 && !terms.contains(&word) {
+            terms.push(word);
         }
     }
-    if !results.messages.is_empty() {
-        rows.push(Row::Section("Messages"));
-        let mut order: Vec<&str> = Vec::new();
-        for hit in &results.messages {
-            if !order.contains(&hit.session_id.as_str()) {
-                order.push(&hit.session_id);
+    terms
+}
+
+/// Lowercase and fold `ё` to `е`, the same way the search index does.
+fn fold(text: &str) -> String {
+    text.chars().map(fold_char).collect()
+}
+
+/// One char in, one char out, so byte offsets stay recoverable even when
+/// lowercasing would change a character's length.
+fn fold_char(c: char) -> char {
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    if lower == 'ё' { 'е' } else { lower }
+}
+
+/// Byte ranges in `text` where any of `terms` occurs, case-insensitively.
+/// Ranges are sorted, disjoint and fall on char boundaries, so they can style
+/// rendered text directly.
+pub fn term_ranges(text: &str, terms: &[String]) -> Vec<std::ops::Range<usize>> {
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<(usize, char)> = text
+        .char_indices()
+        .map(|(at, c)| (at, fold_char(c)))
+        .collect();
+    let terms: Vec<Vec<char>> = terms
+        .iter()
+        .map(|term| term.chars().map(fold_char).collect::<Vec<_>>())
+        .filter(|term| !term.is_empty())
+        .collect();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let longest = terms
+            .iter()
+            .filter(|term| {
+                index + term.len() <= chars.len()
+                    && chars[index..index + term.len()]
+                        .iter()
+                        .zip(term.iter())
+                        .all(|((_, a), b)| a == b)
+            })
+            .map(Vec::len)
+            .max();
+        match longest {
+            Some(len) => {
+                let start = chars[index].0;
+                let end = chars.get(index + len).map_or(text.len(), |(at, _)| *at);
+                ranges.push(start..end);
+                index += len;
             }
-        }
-        for session_id in order {
-            let title = results
-                .messages
-                .iter()
-                .find(|hit| hit.session_id == session_id)
-                .map(|hit| hit.title.clone())
-                .unwrap_or_default();
-            let count = results
-                .messages
-                .iter()
-                .filter(|hit| hit.session_id == session_id)
-                .count();
-            let open = expanded.contains(session_id);
-            rows.push(Row::Group {
-                session_id: session_id.to_string(),
-                title,
-                count,
-                expanded: open,
-            });
-            if open {
-                for (index, hit) in results.messages.iter().enumerate() {
-                    if hit.session_id == session_id {
-                        rows.push(Row::Hit {
-                            hit: index,
-                            role: hit.role,
-                        });
-                    }
-                }
-            }
+            None => index += 1,
         }
     }
-    rows
+    ranges
 }
 
 /// Turn an FTS snippet into one screen line: newlines and runs of whitespace
@@ -619,7 +575,7 @@ fn absolute_label(timestamp_ms: i64) -> String {
 /// FTS5 marks dropped text with `…`, so a fragment between two ellipses is
 /// contiguous and can be searched for in the opened transcript. The fragment
 /// holding the first highlight is the best one: it contains the match.
-pub(crate) fn reveal_needle(hit: &SearchHit) -> String {
+pub fn reveal_needle(hit: &SearchHit) -> String {
     let segments: Vec<&str> = hit
         .snippet
         .split('…')

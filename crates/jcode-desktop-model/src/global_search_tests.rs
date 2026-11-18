@@ -1,4 +1,4 @@
-//! State-machine tests for the global search screen.
+//! Tests for the session picker's search model.
 
 use crate::global_search::*;
 
@@ -33,7 +33,10 @@ fn a_snippet_is_one_line_and_windowed_around_the_match() {
     );
     assert!(!text.contains('\n'), "newlines collapsed: {text:?}");
     assert!(!text.contains("  "), "whitespace runs collapsed: {text:?}");
-    assert!(text.starts_with('…'), "text before the window is elided: {text:?}");
+    assert!(
+        text.starts_with('…'),
+        "text before the window is elided: {text:?}"
+    );
     assert!(
         text.chars().count() <= SNIPPET_CHARS + 2 && text.chars().count() >= 80,
         "one row's worth: {text:?}"
@@ -44,7 +47,10 @@ fn a_snippet_is_one_line_and_windowed_around_the_match() {
         .skip(highlights[0].start as usize)
         .take((highlights[0].end - highlights[0].start) as usize)
         .collect();
-    assert_eq!(marked, "walrus", "the highlight still marks the match: {text:?}");
+    assert_eq!(
+        marked, "walrus",
+        "the highlight still marks the match: {text:?}"
+    );
     let lead = highlights[0].start as usize - 1;
     assert!(
         lead <= SNIPPET_LEAD + 8,
@@ -101,205 +107,6 @@ fn results(titles: Vec<SearchHit>, messages: Vec<SearchHit>) -> Results {
 }
 
 #[test]
-fn debounce_is_150ms_and_blank_query_sends_nothing() {
-    let mut screen = Screen::new();
-    assert_eq!(screen.debounce(), std::time::Duration::from_millis(150));
-    assert_eq!(screen.status(), Status::Idle);
-    assert_eq!(screen.set_query("   "), Effect::Cleared);
-    assert_eq!(screen.status(), Status::Idle);
-    assert!(screen.rows().is_empty());
-    let Effect::Debounce(generation) = screen.set_query("walrus") else {
-        panic!("typing must schedule a debounced query");
-    };
-    assert_eq!(screen.status(), Status::Waiting);
-    assert!(screen.mark_sent(generation));
-    assert_eq!(screen.status(), Status::Searching);
-}
-
-#[test]
-fn identical_query_text_does_not_restart_the_debounce() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("abc") else {
-        panic!("first keystroke schedules");
-    };
-    assert_eq!(screen.set_query("abc"), Effect::Cleared);
-    // The generation is unchanged, so the in-flight debounce stays valid.
-    assert_eq!(screen.pending_query(), ("abc", generation));
-}
-
-#[test]
-fn stale_replies_are_dropped() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(first) = screen.set_query("w") else {
-        panic!()
-    };
-    let Effect::Debounce(second) = screen.set_query("wa") else {
-        panic!()
-    };
-    assert!(second > first);
-    assert!(!screen.mark_sent(first), "an older send is refused");
-    assert!(screen.mark_sent(second));
-    // The answer to the abandoned query arrives late.
-    assert!(!screen.apply_results(
-        first,
-        results(vec![], vec![hit("s1", "t", Role::User, "walrus")]),
-    ));
-    assert_eq!(screen.status(), Status::Searching);
-    assert!(screen.apply_results(second, results(vec![], vec![])));
-    assert_eq!(screen.status(), Status::Ready);
-}
-
-#[test]
-fn titles_come_first_and_messages_are_grouped_by_session() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("walrus") else {
-        panic!()
-    };
-    screen.mark_sent(generation);
-    screen.apply_results(
-        generation,
-        results(
-            vec![hit("s_title", "Walrus plans", Role::Title, "Walrus plans")],
-            vec![
-                hit("s_a", "Alpha", Role::User, "walrus one"),
-                hit("s_b", "Beta", Role::Assistant, "walrus two"),
-                hit("s_a", "Alpha", Role::Assistant, "walrus three"),
-            ],
-        ),
-    );
-    let rows = screen.rows();
-    assert_eq!(
-        rows,
-        &[
-            Row::Section("Titles"),
-            Row::Hit {
-                hit: 0,
-                role: Role::Title
-            },
-            Row::Section("Messages"),
-            Row::Group {
-                session_id: "s_a".into(),
-                title: "Alpha".into(),
-                count: 2,
-                expanded: false
-            },
-            Row::Group {
-                session_id: "s_b".into(),
-                title: "Beta".into(),
-                count: 1,
-                expanded: false
-            },
-        ]
-    );
-    // A collapsed group still says how much is behind it, and opening it puts
-    // exactly that session's hits under the header.
-    assert!(screen.toggle_group(3));
-    assert_eq!(
-        &screen.rows()[3..6],
-        &[
-            Row::Group {
-                session_id: "s_a".into(),
-                title: "Alpha".into(),
-                count: 2,
-                expanded: true
-            },
-            Row::Hit {
-                hit: 0,
-                role: Role::User
-            },
-            Row::Hit {
-                hit: 2,
-                role: Role::Assistant
-            },
-        ]
-    );
-    assert_eq!(screen.selected(), Some(3), "the caret stays on the header");
-    assert!(screen.toggle_group(3));
-    assert_eq!(screen.rows().len(), 5, "closing hides them again");
-}
-
-#[test]
-fn keyboard_navigation_skips_headers_and_clamps() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("x") else {
-        panic!()
-    };
-    screen.mark_sent(generation);
-    screen.apply_results(
-        generation,
-        results(
-            vec![hit("s_title", "T", Role::Title, "x")],
-            vec![
-                hit("s_a", "Alpha", Role::User, "x"),
-                hit("s_a", "Alpha", Role::Assistant, "x"),
-            ],
-        ),
-    );
-    // The first selectable row is selected on arrival.
-    assert_eq!(screen.selected(), Some(1));
-
-    screen.move_selection(1);
-    assert_eq!(
-        screen.selected(),
-        Some(3),
-        "jumps over the Messages section header onto the group header"
-    );
-    screen.move_selection(-1);
-    assert_eq!(screen.selected(), Some(1), "clamped at the first row");
-    // A click on a section heading is ignored; a group header is a target.
-    screen.select_row(2);
-    assert_eq!(screen.selected(), Some(1));
-    screen.select_row(3);
-    assert_eq!(screen.selected(), Some(3));
-
-    // Opening the group puts its hits on the keyboard path.
-    assert!(screen.toggle_group(3));
-    screen.move_selection(1);
-    assert_eq!(screen.selected(), Some(4));
-    screen.move_selection(1);
-    assert_eq!(screen.selected(), Some(5));
-    screen.move_selection(1);
-    assert_eq!(screen.selected(), Some(5), "clamped at the last hit");
-}
-
-#[test]
-fn enter_on_a_title_opens_the_session_and_on_a_message_reveals_its_text() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("walrus") else {
-        panic!()
-    };
-    screen.mark_sent(generation);
-    let mut message = hit(
-        "s_a",
-        "Alpha",
-        Role::User,
-        "…the walrus was Paul…",
-    );
-    message.highlights = vec![Highlight { start: 8, end: 14 }];
-    screen.apply_results(
-        generation,
-        results(
-            vec![hit("s_title", "Walrus plans", Role::Title, "Walrus plans")],
-            vec![message],
-        ),
-    );
-
-    let title_target = screen.open_target().expect("a title row is selected");
-    assert_eq!(title_target.session_id, "s_title");
-    assert_eq!(title_target.reveal, None);
-
-    // Group rows toggle instead of opening a session.
-    screen.move_selection(1);
-    assert_eq!(screen.selected_group().as_deref(), Some("s_a"));
-    assert!(screen.open_target().is_none());
-    assert!(screen.toggle_group(3));
-    screen.move_selection(1);
-    let message_target = screen.open_target().expect("a message row is selected");
-    assert_eq!(message_target.session_id, "s_a");
-    assert_eq!(message_target.reveal.as_deref(), Some("the walrus was Paul"));
-}
-
-#[test]
 fn reveal_needle_prefers_the_fragment_holding_the_match() {
     let mut message = hit(
         "s",
@@ -308,10 +115,7 @@ fn reveal_needle_prefers_the_fragment_holding_the_match() {
         "first fragment about nothing …  the needle\n\n  is here  … trailing words",
     );
     // Offset inside the second fragment ("the needle is here").
-    message.highlights = vec![Highlight {
-        start: 34,
-        end: 40,
-    }];
+    message.highlights = vec![Highlight { start: 34, end: 40 }];
     assert_eq!(
         reveal_needle(&message),
         "the needle is here",
@@ -324,62 +128,200 @@ fn reveal_needle_prefers_the_fragment_holding_the_match() {
     assert_eq!(reveal_needle(&whole), "a plain snippet");
 }
 
-#[test]
-fn empty_results_and_failures_have_honest_status_lines() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("nothing") else {
-        panic!()
+fn searched(query: &str, payload: Results) -> Search {
+    let mut search = Search::new();
+    let Effect::Debounce(generation) = search.set_query(query) else {
+        panic!("a real query schedules a search")
     };
-    screen.mark_sent(generation);
-    screen.apply_results(generation, results(vec![], vec![]));
-    assert_eq!(screen.status_line(), "No matches in 12 sessions");
-    assert_eq!(screen.selected(), None);
-    assert_eq!(screen.open_target(), None);
-
-    let Effect::Debounce(generation) = screen.set_query("boom") else {
-        panic!()
-    };
-    screen.mark_sent(generation);
-    assert!(screen.apply_error(generation, "daemon unavailable".into()));
-    assert_eq!(screen.status(), Status::Failed);
-    assert_eq!(screen.status_line(), "daemon unavailable");
-    assert!(screen.rows().is_empty());
+    assert!(search.mark_sent(generation));
+    assert!(search.apply_results(generation, payload, 12.0));
+    search
 }
 
 #[test]
-fn clearing_the_query_forgets_the_previous_results() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("walrus") else {
-        panic!()
+fn blank_and_single_letter_queries_send_nothing() {
+    let mut search = Search::new();
+    assert_eq!(DEBOUNCE, std::time::Duration::from_millis(150));
+    assert_eq!(search.set_query("   "), Effect::Cleared);
+    assert_eq!(search.set_query("a b"), Effect::Cleared);
+    assert_eq!(search.status(), Status::Idle);
+    assert!(search.status_line().is_none());
+    let Effect::Debounce(generation) = search.set_query("walrus") else {
+        panic!("typing must schedule a debounced query");
     };
-    screen.mark_sent(generation);
-    screen.apply_results(
-        generation,
-        results(vec![], vec![hit("s_a", "Alpha", Role::User, "walrus")]),
+    assert!(search.pending());
+    assert_eq!(
+        search.set_query("walrus"),
+        Effect::Cleared,
+        "unchanged text keeps the pending send"
     );
-    assert_eq!(screen.set_query(""), Effect::Cleared);
-    assert!(screen.results().is_none());
-    assert!(screen.rows().is_empty());
-    assert_eq!(screen.status(), Status::Idle);
-    // A late reply for the abandoned query must not repopulate the screen.
-    assert!(!screen.apply_results(
-        generation,
-        results(vec![], vec![hit("s_a", "Alpha", Role::User, "walrus")]),
-    ));
+    assert_eq!(search.pending_query(), ("walrus", generation));
 }
 
 #[test]
-fn truncation_and_singular_counts_read_naturally() {
-    let mut screen = Screen::new();
-    let Effect::Debounce(generation) = screen.set_query("x") else {
+fn stale_replies_are_dropped_and_clearing_forgets_results() {
+    let mut search = Search::new();
+    let Effect::Debounce(first) = search.set_query("wa") else {
         panic!()
     };
-    screen.mark_sent(generation);
-    let mut payload = results(
-        vec![hit("s1", "T", Role::Title, "x")],
-        vec![hit("s2", "t", Role::User, "x")],
+    let Effect::Debounce(second) = search.set_query("wal") else {
+        panic!()
+    };
+    assert!(!search.mark_sent(first), "an older send is refused");
+    assert!(search.mark_sent(second));
+    let payload = || results(vec![], vec![hit("s1", "t", Role::User, "walrus")]);
+    assert!(!search.apply_results(first, payload(), 1.0));
+    assert!(search.pending());
+    assert!(search.apply_results(second, payload(), 1.0));
+    assert_eq!(search.status(), Status::Ready);
+
+    assert_eq!(search.set_query(""), Effect::Cleared);
+    assert!(search.results().is_none());
+    assert!(
+        !search.apply_results(second, payload(), 1.0),
+        "a late reply must not repopulate a cleared picker"
     );
+}
+
+#[test]
+fn rows_put_each_sessions_hits_under_it_capped() {
+    let search = searched(
+        "walrus",
+        results(
+            vec![hit("s_title", "Walrus plans", Role::Title, "Walrus plans")],
+            vec![
+                hit("s_a", "Alpha", Role::User, "walrus one"),
+                hit("s_b", "Beta", Role::Assistant, "walrus two"),
+                hit("s_a", "Alpha", Role::Assistant, "walrus three"),
+                hit("s_a", "Alpha", Role::User, "walrus four"),
+                hit("s_a", "Alpha", Role::User, "walrus five"),
+            ],
+        ),
+    );
+    assert_eq!(
+        search.matched_sessions(),
+        vec![
+            ("s_title".into(), "Walrus plans".into()),
+            ("s_a".into(), "Alpha".into()),
+            ("s_b".into(), "Beta".into()),
+        ],
+        "title matches outrank message matches, each session once"
+    );
+    let rows = search.rows(&["s_a".into(), "s_title".into(), "s_b".into()]);
+    let hit_row = |hit| PickRow::Hit {
+        session_id: "s_a".into(),
+        hit,
+    };
+    assert_eq!(
+        rows,
+        vec![
+            PickRow::Session("s_a".into()),
+            hit_row(0),
+            hit_row(2),
+            hit_row(3),
+            PickRow::Session("s_title".into()),
+            PickRow::Session("s_b".into()),
+            PickRow::Hit {
+                session_id: "s_b".into(),
+                hit: 1
+            },
+        ]
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.session_id() == "s_a").count(),
+        1 + HITS_PER_SESSION
+    );
+}
+
+#[test]
+fn opening_a_row_reveals_the_matching_message() {
+    let mut message = hit("s_a", "Alpha", Role::User, "…the walrus was Paul…");
+    message.highlights = vec![Highlight { start: 5, end: 11 }];
+    let search = searched(
+        "walrus",
+        results(
+            vec![hit("s_t", "Walrus plans", Role::Title, "Walrus plans")],
+            vec![message],
+        ),
+    );
+    let needle = Some("the walrus was Paul".to_string());
+    assert_eq!(
+        search.reveal_for(&PickRow::Hit {
+            session_id: "s_a".into(),
+            hit: 0
+        }),
+        needle
+    );
+    assert_eq!(
+        search.reveal_for(&PickRow::Session("s_a".into())),
+        needle,
+        "a session row opens at its best hit"
+    );
+    assert_eq!(
+        search.reveal_for(&PickRow::Session("s_t".into())),
+        None,
+        "a title-only match opens normally"
+    );
+}
+
+#[test]
+fn keyboard_steps_clamp_and_recover_a_lost_selection() {
+    let rows = vec![
+        PickRow::Session("a".into()),
+        PickRow::Hit {
+            session_id: "a".into(),
+            hit: 0,
+        },
+        PickRow::Session("b".into()),
+    ];
+    assert_eq!(step(&rows, None, 1), Some(rows[0].clone()));
+    assert_eq!(step(&rows, Some(&rows[0]), 1), Some(rows[1].clone()));
+    assert_eq!(step(&rows, Some(&rows[2]), 8), Some(rows[2].clone()));
+    assert_eq!(step(&rows, Some(&rows[1]), -8), Some(rows[0].clone()));
+    assert_eq!(step(&[], None, 1), None);
+}
+
+#[test]
+fn status_line_reports_progress_counts_and_failures() {
+    let mut payload = results(vec![], vec![hit("s", "t", Role::User, "x")]);
     payload.truncated = true;
-    screen.apply_results(generation, payload);
-    assert_eq!(screen.status_line(), "1+ title · 1+ message");
+    assert_eq!(
+        searched("xy", payload).status_line().as_deref(),
+        Some("1+ matching message · 12ms")
+    );
+    let mut search = Search::new();
+    let Effect::Debounce(generation) = search.set_query("boom") else {
+        panic!()
+    };
+    assert_eq!(
+        search.status_line().as_deref(),
+        Some("searching conversations…")
+    );
+    search.mark_sent(generation);
+    assert!(search.apply_error(generation, "daemon unavailable".into()));
+    assert_eq!(
+        search.status_line().as_deref(),
+        Some("conversation search unavailable: daemon unavailable")
+    );
+}
+
+#[test]
+fn query_terms_strip_syntax_fold_case_and_drop_noise() {
+    assert_eq!(
+        query_terms("  \"ЁЖИК\" Walrus a walrus) "),
+        vec!["ежик", "walrus"]
+    );
+    assert!(query_terms("a ( b").is_empty());
+}
+
+#[test]
+fn term_ranges_mark_every_case_insensitive_occurrence() {
+    let text = "Walrus, walrus! Ёжик и ежик";
+    let ranges = term_ranges(text, &query_terms("walrus ежик"));
+    let marked: Vec<&str> = ranges.iter().map(|range| &text[range.clone()]).collect();
+    assert_eq!(marked, vec!["Walrus", "walrus", "Ёжик", "ежик"]);
+    assert!(term_ranges(text, &[]).is_empty());
+    // Overlapping terms keep the longer match and never overlap ranges.
+    let ranges = term_ranges("rollout", &query_terms("roll rollout"));
+    assert_eq!(ranges, vec![0..7]);
 }
