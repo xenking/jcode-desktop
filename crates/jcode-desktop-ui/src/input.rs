@@ -2283,6 +2283,23 @@ impl PromptInput {
         self.set_content(merged, cx);
     }
 
+    /// Show a daemon queued prompt exactly, replacing the composer instead of
+    /// appending. Used when walking the queue with Up/Down so one prompt is
+    /// never merged into another.
+    pub(crate) fn show_queued_prompt(
+        &mut self,
+        content: &str,
+        images: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachments.clear();
+        self.marked_range = None;
+        self.attachment_preview = None;
+        self.content = "".into();
+        self.recall_prompt(content, images, cx);
+        self.history_index = None;
+    }
+
     pub(crate) fn control_revision(&self) -> u64 {
         self.control_revision
     }

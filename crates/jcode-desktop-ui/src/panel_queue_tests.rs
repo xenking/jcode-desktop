@@ -69,6 +69,7 @@ fn restored_unconfirmed_remote_prompt_retries_with_same_id(cx: &mut gpui::TestAp
                 content: "keep me".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                editing: false,
             });
         panel
     });
@@ -100,6 +101,7 @@ fn pending_remote_steer_does_not_offer_retry_before_failure(cx: &mut gpui::TestA
                 content: "pending".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                editing: false,
             });
         panel
     });
@@ -196,10 +198,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            users,
-            ["plain external prompt", "давай делать"]
-        );
+        assert_eq!(users, ["plain external prompt", "давай делать"]);
     });
     let restored = cx.new(|cx| {
         Panel::new(
@@ -227,10 +226,7 @@ fn peer_prompts_and_skill_reminder_survive_live_and_history(cx: &mut gpui::TestA
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            users,
-            ["plain external prompt", "давай делать"]
-        );
+        assert_eq!(users, ["plain external prompt", "давай делать"]);
         assert!(
             !panel.items.iter().any(
                 |item| matches!(item, Item::User(text) if text.contains("skill instructions"))
@@ -318,7 +314,7 @@ fn mixed_known_and_external_injection_keeps_all_text(cx: &mut gpui::TestAppConte
     panel.update(cx, |panel, cx| {
         panel.prompt_queue.pending_remote.push(jcode_sdk::api::QueuedPrompt {
             client_id: "known".into(), active_skill: None, content: "local".into(), images: vec![],
-            mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            mode: jcode_sdk::api::QueuedPromptMode::Steer, editing: false,
         });
         panel.apply(&event(json!({"ev":"soft_interrupt_injected", "content":"local\n\nexternal", "point":"D", "client_ids":["known", "foreign"]})), cx);
         assert!(panel.items.iter().any(|item| matches!(item, Item::User(text) if text.contains("external"))));
@@ -397,6 +393,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
                 content: "Look [#image 1]".into(),
                 images: vec![(image.media_type, image.data)],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                editing: false,
             });
         panel
     });
@@ -591,6 +588,7 @@ fn retry_after_reload_does_not_duplicate_delivered_history(cx: &mut gpui::TestAp
                 content: "already delivered".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
+                editing: false,
             });
         panel
     });
@@ -617,6 +615,7 @@ fn retry_keeps_a_new_prompt_identical_to_older_history(cx: &mut gpui::TestAppCon
                 content: "repeat".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::AfterYield,
+                editing: false,
             });
         panel
             .prompt_queue
@@ -1568,5 +1567,161 @@ fn undelivered_steered_message_is_kept_when_the_turn_ends(cx: &mut gpui::TestApp
         ),
         "received {} commands",
         sent.len()
+    );
+}
+
+fn editing_test_prompt(
+    id: &str,
+    content: &str,
+    mode: jcode_sdk::api::QueuedPromptMode,
+) -> jcode_sdk::api::QueuedPrompt {
+    jcode_sdk::api::QueuedPrompt {
+        client_id: id.into(),
+        active_skill: None,
+        content: content.into(),
+        images: vec![],
+        mode,
+        editing: false,
+    }
+}
+
+fn drain_commands(commands: &std::sync::mpsc::Receiver<Command>) -> Vec<Command> {
+    let mut drained = Vec::new();
+    while let Ok(command) = commands.try_recv() {
+        drained.push(command);
+    }
+    drained
+}
+
+#[gpui::test]
+fn queued_edit_up_recalls_and_enter_saves_in_place(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-edit".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.prompt_queue.remote_supported = true;
+        panel.prompt_queue.remote_editing_supported = true;
+        panel.prompt_queue.remote = vec![
+            editing_test_prompt("p1", "first queued", QueuedPromptMode::Steer),
+            editing_test_prompt("p2", "second queued", QueuedPromptMode::AfterYield),
+        ];
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_keystrokes("up");
+    assert_eq!(
+        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+        "second queued",
+        "Up loads the last queued prompt"
+    );
+    assert!(
+        drain_commands(&commands).iter().any(|command| matches!(
+            command,
+            Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p2"
+        )),
+        "recalling a queued prompt holds it on the daemon"
+    );
+    vcx.simulate_keystrokes("up");
+    assert_eq!(
+        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+        "first queued",
+        "a second Up walks to the earlier queued prompt"
+    );
+    let commands_after_walk = drain_commands(&commands);
+    assert!(commands_after_walk.iter().any(|command| matches!(
+        command,
+        Command::SetQueuedPromptEditing { prompt_id, editing: true, .. } if prompt_id == "p1"
+    )));
+    vcx.simulate_input(" edited");
+    vcx.simulate_keystrokes("enter");
+    let mut saved = false;
+    for command in drain_commands(&commands) {
+        if let Command::EditQueuedPrompt {
+            prompt_id, content, ..
+        } = &command
+        {
+            assert_eq!(prompt_id, "p1");
+            assert_eq!(content, "first queued edited");
+            saved = true;
+        }
+        assert!(
+            !matches!(&command, Command::QueuePrompt { .. }),
+            "saving an edit must never append a new queue item"
+        );
+    }
+    assert!(saved, "Enter saves the edit in place");
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(
+            panel
+                .prompt_queue
+                .remote
+                .iter()
+                .map(|prompt| prompt.client_id.as_str())
+                .collect::<Vec<_>>(),
+            ["p1", "p2"],
+            "queue order is unchanged while editing"
+        );
+        assert_eq!(
+            panel.prompt_queue.remote[0].mode,
+            QueuedPromptMode::Steer,
+            "editing keeps the delivery mode"
+        );
+        assert_eq!(
+            panel.prompt_queue.remote[1].mode,
+            QueuedPromptMode::AfterYield
+        );
+    });
+}
+
+#[gpui::test]
+fn queued_edit_esc_restores_the_draft(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode;
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("queue-edit-esc".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.prompt_queue.remote_supported = true;
+        panel.prompt_queue.remote_editing_supported = true;
+        panel.prompt_queue.remote = vec![editing_test_prompt(
+            "p1",
+            "original queued text",
+            QueuedPromptMode::Steer,
+        )];
+        panel
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_keystrokes("up");
+    vcx.simulate_input(" changed");
+    assert_eq!(
+        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+        "original queued text changed"
+    );
+    vcx.simulate_keystrokes("escape");
+    assert_eq!(
+        panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+        "",
+        "Esc restores the pre-edit draft"
+    );
+    let released = drain_commands(&commands);
+    assert!(released.iter().any(|command| matches!(
+        command,
+        Command::SetQueuedPromptEditing { prompt_id, editing: false, .. } if prompt_id == "p1"
+    )));
+    assert!(
+        !released
+            .iter()
+            .any(|command| matches!(command, Command::EditQueuedPrompt { .. })),
+        "Esc must not save anything"
     );
 }

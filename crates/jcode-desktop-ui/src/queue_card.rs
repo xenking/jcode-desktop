@@ -521,9 +521,9 @@ impl Panel {
         let retry_id = id.clone();
         let retry = prompt.clone();
         let delete_prompt = prompt.clone();
-        let edit_prompt = prompt.clone();
         let mutations = self.prompt_queue.remote_mutations_supported
             && !self.prompt_queue.remote_removing.contains(&id);
+        let editing_supported = self.prompt_queue.remote_editing_supported;
         let full = prompt.content.clone();
         let failed = self.prompt_queue.remote_failures.contains_key(&id);
         let next = match prompt.mode {
@@ -575,6 +575,19 @@ impl Panel {
                                 cx.notify();
                             })),
                     )
+                    .when(prompt.editing, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("queue-editing-{id}")))
+                                .debug_selector(|| "remote-queue-editing".into())
+                                .flex_none()
+                                .rounded_full()
+                                .px_2()
+                                .py_1()
+                                .text_color(theme.TEXT_DIM)
+                                .child("editing"),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("queue-mode-{id}")))
@@ -736,13 +749,13 @@ impl Panel {
                                 cx.notify();
                             }),
                         ))
-                        .when(mutations, |el| {
+                        .when(mutations && editing_supported, |el| {
                             el.child(menu_action(
                                 "remote-queue-edit",
                                 index.unwrap_or(0),
                                 "Edit",
                                 cx.listener(move |this, _, window, cx| {
-                                    this.remove_remote_card_prompt(edit_prompt.clone(), true, cx);
+                                    this.begin_queued_prompt_edit(index.unwrap_or(0), window, cx);
                                     this.focus_input(window, cx);
                                     cx.stop_propagation();
                                 }),

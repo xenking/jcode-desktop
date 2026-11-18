@@ -254,6 +254,7 @@ mod socket_tests {
                 content: "keep me".into(),
                 images: vec![],
                 mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                editing: false,
             }))
             .unwrap();
         assert!(

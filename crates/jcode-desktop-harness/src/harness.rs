@@ -189,6 +189,15 @@ pub enum Update {
         session_id: String,
         supported: bool,
     },
+    QueueEditingCapability {
+        session_id: String,
+        supported: bool,
+    },
+    QueuedPromptEdited {
+        session_id: String,
+        prompt_id: String,
+        result: Result<jcode_sdk::api::QueuedPromptEditOutcome, String>,
+    },
     QueueRemovalSettled {
         session_id: String,
         prompt: jcode_sdk::api::QueuedPrompt,
@@ -325,6 +334,19 @@ pub enum Command {
         session_id: String,
         prompt: jcode_sdk::api::QueuedPrompt,
         edit: bool,
+    },
+    /// Hold a queued prompt open for editing, or release the hold.
+    SetQueuedPromptEditing {
+        session_id: String,
+        prompt_id: String,
+        editing: bool,
+    },
+    /// Replace a still-queued prompt in place.
+    EditQueuedPrompt {
+        session_id: String,
+        prompt_id: String,
+        content: String,
+        images: Vec<(String, String)>,
     },
     ReorderQueuedPrompts {
         session_id: String,
@@ -480,6 +502,8 @@ enum SessionCommand {
     },
     QueuePrompt(jcode_sdk::api::QueuedPrompt),
     RemoveQueuedPrompt(jcode_sdk::api::QueuedPrompt, bool),
+    SetQueuedPromptEditing(String, bool),
+    EditQueuedPrompt(String, String, Vec<(String, String)>),
     ReorderQueuedPrompts(Vec<String>),
     SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
     InterruptQueuedPrompt(String),
@@ -1393,6 +1417,31 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::RemoveQueuedPrompt(prompt, edit),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SetQueuedPromptEditing {
+                session_id,
+                prompt_id,
+                editing,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SetQueuedPromptEditing(prompt_id, editing),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::EditQueuedPrompt {
+                session_id,
+                prompt_id,
+                content,
+                images,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -2724,6 +2773,10 @@ fn session_worker_with_connector(
             session_id: session_id.clone(),
             supported: client.supports("queued_prompt_mutations_v1"),
         });
+        let _ = updates.send(Update::QueueEditingCapability {
+            session_id: session_id.clone(),
+            supported: client.supports("queued_prompt_editing"),
+        });
         if client.supports("queued_prompts") {
             let _ = updates.send(Update::Event {
                 session_id: session_id.clone(),
@@ -2905,6 +2958,46 @@ fn session_worker_with_connector(
                             session_id: session_id.clone(),
                             prompt,
                             edit,
+                            result,
+                        });
+                    }
+                    SessionCommand::SetQueuedPromptEditing(prompt_id, editing) => {
+                        let result = if client.supports("queued_prompt_editing") {
+                            client
+                                .set_queued_prompt_editing(
+                                    real_id,
+                                    "jcode-desktop",
+                                    &prompt_id,
+                                    editing,
+                                )
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue editing is not supported by this runtime".into())
+                        };
+                        if let Err(reason) = result {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                        }
+                    }
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images) => {
+                        let result = if client.supports("queued_prompt_editing") {
+                            client
+                                .edit_queued_prompt(
+                                    real_id,
+                                    "jcode-desktop",
+                                    &prompt_id,
+                                    content,
+                                    images,
+                                )
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue editing is not supported by this runtime".into())
+                        };
+                        let _ = updates.send(Update::QueuedPromptEdited {
+                            session_id: session_id.clone(),
+                            prompt_id,
                             result,
                         });
                     }

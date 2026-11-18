@@ -2047,6 +2047,16 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        // A queued prompt loaded with Up is saved back into its
+                        // original queue slot, never appended as a new one.
+                        if let Some(panel) = weak.upgrade()
+                            && panel.read(app).queued_edit_active()
+                        {
+                            panel.update(app, |this, cx| {
+                                this.save_queued_prompt_edit(content, images, cx);
+                            });
+                            return;
+                        }
                         if images.is_empty()
                             && let Some(panel) = weak.upgrade()
                             && !panel.read(app).is_pending_session()
@@ -6262,7 +6272,10 @@ impl Render for Panel {
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
-                if this.ask_editor_focused(window, cx) {
+                if this.queued_edit_active() {
+                    this.cancel_queued_prompt_edit(window, cx);
+                    cx.stop_propagation();
+                } else if this.ask_editor_focused(window, cx) {
                     window.focus(&this.focus_handle, cx);
                     cx.notify();
                     cx.stop_propagation();
@@ -6270,6 +6283,28 @@ impl Render for Panel {
                     cx.propagate();
                 }
             }))
+            // Up recalls the newest daemon-queued prompt for in-place editing
+            // when the composer is empty, then walks older queued prompts.
+            // Anything the queue does not claim falls through to the composer's
+            // ordinary prompt history.
+            .capture_action(
+                cx.listener(|this, _: &crate::input::HistoryPrev, window, cx| {
+                    if this.queue_recall_prev(window, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &crate::input::HistoryNext, window, cx| {
+                    if this.queue_recall_next(window, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .capture_action(cx.listener(|this, _: &crate::input::Submit, window, cx| {
                 if this.ask_editor_focused(window, cx) {
                     if let Some(card) = this.ask_card.as_mut() {

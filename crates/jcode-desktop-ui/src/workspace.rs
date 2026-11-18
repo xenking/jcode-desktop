@@ -73,19 +73,19 @@ mod sidebar_collections;
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
+#[path = "sidebar_header.rs"]
+mod sidebar_header;
+#[cfg(test)]
+#[path = "sidebar_header_tests.rs"]
+mod sidebar_header_tests;
 #[path = "workspace_sidebar_metadata.rs"]
 mod sidebar_metadata;
 #[path = "sidebar_projects.rs"]
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
-#[path = "sidebar_header.rs"]
-mod sidebar_header;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
-#[cfg(test)]
-#[path = "sidebar_header_tests.rs"]
-mod sidebar_header_tests;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
@@ -2846,6 +2846,33 @@ impl Workspace {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
                             panel.set_queue_mutations_supported(supported, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueueEditingCapability {
+                session_id,
+                supported,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_editing_supported(supported, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueuedPromptEdited {
+                session_id,
+                prompt_id,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queued_prompt_edited(&prompt_id, result.clone(), cx)
                         });
                         break;
                     }

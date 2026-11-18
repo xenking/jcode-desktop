@@ -37,6 +37,17 @@ pub struct PromptQueue {
     remote_mutations_supported: bool,
     #[serde(skip)]
     remote_removing: std::collections::HashSet<String>,
+    /// Daemon prompt currently loaded into the composer for in-place editing.
+    /// It stays queued (position and mode intact) but the daemon holds it so
+    /// it cannot be delivered while the user edits it.
+    #[serde(skip)]
+    queued_edit: Option<QueuedPromptEditState>,
+    /// A save whose outcome has not landed yet, so a rejection can put the
+    /// edited text back instead of losing it.
+    #[serde(skip)]
+    queued_edit_pending: Option<QueuedPromptEditSave>,
+    #[serde(skip)]
+    remote_editing_supported: bool,
     #[serde(default)]
     pending_remote: Vec<jcode_sdk::api::QueuedPrompt>,
     #[serde(skip)]
@@ -72,6 +83,23 @@ fn default_follow_up() -> bool {
     true
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct QueuedPromptEditState {
+    index: usize,
+    prompt_id: String,
+    draft: crate::input::PromptInputSnapshot,
+    active_skill: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct QueuedPromptEditSave {
+    prompt_id: String,
+    content: String,
+    images: Vec<(String, String)>,
+    draft: crate::input::PromptInputSnapshot,
+    active_skill: Option<String>,
+}
+
 impl Panel {
     pub(crate) fn set_queue_mutations_supported(
         &mut self,
@@ -79,6 +107,240 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.prompt_queue.remote_mutations_supported = supported;
+        cx.notify();
+    }
+
+    pub(crate) fn set_queue_editing_supported(&mut self, supported: bool, cx: &mut Context<Self>) {
+        self.prompt_queue.remote_editing_supported = supported;
+        cx.notify();
+    }
+
+    pub(super) fn queued_edit_active(&self) -> bool {
+        self.prompt_queue.queued_edit.is_some()
+    }
+
+    /// Load a daemon-queued prompt into the composer for in-place editing.
+    /// Clicking Edit on a queue card uses the same path as Up recall.
+    pub(super) fn begin_queued_prompt_edit(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.load_queued_prompt_edit(index, window, cx);
+    }
+
+    /// Up with an empty composer recalls the newest daemon-queued prompt for
+    /// editing; while editing, Up walks towards older queued prompts.
+    pub(super) fn queue_recall_prev(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(edit) = self.prompt_queue.queued_edit.as_ref() {
+            if edit.index == 0 {
+                // Past the oldest queued prompt: give the draft back and let
+                // ordinary prompt history take this Up.
+                self.cancel_queued_prompt_edit(window, cx);
+                return false;
+            }
+            let index = edit.index - 1;
+            self.load_queued_prompt_edit(index, window, cx);
+            return true;
+        }
+        if !self.prompt_queue.remote_editing_supported || self.prompt_queue.remote.is_empty() {
+            return false;
+        }
+        if !self.input.read(cx).content.trim().is_empty() {
+            return false;
+        }
+        let index = self.prompt_queue.remote.len() - 1;
+        self.load_queued_prompt_edit(index, window, cx);
+        true
+    }
+
+    /// Down while editing walks towards newer queued prompts, then restores
+    /// the draft and hands the key back to normal prompt history.
+    pub(super) fn queue_recall_next(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self
+            .prompt_queue
+            .queued_edit
+            .as_ref()
+            .map(|edit| edit.index)
+        else {
+            return false;
+        };
+        if index + 1 < self.prompt_queue.remote.len() {
+            self.load_queued_prompt_edit(index + 1, window, cx);
+        } else {
+            self.cancel_queued_prompt_edit(window, cx);
+        }
+        true
+    }
+
+    /// Enter while editing: replace the queued prompt in place.
+    pub(super) fn save_queued_prompt_edit(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = self.prompt_queue.queued_edit.take() else {
+            return false;
+        };
+        self.prompt_queue.queued_edit_pending = Some(QueuedPromptEditSave {
+            prompt_id: edit.prompt_id.clone(),
+            content: content.clone(),
+            images: images.clone(),
+            draft: edit.draft,
+            active_skill: edit.active_skill.clone(),
+        });
+        self.active_skill = edit.active_skill;
+        self.bridge.send(Command::EditQueuedPrompt {
+            session_id: self.session_id.clone(),
+            prompt_id: edit.prompt_id,
+            content,
+            images,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Esc while editing: release the daemon hold and restore the draft.
+    pub(super) fn cancel_queued_prompt_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = self.prompt_queue.queued_edit.take() else {
+            return false;
+        };
+        self.bridge.send(Command::SetQueuedPromptEditing {
+            session_id: self.session_id.clone(),
+            prompt_id: edit.prompt_id,
+            editing: false,
+        });
+        self.input
+            .update(cx, |input, cx| input.restore(edit.draft, cx));
+        self.active_skill = edit.active_skill;
+        self.focus_input(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// Outcome of an in-place edit. A rejection restores the edited text so it
+    /// is never lost.
+    pub(crate) fn queued_prompt_edited(
+        &mut self,
+        prompt_id: &str,
+        result: Result<jcode_sdk::api::QueuedPromptEditOutcome, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let pending = self
+            .prompt_queue
+            .queued_edit_pending
+            .take_if(|save| save.prompt_id == prompt_id);
+        match result {
+            Ok(jcode_sdk::api::QueuedPromptEditOutcome::Edited) => {}
+            Ok(outcome) => {
+                self.items.push(Item::Error(format!(
+                    "Could not save queued message: {outcome:?}"
+                )));
+                if let Some(save) = pending {
+                    self.restore_rejected_queue_edit(save, cx);
+                }
+            }
+            Err(reason) => {
+                self.items.push(Item::Error(format!(
+                    "Queue edit could not be confirmed: {reason}. The text is back in the composer; check whether the original was delivered before sending it again."
+                )));
+                if let Some(save) = pending {
+                    self.restore_rejected_queue_edit(save, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn restore_rejected_queue_edit(&mut self, save: QueuedPromptEditSave, cx: &mut Context<Self>) {
+        self.active_skill = save.active_skill;
+        self.input.update(cx, |input, cx| {
+            input.restore(save.draft, cx);
+            input.show_queued_prompt(&save.content, save.images, cx);
+        });
+    }
+
+    fn load_queued_prompt_edit(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self.prompt_queue.remote.get(index).cloned() else {
+            return;
+        };
+        // Switching items keeps the draft captured when editing began and
+        // moves the daemon hold to the newly selected prompt.
+        let (draft, active_skill) = match self.prompt_queue.queued_edit.take() {
+            Some(previous) => {
+                self.bridge.send(Command::SetQueuedPromptEditing {
+                    session_id: self.session_id.clone(),
+                    prompt_id: previous.prompt_id,
+                    editing: false,
+                });
+                (previous.draft, previous.active_skill)
+            }
+            None => (self.input.read(cx).snapshot(), self.active_skill.clone()),
+        };
+        self.active_skill = prompt.active_skill.clone();
+        self.input.update(cx, |input, cx| {
+            input.show_queued_prompt(&prompt.content, prompt.images.clone(), cx);
+        });
+        self.prompt_queue.queued_edit = Some(QueuedPromptEditState {
+            index,
+            prompt_id: prompt.client_id.clone(),
+            draft,
+            active_skill,
+        });
+        self.bridge.send(Command::SetQueuedPromptEditing {
+            session_id: self.session_id.clone(),
+            prompt_id: prompt.client_id,
+            editing: true,
+        });
+        self.focus_input(window, cx);
+        cx.notify();
+    }
+
+    /// Keep the edit target pointing at the same prompt after a queue
+    /// snapshot, and give the draft back if the daemon no longer owns it.
+    fn sync_queued_edit_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.prompt_queue.queued_edit.as_ref() else {
+            return;
+        };
+        if let Some(index) = self
+            .prompt_queue
+            .remote
+            .iter()
+            .position(|prompt| prompt.client_id == edit.prompt_id)
+        {
+            if let Some(edit) = self.prompt_queue.queued_edit.as_mut() {
+                edit.index = index;
+            }
+            return;
+        }
+        let Some(edit) = self.prompt_queue.queued_edit.take() else {
+            return;
+        };
+        self.input
+            .update(cx, |input, cx| input.restore(edit.draft, cx));
+        self.active_skill = edit.active_skill;
+        self.items.push(Item::Error(
+            "The queued prompt you were editing is no longer queued. Draft restored; check the conversation before sending it again.".into(),
+        ));
         cx.notify();
     }
 
@@ -301,6 +563,7 @@ impl Panel {
                 } else {
                     jcode_sdk::api::QueuedPromptMode::AfterYield
                 },
+                editing: false,
             });
         }
     }
@@ -480,6 +743,7 @@ impl Panel {
             } else {
                 jcode_sdk::api::QueuedPromptMode::Steer
             },
+            editing: false,
         };
         let history_count = self
             .items
@@ -646,6 +910,7 @@ impl Panel {
                         });
                     }
                 }
+                self.sync_queued_edit_snapshot(cx);
             }
             ApiEvent::SoftInterruptInjected {
                 client_ids,
