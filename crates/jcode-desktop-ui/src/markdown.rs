@@ -1820,7 +1820,7 @@ pub(crate) fn selection_segments(
 fn collect_selection_segments(
     source: &str,
     key_prefix: &str,
-    reasoning: bool,
+    _reasoning: bool,
     prompt: bool,
     segments: &mut Vec<(SharedString, SharedString)>,
 ) {
@@ -1831,12 +1831,7 @@ fn collect_selection_segments(
         let key = format!("{key_prefix}-{block_index}");
         match block {
             Block::Paragraph(text) => {
-                let text = if reasoning {
-                    reasoning_section_title(&text).unwrap_or(&text)
-                } else {
-                    &text
-                };
-                segments.push((key.into(), inline_spans(text).plain.into()));
+                segments.push((key.into(), inline_spans(&text).plain.into()));
             }
             Block::Heading(_, text) | Block::Bullet { text, .. } | Block::Numbered { text, .. } => {
                 segments.push((key.into(), inline_spans(&text).plain.into()));
@@ -2029,18 +2024,6 @@ fn render_document(
     )
 }
 
-// Providers often send reasoning section titles as standalone bold paragraphs
-// rather than ATX headings. Do not promote ordinary prose or partial emphasis.
-fn reasoning_section_title(text: &str) -> Option<&str> {
-    let text = text.trim();
-    let title = text.strip_prefix("**")?.strip_suffix("**")?;
-    (!title.trim().is_empty()
-        && !title.contains('\n')
-        && !title.contains("**")
-        && title.chars().count() <= 100)
-        .then_some(title)
-}
-
 #[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document_with_prompt_background(
     source: &str,
@@ -2071,12 +2054,6 @@ fn render_document_with_prompt_background(
     for (block_index, block) in blocks.into_iter().enumerate() {
         // Only prose leaves fade. Table cells and code keep full contrast.
         LEAF_FADE.set(fades.get(block_index).copied().unwrap_or_default());
-        let block = match block {
-            Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
-                .map(|title| Block::Heading(3, title.to_owned()))
-                .unwrap_or(block),
-            block => block,
-        };
         let text_key = || -> SharedString { format!("{key_prefix}-{block_index}").into() };
         let is_list = matches!(block, Block::Bullet { .. } | Block::Numbered { .. });
         let tight = is_list && previous_was_list;
@@ -2117,7 +2094,7 @@ fn render_document_with_prompt_background(
         let element = match block {
             Block::Heading(level, text) => {
                 let (size, weight) = match level {
-                    _ if reasoning => (px(16.5), FontWeight::SEMIBOLD),
+                    _ if reasoning => (px(12.0), FontWeight::SEMIBOLD),
                     1 => (px(19.0), FontWeight::BOLD),
                     2 => (px(16.5), FontWeight::BOLD),
                     3 => (px(14.5), FontWeight::SEMIBOLD),
@@ -3221,7 +3198,7 @@ mod tests {
         assert!(vcx.debug_bounds("restored-reasoning").is_some());
         let heading = vcx.debug_bounds("selectable-text-0-0-0").unwrap();
         let body = vcx.debug_bounds("selectable-text-0-0-1").unwrap();
-        assert!(heading.size.height > body.size.height);
+        assert_eq!(heading.size.height, body.size.height, "reasoning titles must use body-sized text");
         let answer = vcx.debug_bounds("selectable-text-0-1").unwrap();
         assert!(answer.top() >= heading.bottom());
         for (bounds, expected) in [(heading, "Checking top live tabs"), (answer, "The answer.")] {
@@ -3239,28 +3216,6 @@ mod tests {
                 .and_then(|item| item.text());
             assert_eq!(copied.as_deref(), Some(expected));
         }
-    }
-
-    #[test]
-    fn reasoning_section_titles_only_promote_short_standalone_emphasis() {
-        assert_eq!(
-            reasoning_section_title("**Classifying voice support**"),
-            Some("Classifying voice support")
-        );
-        for source in [
-            "ordinary text",
-            "**bold** and prose",
-            "**one** and **two**",
-            "****",
-            "**two\nlines**",
-            "**unfinished",
-        ] {
-            assert_eq!(reasoning_section_title(source), None, "{source}");
-        }
-        assert_eq!(
-            reasoning_section_title(&format!("**{}**", "x".repeat(101))),
-            None
-        );
     }
 
     /// Nested inline spans produce overlapping highlight ranges. GPUI aborts
