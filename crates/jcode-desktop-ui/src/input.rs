@@ -1752,12 +1752,16 @@ impl PromptInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        match crate::clipboard_image::read() {
-            Ok(Some(image)) => {
+        match crate::clipboard_image::read_paste() {
+            Ok(crate::clipboard_image::ClipboardContent::Files(files)) => {
+                self.drop_files(&files, window, cx);
+                return;
+            }
+            Ok(crate::clipboard_image::ClipboardContent::Image(image)) => {
                 self.attach_image(image, cx);
                 return;
             }
-            Ok(None) => {}
+            Ok(crate::clipboard_image::ClipboardContent::Empty) => {}
             Err(error) => {
                 self.attachment_notice = Some(format!("image paste unavailable: {error}").into());
             }
