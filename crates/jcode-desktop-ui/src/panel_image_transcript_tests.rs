@@ -38,6 +38,7 @@ fn session_gallery_is_available_without_loaded_history_images(cx: &mut gpui::Tes
 
 fn image_marker_history_message() -> jcode_sdk::HistoryMessage {
     jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         role: "user".into(), content: "text[#image 1]more".into(),
         tool: None, timestamp_ms: None, response_stats: None,
     }
@@ -452,6 +453,7 @@ fn tool(call: &str) -> Item {
 
 fn message(role: &str, content: &str) -> jcode_sdk::HistoryMessage {
     jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         response_stats: None,
         timestamp_ms: None,
         tool: None,

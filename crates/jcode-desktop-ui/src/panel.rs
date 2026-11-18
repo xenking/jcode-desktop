@@ -8537,6 +8537,7 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
                         timestamp_ms: None,
                         tool: None,
@@ -8547,6 +8548,7 @@ mod tests {
                             .join("\n\n"),
                     },
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
                         timestamp_ms: None,
                         tool: None,
@@ -8594,6 +8596,7 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
                         timestamp_ms: None,
                         tool: None,
@@ -8601,6 +8604,7 @@ mod tests {
                         content: "Fix the rendering".into(),
                     },
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
                         timestamp_ms: None,
                         tool: None,
@@ -8720,6 +8724,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
                     timestamp_ms: None,
                     tool: None,
@@ -10517,11 +10522,13 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None, timestamp_ms: None, tool: None,
                         role: "user".into(),
                         content: "hello".into(),
                     },
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None, timestamp_ms: None, tool: None,
                         role: "assistant".into(),
                         content: "recovered response".into(),
@@ -10539,7 +10546,7 @@ mod tests {
             *panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
-                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None, timestamp_ms: None, tool: None }, jcode_sdk::HistoryMessage {
+                vec![jcode_sdk::HistoryMessage { attachments: Vec::new(), role: "user".into(), content: "next".into(), response_stats: None, timestamp_ms: None, tool: None }, jcode_sdk::HistoryMessage { attachments: Vec::new(),
                     response_stats: None, timestamp_ms: None, tool: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
@@ -10615,6 +10622,7 @@ mod tests {
             panel.items.clear();
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
                     timestamp_ms: None,
                     tool: None,

@@ -382,6 +382,7 @@ mod tests {
             panel.history_loaded = false;
             let message =
                 |role: &str, content: &str, at: i64, stats: bool| jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     role: role.into(),
                     content: content.into(),
                     timestamp_ms: Some(at),
@@ -536,6 +537,7 @@ mod tests {
         let history = || {
             vec![
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     role: "user".into(),
                     content: "Question".into(),
                     response_stats: None,
@@ -543,6 +545,7 @@ mod tests {
                     tool: None,
                 },
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     timestamp_ms: None,
                     role: "assistant".into(),
                     content: "Answer".into(),

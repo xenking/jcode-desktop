@@ -25,6 +25,7 @@ fn memory_rows(items: &[Item]) -> Vec<CompactionRow> {
 #[test]
 fn organization_tool_rows_are_restored_after_a_reload() {
     let message = jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         timestamp_ms: None,
         response_stats: None,
         role: "memory".into(),
@@ -44,6 +45,7 @@ fn organization_tool_rows_are_restored_after_a_reload() {
 #[test]
 fn stored_memory_tool_calls_survive_a_reload() {
     let message = jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         timestamp_ms: None,
         response_stats: None,
         role: "tool".into(),

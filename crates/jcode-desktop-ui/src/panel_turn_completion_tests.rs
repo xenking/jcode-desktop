@@ -17,8 +17,10 @@ fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::T
             panel.connection_phase = "streaming".into();
             panel.status = "lost: reconnecting".into();
             panel.load_history(vec![jcode_sdk::HistoryMessage {
+                attachments: Vec::new(),
                 response_stats: None, timestamp_ms: None, tool: None, role: "user".into(), content: "hello".into(),
             }, jcode_sdk::HistoryMessage {
+                attachments: Vec::new(),
                 response_stats: None, timestamp_ms: None, tool: None,
                 role: "assistant".into(), content: "partial response".into(),
             }], vec![], cx);
@@ -75,6 +77,7 @@ fn reconnect_history_does_not_replay_previous_answer_over_a_new_turn(
         panel.load_history(
             vec![
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
                     timestamp_ms: None,
                     tool: None,
@@ -82,6 +85,7 @@ fn reconnect_history_does_not_replay_previous_answer_over_a_new_turn(
                     content: "old answer".into(),
                 },
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
                     timestamp_ms: None,
                     tool: None,

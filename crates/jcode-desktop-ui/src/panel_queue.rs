@@ -799,17 +799,6 @@ impl Panel {
         cx.notify();
     }
 
-    fn send_remote_prompt(
-        &mut self,
-        content: String,
-        images: Vec<(String, String)>,
-        after_yield: bool,
-        active_skill: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.send_remote_prompt_with_files(content, images, Vec::new(), after_yield, active_skill, cx);
-    }
-
     fn send_remote_prompt_with_files(
         &mut self,
         content: String,

@@ -14,6 +14,7 @@ fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTest
 fn history(rows: &[(&str, &str)]) -> Vec<jcode_sdk::HistoryMessage> {
     rows.iter()
         .map(|(role, content)| jcode_sdk::HistoryMessage {
+            attachments: Vec::new(),
             role: (*role).into(),
             content: (*content).into(),
             response_stats: None,

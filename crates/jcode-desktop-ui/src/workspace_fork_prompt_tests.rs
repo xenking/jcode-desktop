@@ -146,6 +146,7 @@ fn workspace_fork_with_prompt_shows_the_question_and_working_indicator(
 
 fn user_message(content: &str) -> jcode_sdk::HistoryMessage {
     jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         timestamp_ms: None,
         response_stats: None,
         role: "user".into(),

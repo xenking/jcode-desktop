@@ -4,6 +4,7 @@ fn history(pairs: &[(&str, &str)]) -> crate::persisted_history::History {
     let messages = pairs
         .iter()
         .map(|(role, content)| jcode_sdk::HistoryMessage {
+            attachments: Vec::new(),
             response_stats: None,
             timestamp_ms: None,
             tool: None,

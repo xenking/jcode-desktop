@@ -38,6 +38,7 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
     let messages = messages
         .into_iter()
         .map(|message| jcode_sdk::HistoryMessage {
+            attachments: message.attachments,
             timestamp_ms: message.timestamp_ms,
             response_stats: message
                 .response_stats

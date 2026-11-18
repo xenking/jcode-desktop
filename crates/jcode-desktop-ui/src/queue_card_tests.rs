@@ -379,6 +379,7 @@ fn paused_queue_is_labelled_in_the_header_and_resumes(cx: &mut gpui::TestAppCont
         panel.items.push(Item::User("initial".into()));
         for content in ["first queued message", "second queued message"] {
             panel.prompt_queue.prompts.push(QueuedPrompt {
+                files: Vec::new(),
                 content: content.into(),
                 images: vec![],
                 active_skill: None,
@@ -425,6 +426,7 @@ fn reconnect_waits_neutrally_then_flushes_the_queue(cx: &mut gpui::TestAppContex
         panel.prompt_queue.waiting_for_connection = true;
         panel.items.push(Item::User("initial".into()));
         panel.prompt_queue.prompts.push(QueuedPrompt {
+            files: Vec::new(),
             content: "typed during the outage".into(),
             images: vec![],
             active_skill: None,

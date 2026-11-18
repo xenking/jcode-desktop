@@ -379,6 +379,7 @@ mod tests {
         values
             .iter()
             .map(|(role, content)| jcode_sdk::HistoryMessage {
+                attachments: Vec::new(),
                 role: (*role).into(),
                 content: (*content).into(),
                 tool: None,
@@ -741,6 +742,7 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
         let messages = (0..50)
             .map(|i| jcode_sdk::HistoryMessage {
+                attachments: Vec::new(),
                 role: "user".into(),
                 content: format!("recent {i}"),
                 timestamp_ms: None,
@@ -1007,6 +1009,7 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
         let mut initial = rows(&[("system", marker())]);
         initial.extend((0..50).map(|i| jcode_sdk::HistoryMessage {
+            attachments: Vec::new(),
             role: "user".into(),
             content: format!("recent {i}"),
             timestamp_ms: None,

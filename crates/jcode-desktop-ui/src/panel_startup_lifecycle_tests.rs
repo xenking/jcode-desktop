@@ -3,6 +3,7 @@ use super::*;
 
 fn history(prompt: &str) -> Vec<jcode_sdk::HistoryMessage> {
     vec![jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         response_stats: None,
         timestamp_ms: None,
         tool: None,
