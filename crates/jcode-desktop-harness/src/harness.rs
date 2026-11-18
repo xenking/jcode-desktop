@@ -302,7 +302,7 @@ pub enum Command {
     },
     GetHistoryPage {
         session_id: String,
-        before: String,
+        before: Option<String>,
     },
     GetHistoryImage {
         session_id: String,
@@ -485,7 +485,7 @@ pub enum SessionOperation {
 enum SessionCommand {
     RefreshRuntime,
     GetCompactedHistory(usize),
-    GetHistoryPage(String),
+    GetHistoryPage(Option<String>),
     GetHistoryImage(String),
     ListSessionImages,
     TodoState,
@@ -2847,7 +2847,7 @@ fn session_worker_with_connector(
                     }
                     SessionCommand::GetHistoryPage(before) => {
                         let result = client
-                            .get_history_page(real_id, Some(before))
+                            .get_history_page(real_id, before)
                             .map_err(|error| error.to_string());
                         let _ = updates.send(Update::BoundedHistoryPage {
                             session_id: session_id.clone(),
