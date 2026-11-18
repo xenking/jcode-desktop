@@ -97,6 +97,7 @@ impl HistoryPaging {
                     (Item::Compaction(left), Item::Compaction(right)) => {
                         left.content == right.content
                     }
+                    (Item::Memory(left), Item::Memory(right)) => left.content == right.content,
                     _ => left == right,
                 })
         })

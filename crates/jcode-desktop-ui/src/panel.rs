@@ -59,6 +59,10 @@ mod selection_tests;
 mod file_drop_tests;
 
 #[cfg(test)]
+#[path = "panel_memory_tests.rs"]
+mod memory_tests;
+
+#[cfg(test)]
 #[path = "panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
 
@@ -365,6 +369,10 @@ pub enum Item {
     /// A completed or in-progress context compaction: one full-width rule with a
     /// centered label that expands to the summary and elided-message detail.
     Compaction(compaction::CompactionRow),
+    /// An automatic memory injection: one full-width rule labelled
+    /// `auto-recalled N memories` that expands to what was recalled. Live and
+    /// reloaded rows share the body the daemon stores, so they cannot drift.
+    Memory(compaction::CompactionRow),
     /// Daemon-reported KV (prompt) cache miss for a provider request.
     CacheMiss(cache_miss::CacheMissNotice),
     /// An applet instance placed in this transcript that is not anchored to
@@ -601,6 +609,9 @@ pub struct Panel {
     pending_save_requests: usize,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
+    /// Memory pipeline activity for the session, when something is running.
+    /// Display-only: it feeds the composer status line, never the transcript.
+    memory_activity: Option<jcode_sdk::api::MemoryActivitySnapshot>,
     response_stats: response_stats::Tracker,
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
@@ -1156,6 +1167,7 @@ impl Panel {
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
+            memory_activity: None,
             response_stats: response_stats::Tracker::default(),
             items,
             streaming_text: if streaming_fixture {
@@ -2975,7 +2987,11 @@ impl Panel {
                 }
                 "tool" => {
                     if let Some(tool) = message.tool.filter(|tool| {
-                        tool.name == "ask" || tool.name.trim_start_matches("functions.") == "swarm"
+                        tool.name == "ask"
+                            || matches!(
+                                tool.name.trim_start_matches("functions."),
+                                "swarm" | "memory"
+                            )
                     }) {
                         if tool.name == "ask"
                             && let Some(at) = message.timestamp_ms
@@ -2998,6 +3014,16 @@ impl Panel {
                 "compaction" => {
                     if !message.content.trim().is_empty() {
                         items.push(Item::Compaction(compaction::CompactionRow::complete(
+                            message.content,
+                        )));
+                    }
+                }
+                // A stored automatic memory injection. Like the compaction
+                // divider, its body already carries the label and the
+                // expandable detail, so the reloaded row matches the live one.
+                "memory" => {
+                    if !message.content.trim().is_empty() {
+                        items.push(Item::Memory(compaction::CompactionRow::complete(
                             message.content,
                         )));
                     }
@@ -3585,6 +3611,22 @@ impl Panel {
                     done: false,
                 });
             }
+            ApiEvent::MemoryInjected { content, .. } => {
+                // The daemon stores the same row it sends here, so the live
+                // line and the reloaded one come from one body. Never coalesce
+                // repeated injections: each delivery is part of the timeline.
+                if !content.trim().is_empty() {
+                    self.items
+                        .push(Item::Memory(compaction::CompactionRow::complete(
+                            content.clone(),
+                        )));
+                }
+            }
+            ApiEvent::MemoryActivity { activity, .. } => {
+                // Activity is chrome, not transcript: keep the latest snapshot
+                // only while the pipeline is doing something.
+                self.memory_activity = (!activity.is_idle()).then(|| activity.clone());
+            }
             // A compaction started or finished. The divider replaces the old
             // transient "Context compaction" card: it is one rule line, it
             // carries the method/token/duration label, and the completed row is
@@ -4040,6 +4082,19 @@ impl Panel {
         let phase = self.connection_phase.trim();
         if !phase.is_empty() && !matches!(phase, "connected" | "streaming") {
             return activity_state::phase_label(phase);
+        }
+        // Memory recall runs before the model request, so while it works its
+        // step is the most specific thing this session is doing. Streaming,
+        // reasoning and running tools take over as soon as they start.
+        if self.activity_active()
+            && !matches!(
+                self.status.as_str(),
+                "thinking" | "streaming" | "running_tools" | "compacting"
+            )
+            && let Some(activity) = self.memory_activity.as_ref()
+            && let Some(label) = activity.status_label()
+        {
+            return label;
         }
         if self.activity_active() {
             // Buffers may still contain an earlier block. The latest semantic
@@ -4588,6 +4643,7 @@ impl Panel {
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::Compaction(row) => self.render_compaction_divider(index, row, window, cx),
+            Item::Memory(row) => self.render_memory_divider(index, row, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
@@ -4804,7 +4860,9 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .when(!expanded, |el| el.max_w(relative(0.6)).min_w_0().truncate())
+                                    .when(!expanded, |el| {
+                                        el.max_w(relative(0.6)).min_w_0().truncate()
+                                    })
                                     .text_size(px(11.0))
                                     .text_color(Theme::global().TEXT_FAINT)
                                     .child(row_summary),
@@ -6867,6 +6925,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Todos(_)
         | Item::Stopped(_)
         | Item::Compaction(_)
+        | Item::Memory(_)
         | Item::CacheMiss(_)
         | Item::Applet(_)
         | Item::Error(_)
@@ -7132,7 +7191,6 @@ fn format_tokens(count: u64) -> String {
 }
 
 /// Collapse whitespace and clip to a readable length.
-#[cfg(test)]
 fn condense(text: &str, limit: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= limit {
@@ -7914,6 +7972,9 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
 }
 
 fn tool_row_summary(name: &str, input: &str) -> String {
+    if name.trim_start_matches("functions.") == "memory" {
+        return memory_tool_summary(input);
+    }
     if name == "bg"
         && serde_json::from_str::<serde_json::Value>(input)
             .ok()
@@ -7923,6 +7984,69 @@ fn tool_row_summary(name: &str, input: &str) -> String {
         "Background task".into()
     } else {
         tool_summary_full(input)
+    }
+}
+
+/// What a `memory` call did, in the same words the TUI row uses: the raw
+/// arguments would otherwise read as `remember: <the whole note>` or as
+/// `recall` with no query, because `action` is not a summary field.
+fn memory_tool_summary(input: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+        return tool_summary_full(input);
+    };
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+    };
+    match text("action") {
+        "remember" => {
+            let content = text("content");
+            if content.is_empty() {
+                "remember".into()
+            } else {
+                format!("remember: {}", condense(content, 90))
+            }
+        }
+        "recall" => {
+            let query = text("query");
+            if query.is_empty() {
+                "recall (recent)".into()
+            } else {
+                format!("recall '{}'", condense(query, 80))
+            }
+        }
+        "search" => {
+            let query = text("query");
+            if query.is_empty() {
+                "search".into()
+            } else {
+                format!("search '{}'", condense(query, 80))
+            }
+        }
+        "forget" => {
+            let id = text("id");
+            if id.is_empty() {
+                "forget".into()
+            } else {
+                format!("forget {id}")
+            }
+        }
+        "tag" => {
+            let id = text("id");
+            if id.is_empty() {
+                "tag".into()
+            } else {
+                format!("tag {id}")
+            }
+        }
+        "list" => "list memories".into(),
+        "link" => "link memories".into(),
+        "related" => "related memories".into(),
+        action if !action.is_empty() => action.to_string(),
+        _ => tool_summary_full(input),
     }
 }
 

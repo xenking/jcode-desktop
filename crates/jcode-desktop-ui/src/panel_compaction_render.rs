@@ -1,13 +1,38 @@
-//! Rendering for the compaction divider.
+//! Rendering for transcript divider rows.
 //!
 //! Kept next to [`super::compaction`] rather than in `render_item` so the divider
 //! can be reused by the preview, the snapshot and the live transcript without
-//! three copies of the rule geometry.
+//! three copies of the rule geometry. Compactions and automatic memory
+//! injections share it: both are a collapsed rule line that expands in place.
 
 use gpui::prelude::*;
 
 use super::compaction::CompactionRow;
 use super::{Context, FontWeight, Item, Theme, Window, div, px, text_selection};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Divider {
+    /// `─── compacted · snapcompact · 180k→26k ───`
+    Compaction,
+    /// `─── auto-recalled 3 memories ───`
+    Memory,
+}
+
+impl Divider {
+    fn selector(self) -> &'static str {
+        match self {
+            Self::Compaction => "compaction-divider",
+            Self::Memory => "memory-divider",
+        }
+    }
+
+    fn detail_key(self, index: usize) -> String {
+        match self {
+            Self::Compaction => format!("{index}-compaction-detail"),
+            Self::Memory => format!("{index}-memory-detail"),
+        }
+    }
+}
 
 impl super::Panel {
     /// One compaction divider: `─── label ───`, expanded on click.
@@ -18,15 +43,38 @@ impl super::Panel {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        self.render_transcript_divider(index, row, Divider::Compaction, window, cx)
+    }
+
+    /// One memory-injection row: the same rule, labelled with what was recalled.
+    pub(super) fn render_memory_divider(
+        &self,
+        index: usize,
+        row: &CompactionRow,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.render_transcript_divider(index, row, Divider::Memory, window, cx)
+    }
+
+    fn render_transcript_divider(
+        &self,
+        index: usize,
+        row: &CompactionRow,
+        kind: Divider,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let theme = Theme::global();
         let running = row.state.is_running();
         let expanded = row.state.is_expanded();
         let tone = if running { theme.WARN } else { theme.TEXT_DIM };
         let rule = div().flex_1().h(px(1.)).bg(theme.PANEL_BORDER);
 
+        let selector = kind.selector();
         let label = row.label().to_string();
         let mut line = div()
-            .debug_selector(|| "compaction-divider".into())
+            .debug_selector(move || selector.into())
             .flex()
             .items_center()
             .gap_2()
@@ -56,11 +104,11 @@ impl super::Panel {
         // element stateful, so erase it before wrapping it in the column.
         let line = if row.has_detail() {
             let entity = cx.entity().downgrade();
-            line.id(("compaction-divider", index))
+            line.id((selector, index))
                 .cursor_pointer()
                 .on_click(move |_, _, cx| {
                     let _ = entity.update(cx, |panel, cx| {
-                        panel.toggle_compaction_divider(index);
+                        panel.toggle_transcript_divider(index, kind);
                         cx.notify();
                     });
                 })
@@ -70,14 +118,12 @@ impl super::Panel {
         };
 
         let mut column = div().w_full().flex().flex_col().child(line);
-        if expanded
-            && let Some(detail) = row.detail()
-        {
-            // Rendered as selectable plain text so the summary can be copied out
-            // of the transcript instead of only read.
+        if expanded && let Some(detail) = row.detail() {
+            // Rendered as selectable plain text so the recalled memories can be
+            // copied out of the transcript instead of only read.
             column = column.child(div().w_full().px_2().pb_1().child(text_selection::plain(
                 self.transcript_selection.clone(),
-                format!("{index}-compaction-detail"),
+                kind.detail_key(index),
                 detail,
                 window,
                 cx,
@@ -88,10 +134,25 @@ impl super::Panel {
 
     /// Flip a divider between collapsed and expanded.
     pub(crate) fn toggle_compaction_divider(&mut self, index: usize) -> bool {
+        self.toggle_transcript_divider(index, Divider::Compaction)
+    }
+
+    pub(crate) fn toggle_transcript_divider(&mut self, index: usize, kind: Divider) -> bool {
         // `items` derefs mutably, which bumps the transcript revision, so the
         // cached transcript documents are rebuilt after a toggle.
-        let Some(Item::Compaction(row)) = self.items.get_mut(index) else {
-            return false;
+        let row = match kind {
+            Divider::Compaction => {
+                let Some(Item::Compaction(row)) = self.items.get_mut(index) else {
+                    return false;
+                };
+                row
+            }
+            Divider::Memory => {
+                let Some(Item::Memory(row)) = self.items.get_mut(index) else {
+                    return false;
+                };
+                row
+            }
         };
         row.toggle()
     }
@@ -103,15 +164,10 @@ impl super::Panel {
     pub(crate) fn show_compaction_running(&mut self, content: impl Into<String>) {
         let content = content.into();
         let running = CompactionRow::running(content);
-        if let Some(existing) = self
-            .items
-            .iter_mut()
-            .rev()
-            .find_map(|item| match item {
-                Item::Compaction(row) if row.state.is_running() => Some(row),
-                _ => None,
-            })
-        {
+        if let Some(existing) = self.items.iter_mut().rev().find_map(|item| match item {
+            Item::Compaction(row) if row.state.is_running() => Some(row),
+            _ => None,
+        }) {
             existing.content = running.content;
             return;
         }
@@ -121,15 +177,10 @@ impl super::Panel {
     /// Replace the running divider with the completed one.
     pub(crate) fn finish_compaction_divider(&mut self, content: impl Into<String>) {
         let completed = CompactionRow::complete(content);
-        if let Some(existing) = self
-            .items
-            .iter_mut()
-            .rev()
-            .find_map(|item| match item {
-                Item::Compaction(row) if row.state.is_running() => Some(row),
-                _ => None,
-            })
-        {
+        if let Some(existing) = self.items.iter_mut().rev().find_map(|item| match item {
+            Item::Compaction(row) if row.state.is_running() => Some(row),
+            _ => None,
+        }) {
             *existing = completed;
             return;
         }
