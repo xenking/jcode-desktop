@@ -380,6 +380,26 @@ fn image_marker_before_markdown_link_opens_image_not_url(cx: &mut gpui::TestAppC
     assert_eq!(vcx.opened_url(), None);
 }
 
+/// A parenthetical typed right after a pasted image is prose, not a link URL.
+#[gpui::test]
+fn image_marker_followed_by_parenthesis_is_a_chip_not_a_link(cx: &mut gpui::TestAppContext) {
+    for marker in ["[#image 1]", "[#img_64ab0e4a8c467a9f70900b407050b140]"] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("image-paren".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![Item::User(format!("Look {marker}(сессия и TLDR видео) after")), Item::Image(image_preview::fixture_image())];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let chip = vcx.debug_bounds("transcript-image-chip").unwrap_or_else(|| panic!("{marker} must render as a chip"));
+        vcx.simulate_click(chip.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("image-preview-full").is_some(), "{marker} click must preview the image");
+        assert_eq!(vcx.opened_url(), None, "{marker} click must not ask the OS to open a URL");
+    }
+}
+
 #[gpui::test]
 fn image_marker_in_code_block_opens_image(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {

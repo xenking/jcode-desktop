@@ -11997,6 +11997,27 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             ),
         ];
     }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
+        // Two pasted screenshots, the first followed directly by a
+        // parenthetical, as typed in a real report.
+        let pasted = |label: &str| {
+            let mut image = image_preview::fixture_image();
+            image.label = Some(label.into());
+            image.source = jcode_sdk::RenderedImageSource::UserInput;
+            image.anchor = Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 });
+            Item::Image(image)
+        };
+        return vec![
+            Item::User(
+                "The bottom inset is off on some sessions [#image 1](transcription and TLDR video). \
+                 And the compaction issue from [#image 2] happened again."
+                    .into(),
+            ),
+            pasted("first"),
+            pasted("second"),
+            Item::Assistant("Both screenshots are attached above.".into()),
+        ];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("html") {
         return vec![
             Item::User("Show me different fonts directly in this chat.".into()),

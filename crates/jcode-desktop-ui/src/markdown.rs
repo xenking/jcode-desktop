@@ -419,16 +419,17 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 2;
                 continue;
             }
-        // An attachment marker is literal text, not the beginning of a
-        // later markdown link in the same paragraph.
-        if source[i..].starts_with("[#image ")
-            && let Some(end) = source[i..].find(']')
-            && source[i + 8..i + end].bytes().all(|b| b.is_ascii_digit())
-            && end > 8
-            && !source[i + end + 1..].starts_with('(')
+        // An attachment marker is literal text, never a markdown link label,
+        // even when prose in parentheses follows it directly: `[#image 1](see
+        // above)` made the marker a link to "see above", hid its chip and sent
+        // the OS an invalid URL on click (Finder error -50).
+        if bytes[i] == b'['
+            && let Some(marker) = crate::input::image_marker_ranges(&source[i..])
+                .into_iter()
+                .find(|range| range.start == 0)
         {
-            plain.push_str(&source[i..=i + end]);
-            i += end + 1;
+            plain.push_str(&source[i..i + marker.end]);
+            i += marker.end;
             continue;
         }
         // Links: [label](url) and bare <url>.
@@ -625,6 +626,20 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         highlights,
         links,
     }
+}
+
+/// Only a URL with a scheme is handed to the OS. A link target such as
+/// `сессия и TLDR видео` or `crates/foo.rs` is not openable, and macOS answers
+/// it with a modal "The application can't be opened. -50".
+fn openable_url(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let (scheme, rest) = url.split_once(':')?;
+    let valid_scheme = scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    (valid_scheme && !rest.is_empty() && !url.chars().any(char::is_whitespace)).then_some(url)
 }
 
 fn link_style() -> HighlightStyle {
@@ -1238,7 +1253,11 @@ fn styled_line_layout(
         InteractiveText::new(id, text)
             .on_click(ranges, move |index, window, cx| {
                 match targets.get(index) {
-                    Some(Target::Url(url)) => cx.open_url(url),
+                    Some(Target::Url(url)) => {
+                        if let Some(url) = openable_url(url) {
+                            cx.open_url(url);
+                        }
+                    }
                     Some(Target::Image(image)) => {
                         if let Some(images) = &images {
                             (images.on_click)(*image, window, cx);
@@ -3611,6 +3630,25 @@ mod tests {
         assert_eq!(inline.links.len(), 1);
         assert_eq!(inline.links[0].1, "https://example.com");
         assert_eq!(inline.links[0].0, 4..8);
+    }
+
+    #[test]
+    fn image_marker_before_parenthesis_stays_a_marker() {
+        for marker in ["[#image 1]", "[#img_64ab0e4a8c467a9f70900b407050b140]"] {
+            let source = format!("see {marker}(сессия и TLDR видео) now");
+            let inline = inline_spans(&source);
+            assert_eq!(inline.plain, source);
+            assert!(inline.links.is_empty(), "{marker} must not start a link");
+        }
+    }
+
+    #[test]
+    fn only_urls_with_a_scheme_are_opened() {
+        assert_eq!(openable_url("https://example.com"), Some("https://example.com"));
+        assert_eq!(openable_url("mailto:a@b.c"), Some("mailto:a@b.c"));
+        assert_eq!(openable_url("сессия транскрипция и TLDR видео"), None);
+        assert_eq!(openable_url("crates/foo.rs"), None);
+        assert_eq!(openable_url(""), None);
     }
 
     #[test]
