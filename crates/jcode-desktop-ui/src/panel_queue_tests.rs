@@ -360,6 +360,7 @@ fn queued_image_uses_chip_and_opens_preview(cx: &mut gpui::TestAppContext) {
             images: vec![(image.media_type, image.data)],
             files: vec![],
             after_yield: true,
+            send_now: false,
         });
         panel
     });
@@ -416,6 +417,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
             images: remote.images,
             files: vec![],
             after_yield: false,
+            send_now: false,
         });
         cx.notify();
     });
@@ -551,6 +553,7 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
                 images: vec![],
                 files: vec![],
                 after_yield: true,
+                send_now: false,
             },
             QueuedPrompt {
                 content: "two".into(),
@@ -558,6 +561,7 @@ fn pending_connection_prompts_remain_separate_daemon_turns(cx: &mut gpui::TestAp
                 images: vec![],
                 files: vec![],
                 after_yield: true,
+                send_now: false,
             },
         ];
         panel
@@ -718,7 +722,9 @@ fn queued_row_has_visible_send_now_action(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn enter_with_text_adds_it_to_the_queued_batch(cx: &mut gpui::TestAppContext) {
+fn enter_with_text_sends_only_the_new_prompt_and_keeps_after_yield_queued(
+    cx: &mut gpui::TestAppContext,
+) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {
@@ -744,9 +750,113 @@ fn enter_with_text_adds_it_to_the_queued_batch(cx: &mut gpui::TestAppContext) {
         }
         _ => panic!("expected queue command"),
     };
+    match commands.try_recv() {
+        Ok(Command::InterruptQueuedPrompts { ids, .. }) => assert_eq!(
+            ids,
+            [new_id.clone()],
+            "plain Enter promotes only the prompt just typed"
+        ),
+        _ => panic!("expected a targeted interrupt"),
+    }
     assert!(
-        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b", &new_id])
+        commands.try_recv().is_err(),
+        "the other queued prompts keep their mode"
     );
+    panel.read_with(vcx, |p, _| {
+        let mode = |id: &str| {
+            p.prompt_queue
+                .remote
+                .iter()
+                .find(|prompt| prompt.client_id == id)
+                .map(|prompt| prompt.mode)
+        };
+        assert_eq!(mode("a"), Some(jcode_sdk::api::QueuedPromptMode::Steer));
+        assert_eq!(
+            mode("b"),
+            Some(jcode_sdk::api::QueuedPromptMode::AfterYield),
+            "the after-yield prompt still waits for the turn to yield"
+        );
+    });
+}
+
+#[gpui::test]
+fn enter_while_pending_promotes_only_the_new_prompt_once_connected(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(Panel::STARTUP_SESSION_ID.into(), None, None, bridge, cx)
+    });
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
+    });
+    vcx.simulate_input("after yield prompt");
+    vcx.simulate_keystrokes("ctrl-enter");
+    vcx.simulate_input("send this now");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(commands.try_recv().is_err(), "nothing leaves before attach");
+    panel.update(vcx, |p, cx| {
+        p.attach_startup_session(attached_session("session-ready"), cx);
+        p.status = "running".into();
+        p.apply(&event(json!({"ev":"queued_prompts", "session_id":"session-ready", "prompts":[]})), cx);
+        p.load_history(vec![], vec![], cx);
+    });
+    vcx.run_until_parked();
+    let sent = drain_commands(&commands);
+    let queued: Vec<_> = sent
+        .iter()
+        .filter_map(|command| match command {
+            Command::QueuePrompt { prompt, .. } => Some(prompt.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued.len(), 2, "both prompts reach the daemon queue");
+    let after_yield = queued.iter().find(|p| p.content == "after yield prompt").unwrap();
+    let now = queued.iter().find(|p| p.content == "send this now").unwrap();
+    assert_eq!(after_yield.mode, jcode_sdk::api::QueuedPromptMode::AfterYield);
+    let interrupts: Vec<_> = sent
+        .iter()
+        .filter_map(|command| match command {
+            Command::InterruptQueuedPrompts { ids, .. } => Some(ids.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        interrupts,
+        [vec![now.client_id.clone()]],
+        "only the Enter prompt is promoted"
+    );
+}
+
+#[gpui::test]
+fn enter_on_legacy_local_queue_steers_only_the_new_prompt(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(cx, |p, cx| {
+        p.submit_or_queue("after yield prompt".into(), vec![], true, cx);
+        p.submit_or_queue("send this now".into(), vec![], false, cx);
+    });
+    cx.run_until_parked();
+    let sent = drain_commands(&commands);
+    assert!(
+        matches!(sent.as_slice(), [Command::Send { content, .. }] if content == "send this now"),
+        "only the new prompt is sent now"
+    );
+    panel.read_with(cx, |p, _| {
+        assert_eq!(p.prompt_queue.prompts.len(), 1);
+        assert_eq!(p.prompt_queue.prompts[0].content, "after yield prompt");
+        assert!(p.prompt_queue.prompts[0].after_yield);
+        assert!(!p.prompt_queue.send_all_on_connect);
+    });
 }
 
 #[gpui::test]

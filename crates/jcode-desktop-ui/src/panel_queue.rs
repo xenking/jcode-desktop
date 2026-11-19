@@ -57,6 +57,10 @@ pub struct PromptQueue {
     send_all_on_connect: bool,
     #[serde(skip)]
     send_now_generation: u64,
+    /// The latest Send now request that names each prompt. Its escalation
+    /// timer owns the prompt; an older timer for the same prompt stands down.
+    #[serde(skip)]
+    send_now_pending: std::collections::HashMap<String, u64>,
     #[serde(default)]
     default_after_yield: bool,
     #[serde(skip)]
@@ -75,6 +79,10 @@ struct QueuedPrompt {
     active_skill: Option<String>,
     #[serde(default = "default_follow_up")]
     after_yield: bool,
+    /// Sent with plain Enter over a visible queue: deliver this prompt now,
+    /// as soon as it can reach the runtime, without promoting the others.
+    #[serde(default)]
+    send_now: bool,
 }
 
 fn wire_attachments(files: &[crate::input::SubmittedFile]) -> Vec<jcode_sdk::api::Attachment> {
@@ -347,9 +355,10 @@ impl Panel {
     }
 
     fn resume_local_queue_after_edit(&mut self, cx: &mut Context<Self>) {
-        self.send_queued_prompts(cx);
         if std::mem::take(&mut self.prompt_queue.send_all_on_connect) {
             self.interrupt_all_queued_prompts(cx);
+        } else {
+            self.send_queued_prompts(cx);
         }
     }
 
@@ -769,6 +778,7 @@ impl Panel {
                     files,
                     active_skill: self.active_skill.clone(),
                     after_yield: true,
+                    send_now: false,
                 });
                 self.prompt_queue.paused = false;
                 self.send_queued_prompts(cx);
@@ -777,23 +787,16 @@ impl Panel {
             return;
         }
         if !queued && self.has_visible_queued_prompts() {
-            if !content.trim().is_empty() || !images.is_empty() || !files.is_empty() {
-                if self.prompt_queue.remote_supported
-                    && !self.is_pending_session()
-                    && !self.prompt_queue.waiting_for_connection
-                {
-                    self.send_remote_prompt_with_files(content, images, files, true, self.active_skill.clone(), cx);
-                } else {
-                    self.prompt_queue.prompts.push(QueuedPrompt {
-                        content,
-                        images,
-                        files,
-                        active_skill: self.active_skill.clone(),
-                        after_yield: true,
-                    });
-                }
+            if content.trim().is_empty() && images.is_empty() && files.is_empty() {
+                // Enter on an empty composer is the keyboard Send all now.
+                self.interrupt_all_queued_prompts(cx);
+            } else {
+                // Enter with text sends that text now. Everything already
+                // queued keeps its mode: an after-yield prompt still waits
+                // for the turn to yield.
+                self.send_prompt_now(content, images, files, cx);
             }
-            self.interrupt_all_queued_prompts(cx);
+            cx.notify();
             return;
         }
         if self.prompt_queue.remote_supported
@@ -824,6 +827,7 @@ impl Panel {
                 files,
                 active_skill: self.active_skill.clone(),
                 after_yield: queued || self.prompt_queue.default_after_yield,
+                send_now: false,
             });
             self.prompt_queue.paused = false;
             self.send_queued_prompts(cx);
@@ -844,9 +848,10 @@ impl Panel {
         // "Send all now" is an explicit resume of a stopped queue.
         self.prompt_queue.paused = false;
         // Local prompts must reach the daemon queue before the batch
-        // interrupt can name them.
+        // interrupt can name them. The batch covers prompts marked to send
+        // now, so the flush must not interrupt them separately.
         if !self.prompt_queue.prompts.is_empty() {
-            self.send_queued_prompts(cx);
+            self.flush_local_queue(cx);
         }
         if !self.prompt_queue.prompts.is_empty() {
             // Still held locally (history not loaded yet): finish on reconnect.
@@ -872,12 +877,62 @@ impl Panel {
             cx.notify();
             return;
         }
+        self.interrupt_queued_prompts(ids, cx);
+    }
+
+    /// Plain Enter over a visible queue: deliver this prompt now. Prompts
+    /// already queued keep their mode, so an after-yield prompt still waits
+    /// for the running turn to yield.
+    fn send_prompt_now(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        files: Vec<crate::input::SubmittedFile>,
+        cx: &mut Context<Self>,
+    ) {
+        let reachable = !self.is_pending_session()
+            && !self.prompt_queue.waiting_for_connection
+            && !self.queue_transport_lost();
+        if reachable && self.prompt_queue.remote_supported {
+            let id = self.send_remote_prompt_with_files(content, images, files, true, self.active_skill.clone(), cx);
+            self.interrupt_queued_prompts(vec![id], cx);
+        } else if reachable && self.history_loaded && self.active_skill.is_none() {
+            // A legacy runtime has no daemon queue to name a prompt in. A
+            // direct send steers the running turn, which is its Send now.
+            self.prompt_queue.paused = false;
+            self.send_prompt_with_skill_files(content, images, files, None, cx);
+        } else {
+            // Not deliverable yet: hold it locally, marked to be sent now as
+            // soon as the daemon owns it.
+            self.prompt_queue.waiting_for_connection |= self.is_pending_session();
+            self.prompt_queue.prompts.push(QueuedPrompt {
+                content,
+                images,
+                files,
+                active_skill: self.active_skill.clone(),
+                after_yield: true,
+                send_now: true,
+            });
+            self.prompt_queue.paused = false;
+            self.send_queued_prompts(cx);
+        }
+    }
+
+    /// Interrupt exactly these daemon-owned prompts, and escalate to a turn
+    /// cancel if they are still blocked two seconds later.
+    fn interrupt_queued_prompts(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        if ids.is_empty() {
+            return;
+        }
         for id in &ids {
             self.prompt_queue.remote_failures.remove(id);
         }
         self.prompt_queue.send_now_generation =
             self.prompt_queue.send_now_generation.wrapping_add(1);
         let generation = self.prompt_queue.send_now_generation;
+        for id in &ids {
+            self.prompt_queue.send_now_pending.insert(id.clone(), generation);
+        }
         let pending_ids = ids.clone();
         self.bridge.send(Command::InterruptQueuedPrompts {
             session_id: self.session_id.clone(),
@@ -886,12 +941,18 @@ impl Panel {
         cx.spawn(async move |panel, cx| {
             cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
             let _ = panel.update(cx, |this, cx| {
-                if this.prompt_queue.send_now_generation != generation { return; }
-                let remaining: Vec<_> = pending_ids.iter().filter(|id| {
-                    !this.prompt_queue.delivered_ids.contains(*id)
-                        && !this.prompt_queue.remote_failures.contains_key(*id)
-                        && this.prompt_queue.remote.iter().chain(&this.prompt_queue.pending_remote).any(|p| &p.client_id == *id)
-                }).cloned().collect();
+                let owned: Vec<_> = pending_ids
+                    .into_iter()
+                    .filter(|id| this.prompt_queue.send_now_pending.get(id) == Some(&generation))
+                    .collect();
+                for id in &owned {
+                    this.prompt_queue.send_now_pending.remove(id);
+                }
+                let remaining: Vec<_> = owned.into_iter().filter(|id| {
+                    !this.prompt_queue.delivered_ids.contains(id)
+                        && !this.prompt_queue.remote_failures.contains_key(id)
+                        && this.prompt_queue.remote.iter().chain(&this.prompt_queue.pending_remote).any(|p| &p.client_id == id)
+                }).collect();
                 if !remaining.is_empty() {
                     let reason = "Delivery is still blocked. Escalating cancellation; retry Send now if it remains queued.".to_string();
                     for id in remaining { this.prompt_queue.remote_failures.insert(id, reason.clone()); }
@@ -911,10 +972,11 @@ impl Panel {
         after_yield: bool,
         active_skill: Option<String>,
         cx: &mut Context<Self>,
-    ) {
-        self.send_remote_prompt_with_attachments(content, images, wire_attachments(&files), after_yield, active_skill, cx);
+    ) -> String {
+        self.send_remote_prompt_with_attachments(content, images, wire_attachments(&files), after_yield, active_skill, cx)
     }
 
+    /// Hand a prompt to the daemon queue and return its client id.
     fn send_remote_prompt_with_attachments(
         &mut self,
         content: String,
@@ -923,7 +985,7 @@ impl Panel {
         after_yield: bool,
         active_skill: Option<String>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> String {
         if !self.activity_active() {
             self.prompt_queue.paused = false;
             self.prompt_queue.auto_poke.start(self.items.len());
@@ -962,12 +1024,14 @@ impl Panel {
             .pending_remote_history_counts
             .insert(prompt.client_id.clone(), history_count);
         self.prompt_queue.pending_remote.push(prompt.clone());
+        let id = prompt.client_id.clone();
         self.bridge.send(Command::QueuePrompt {
             session_id: self.session_id.clone(),
             prompt,
         });
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
         cx.notify();
+        id
     }
 
     fn send_composer_prompt_with_files(
@@ -1038,6 +1102,7 @@ impl Panel {
                 files,
                 active_skill: None,
                 after_yield: false,
+                send_now: false,
             });
             crate::sounds::play(crate::sounds::Cue::Sent, cx);
             return;
@@ -1324,32 +1389,43 @@ impl Panel {
         let panel = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = panel.update(cx, |this, cx| {
-                this.send_queued_prompts(cx);
                 if std::mem::take(&mut this.prompt_queue.send_all_on_connect) {
                     this.interrupt_all_queued_prompts(cx);
+                } else {
+                    this.send_queued_prompts(cx);
                 }
             });
         });
     }
 
     pub(super) fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
+        let send_now = self.flush_local_queue(cx);
+        self.interrupt_queued_prompts(send_now, cx);
+    }
+
+    /// Move deliverable local prompts to the runtime. Returns the daemon ids
+    /// of prompts the user asked to send now, for the caller to interrupt.
+    fn flush_local_queue(&mut self, cx: &mut Context<Self>) -> Vec<String> {
         // A message open for editing keeps its place: the local queue waits
         // until the edit is saved or cancelled, then resumes.
         if self.local_edit_index().is_some() {
-            return;
+            return Vec::new();
         }
         if self.prompt_queue.prompts.is_empty() {
             if !self.is_pending_session() && self.history_loaded {
                 self.prompt_queue.waiting_for_connection = false;
             }
-            return;
+            return Vec::new();
         }
         if self.prompt_queue.paused
             || self.is_pending_session()
             || !self.history_loaded
             || self.queue_transport_lost()
         {
-            return;
+            return Vec::new();
+        }
+        if !self.prompt_queue.remote_supported {
+            self.send_legacy_prompts_now(cx);
         }
         if !self.prompt_queue.remote_supported
             && self
@@ -1362,7 +1438,7 @@ impl Panel {
                 || !self.pending_users.is_empty()
                 || !(self.status == "idle" || self.status == "connected")
             {
-                return;
+                return Vec::new();
             }
             let prompt = self.prompt_queue.prompts.remove(0);
             self.prompt_queue.waiting_for_connection = false;
@@ -1370,7 +1446,7 @@ impl Panel {
             self.prompt_queue.auto_poke.start(self.items.len());
             self.send_prompt_with_skill_files(prompt.content, prompt.images, prompt.files, prompt.active_skill, cx);
             cx.notify();
-            return;
+            return Vec::new();
         }
         if !self.prompt_queue.remote_supported
             && (!(self.status == "idle"
@@ -1378,15 +1454,19 @@ impl Panel {
                 || self.activity_active()
                 || !self.pending_users.is_empty())
         {
-            return;
+            return Vec::new();
         }
         let prompts = std::mem::take(&mut self.prompt_queue.prompts);
         self.prompt_queue.waiting_for_connection = false;
+        if prompts.is_empty() {
+            return Vec::new();
+        }
         if self.prompt_queue.remote_supported {
             // Preserve independent follow-up turns when the daemon owns the
             // queue, including prompts typed before the session attached.
+            let mut send_now = Vec::new();
             for prompt in prompts {
-                self.send_remote_prompt_with_files(
+                let id = self.send_remote_prompt_with_files(
                     prompt.content,
                     prompt.images,
                     prompt.files,
@@ -1394,9 +1474,12 @@ impl Panel {
                     prompt.active_skill,
                     cx,
                 );
+                if prompt.send_now {
+                    send_now.push(id);
+                }
             }
             cx.notify();
-            return;
+            return send_now;
         }
         // Legacy daemons have only the local queue. Keep their historical
         // behavior of combining prompts into one follow-up turn.
@@ -1415,6 +1498,32 @@ impl Panel {
         self.prompt_queue.auto_poke.start(self.items.len());
         self.send_prompt_with_skill_files(content, images, files, None, cx);
         cx.notify();
+        Vec::new()
+    }
+
+    /// A legacy runtime has no daemon queue, so a prompt marked to send now
+    /// goes out directly once the session is reachable, steering a running
+    /// turn. The rest of the local queue keeps waiting for the turn to end.
+    fn send_legacy_prompts_now(&mut self, cx: &mut Context<Self>) {
+        let reachable = self.status == "idle"
+            || self.status == "connected"
+            || self.activity_active();
+        if !reachable {
+            return;
+        }
+        let mut index = 0;
+        while index < self.prompt_queue.prompts.len() {
+            let prompt = &self.prompt_queue.prompts[index];
+            if !prompt.send_now || prompt.active_skill.is_some() {
+                index += 1;
+                continue;
+            }
+            let prompt = self.prompt_queue.prompts.remove(index);
+            self.prompt_queue.waiting_for_connection = false;
+            self.prompt_queue.auto_poke.start(self.items.len());
+            self.send_prompt_with_skill_files(prompt.content, prompt.images, prompt.files, None, cx);
+            cx.notify();
+        }
     }
 
     /// Send one queued prompt immediately. During an active turn the harness
