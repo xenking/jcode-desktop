@@ -50,12 +50,16 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         let ladder = effort::ladder(None, Some(model));
-        self.bridge.send(Command::SetModel {
-            session_id: self.session_id.clone(),
-            model: model.to_string(),
-        });
-        self.items
-            .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        if self.is_pending_session() {
+            self.pick_draft_model(model, cx);
+        } else {
+            self.bridge.send(Command::SetModel {
+                session_id: self.session_id.clone(),
+                model: model.to_string(),
+            });
+            self.items
+                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        }
         self.request_effort_on(&ladder, level, cx);
     }
 
@@ -82,6 +86,15 @@ impl Panel {
             )));
             return false;
         };
+        if self.is_pending_session() {
+            // A draft has no session to tell: keep the choice for its first
+            // prompt.
+            self.draft_config.effort = Some(level.to_string());
+            self.reasoning_effort = Some(level.to_string());
+            self.sync_effort_menu(cx);
+            cx.notify();
+            return true;
+        }
         let pending = self.pending_effort.get_or_insert_with(|| PendingEffort {
             previous: self.reasoning_effort.clone(),
             requested: VecDeque::new(),

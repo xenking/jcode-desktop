@@ -740,10 +740,124 @@ fn a_runtime_command_creates_the_session_but_resume_does_not(cx: &mut gpui::Test
         "/resume opens another session and must not create this one"
     );
     vcx.simulate_keystrokes("cmd-a backspace");
-    vcx.simulate_input("/model");
+    vcx.simulate_input("/compact");
     vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { .. })),
-        "the model list belongs to a runtime session"
+        "a command the runtime answers needs its session"
+    );
+}
+
+/// Setting effort and model is how a new session usually starts. Neither may
+/// register the session: both wait for the first prompt and reach the runtime
+/// ahead of it.
+#[gpui::test]
+fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    // An earlier session reported the model catalog, as any used app has.
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| {
+            panel.apply(
+                &jcode_sdk::ApiEvent::RuntimeInfo {
+                    session_id: "existing".into(),
+                    provider: Some("openai".into()),
+                    model: Some("openai:gpt-5.6-terra".into()),
+                    reasoning_effort: None,
+                    auth_method: None,
+                    account_label: None,
+                    routes: ["gpt-5.6-terra", "gpt-5.6-sol"]
+                        .into_iter()
+                        .map(|model| jcode_sdk::ModelRouteInfo {
+                            usage: None,
+                            model: model.into(),
+                            provider: "openai".into(),
+                            api_method: "openai".into(),
+                            available: true,
+                            detail: String::new(),
+                        })
+                        .collect(),
+                },
+                cx,
+            )
+        })
+    });
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let draft = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+
+    // The picker's second step asks for an effort too. `/effort` then
+    // overrides it, as the user does.
+    vcx.simulate_input("/model gpt-5.6-sol");
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("/effort high");
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "choosing effort or model must not register a session"
+    );
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.session_deferred());
+        let (model, effort) = panel.composer_identity_for_test();
+        assert!(
+            model.to_lowercase().contains("5.6") && !model.contains(':'),
+            "the draft shows the picked model by name: {model}"
+        );
+        assert_eq!(effort.as_deref(), Some("high"), "and the picked effort");
+    });
+
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("first prompt");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { request_id: Some(id), .. }) if id == draft)
+    );
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        let active = w.active;
+        w.slots[active]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    let sent: Vec<Command> = commands.try_iter().collect();
+    let order: Vec<&str> = sent
+        .iter()
+        .filter_map(|command| match command {
+            Command::SetModel { session_id, model }
+                if session_id == "ready" && model.ends_with("gpt-5.6-sol") =>
+            {
+                Some("model")
+            }
+            Command::SessionOperation {
+                session_id,
+                operation: harness::SessionOperation::SetEffort(effort),
+            } if session_id == "ready" && effort == "high" => Some("effort"),
+            Command::Send {
+                session_id,
+                content,
+                ..
+            } if session_id == "ready" && content == "first prompt" => Some("prompt"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        order,
+        ["model", "effort", "prompt"],
+        "the picked model and effort reach the new session before its prompt"
     );
 }

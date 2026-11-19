@@ -54,7 +54,9 @@ impl Panel {
             .as_deref()
             .or_else(|| record.and_then(|record| record.effort.as_deref()))
             .map(str::trim)
-            .filter(|effort| !effort.is_empty() && model.is_some())
+            .filter(|effort| {
+                !effort.is_empty() && (model.is_some() || self.draft_config.effort.is_some())
+            })
             .map(str::to_string);
         (pretty_model_label(model), effort)
     }
