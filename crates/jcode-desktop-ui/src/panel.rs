@@ -207,6 +207,11 @@ pub(crate) type SessionOpener =
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
 
+// Distance from the composer's pill row to the panel's bottom edge. The docked
+// dock and the welcome-started layout share it, so pill rows line up across
+// panels instead of one sitting flush with the window edge.
+const COMPOSER_BOTTOM_INSET: f32 = 8.0;
+
 /// Opening a panel is not yet a conversation. A local draft asks the runtime
 /// for a session only when the user sends its first prompt, so abandoned
 /// panels never register a session.
@@ -6462,6 +6467,7 @@ impl Render for Panel {
                             .w_full()
                             .flex_none()
                             .px_4()
+                            .pb(px(COMPOSER_BOTTOM_INSET))
                             .flex()
                             .justify_center()
                             .child(

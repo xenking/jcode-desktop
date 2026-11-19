@@ -349,3 +349,66 @@ fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
             .is_some_and(|layout| layout.compact)
     }));
 }
+
+/// Distance from the composer pill row to the bottom edge of the window.
+fn pill_row_bottom_inset(vcx: &mut gpui::VisualTestContext) -> gpui::Pixels {
+    let tabs = vcx.debug_bounds("composer-tabs").unwrap();
+    let height = vcx.update(|window, _| window.viewport_size().height);
+    height - tabs.bottom()
+}
+
+/// A chat started on the welcome screen keeps that layout for good (the
+/// snapshot carries it), and once its transcript filled the window its pill
+/// row sat flush with the bottom edge while a docked panel beside it kept a
+/// margin. Every panel needs the same bottom inset.
+#[gpui::test]
+fn started_and_docked_composers_share_one_bottom_inset(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    vcx.simulate_input("Short question");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = (0..60)
+            .map(|i| format!("Response paragraph {i}\n\n"))
+            .collect();
+        cx.notify();
+    });
+    for _ in 0..4 {
+        vcx.run_until_parked();
+    }
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| layout.filled)
+    }));
+    let started = pill_row_bottom_inset(vcx);
+
+    let (docked, dvcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "docked-inset".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.test_settled_conversation(60, cx);
+        panel
+    });
+    let handle = dvcx.update(|window, _| window.window_handle());
+    dvcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    dvcx.run_until_parked();
+    docked.update(dvcx, |_, cx| cx.notify());
+    dvcx.run_until_parked();
+    assert!(docked.read_with(dvcx, |panel, _| panel.startup_layout.is_none()));
+    let docked = pill_row_bottom_inset(dvcx);
+
+    assert!(docked > px(0.), "a docked composer keeps a bottom margin: {docked:?}");
+    assert!(
+        (started - docked).abs() < px(1.),
+        "started {started:?} vs docked {docked:?}: the pill row must not drop to the edge"
+    );
+}

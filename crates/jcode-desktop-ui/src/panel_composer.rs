@@ -392,7 +392,7 @@ impl Panel {
                     .w_full()
                     .min_w_0()
                     .px_2()
-                    .pb_2()
+                    .pb(px(COMPOSER_BOTTOM_INSET))
                     .bg(veil(DOCK_VEIL_ALPHA))
                     .when(self.recovery_picker_open, |el| {
                         el.child(self.render_recovery_model_picker(cx))
