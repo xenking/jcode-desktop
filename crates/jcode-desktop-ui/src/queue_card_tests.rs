@@ -27,7 +27,7 @@ fn queue_card_actions_delete_and_edit(cx: &mut gpui::TestAppContext) {
     for selector in [
         "queue-row-icon-0",
         "queue-row-text-0",
-        "queue-mode-button-0",
+        "send-queued-prompt-0",
         "recall-queued-prompt-0",
         "remove-queued-prompt-0",
     ] {
@@ -134,7 +134,7 @@ fn queue_card_remote_actions_wait_for_confirmation(cx: &mut gpui::TestAppContext
         )),
         "cancelling releases the daemon hold"
     );
-    let delete = vcx.debug_bounds("remote-queue-delete").unwrap().center();
+    let delete = vcx.debug_bounds("remote-queue-delete-0").unwrap().center();
     vcx.simulate_click(delete, Default::default());
     assert!(matches!(
         commands.try_recv(),
@@ -217,14 +217,14 @@ fn queue_card_scrolls_and_expands_long_text(cx: &mut gpui::TestAppContext) {
     vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
     vcx.run_until_parked();
     let items = vcx.debug_bounds("prompt-queue-items").unwrap();
-    assert!(items.size.height <= px(144.));
+    assert!(items.size.height <= px(170.));
     let text = vcx.debug_bounds("queue-row-text-0").unwrap().center();
     vcx.simulate_click(text, Default::default());
     panel.read_with(vcx, |p, _| {
         assert_eq!(p.prompt_queue.card_expanded.as_deref(), Some("local-0"))
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("prompt-queue-items").unwrap().size.height <= px(144.));
+    assert!(vcx.debug_bounds("prompt-queue-items").unwrap().size.height <= px(170.));
     vcx.simulate_click(text, Default::default());
     panel.read_with(vcx, |p, _| assert!(p.prompt_queue.card_expanded.is_none()));
 }
@@ -404,9 +404,9 @@ fn paused_queue_is_labelled_in_the_header_and_resumes(cx: &mut gpui::TestAppCont
     let resume = vcx
         .debug_bounds("queue-resume")
         .expect("the paused state is labelled in the card header");
-    let items = vcx.debug_bounds("prompt-queue-items").unwrap();
+    let first_row = vcx.debug_bounds("queued-prompt-0").unwrap();
     assert!(
-        resume.top() < items.top(),
+        resume.bottom() <= first_row.top(),
         "the label lives in the header, not as a mystery button below the rows"
     );
     assert!(vcx.debug_bounds("resume-prompt-queue").is_none());
@@ -451,7 +451,8 @@ fn reconnect_waits_neutrally_then_flushes_the_queue(cx: &mut gpui::TestAppContex
         vcx.debug_bounds("queue-waiting").is_some(),
         "a reconnect is a neutral waiting state, not a failure"
     );
-    assert!(vcx.debug_bounds("queue-send-all-now").is_none());
+    assert!(vcx.debug_bounds("queue-send-all-steer").is_none());
+    assert!(vcx.debug_bounds("queue-send-all-after-yield").is_none());
     // Asking to send everything while offline records the intent instead of
     // leaving a permanent error behind.
     panel.update(vcx, |p, cx| p.interrupt_all_queued_prompts(cx));

@@ -108,7 +108,7 @@ fn pending_remote_steer_does_not_offer_retry_before_failure(cx: &mut gpui::TestA
         panel
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("daemon-prompt-queue").is_some());
+    assert!(vcx.debug_bounds("queue-section-steer").is_some());
     assert!(
         vcx.debug_bounds("queue-send-control").is_none(),
         "in-flight send is not a failure"
@@ -339,7 +339,7 @@ fn active_empty_queue_has_no_default_mode_label(cx: &mut gpui::TestAppContext) {
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("queue-default-mode").is_none());
-    assert!(vcx.debug_bounds("daemon-prompt-queue").is_none());
+    assert!(vcx.debug_bounds("queue-section-steer").is_none());
 }
 
 #[gpui::test]
@@ -422,7 +422,7 @@ fn remote_and_steered_queue_images_use_same_chip(cx: &mut gpui::TestAppContext) 
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("steered-prompts").is_some());
+    assert!(vcx.debug_bounds("steered-prompt-0").is_some());
     assert!(vcx.debug_bounds("queue-image-thumbnail").is_some());
     let chip = vcx.debug_bounds("queue-image-chip").unwrap();
     vcx.simulate_click(chip.center(), Default::default());
@@ -689,35 +689,132 @@ fn event(mut value: serde_json::Value) -> ApiEvent {
 }
 
 #[gpui::test]
-fn queued_row_has_visible_send_now_action(cx: &mut gpui::TestAppContext) {
-    let (bridge, commands) = crate::harness::spawn_recording();
-    let (panel, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
-        panel.history_loaded = true;
-        panel.status = "running".into();
-        panel
-    });
-    panel.update(vcx, |p, cx| p.apply(&event(json!({"ev":"queued_prompts", "prompts":[{"client_id":"a","content":"first","mode":"steer"},{"client_id":"b","content":"second","mode":"after_yield"}]})), cx));
+fn queue_sections_group_modes_and_keep_row_actions_in_order(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let (_, vcx, _) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("a", "first after yield", AfterYield),
+            editing_test_prompt("b", "first steer", Steer),
+            editing_test_prompt("c", "second after yield", AfterYield),
+            editing_test_prompt("d", "second steer", Steer),
+        ],
+    );
+    let mut bounds = |selector: &'static str| vcx.debug_bounds(selector).unwrap();
+    let steer = bounds("queue-section-steer");
+    let after_yield = bounds("queue-section-after-yield");
+    assert!(steer.bottom() <= after_yield.top());
+    for (section, [first, second, send, edit, delete]) in [
+        (
+            steer,
+            [
+                "remote-queue-row-1",
+                "remote-queue-row-3",
+                "queue-row-send-now-1",
+                "remote-queue-edit-1",
+                "remote-queue-delete-1",
+            ],
+        ),
+        (
+            after_yield,
+            [
+                "remote-queue-row-0",
+                "remote-queue-row-2",
+                "queue-row-send-now-0",
+                "remote-queue-edit-0",
+                "remote-queue-delete-0",
+            ],
+        ),
+    ] {
+        let first_row = bounds(first);
+        let second_row = bounds(second);
+        assert!(section.top() < first_row.top());
+        assert!(first_row.bottom() <= second_row.top());
+        assert!(second_row.bottom() <= section.bottom());
+        let (send, edit, delete) = (bounds(send), bounds(edit), bounds(delete));
+        assert!(send.right() <= edit.left() && edit.right() <= delete.left());
+        assert!(first_row.right() - delete.right() <= px(8.));
+    }
+}
+
+#[gpui::test]
+fn queue_row_send_promotes_after_yield_and_interrupts_only_the_steered_row(
+    cx: &mut gpui::TestAppContext,
+) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let (_, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("a", "first", AfterYield),
+            editing_test_prompt("b", "second", Steer),
+            editing_test_prompt("c", "third", Steer),
+        ],
+    );
+    let after_yield = vcx.debug_bounds("queue-row-send-now-0").unwrap();
+    vcx.simulate_click(after_yield.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
-        vcx.debug_bounds("queue-row-send-now-0").is_some(),
-        "row Send now must be visible without opening a menu"
+        matches!(commands.try_recv(), Ok(Command::SetQueuedPromptMode { client_id, mode: Steer, .. }) if client_id == "a")
     );
-    assert!(
-        vcx.debug_bounds("queue-send-all-now").is_some(),
-        "header must offer Send all now"
-    );
-    let row = vcx.debug_bounds("queue-row-send-now-0").unwrap();
-    vcx.simulate_click(row.center(), gpui::Modifiers::default());
+    let steer = vcx.debug_bounds("queue-row-send-now-1").unwrap();
+    vcx.simulate_click(steer.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
-        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b"])
+        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompt { client_id, .. }) if client_id == "b")
     );
-    let header = vcx.debug_bounds("queue-send-all-now").unwrap();
-    vcx.simulate_click(header.center(), gpui::Modifiers::default());
-    vcx.run_until_parked();
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn queue_send_all_now_only_interrupts_its_own_section(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let (_, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![
+            editing_test_prompt("a", "first", AfterYield),
+            editing_test_prompt("b", "second", Steer),
+            editing_test_prompt("c", "third", AfterYield),
+        ],
+    );
+    for (selector, expected) in [
+        ("queue-send-all-steer", vec!["b"]),
+        ("queue-send-all-after-yield", vec!["a", "c"]),
+    ] {
+        let send = vcx.debug_bounds(selector).unwrap();
+        vcx.simulate_click(send.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == expected)
+        );
+    }
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn queue_edit_mode_is_staged_until_save(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+    let (_, vcx, commands) =
+        queue_edit_panel(cx, vec![editing_test_prompt("a", "queued", AfterYield)]);
+    let mut click = |selector| {
+        let position = vcx.debug_bounds(selector).unwrap().center();
+        vcx.simulate_click(position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+    click("remote-queue-edit-0");
+    click("queue-edit-mode-steer");
+    click("queue-edit-cancel");
+    assert!(matches!(
+        drain_commands(&commands).as_slice(),
+        [
+            Command::SetQueuedPromptEditing { editing: true, .. },
+            Command::SetQueuedPromptEditing { editing: false, .. }
+        ]
+    ));
+    click("remote-queue-edit-0");
+    click("queue-edit-mode-steer");
+    click("queue-edit-save");
     assert!(
-        matches!(commands.try_recv(), Ok(Command::InterruptQueuedPrompts { ids, .. }) if ids == ["a", "b"])
+        matches!(drain_commands(&commands).as_slice(), [Command::SetQueuedPromptEditing { editing: true, .. }, Command::SetQueuedPromptMode { client_id, mode: Steer, .. }, Command::EditQueuedPrompt { prompt_id, .. }] if client_id == "a" && prompt_id == "a")
     );
 }
 
@@ -1400,7 +1497,7 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
     let queue = vcx.debug_bounds("queue-card").unwrap();
     let items = vcx.debug_bounds("prompt-queue-items").unwrap();
     let input = vcx.debug_bounds("prompt-input").unwrap();
-    assert!(items.size.height <= px(144.));
+    assert!(items.size.height <= px(170.));
     assert!(queue.bottom() <= input.top());
     let first = vcx.debug_bounds("queued-prompt-0").unwrap();
     let second = vcx.debug_bounds("queued-prompt-1").unwrap();

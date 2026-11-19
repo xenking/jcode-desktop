@@ -257,10 +257,11 @@ impl Panel {
         cx.notify();
     }
 
-    /// Enter or Save: replace the message in place. A daemon row keeps its
-    /// slot, mode and skill; a local row is replaced at the same index.
+    /// Enter or Save: replace the message in place, applying its chosen mode.
     pub(super) fn save_queued_prompt_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(edit) = self.prompt_queue.queued_edit.as_mut() else { return };
+        let Some(edit) = self.prompt_queue.queued_edit.as_mut() else {
+            return;
+        };
         if matches!(edit.phase, QueueEditPhase::Recovered(_)) {
             self.requeue_recovered_edit(window, cx);
             return;
@@ -272,9 +273,25 @@ impl Panel {
         if content.trim().is_empty() && images.is_empty() && attachments.is_empty() {
             return;
         }
+        let after_yield = edit.after_yield;
         match edit.target.clone() {
             QueueEditTarget::Remote(prompt_id) => {
                 edit.phase = QueueEditPhase::Saving;
+                let mode = if after_yield {
+                    jcode_sdk::api::QueuedPromptMode::AfterYield
+                } else {
+                    jcode_sdk::api::QueuedPromptMode::Steer
+                };
+                // The ordered session worker applies the mode while the edit still
+                // holds the row. EditQueuedPrompt releases that hold on save.
+                if self
+                    .prompt_queue
+                    .remote
+                    .iter()
+                    .any(|prompt| prompt.client_id == prompt_id && prompt.mode != mode)
+                {
+                    self.set_remote_queue_mode(&prompt_id, mode);
+                }
                 self.bridge.send(Command::EditQueuedPrompt {
                     session_id: self.session_id.clone(),
                     prompt_id,
@@ -288,6 +305,7 @@ impl Panel {
                 if let Some(prompt) = self.prompt_queue.prompts.get_mut(index) {
                     prompt.content = content;
                     prompt.images = images;
+                    prompt.after_yield = after_yield;
                     // Local entries carry their bytes, as do files pasted into
                     // the editor, so every attachment converts.
                     prompt.files = captured_files(&attachments);
@@ -836,6 +854,113 @@ impl Panel {
             self.send_composer_prompt_with_files(content, images, files, cx);
         }
         cx.notify();
+    }
+
+    fn set_remote_queue_mode(&self, client_id: &str, mode: jcode_sdk::api::QueuedPromptMode) {
+        self.bridge.send(Command::SetQueuedPromptMode {
+            session_id: self.session_id.clone(),
+            client_id: client_id.to_owned(),
+            mode,
+        });
+    }
+
+    fn queued_remote_sendable(&self, prompt: &jcode_sdk::api::QueuedPrompt) -> bool {
+        !prompt.editing
+            && !self.prompt_queue.remote_removing.contains(&prompt.client_id)
+            && !self.prompt_queue.queued_edit.as_ref().is_some_and(|edit| {
+                matches!(&edit.target, QueueEditTarget::Remote(id) if *id == prompt.client_id)
+            })
+    }
+
+    fn send_remote_queue_row(
+        &mut self,
+        client_id: &str,
+        mode: jcode_sdk::api::QueuedPromptMode,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_sdk::api::QueuedPromptMode::{AfterYield, Steer};
+        if !self.queue_connection_ready()
+            || !self.prompt_queue.remote.iter().any(|prompt| {
+                prompt.client_id == client_id
+                    && prompt.mode == mode
+                    && self.queued_remote_sendable(prompt)
+            })
+        {
+            return;
+        }
+        self.prompt_queue.remote_failures.remove(client_id);
+        match mode {
+            AfterYield => self.set_remote_queue_mode(client_id, Steer),
+            Steer => self.bridge.send(Command::InterruptQueuedPrompt {
+                session_id: self.session_id.clone(),
+                client_id: client_id.to_owned(),
+            }),
+        }
+        cx.notify();
+    }
+
+    fn send_local_queue_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.local_edit_index() == Some(index) || !self.queue_connection_ready() {
+            return;
+        }
+        let Some(prompt) = self.prompt_queue.prompts.get_mut(index) else {
+            return;
+        };
+        if prompt.after_yield {
+            prompt.after_yield = false;
+            cx.notify();
+        } else {
+            self.send_queued_prompt_now(index, cx);
+        }
+    }
+
+    fn interrupt_queue_section(
+        &mut self,
+        mode: jcode_sdk::api::QueuedPromptMode,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.queue_connection_ready() {
+            return;
+        }
+        let mut ids = Vec::new();
+        for prompt in self
+            .prompt_queue
+            .remote
+            .iter()
+            .chain(&self.prompt_queue.pending_remote)
+        {
+            if prompt.mode == mode
+                && self.queued_remote_sendable(prompt)
+                && !ids.contains(&prompt.client_id)
+            {
+                ids.push(prompt.client_id.clone());
+            }
+        }
+        let after_yield = mode == jcode_sdk::api::QueuedPromptMode::AfterYield;
+        let mut index = 0;
+        while let Some(prompt) = self.prompt_queue.prompts.get(index) {
+            if prompt.after_yield != after_yield || self.local_edit_index() == Some(index) {
+                index += 1;
+                continue;
+            }
+            if self.prompt_queue.remote_supported {
+                let prompt = self.prompt_queue.prompts.remove(index);
+                self.local_queue_removed(index);
+                ids.push(self.send_remote_prompt_with_files(
+                    prompt.content,
+                    prompt.images,
+                    prompt.files,
+                    prompt.after_yield,
+                    prompt.active_skill,
+                    cx,
+                ));
+            } else {
+                let before = self.prompt_queue.prompts.len();
+                self.send_queued_prompt_now(index, cx);
+                index += usize::from(self.prompt_queue.prompts.len() == before);
+            }
+        }
+        self.interrupt_queued_prompts(ids, cx);
     }
 
     fn interrupt_all_queued_prompts(&mut self, cx: &mut Context<Self>) {
