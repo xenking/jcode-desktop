@@ -23,7 +23,24 @@ fn created(id: &str) -> jcode_sdk::SessionInfo {
     }
 }
 
-fn request(commands: &std::sync::mpsc::Receiver<Command>) -> (String, Option<String>) {
+/// The create request of the oldest draft. A draft still waiting for its
+/// first prompt must have sent nothing, and is then committed.
+fn request(
+    workspace: &Entity<Workspace>,
+    cx: &mut gpui::VisualTestContext,
+    commands: &std::sync::mpsc::Receiver<Command>,
+) -> (String, Option<String>) {
+    if workspace.read_with(cx, |w, cx| {
+        w.slots
+            .iter()
+            .any(|slot| slot.panel.read(cx).session_deferred())
+    }) {
+        assert!(
+            commands.try_recv().is_err(),
+            "an open draft must not create a session before its first prompt"
+        );
+        workspace.update(cx, |w, cx| w.request_deferred_sessions(cx));
+    }
     match commands
         .try_recv()
         .expect("native panel must request creation")
@@ -151,10 +168,9 @@ fn local_draft_entrance_slides_a_full_width_editor(cx: &mut gpui::TestAppContext
             );
         }
     });
-    request(&commands);
     assert!(
         commands.try_recv().is_err(),
-        "motion must not wait for a backend reply"
+        "motion must not wait for a backend, and an untouched draft creates nothing"
     );
 }
 
@@ -187,7 +203,7 @@ fn repeated_local_drafts_keep_earlier_entrances_and_focus_the_latest_editor(
         }
         w.set_active(3, cx);
     });
-    let ids: Vec<_> = (0..3).map(|_| request(&commands).0).collect();
+    let ids: Vec<_> = (0..3).map(|_| request(&workspace, vcx, &commands).0).collect();
     assert!(ids.windows(2).all(|pair| pair[0] != pair[1]));
     vcx.run_until_parked();
     vcx.simulate_input("latest draft");
@@ -211,7 +227,7 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     let start = Instant::now();
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (id, _) = request(&commands);
+    let (id, _) = request(&workspace, vcx, &commands);
     let panel = workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert_eq!(w.active, 1);
@@ -273,11 +289,11 @@ fn concurrent_drafts_attach_out_of_order_without_stealing_focus(cx: &mut gpui::T
     let (workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (first, _) = request(&commands);
+    let (first, _) = request(&workspace, vcx, &commands);
     vcx.simulate_input("first draft");
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (second, _) = request(&commands);
+    let (second, _) = request(&workspace, vcx, &commands);
     assert_ne!(first, second);
     vcx.simulate_input("second draft");
     workspace.update(vcx, |w, cx| {
@@ -320,7 +336,7 @@ fn closed_pending_draft_never_resurrects_even_during_close_animation(
     for during_animation in [true, false] {
         vcx.simulate_keystrokes("super-n");
         vcx.run_until_parked();
-        let (id, _) = request(&commands);
+        let (id, _) = request(&workspace, vcx, &commands);
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
@@ -360,7 +376,7 @@ fn pending_failure_is_visible_and_keeps_draft_unsent(cx: &mut gpui::TestAppConte
     let (workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (id, _) = request(&commands);
+    let (id, _) = request(&workspace, vcx, &commands);
     vcx.simulate_input("do not lose me");
     workspace.update(vcx, |w, cx| {
         w.apply(Update::CommandFailed { session_id: id, reason: "agent init failed".into() }, cx);
@@ -396,7 +412,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
         w.open_local_draft(Some("/pinned/local".into()), cx)
     });
     vcx.run_until_parked();
-    let (old, _) = request(&commands);
+    let (old, _) = request(&workspace, vcx, &commands);
     let input = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
     add_image(&input, vcx);
     vcx.simulate_input("restored draft");
@@ -410,7 +426,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
         w.active = 1;
         w.remotes.default_host = Some("different-machine".into());
     });
-    let (closed, _) = request(&commands);
+    let (closed, _) = request(&workspace, vcx, &commands);
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| {
             let encoded = w.snapshot(window, cx).unwrap().encode().unwrap();
@@ -425,7 +441,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     assert!(
         matches!(commands.try_recv(), Ok(Command::Watch { session_id }) if session_id == "existing")
     );
-    let (new, directory) = request(&commands);
+    let (new, directory) = request(&workspace, vcx, &commands);
     assert_eq!(directory.as_deref(), Some("/pinned/local"));
     assert_ne!(old, new);
     assert!(commands.try_recv().is_err());
@@ -477,9 +493,9 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| w.new_help_session(&NewHelpSession, window, cx))
     });
-    let (help, _) = request(&commands);
+    let (help, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
-    let (other, _) = request(&commands);
+    let (other, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| {
         w.apply(
             Update::SessionCreated {
@@ -509,7 +525,7 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
             w.close_panel(&ClosePanel, window, cx);
         })
     });
-    let (closed, _) = request(&commands);
+    let (closed, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| {
         w.apply(
             Update::SessionCreated {
@@ -550,7 +566,7 @@ fn pending_editor_accepts_input_during_motion_and_settles_visible_from_full_widt
                 // finishes, without waiting for a backend creation reply.
                 vcx.simulate_keystrokes("super-n");
                 vcx.run_until_parked();
-                request(&commands);
+                request(&workspace, vcx, &commands);
                 let early_canvas = vcx.debug_bounds("workspace-canvas").unwrap();
                 let early_input = vcx.debug_bounds("prompt-input").unwrap();
                 let visible_width = early_input.right().min(early_canvas.right())
@@ -622,7 +638,7 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
     assert!(vcx.debug_bounds("empty-strip-shortcut").is_some());
     vcx.simulate_keystrokes("super-enter");
     vcx.run_until_parked();
-    request(&commands);
+    request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, _| {
         let indices = w.row_indices(1).collect::<Vec<_>>();
         assert_eq!(indices.len(), 1);
@@ -633,7 +649,7 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
     assert!(vcx.debug_bounds("empty-strip-hint").is_none());
     vcx.simulate_keystrokes("super-enter");
     vcx.run_until_parked();
-    request(&commands);
+    request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, _| {
         let widths = w
             .row_indices(1)
@@ -642,4 +658,92 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
         assert_eq!(widths, vec![0.5, 0.5]);
         assert_eq!(w.slots[0].width_fraction, DEFAULT_WIDTH);
     });
+}
+
+#[gpui::test]
+fn a_session_is_created_by_the_first_prompt_not_by_opening_the_panel(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let draft = workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[w.active].panel.read(cx);
+        assert!(panel.is_pending_session());
+        assert!(panel.session_deferred());
+        panel.session_id.clone()
+    });
+    vcx.simulate_input("hello there");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "opening a panel and typing must not register a session"
+    );
+
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    match commands.try_recv() {
+        Ok(Command::CreateSession {
+            request_id: Some(id),
+            ..
+        }) => assert_eq!(id, draft, "the first prompt creates this draft's session"),
+        _ => panic!("the first prompt must create the session"),
+    }
+    assert!(commands.try_recv().is_err(), "one create per draft");
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        let active = w.active;
+        w.slots[active]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "ready" && content == "hello there")
+    );
+}
+
+#[gpui::test]
+fn closing_an_untouched_draft_never_reaches_the_runtime(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    vcx.simulate_input("changed my mind");
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.close_panel(&ClosePanel, window, cx);
+            w.remove_finished_closing_panels(Instant::now() + Duration::from_secs(2), window, cx);
+            assert_eq!(w.slots.len(), 1);
+        })
+    });
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "an abandoned draft must leave no session behind"
+    );
+}
+
+#[gpui::test]
+fn a_runtime_command_creates_the_session_but_resume_does_not(cx: &mut gpui::TestAppContext) {
+    let (_workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    vcx.simulate_input("/resume");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "/resume opens another session and must not create this one"
+    );
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("/model");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { .. })),
+        "the model list belongs to a runtime session"
+    );
 }

@@ -2075,9 +2075,15 @@ mod tests {
             );
             w.close_resume(window, cx);
             assert!(
-                commands.try_recv().is_ok(),
-                "cancel starts the normal draft"
+                commands.try_recv().is_err(),
+                "cancel returns to a draft that waits for its first prompt"
             );
+            assert!(w.slots[0].panel.read(cx).session_deferred());
+            assert_eq!(w.request_deferred_sessions(cx), 1);
+            assert!(matches!(
+                commands.try_recv(),
+                Ok(Command::CreateSession { request_id: Some(id), .. }) if id == Panel::STARTUP_SESSION_ID
+            ));
         });
     }
 

@@ -177,6 +177,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     }
     click(vcx, "machines-picker-button");
     click(vcx, "machine-connect-0");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     match commands.try_recv() {
         Ok(Command::CreateSession { .. }) => {}
         Ok(Command::CreateRemoteSession { host, .. }) => panic!("unexpected remote create: {host}"),
@@ -189,6 +190,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     click(vcx, "machines-picker-button");
     click(vcx, "machine-default-0");
     vcx.simulate_keystrokes("super-n");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -319,6 +321,7 @@ fn local_connect_keeps_new_panel_selected_after_mouse_release(cx: &mut gpui::Tes
         w.slots[w.active].panel.read(cx).session_id.clone()
     });
     assert!(Panel::is_pending_session_id(&draft));
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -418,6 +421,7 @@ fn explicit_folder_and_help_stay_local_with_a_remote_default(cx: &mut gpui::Test
     workspace.update(vcx, |w, cx| {
         w.folder_picker_dir = Some(PathBuf::from("/local/project"));
         w.choose_browsed_folder(cx);
+        w.request_deferred_sessions(cx);
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/local/project")

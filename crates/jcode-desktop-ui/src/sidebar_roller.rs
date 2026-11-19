@@ -731,6 +731,8 @@ mod tests {
         let new = vcx.debug_bounds("sidebar-new-session-expanded").unwrap();
         vcx.simulate_click(new.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "a new panel creates nothing yet");
+        workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
         let Ok(Command::CreateSession {
             request_id: Some(request_id),
             ..

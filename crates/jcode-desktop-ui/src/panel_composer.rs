@@ -573,7 +573,8 @@ impl Panel {
         let previous = std::mem::replace(&mut self.session_id, request_id);
         self.working_dir = Some(directory);
         self.title = "New session".into();
-        self.status = "Starting session · you can type now".into();
+        self.draft_session = super::DraftSession::Deferred;
+        self.status = super::DEFERRED_SESSION_STATUS.into();
         self.connection_phase.clear();
         self.history_loaded = false;
         self.input

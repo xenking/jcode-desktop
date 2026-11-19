@@ -79,7 +79,15 @@ fn select_directory(
     });
 }
 
-fn assert_created_in(commands: &Receiver<Command>, directory: &Path) {
+/// The draft opened in `directory` creates its session there once committed.
+fn assert_created_in(
+    workspace: &Entity<Workspace>,
+    vcx: &mut gpui::VisualTestContext,
+    commands: &Receiver<Command>,
+    directory: &Path,
+) {
+    assert_no_command(commands);
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     match commands
         .try_recv()
         .expect("one new session should be created")
@@ -363,7 +371,7 @@ fn choosing_default_directory_changes_preference_without_spawning_and_next_enter
     // shortcut operational without waiting for a runtime reply.
     vcx.simulate_keystrokes(&platform_chord("super-enter"));
     vcx.run_until_parked();
-    assert_created_in(&commands, selected.path());
+    assert_created_in(&workspace, vcx, &commands, selected.path());
     workspace.read_with(vcx, |workspace, _| {
         assert_eq!(workspace.slots.len(), before.len() + 1);
     });
@@ -466,7 +474,7 @@ fn cancelling_default_directory_preserves_prior_and_restores_shortcut(
     assert_no_command(&commands);
     vcx.simulate_keystrokes(&platform_chord("super-enter"));
     vcx.run_until_parked();
-    assert_created_in(&commands, prior.path());
+    assert_created_in(&workspace, vcx, &commands, prior.path());
 }
 
 #[gpui::test]
@@ -493,7 +501,7 @@ fn ordinary_open_folder_resets_default_mode_and_still_spawns(cx: &mut gpui::Test
         );
         assert_eq!(workspace.slots.len(), 3);
     });
-    assert_created_in(&commands, selected.path());
+    assert_created_in(&workspace, vcx, &commands, selected.path());
 }
 
 #[gpui::test]

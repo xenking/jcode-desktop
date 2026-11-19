@@ -76,10 +76,7 @@ impl Workspace {
                 session_id: previous,
             });
         }
-        self.bridge.send(Command::CreateSession {
-            working_dir: Some(directory.to_owned()),
-            request_id: Some(request_id),
-        });
+        // The retargeted draft creates its session with its first prompt.
         true
     }
 }
@@ -147,6 +144,11 @@ mod tests {
             commands.try_recv(),
             Ok(Command::Unwatch { session_id }) if session_id == "existing"
         ));
+        assert!(
+            commands.try_recv().is_err(),
+            "the new folder gets a session with its first prompt"
+        );
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
         let request_id = match commands.try_recv() {
             Ok(Command::CreateSession {
                 working_dir,
@@ -186,6 +188,7 @@ mod tests {
         click_location(vcx);
         vcx.simulate_keystrokes("b e t a enter");
         vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
         assert!(matches!(
             commands.try_recv(),
             Ok(Command::CreateSession { working_dir, .. }) if working_dir.as_deref() == other.to_str()

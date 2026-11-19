@@ -1915,6 +1915,8 @@ impl Workspace {
         for saved in snapshot.slots {
             restored_index.push(None);
             let mut panel_state = saved.panel;
+            // Some(needs a session now) for a local draft from the last run.
+            let mut restored_local_draft = None;
             // Preview fixture IDs are never runtime sessions, including old snapshots.
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
@@ -1954,10 +1956,7 @@ impl Workspace {
                             1,
                         );
                     }
-                    self.bridge.send(Command::CreateSession {
-                        working_dir: panel_state.working_dir.clone(),
-                        request_id: Some(panel_state.session_id.clone()),
-                    });
+                    restored_local_draft = Some(help || publish);
                 }
             }
             let terminal =
@@ -2043,6 +2042,9 @@ impl Workspace {
             panel.update(cx, |panel, cx| {
                 panel.restore_snapshot(panel_state, cx);
                 panel.prefetch_persisted_history(cx);
+                if let Some(needs_session) = restored_local_draft {
+                    panel.resume_draft_session(needs_session, cx);
+                }
             });
             if panel
                 .read(cx)
@@ -13160,6 +13162,8 @@ mod tests {
             .expect("open this folder should paint");
         vcx.simulate_click(open.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "a draft creates nothing yet");
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
 
         match commands
             .try_recv()
@@ -13317,6 +13321,7 @@ mod tests {
 
         vcx.simulate_keystrokes("n o t e s enter");
         vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
         match commands
             .try_recv()
             .expect("enter should open the search match")
@@ -13440,6 +13445,8 @@ mod tests {
         ] {
             vcx.simulate_keystrokes(&platform_chord(chord));
             vcx.run_until_parked();
+            assert!(commands.try_recv().is_err(), "{chord} only opens a draft");
+            workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
             match commands
                 .try_recv()
                 .expect("shortcut should create a session")
@@ -15798,6 +15805,7 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_keystrokes(&format!("{MOD}-enter"));
         cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| workspace.request_deferred_sessions(cx));
 
         let Command::CreateSession {
             working_dir,

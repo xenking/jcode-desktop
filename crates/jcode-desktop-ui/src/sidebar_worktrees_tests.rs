@@ -168,6 +168,7 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
         w.remotes.default_host = Some("elsewhere".into())
     });
     click(vcx, "sidebar-project-new-0");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.main)
     );
@@ -182,6 +183,7 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
             .unwrap()
     });
     click(vcx, &format!("sidebar-checkout-new-{search_header}"));
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.search)
     );
@@ -205,6 +207,7 @@ fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppCont
     );
     workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
     click(vcx, "sidebar-new-thread");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -313,6 +316,7 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     click(vcx, "sidebar-project-worktree-0");
     vcx.simulate_keystrokes("f e a t u r e - a enter");
     vcx.run_until_parked();
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     let created = match commands.try_recv().unwrap() {
         Command::CreateSession {
             working_dir: Some(directory),

@@ -762,6 +762,7 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
+        self.request_deferred_session(cx);
         if self.active_skill.is_some() && !self.prompt_queue.remote_supported {
             if !self.is_pending_session()
                 && self.history_loaded

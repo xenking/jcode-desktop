@@ -63,10 +63,31 @@ impl Workspace {
             "New session".into(),
             cx,
         );
-        self.bridge.send(Command::CreateSession {
-            working_dir: directory,
-            request_id: Some(request_id),
-        });
+        let panel = self.slots[self.active].panel.clone();
+        if help {
+            // Help sends its own first prompt as soon as the session exists.
+            panel.update(cx, |panel, _| panel.mark_session_requested());
+            self.bridge.send(Command::CreateSession {
+                working_dir: directory,
+                request_id: Some(request_id),
+            });
+        } else {
+            panel.update(cx, |panel, cx| panel.defer_session(cx));
+        }
+    }
+
+    /// Stand in for the first prompt of every draft that is waiting for one.
+    #[cfg(test)]
+    pub(super) fn request_deferred_sessions(&mut self, cx: &mut Context<Self>) -> usize {
+        let mut requested = 0;
+        for slot in &self.slots {
+            if slot.panel.read(cx).session_deferred() {
+                slot.panel
+                    .update(cx, |panel, cx| panel.request_deferred_session(cx));
+                requested += 1;
+            }
+        }
+        requested
     }
 
     pub(super) fn open_remote_draft(&mut self, host: String, cx: &mut Context<Self>) {

@@ -209,6 +209,8 @@ impl Workspace {
         if !panel.read(cx).is_pending_session() {
             return;
         }
+        // An explicit retry is a request for the session.
+        panel.update(cx, |panel, _| panel.mark_session_requested());
         let remote_host = pending::remote_draft_host(&panel.read(cx).session_id).map(str::to_owned);
         if let Some(host) = remote_host.as_ref().filter(|_| !local) {
             let host = new_session_host(host).to_owned();
@@ -339,7 +341,7 @@ impl Workspace {
                     .child(div().text_color(theme.TEXT_DIM).child(if failed {
                         "Not sent. Your draft and queued prompts are preserved."
                     } else {
-                        if cloud { "This panel shares your cloud VM. Enter queues your prompt until connected." } else { "Enter queues your prompt until the connection is ready." }
+                        if cloud { "This panel shares your cloud VM. Enter queues your prompt until connected." } else if panel.read(cx).session_deferred() { "Nothing is created until you send. Enter starts the session with your prompt." } else { "Enter queues your prompt until the connection is ready." }
                     }))
                     .child(
                         div()
@@ -462,7 +464,23 @@ impl Workspace {
                 .iter()
                 .any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
         {
+            if self.remotes.default_host.is_none() {
+                // A local startup draft creates its session with the first
+                // prompt. Not marked requested: a machine chosen before then
+                // still connects through the branch below.
+                for slot in &self.slots {
+                    if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                        slot.panel.update(cx, |panel, cx| panel.defer_session(cx));
+                    }
+                }
+                return;
+            }
             self.remotes.startup_requested = true;
+            for slot in &self.slots {
+                if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                    slot.panel.update(cx, |panel, _| panel.mark_session_requested());
+                }
+            }
             self.create_default_session(
                 self.default_working_dir(),
                 Some(Panel::STARTUP_SESSION_ID.into()),

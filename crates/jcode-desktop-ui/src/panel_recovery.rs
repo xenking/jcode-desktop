@@ -195,6 +195,8 @@ impl Panel {
     }
 
     pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The model list belongs to a runtime session.
+        self.request_deferred_session(cx);
         if self.recovery_picker_open {
             self.recovery_picker_open = false;
         } else if self.model_picker_open && self.picker_search.is_some() {

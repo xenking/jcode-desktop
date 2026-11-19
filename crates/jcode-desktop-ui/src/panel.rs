@@ -207,6 +207,21 @@ pub(crate) type SessionOpener =
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
 
+/// Opening a panel is not yet a conversation. A local draft asks the runtime
+/// for a session only when the user sends its first prompt, so abandoned
+/// panels never register a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DraftSession {
+    /// Mounted, with no decision yet about when to create its session.
+    Unrequested,
+    /// Waiting for the first prompt.
+    Deferred,
+    /// The create request is in flight, or the session exists.
+    Requested,
+}
+
+pub(crate) const DEFERRED_SESSION_STATUS: &str = "New session · starts with your first prompt";
+
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
     match registered_command(name) {
@@ -709,6 +724,8 @@ pub struct Panel {
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
+    /// Whether this draft has asked the runtime for its session yet.
+    draft_session: DraftSession,
     history_loaded: bool,
     history_paging: Option<history_paging::HistoryPaging>,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
@@ -1024,6 +1041,59 @@ impl Panel {
         Self::is_pending_session_id(&self.session_id)
     }
 
+    /// Hold the runtime session back until the user commits to this draft.
+    /// A draft that was already requested keeps its in-flight request.
+    pub(crate) fn defer_session(&mut self, cx: &mut Context<Self>) {
+        if self.is_pending_session() && self.draft_session == DraftSession::Unrequested {
+            self.draft_session = DraftSession::Deferred;
+            if self.has_queued_prompts() {
+                // Sent before the runtime was reachable: the commitment is
+                // already made.
+                self.request_deferred_session(cx);
+                return;
+            }
+            self.status = DEFERRED_SESSION_STATUS.into();
+            cx.notify();
+        }
+    }
+
+    /// The workspace sent, or is about to send, this draft's create request.
+    pub(crate) fn mark_session_requested(&mut self) {
+        self.draft_session = DraftSession::Requested;
+    }
+
+    /// True while nothing has asked the runtime to create this draft's session.
+    pub(crate) fn session_deferred(&self) -> bool {
+        self.is_pending_session() && self.draft_session == DraftSession::Deferred
+    }
+
+    /// Create the session a deferred draft stands for. Called when the user
+    /// sends a prompt or reaches for something only a runtime session has.
+    pub(crate) fn request_deferred_session(&mut self, cx: &mut Context<Self>) {
+        if !self.session_deferred() {
+            return;
+        }
+        self.draft_session = DraftSession::Requested;
+        self.status = "Starting session · you can type now".into();
+        self.bridge.send(Command::CreateSession {
+            working_dir: self.working_dir.clone(),
+            request_id: Some(self.session_id.clone()),
+        });
+        cx.notify();
+    }
+
+    /// A draft restored after a restart resumes where it stood: prompts that
+    /// were queued need their session now, an untouched editor does not.
+    pub(crate) fn resume_draft_session(&mut self, needs_session: bool, cx: &mut Context<Self>) {
+        self.draft_session = DraftSession::Deferred;
+        if needs_session || self.has_queued_prompts() {
+            self.request_deferred_session(cx);
+        } else {
+            self.status = DEFERRED_SESSION_STATUS.into();
+            cx.notify();
+        }
+    }
+
     /// Promote in place so focus, selection, undo history, and pasted images
     /// all survive the asynchronous runtime connection.
     pub fn attach_startup_session(
@@ -1262,6 +1332,7 @@ impl Panel {
             provisional_items: 0,
             provisional_task: None,
             awaiting_persisted: false,
+            draft_session: DraftSession::Requested,
             expanded_regions,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
@@ -2257,6 +2328,17 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
+                            // Commands are answered by the runtime, so a
+                            // slash is the commitment a prompt would be.
+                            // `/resume` and `/accounts` run without one and
+                            // must not leave an empty session behind.
+                            let command = content.split_whitespace().next().unwrap_or("");
+                            if command.starts_with('/')
+                                && !"/resume".starts_with(command)
+                                && !"/accounts".starts_with(command)
+                            {
+                                this.request_deferred_session(cx);
+                            }
                             if (content == "/model" || content.starts_with("/model "))
                                 && !this.is_pending_session()
                             {
@@ -2354,6 +2436,7 @@ impl Panel {
                 );
             }
             if this.is_pending_session() {
+                this.draft_session = DraftSession::Unrequested;
                 this.status = "Starting session · you can type now".into();
                 this.input
                     .update(cx, |input, cx| input.set_pending_session(true, cx));
