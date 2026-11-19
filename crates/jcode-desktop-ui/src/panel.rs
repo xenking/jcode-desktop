@@ -800,6 +800,8 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    ask_recovery: Option<gpui::Task<()>>,
+    answered_asks: HashSet<String>,
     /// Scroll state of the queue card's rows, so an inline queue editor can
     /// bring its row into view when it opens.
     queue_items_scroll: gpui::ScrollHandle,
@@ -1227,7 +1229,13 @@ impl Panel {
                 })).collect();
                 let event = serde_json::json!({"ev":"ask_request", "session_id":"screenshot-fixture", "request_id":"screenshot-ask", "tool_call_id":"screenshot-tool", "questions":questions});
                 if let Ok(event) = serde_json::from_value::<ApiEvent>(event) {
-                    let _ = panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                    let _ = panel.update(cx, |panel, cx| {
+                        panel.apply(&event, cx);
+                        if let Some(card) = &mut panel.ask_card {
+                            card.toggle(0, 0);
+                            card.open_comment(0, 0);
+                        }
+                    });
                 }
             });
         }
@@ -1371,6 +1379,8 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            ask_recovery: None,
+            answered_asks: HashSet::new(),
             queue_items_scroll: queue_items_scroll.clone(),
             queue_edit_anchor: gpui::ScrollAnchor::for_handle(queue_items_scroll),
             pending_ask_draft: None,
@@ -2134,6 +2144,7 @@ impl Panel {
             .set_offset_from_scrollbar(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
         self.input
             .update(cx, |input, cx| input.restore(snapshot.draft, cx));
+        self.schedule_ask_recovery(cx);
     }
 
     /// Wire the input's submit to also echo locally. Called once after
@@ -3326,6 +3337,7 @@ impl Panel {
                 .update(cx, |input, cx| input.set_pending_session(false, cx));
         }
         if self.history_loaded {
+            self.schedule_ask_recovery(cx);
             // History is persisted message state, not a replay of the live turn.
             // Wait for authoritative idle before reconciling it with a saved
             // suffix. Buffered deltas must not be appended to a history prefix.
@@ -3384,6 +3396,7 @@ impl Panel {
         items.append(&mut existing);
         self.image_pane_selected = None;
         *self.items = items;
+        self.schedule_ask_recovery(cx);
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
@@ -3502,21 +3515,7 @@ impl Panel {
                 questions,
                 ..
             } => {
-                if self.ask_card.as_ref().is_some_and(|card| {
-                    card.request_id == *request_id && card.questions == *questions
-                }) {
-                    return;
-                }
-                let mut card = ask::AskCard::new(request_id.clone(), questions.clone());
-                card.tool_call_id = tool_call_id.clone();
-                self.ask_card = Some(card);
-                self.prepare_ask_inputs(cx);
-                if let (Some(draft), Some(card)) =
-                    (self.pending_ask_draft.take(), self.ask_card.as_mut())
-                {
-                    card.restore_draft(draft, cx);
-                }
-                self.stick_to_bottom = true;
+                self.show_ask(request_id, tool_call_id, questions, cx);
             }
             ApiEvent::RuntimeCommandResult {
                 session_id,
@@ -3651,11 +3650,17 @@ impl Panel {
                 });
             }
             ApiEvent::ToolInputDelta { call_id, delta, .. } => {
-                if let Some(Item::Tool { input, .. }) = self.find_tool(call_id) {
+                if let Some(Item::Tool { input, name, .. }) = self.find_tool(call_id) {
                     input.push_str(delta);
+                    if name == "ask" {
+                        self.schedule_ask_recovery(cx);
+                    }
                 }
             }
-            ApiEvent::ToolExec { call_id, .. } => {
+            ApiEvent::ToolExec { call_id, name, .. } => {
+                if name == "ask" {
+                    self.schedule_ask_recovery(cx);
+                }
                 self.tool_started.insert(call_id.clone(), Instant::now());
                 self.tool_wall_times
                     .insert(call_id.clone(), (response_stats::now_ms(), None));
@@ -3675,10 +3680,12 @@ impl Panel {
                     .entry(call_id.clone())
                     .or_insert((None, None))
                     .1 = response_stats::now_ms();
-                let completed_ask = self
-                    .ask_card
-                    .as_ref()
-                    .is_some_and(|card| name == "ask" && card.tool_call_id == *call_id);
+                let completed_ask = self.ask_card.as_ref().is_some_and(|card| {
+                    name == "ask"
+                        && (card.tool_call_id == *call_id
+                            || (card.tool_call_id.is_empty()
+                                && card.request_id.strip_prefix("ask-") == Some(call_id)))
+                });
                 let ask_input = if completed_ask {
                     self.cancel_ask_voice(cx);
                     let card = self.ask_card.take().expect("checked above");
@@ -3727,6 +3734,9 @@ impl Panel {
                         done: true,
                         error: error.clone(),
                     });
+                }
+                if name == "ask" {
+                    self.schedule_ask_recovery(cx);
                 }
             }
             ApiEvent::Compacted { message, .. } => {

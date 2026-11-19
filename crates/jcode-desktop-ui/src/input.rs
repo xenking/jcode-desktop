@@ -250,6 +250,7 @@ pub struct PromptInput {
     empty_submit: bool,
     pending_session: bool,
     spacious: bool,
+    compact_padding: bool,
     /// Right padding reserved for a control the host floats inside the box
     /// (the chat composer's voice button).
     trailing_inset: f32,
@@ -930,6 +931,7 @@ impl PromptInput {
             empty_submit: false,
             pending_session: false,
             spacious: false,
+            compact_padding: false,
             trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
@@ -1398,6 +1400,11 @@ impl PromptInput {
     /// The host draws the fill, border and corners around this field.
     pub(crate) fn without_chrome(mut self) -> Self {
         self.chrome = false;
+        self
+    }
+
+    pub(crate) fn with_compact_padding(mut self) -> Self {
+        self.compact_padding = true;
         self
     }
 
@@ -3946,6 +3953,7 @@ impl Render for PromptInput {
                     .items_start()
                     .px_4()
                     .py_2()
+                    .when(self.compact_padding, |el| el.py(px(3.)))
                     .text_size(px(14.0))
                     .when(spacious, |el| {
                         // One line of 16px text plus padding.

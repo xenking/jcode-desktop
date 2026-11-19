@@ -1,7 +1,7 @@
 //! Composer chrome: the input with one row of compact pills below it.
 //!
-//! Nothing sits above the input. The bottom row holds the model pill, a
-//! separate reasoning effort pill, the credential method pill and the context
+//! The bottom row holds the model pill, a separate reasoning effort pill,
+//! the credential method pill and the context
 //! ring on the left, and the publish button plus the location (repo or
 //! directory) on the right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
@@ -67,7 +67,6 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let _ = window;
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode;
         let (model_label, effort) = self.composer_identity();
@@ -123,6 +122,29 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
+                    .when(self.ask_card.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("composer-ask-pending")
+                                .debug_selector(|| "composer-ask-pending".into())
+                                .flex_none()
+                                .size(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(theme.ACCENT_DIM)
+                                .text_color(theme.ACCENT)
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        super::usage::MeterTooltip("Waiting for your answer".into())
+                                    })
+                                    .into()
+                                })
+                                .child("?"),
+                        )
+                    })
                     .children(workers_pill)
                     .children(cache_pill)
                     .children(activity_icon)
@@ -266,6 +288,7 @@ impl Panel {
                     })),
             );
         let strips = self.render_composer_applets(window, cx);
+        let ask = self.render_ask_card(window, cx);
         div()
             .debug_selector(|| "composer".into())
             .w_full()
@@ -280,13 +303,16 @@ impl Panel {
                     .debug_selector(|| "picker-search".into())
                     .child(search.clone())
             }))
+            .children(ask)
             .when(
-                self.picker_search.is_none() || self.input.read(cx).has_draft(),
+                self.ask_card.is_none()
+                    && (self.picker_search.is_none() || self.input.read(cx).has_draft()),
                 |el| {
                     el.child(
                         // The voice button floats inside the input's right edge. The
                         // input reserves matching trailing space for it.
                         div()
+                            .debug_selector(|| "composer-text-slot".into())
                             .relative()
                             .w_full()
                             .min_w_0()
@@ -412,19 +438,10 @@ impl Panel {
                                 self.has_visible_queued_prompts() && self.ask_card.is_none(),
                                 |el| el.gap_0(),
                             )
-                            .children(self.render_ask_card(window, cx))
                             .children(self.render_side_question_card(cx))
-                            .children(if self.ask_card.is_none() {
-                                self.render_prompt_queue(cx)
-                            } else {
-                                None
-                            })
+                            .children(self.render_prompt_queue(cx))
                             .children(self.render_voice_pending())
-                            .children(
-                                self.ask_card
-                                    .is_none()
-                                    .then(|| self.render_composer(window, cx)),
-                            )
+                            .child(self.render_composer(window, cx))
                             .when(self.ask_card.is_none(), |el| {
                                 el.child(startup::input_marker(input_bounds))
                             }),

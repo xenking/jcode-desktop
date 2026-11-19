@@ -194,6 +194,10 @@ impl AskCard {
         }
     }
 
+    pub(super) fn open_comment(&mut self, question: usize, option: usize) {
+        self.comment_open[question][option] = true;
+    }
+
     pub fn toggle(&mut self, q: usize, option: usize) {
         let multi = self.questions[q].multi_select;
         let chosen = &mut self.chosen[q];
@@ -315,7 +319,98 @@ fn question_without_header<'a>(question: &'a str, header: Option<&str>) -> &'a s
     }
 }
 
+#[derive(Deserialize)]
+struct AskToolInput {
+    questions: Vec<AskQuestion>,
+}
+
 impl Panel {
+    pub(super) fn show_ask(
+        &mut self,
+        request_id: &str,
+        tool_call_id: &str,
+        questions: &[AskQuestion],
+        cx: &mut Context<Self>,
+    ) {
+        if self.answered_asks.contains(request_id) {
+            return;
+        }
+        self.ask_recovery = None;
+        if let Some(card) = self.ask_card.as_mut()
+            && card.request_id == request_id
+            && card.questions == questions
+        {
+            if !tool_call_id.is_empty() {
+                tool_call_id.clone_into(&mut card.tool_call_id);
+            }
+            return;
+        }
+        let mut card = AskCard::new(request_id.to_owned(), questions.to_vec());
+        tool_call_id.clone_into(&mut card.tool_call_id);
+        self.ask_card = Some(card);
+        self.prepare_ask_inputs(cx);
+        if let (Some(draft), Some(card)) = (self.pending_ask_draft.take(), self.ask_card.as_mut()) {
+            card.restore_draft(draft, cx);
+        }
+        self.stick_to_bottom = true;
+        cx.notify();
+    }
+
+    fn recoverable_ask(&self) -> Option<(&str, Vec<AskQuestion>)> {
+        let mut seen = HashSet::new();
+        self.items.iter().rev().find_map(|item| {
+            let Item::Tool {
+                call_id,
+                name,
+                input,
+                done,
+                ..
+            } = item
+            else {
+                return None;
+            };
+            // History and the event stream can both supply the same tool row.
+            // Only the most recent state of that call can reopen a card.
+            if name != "ask"
+                || call_id.is_empty()
+                || !seen.insert(call_id.as_str())
+                || *done
+                || self.answered_asks.contains(&format!("ask-{call_id}"))
+            {
+                return None;
+            }
+            let AskToolInput { questions } = serde_json::from_str(input).ok()?;
+            (!questions.is_empty()).then_some((call_id.as_str(), questions))
+        })
+    }
+
+    pub(super) fn schedule_ask_recovery(&mut self, cx: &mut Context<Self>) {
+        if self.ask_card.is_some() || self.ask_recovery.is_some() {
+            return;
+        }
+        let Some((call_id, _)) = self.recoverable_ask() else {
+            return;
+        };
+        let call_id = call_id.to_owned();
+        let grace = cx.background_executor().timer(Duration::from_secs(1));
+        self.ask_recovery = Some(cx.spawn(async move |panel, cx| {
+            grace.await;
+            let _ = panel.update(cx, |panel, cx| {
+                panel.ask_recovery = None;
+                if panel.ask_card.is_some() {
+                    return;
+                }
+                match panel.recoverable_ask() {
+                    Some((current, questions)) if current == call_id => {
+                        panel.show_ask(&format!("ask-{call_id}"), &call_id, &questions, cx);
+                    }
+                    Some(_) => panel.schedule_ask_recovery(cx),
+                    None => {}
+                }
+            });
+        }));
+    }
+
     pub(super) fn ask_result_images(&self, call_id: &str) -> Vec<(usize, &TranscriptImage)> {
         self.items.iter().enumerate().filter_map(|(index, item)| match item {
             Item::Image(image)
@@ -509,7 +604,7 @@ impl Panel {
             }
             "n" if count > 0 => {
                 let o = card.cursor_option.min(count - 1);
-                card.comment_open[q][o] = true;
+                card.open_comment(q, o);
                 if let Some(input) = card.comment_inputs.get(q).and_then(|inputs| inputs.get(o)) {
                     let focus = input.read(cx).focus_handle.clone();
                     window.focus(&focus, cx);
@@ -604,6 +699,7 @@ impl Panel {
                         });
                     });
                 })
+                .with_compact_padding()
                 .with_on_change(move |text, app| {
                     let _ = panel.update(app, |panel, cx| {
                         if let Some(card) =
@@ -631,6 +727,7 @@ impl Panel {
                             });
                         });
                     })
+                    .with_compact_padding()
                     .with_on_change(move |text, app| {
                         let _ = panel.update(app, |panel, cx| {
                             if let Some(card) =
@@ -686,8 +783,10 @@ impl Panel {
             card.submitting = false;
             card.submit_error = Some(error);
         } else {
+            self.answered_asks.insert(request_id.to_owned());
             self.ask_card = None;
             self.pending_ask_draft = None;
+            self.schedule_ask_recovery(cx);
         }
         cx.notify();
     }
@@ -721,13 +820,13 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2()
+            .w_full()
             .min_w_0()
-            .mx_2()
-            .p_3()
-            .rounded_md()
+            .p_2()
+            .rounded_lg()
             .border_1()
-            .border_color(theme.ACCENT_DIM)
-            .bg(theme.TOOL_BG)
+            .border_color(theme.INPUT_BORDER)
+            .bg(theme.INPUT_BG)
             .text_size(px(13.))
             .text_color(theme.TEXT)
             .children(
@@ -742,26 +841,39 @@ impl Panel {
             .flex_wrap()
             .gap_1();
         for q in 0..=card.questions.len() {
-            let label = if q == card.questions.len() {
-                "Review".to_string()
-            } else {
-                format!("{}", q + 1)
+            let label = match card.questions.get(q) {
+                Some(question) => match question.header.as_deref().filter(|s| !s.trim().is_empty())
+                {
+                    Some(header) => format!("{} {}", q + 1, header.trim()),
+                    None => format!("Question {}", q + 1),
+                },
+                None => "Review".to_owned(),
             };
+            let label_selector = format!("ask-tab-label-{label}");
             tabs = tabs.child(
                 div()
                     .id(("ask-tab", q))
                     .debug_selector(move || format!("ask-tab-{q}"))
+                    .min_w_0()
+                    .max_w_full()
                     .px_3()
                     .py_1()
                     .rounded_full()
                     .cursor_pointer()
+                    .text_size(px(14.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .when(card.cursor_question == q, |el| {
                         el.bg(theme.ACCENT_DIM).text_color(theme.TEXT)
                     })
                     .when(card.cursor_question != q, |el| {
                         el.text_color(theme.TEXT_DIM)
                     })
-                    .child(label)
+                    .child(
+                        div()
+                            .debug_selector(move || label_selector)
+                            .truncate()
+                            .child(label),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(card) = this.ask_card.as_mut() {
                             card.switch_tab(q);
@@ -798,35 +910,12 @@ impl Panel {
                 .bg(theme.QUOTE_BG)
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
                         .min_w_0()
+                        .pb_1()
+                        .debug_selector(move || format!("ask-question-{q}"))
                         .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .text_size(px(11.))
-                                .child(div().text_color(theme.TEXT_DIM).child(format!(
-                                    "{}/{}",
-                                    q + 1,
-                                    card.questions.len()
-                                )))
-                                .when_some(question.header.clone(), |el, header| {
-                                    el.child(div().text_color(theme.ACCENT).child(header))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .debug_selector(move || format!("ask-question-{q}"))
-                                .child(
-                                    question_without_header(
-                                        &question.question,
-                                        question.header.as_deref(),
-                                    )
-                                    .to_string(),
-                                ),
+                            question_without_header(&question.question, question.header.as_deref())
+                                .to_owned(),
                         ),
                 );
             for (o, option) in question.options.iter().enumerate() {
@@ -866,102 +955,107 @@ impl Panel {
                             .size(px(14.)),
                         )
                     });
+                let row = div()
+                    .id(("ask-option-row", q * 16 + o))
+                    .flex()
+                    .gap_2()
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .when(!selected, |el| el.hover(|el| el.bg(theme.INPUT_BG)))
+                    .child(mark)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("ask-label-{q}-{o}"))
+                                    .child(if o < 9 {
+                                        format!("{}. {}", o + 1, option.label)
+                                    } else {
+                                        option.label.clone()
+                                    }),
+                            )
+                            .when_some(option.description.clone(), |el, desc| {
+                                el.child(
+                                    div()
+                                        .min_w_0()
+                                        .debug_selector(move || format!("ask-description-{q}-{o}"))
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(desc),
+                                )
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id(("ask-comment-button", q * 16 + o))
+                            .debug_selector(move || format!("ask-comment-button-{q}-{o}"))
+                            .px_2()
+                            .rounded_full()
+                            .text_color(theme.TEXT_DIM)
+                            .child("Comment")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(card) = this.ask_card.as_mut() {
+                                    card.cursor_option = o;
+                                    card.open_comment(q, o);
+                                    if let Some(input) =
+                                        card.comment_inputs.get(q).and_then(|inputs| inputs.get(o))
+                                    {
+                                        let focus = input.read(cx).focus_handle.clone();
+                                        window.focus(&focus, cx);
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(card) = this.ask_card.as_mut() {
+                            card.cursor_question = q;
+                            card.cursor_option = o;
+                            card.toggle(q, o);
+                            window.focus(&this.focus_handle, cx);
+                            cx.notify();
+                        }
+                    }));
+                let editor = card
+                    .comment_inputs
+                    .get(q)
+                    .and_then(|inputs| inputs.get(o))
+                    .filter(|_| card.comment_open[q][o]);
                 block = block.child(
                     div()
-                        .id(("ask-option", q * 16 + o))
                         .debug_selector(move || format!("ask-option-{q}-{o}"))
                         .flex()
-                        .gap_2()
+                        .flex_col()
                         .min_w_0()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .cursor_pointer()
+                        .rounded(if editor.is_some() { px(12.) } else { px(20.) })
                         .when(selected, |el| el.bg(theme.ACCENT_DIM))
                         .when(
-                            self.focus_handle.is_focused(window)
-                                && card.cursor_question == q
-                                && card.cursor_option == o,
+                            self.focus_handle.is_focused(window) && card.cursor_option == o,
                             |el| el.border_1().border_color(theme.ACCENT),
                         )
-                        .hover(|el| el.bg(theme.QUOTE_BG))
-                        .child(mark)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .debug_selector(move || format!("ask-label-{q}-{o}"))
-                                        .child(if o < 9 {
-                                            format!("{}. {}", o + 1, option.label)
-                                        } else {
-                                            option.label.clone()
-                                        }),
-                                )
-                                .when_some(option.description.clone(), |el, desc| {
-                                    el.child(
-                                        div()
-                                            .min_w_0()
-                                            .debug_selector(move || {
-                                                format!("ask-description-{q}-{o}")
-                                            })
-                                            .text_color(theme.TEXT_DIM)
-                                            .child(desc),
-                                    )
-                                }),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .id(("ask-comment-button", q * 16 + o))
-                                .debug_selector(move || format!("ask-comment-button-{q}-{o}"))
-                                .px_2()
-                                .rounded_full()
-                                .text_color(theme.TEXT_DIM)
-                                .child("Comment")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if let Some(card) = this.ask_card.as_mut() {
-                                        card.cursor_option = o;
-                                        card.comment_open[q][o] = true;
-                                        if let Some(input) = card
-                                            .comment_inputs
-                                            .get(q)
-                                            .and_then(|inputs| inputs.get(o))
-                                        {
-                                            let focus = input.read(cx).focus_handle.clone();
-                                            window.focus(&focus, cx);
-                                        }
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                })),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            if let Some(card) = this.ask_card.as_mut() {
-                                card.cursor_question = q;
-                                card.cursor_option = o;
-                                card.toggle(q, o);
-                                window.focus(&this.focus_handle, cx);
-                                cx.notify();
-                            }
-                        })),
+                        .child(row)
+                        .when_some(editor, |el, input| {
+                            el.child(
+                                div()
+                                    .ml(px(34.))
+                                    .pr_2()
+                                    .pb_1()
+                                    .debug_selector(move || format!("ask-comment-{q}-{o}"))
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(div().flex_1().min_w_0().child(input.clone()))
+                                    .child(self.render_ask_microphone(q, Some(o), cx)),
+                            )
+                        }),
                 );
-                if card.comment_open[q][o]
-                    && let Some(input) = card.comment_inputs.get(q).and_then(|inputs| inputs.get(o))
-                {
-                    block = block.child(
-                        div()
-                            .ml(px(28.))
-                            .debug_selector(move || format!("ask-comment-{q}-{o}"))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(div().flex_1().min_w_0().child(input.clone()))
-                            .child(self.render_ask_microphone(q, Some(o), cx)),
-                    );
-                }
             }
             if let Some(input) = card.other_inputs.get(q) {
                 let own_selected = card.other[q].is_some();
@@ -1054,7 +1148,7 @@ impl Panel {
                             .debug_selector(|| "ask-decline".into())
                             .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .text_color(theme.TEXT_DIM)
                             .hover(|el| el.bg(theme.QUOTE_BG))
@@ -1069,7 +1163,7 @@ impl Panel {
                             .debug_selector(|| "ask-submit".into())
                             .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .when(
                                 complete || card.cursor_question < card.questions.len(),
                                 |el| {
@@ -1188,6 +1282,34 @@ mod tests {
     }"#;
 
     #[gpui::test]
+    fn question_name_is_in_the_tab_strip(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&serde_json::from_str(REAL_ASK_REQUEST).unwrap(), cx);
+        });
+        vcx.run_until_parked();
+        let tabs = vcx.debug_bounds("ask-tabs").unwrap();
+        let label = vcx
+            .debug_bounds("ask-tab-label-1 Database")
+            .expect("question name is rendered in the tab strip");
+        assert!(tabs.contains(&label.center()));
+        let question = vcx.debug_bounds("ask-question-0").unwrap();
+        assert!(
+            question.top() - tabs.bottom() < px(20.),
+            "no duplicate heading between tabs and question"
+        );
+    }
+
+    #[gpui::test]
     fn tabs_digits_and_comment_keep_answers(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -1223,7 +1345,14 @@ mod tests {
         );
         vcx.simulate_keystrokes("2 n");
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("ask-comment-0-1").is_some());
+        let editor = vcx.debug_bounds("ask-comment-0-1").unwrap();
+        let option = vcx.debug_bounds("ask-option-0-1").unwrap();
+        assert!(
+            option.contains(&editor.center()),
+            "selected option must contain its own comment editor"
+        );
+        vcx.simulate_click(editor.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         vcx.update(|window, cx| {
             let panel = panel.read(cx);
             assert!(
@@ -2241,6 +2370,115 @@ mod tests {
         });
     }
 
+    fn stream_ask(panel: &mut Panel, cx: &mut Context<Panel>) -> ApiEvent {
+        let request: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        let call_id = request["tool_call_id"].as_str().unwrap();
+        let input = serde_json::json!({"questions": request["questions"]}).to_string();
+        for event in [
+            serde_json::json!({"ev":"tool_start", "session_id":"session-a", "call_id":call_id, "name":"ask"}),
+            serde_json::json!({"ev":"tool_input_delta", "session_id":"session-a", "call_id":call_id, "delta":input}),
+            serde_json::json!({"ev":"tool_exec", "session_id":"session-a", "call_id":call_id, "name":"ask"}),
+        ] {
+            panel.apply(&serde_json::from_value(event).unwrap(), cx);
+        }
+        serde_json::from_value(request).unwrap()
+    }
+
+    #[gpui::test]
+    fn missing_ask_request_recovers_from_live_tool_and_merges_late_event(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let event = panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            stream_ask(panel, cx)
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-card").is_none(),
+            "wait for live AskRequest first"
+        );
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-card").is_some(),
+            "the running tool must be answerable without an AskRequest"
+        );
+        panel.update(vcx, |panel, cx| {
+            let card = panel.ask_card.as_mut().unwrap();
+            let ApiEvent::AskRequest {
+                request_id,
+                tool_call_id,
+                ..
+            } = &event
+            else {
+                unreachable!()
+            };
+            assert_eq!(&card.request_id, request_id);
+            assert_eq!(&card.tool_call_id, tool_call_id);
+            card.toggle(0, 1);
+            let editor = card.comment_inputs[0][1].clone();
+            panel.apply(&event, cx);
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.chosen[0], vec![1]);
+            assert_eq!(card.comment_inputs[0][1], editor);
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled(request_id, None, cx);
+            panel.apply(&event, cx);
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("ask-card").is_none(),
+            "neither replay nor the unfinished transcript row may reopen an acknowledged ask"
+        );
+    }
+
+    #[gpui::test]
+    fn restored_in_flight_ask_recovers_without_an_event(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace.push_test_panel("session-restored", cx);
+            workspace
+        });
+        let (live, restored) = workspace.read_with(vcx, |workspace, _| {
+            (
+                workspace.test_panel(0).unwrap(),
+                workspace.test_panel(1).unwrap(),
+            )
+        });
+        let snapshot = live.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            stream_ask(panel, cx);
+            panel.snapshot_for_reload(cx)
+        });
+        restored.update(vcx, |panel, cx| panel.restore_snapshot(snapshot, cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        restored.read_with(vcx, |panel, _| {
+            assert_eq!(
+                panel.ask_card.as_ref().unwrap().questions[0]
+                    .header
+                    .as_deref(),
+                Some("Database")
+            );
+        });
+    }
+
     #[gpui::test]
     fn real_ask_request_event_renders_card_and_submits(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
@@ -2270,8 +2508,10 @@ mod tests {
         }
         assert!(vcx.debug_bounds("composer-dock").is_some());
         assert!(vcx.debug_bounds("ask-card").is_none());
+        let bar_before = vcx.debug_bounds("composer-tabs").unwrap();
 
         panel.update(vcx, |panel, cx| {
+            panel.seed_screenshot_queued(2, 0);
             panel.input.update(cx, |input, cx| {
                 input.set_content("valuable draft".into(), cx)
             });
@@ -2287,8 +2527,21 @@ mod tests {
 
         assert!(vcx.debug_bounds("ask-card").is_some(), "ask card paints");
         assert!(
-            vcx.debug_bounds("composer").is_none(),
-            "composer is hidden during ask"
+            vcx.debug_bounds("composer-tabs").is_some()
+                && vcx.debug_bounds("composer-ask-pending").is_some()
+                && vcx.debug_bounds("composer-text-slot").is_none(),
+            "ask replaces only the text slot and leaves the composer bar visible"
+        );
+        let ask = vcx.debug_bounds("ask-card").unwrap();
+        let queue = vcx
+            .debug_bounds("queue-card")
+            .expect("visible prompt queue");
+        let bar = vcx.debug_bounds("composer-tabs").unwrap();
+        assert!(queue.bottom() <= ask.top() && ask.bottom() <= bar.top());
+        assert_eq!(
+            bar.bottom(),
+            bar_before.bottom(),
+            "the bar stays anchored to the bottom"
         );
         assert!(
             vcx.debug_bounds("ask-scroll").is_some(),

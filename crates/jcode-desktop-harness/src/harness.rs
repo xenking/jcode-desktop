@@ -3641,6 +3641,8 @@ fn session_worker_with_connector(
                 // desktop panel look busy: doing so routes its first prompt
                 // through soft_interrupt, where it waits forever because that
                 // new session has no active turn to interrupt.
+                // Some bridge frames (including AskRequest) omit the identity
+                // when the connection owns the request but has not named it.
                 if event_session_id(&event).is_some_and(|id| id != real_id) {
                     continue;
                 }
@@ -3797,7 +3799,7 @@ fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
 
 fn event_session_id(event: &ApiEvent) -> Option<&str> {
     match event {
-        ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id),
+        ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id.as_str()),
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
@@ -3833,9 +3835,10 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::FileStatus { session_id, .. }
         | ApiEvent::Compacted { session_id, .. }
         | ApiEvent::SessionRenamed { session_id, .. }
-        | ApiEvent::History { session_id, .. } => Some(session_id),
+        | ApiEvent::History { session_id, .. } => Some(session_id.as_str()),
         _ => None,
     }
+    .filter(|id| !id.is_empty())
 }
 
 fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> ApiEvent {
@@ -4996,6 +4999,17 @@ mod tests {
         };
         assert_eq!(event_session_id(&event), Some("other-session"));
         assert_ne!(event_session_id(&event), Some("this-session"));
+    }
+
+    #[test]
+    fn connection_scoped_ask_with_empty_identity_is_not_filtered_out() {
+        let event = ApiEvent::AskRequest {
+            session_id: String::new(),
+            request_id: "ask-call".into(),
+            tool_call_id: "call".into(),
+            questions: vec![],
+        };
+        assert_eq!(event_session_id(&event), None);
     }
 
     /// The daemon replays occupancy right after an attach. Without a session
