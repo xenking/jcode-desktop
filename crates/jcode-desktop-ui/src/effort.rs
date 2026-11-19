@@ -80,9 +80,17 @@ pub(crate) fn label(effort: &str) -> &str {
 }
 
 /// Hover copy for the drawn level mark: the level name the shape replaces.
+/// Swarm is not a rung, so its hover says what it actually does.
 pub(crate) fn tooltip(effort: &str) -> String {
+    if effort.trim().eq_ignore_ascii_case("swarm") {
+        return format!("Reasoning effort: Swarm\n{SWARM_HELP}");
+    }
     format!("Reasoning effort: {}", spoken(effort))
 }
+
+/// What the swarm rung means, unlike `/swarm`, which only toggles the tools.
+pub(crate) const SWARM_HELP: &str =
+    "Root thinks at low effort and every prompt asks it to fan work out to parallel workers";
 
 /// The level name, for the places that must stay legible without a hover:
 /// picker rows (beside the drawn mark), transcript notices. No text glyph:
@@ -324,7 +332,10 @@ mod tests {
     #[test]
     fn spoken_copy_carries_no_text_glyph() {
         assert_eq!(tooltip("xhigh"), "Reasoning effort: xHigh");
-        assert_eq!(tooltip("swarm"), "Reasoning effort: Swarm");
+        assert_eq!(
+            tooltip("swarm"),
+            format!("Reasoning effort: Swarm\n{SWARM_HELP}")
+        );
         for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
             let text = spoken(level);
             assert!(

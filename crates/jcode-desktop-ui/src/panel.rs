@@ -129,6 +129,8 @@ pub(crate) use swarm_indicator::OpenSwarmWorker;
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+#[path = "panel_mode.rs"]
+mod mode_switch;
 // One disclosure model for every truncated line: tool titles, errors, output,
 // prompts, notices, background tasks and swarm lines.
 #[path = "expandable.rs"]
@@ -848,10 +850,11 @@ pub(crate) fn is_draft_config_command(content: &str) -> bool {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PickerKind {
     Model,
     Effort,
+    Mode,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1329,8 +1332,7 @@ impl Panel {
             });
         }
         let activity_owner = cx.entity();
-        let (fixture_tool_durations, fixture_tool_wall_times) =
-            demo_tool_times(fixture.as_deref());
+        let (fixture_tool_durations, fixture_tool_wall_times) = demo_tool_times(fixture.as_deref());
         let queue_items_scroll = gpui::ScrollHandle::new();
         Self {
             session_id,
@@ -2885,6 +2887,7 @@ impl Panel {
         }
         .to_string();
         self.active_skill = Some(name.clone());
+        self.sync_mode_menu(cx);
         self.items.push(Item::Assistant(format!(
             "Activated skill: {name} - {description}"
         )));
@@ -2986,11 +2989,15 @@ impl Panel {
             let placeholder = match kind {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
+                PickerKind::Mode => "Search modes…",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {
                     panel.update(app, |panel, cx| {
-                        if content.starts_with("/model ") || content.starts_with("/effort ") {
+                        if content.starts_with("/model ")
+                            || content.starts_with("/effort ")
+                            || content.starts_with("/mode ")
+                        {
                             panel.handle_slash_command(&content, cx);
                         }
                         panel.picker_search = None;
@@ -3018,6 +3025,7 @@ impl Panel {
                 match kind {
                     PickerKind::Model => "/model",
                     PickerKind::Effort => "/effort",
+                    PickerKind::Mode => "/mode",
                 },
                 models,
                 cx,
@@ -3689,6 +3697,7 @@ impl Panel {
                 }
                 if *command == jcode_sdk::api::RuntimeCommand::Mode {
                     self.active_skill = data["pinned_skill"].as_str().map(str::to_owned);
+                    self.sync_mode_menu(cx);
                 }
                 if *command == jcode_sdk::api::RuntimeCommand::Skills {
                     let skills = data["skills"]
@@ -3706,6 +3715,7 @@ impl Panel {
                     if self.active_skill.is_none() {
                         self.active_skill = data["active_skill"].as_str().map(str::to_owned);
                     }
+                    self.sync_mode_menu(cx);
                     self.input
                         .update(cx, |input, cx| input.set_skills(skills, cx));
                     if message.is_empty() {

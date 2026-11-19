@@ -146,7 +146,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show current session goals and explain retired legacy initiatives",
     ),
     RegisteredCommand::public("/goals", "Legacy alias for /initiatives"),
-    RegisteredCommand::public("/swarm", "Toggle swarm feature"),
+    RegisteredCommand::public(
+        "/swarm",
+        "Show whether swarm tools are on (effort Swarm is the auto-fan-out mode)",
+    ),
     RegisteredCommand::public("/overnight", "Run a supervised overnight coordinator"),
     RegisteredCommand::public("/context", "Show the full session context snapshot"),
     RegisteredCommand::public(

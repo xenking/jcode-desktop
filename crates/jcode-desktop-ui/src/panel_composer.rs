@@ -212,6 +212,21 @@ impl Panel {
                                 cx.stop_propagation();
                             }))
                     }))
+                    .children(self.mode_label().map(|mode| {
+                        let hover = format!(
+                            "Session mode: {}",
+                            self.active_skill.as_deref().unwrap_or(&mode)
+                        );
+                        composer_pill("panel-mode")
+                            .flex_shrink(3.)
+                            .min_w(px(32.))
+                            .child(div().min_w_0().truncate().child(mode))
+                            .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_mode_picker(window, cx);
+                                cx.stop_propagation();
+                            }))
+                    }))
                     .children(self.render_context_meter()),
             )
             .child(
@@ -826,9 +841,7 @@ mod tests {
     /// row's edge, as if the padding had gone. Pin the inset in both states so
     /// a later fill change cannot hide the padding again.
     #[gpui::test]
-    fn the_model_pill_keeps_its_inset_when_the_pane_loses_focus(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn the_model_pill_keeps_its_inset_when_the_pane_loses_focus(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.provider = Some("openai".into());
@@ -844,9 +857,7 @@ mod tests {
             });
             vcx.run_until_parked();
             let pill = vcx.debug_bounds("panel-model").expect("model pill");
-            let name = vcx
-                .debug_bounds("panel-model-name")
-                .expect("model name");
+            let name = vcx.debug_bounds("panel-model-name").expect("model name");
             assert!(
                 name.left() - pill.left() >= px(9.),
                 "focused={focused}: the label keeps its left padding: {name:?} in {pill:?}"

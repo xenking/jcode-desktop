@@ -213,7 +213,8 @@ pub struct PromptInput {
     file_attachments_enabled: bool,
     queue_editor: bool,
     #[allow(clippy::type_complexity)]
-    on_submit: Box<dyn Fn(String, Vec<(String, String)>, Vec<SubmittedFile>, bool, &mut Window, &mut App)>,
+    on_submit:
+        Box<dyn Fn(String, Vec<(String, String)>, Vec<SubmittedFile>, bool, &mut Window, &mut App)>,
     #[allow(clippy::type_complexity)]
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     #[allow(clippy::type_complexity)]
@@ -238,6 +239,8 @@ pub struct PromptInput {
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
+    /// The session's pinned skill, marked in the `/mode` menu.
+    current_mode: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
     control_revision: u64,
@@ -399,6 +402,8 @@ fn command_suggestions_with_efforts(
                 value: format!("/effort {effort}"),
                 help: if efforts.current == Some(effort) {
                     "Current".into()
+                } else if effort == "swarm" {
+                    "Low-effort root that fans work out to workers".into()
                 } else {
                     "Set reasoning effort".into()
                 },
@@ -430,6 +435,37 @@ fn command_suggestions_with_efforts(
             header: None,
             toggle: None,
             action: None,
+        })
+        .collect()
+}
+
+/// The `/mode` menu: Off, then every loaded skill, the current one marked.
+/// Pinning a skill makes it the session's mode until switched off.
+fn mode_suggestions(
+    input: &str,
+    skills: &[(String, String)],
+    current: Option<&str>,
+) -> Vec<CommandSuggestion> {
+    let query = input
+        .strip_prefix("/mode")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let row = |name: &str, help: &str| CommandSuggestion {
+        value: format!("/mode {name}"),
+        help: help.to_string(),
+        detail: (current.unwrap_or("off") == name).then(|| "Current".into()),
+        header: None,
+        toggle: None,
+        action: None,
+    };
+    std::iter::once(row("off", "No pinned skill"))
+        .chain(skills.iter().map(|(name, help)| row(name, help)))
+        .filter(|row| {
+            query.is_empty()
+                || row.value["/mode ".len()..]
+                    .to_ascii_lowercase()
+                    .contains(&query)
         })
         .collect()
 }
@@ -466,8 +502,16 @@ enum AttachmentPayload {
         preview: Arc<gpui::Image>,
     },
     Text(Arc<str>),
-    Queued { source: QueuedAttachment, preview: Option<FileImage>, replacement: String },
-    File { path: std::path::PathBuf, image: Option<FileImage>, file: SubmittedFile },
+    Queued {
+        source: QueuedAttachment,
+        preview: Option<FileImage>,
+        replacement: String,
+    },
+    File {
+        path: std::path::PathBuf,
+        image: Option<FileImage>,
+        file: SubmittedFile,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -480,11 +524,21 @@ impl QueuedAttachment {
     fn preview(&self) -> Option<FileImage> {
         let (mime, data) = match self {
             Self::Image(mime, data) => (mime, data),
-            Self::File(jcode_sdk::api::Attachment::File { mime, data: Some(data), .. }) => (mime, data),
+            Self::File(jcode_sdk::api::Attachment::File {
+                mime,
+                data: Some(data),
+                ..
+            }) => (mime, data),
             Self::File(_) => return None,
         };
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
-        Some(FileImage { media_type: mime.clone(), encoded: data.clone().into(), preview: preview_image(mime, bytes)? })
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .ok()?;
+        Some(FileImage {
+            media_type: mime.clone(),
+            encoded: data.clone().into(),
+            preview: preview_image(mime, bytes)?,
+        })
     }
 }
 
@@ -516,17 +570,33 @@ impl Attachment {
                 encoded,
                 ..
             } => (media_type.clone(), encoded.to_string()),
-            AttachmentPayload::Queued { source, replacement, .. } => (
+            AttachmentPayload::Queued {
+                source,
+                replacement,
+                ..
+            } => (
                 QUEUED_MEDIA_TYPE.to_string(),
-                base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&(source, replacement)).expect("queued attachment snapshot")),
+                base64::engine::general_purpose::STANDARD.encode(
+                    serde_json::to_vec(&(source, replacement)).expect("queued attachment snapshot"),
+                ),
             ),
             AttachmentPayload::Text(text) => (
                 SNIPPET_MEDIA_TYPE.to_string(),
                 base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
             ),
             AttachmentPayload::File { path, image, file } => {
-                let saved = SavedFile { path: path.clone(), image: image.as_ref().map(|image| (image.media_type.clone(), image.encoded.to_string())), file: file.clone() };
-                (FILE_MEDIA_TYPE.to_string(), base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&saved).expect("file attachment snapshot")))
+                let saved = SavedFile {
+                    path: path.clone(),
+                    image: image
+                        .as_ref()
+                        .map(|image| (image.media_type.clone(), image.encoded.to_string())),
+                    file: file.clone(),
+                };
+                (
+                    FILE_MEDIA_TYPE.to_string(),
+                    base64::engine::general_purpose::STANDARD
+                        .encode(serde_json::to_vec(&saved).expect("file attachment snapshot")),
+                )
             }
         };
         AttachmentSnapshot {
@@ -589,18 +659,33 @@ fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> 
             let payload = if attachment.media_type == SNIPPET_MEDIA_TYPE {
                 AttachmentPayload::Text(String::from_utf8(bytes).ok()?.into())
             } else if attachment.media_type == QUEUED_MEDIA_TYPE {
-                let (source, replacement): (QueuedAttachment, String) = serde_json::from_slice(&bytes).ok()?;
-                AttachmentPayload::Queued { preview: source.preview(), source, replacement }
+                let (source, replacement): (QueuedAttachment, String) =
+                    serde_json::from_slice(&bytes).ok()?;
+                AttachmentPayload::Queued {
+                    preview: source.preview(),
+                    source,
+                    replacement,
+                }
             } else if attachment.media_type == FILE_MEDIA_TYPE {
                 let saved: SavedFile = serde_json::from_slice(&bytes).ok()?;
                 let image = match saved.image {
                     Some((media_type, encoded)) => {
-                        let bytes = base64::engine::general_purpose::STANDARD.decode(&encoded).ok()?;
-                        Some(FileImage { preview: preview_image(&media_type, bytes)?, media_type, encoded: encoded.into() })
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(&encoded)
+                            .ok()?;
+                        Some(FileImage {
+                            preview: preview_image(&media_type, bytes)?,
+                            media_type,
+                            encoded: encoded.into(),
+                        })
                     }
                     None => None,
                 };
-                AttachmentPayload::File { path: saved.path, image, file: saved.file }
+                AttachmentPayload::File {
+                    path: saved.path,
+                    image,
+                    file: saved.file,
+                }
             } else {
                 let preview = preview_image(&attachment.media_type, bytes)?;
                 AttachmentPayload::Image {
@@ -659,6 +744,8 @@ pub(crate) struct PickerSettings {
     current_model: Option<String>,
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
+    skills: Vec<(String, String)>,
+    current_mode: Option<String>,
 }
 
 impl PromptInput {
@@ -686,6 +773,8 @@ impl PromptInput {
             current_model: self.current_model.clone(),
             effort_ladder: self.effort_ladder.clone(),
             current_effort: self.current_effort.clone(),
+            skills: self.command_skills.clone(),
+            current_mode: self.current_mode.clone(),
         }
     }
 
@@ -699,6 +788,8 @@ impl PromptInput {
         self.current_model = settings.current_model;
         self.effort_ladder = settings.effort_ladder;
         self.current_effort = settings.current_effort;
+        self.command_skills = settings.skills;
+        self.current_mode = settings.current_mode;
         self.suggestions_revision += 1;
         cx.notify();
     }
@@ -857,9 +948,11 @@ impl PromptInput {
         placeholder: impl Into<SharedString>,
         on_submit: impl Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App) + 'static,
     ) -> Self {
-        let mut input = Self::new_with_queue_files(cx, placeholder, move |text, images, _, queued, window, cx| {
-            on_submit(text, images, queued, window, cx)
-        });
+        let mut input = Self::new_with_queue_files(
+            cx,
+            placeholder,
+            move |text, images, _, queued, window, cx| on_submit(text, images, queued, window, cx),
+        );
         input.file_attachments_enabled = false;
         input
     }
@@ -867,7 +960,14 @@ impl PromptInput {
     pub(crate) fn new_with_queue_files(
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
-        on_submit: impl Fn(String, Vec<(String, String)>, Vec<SubmittedFile>, bool, &mut Window, &mut App) + 'static,
+        on_submit: impl Fn(
+            String,
+            Vec<(String, String)>,
+            Vec<SubmittedFile>,
+            bool,
+            &mut Window,
+            &mut App,
+        ) + 'static,
     ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -919,6 +1019,7 @@ impl PromptInput {
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
+            current_mode: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
             control_revision: 0,
@@ -950,7 +1051,8 @@ impl PromptInput {
         attachments: Vec<jcode_sdk::api::Attachment>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut input = Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _| {});
+        let mut input =
+            Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _| {});
         input.queue_editor = true;
         input.command_completion = false;
         let mut text = content;
@@ -991,7 +1093,9 @@ impl PromptInput {
                     (1, None) => base.clone(),
                     (n, None) => format!("{} #{n}]", &base[..base.len() - 1]),
                 })
-                .find(|label| !text.contains(label.as_str()) && !chips.iter().any(|(used, ..)| used == label))
+                .find(|label| {
+                    !text.contains(label.as_str()) && !chips.iter().any(|(used, ..)| used == label)
+                })
                 .expect("an unused chip label");
             if !text.is_empty() {
                 text.push(' ');
@@ -1003,7 +1107,11 @@ impl PromptInput {
             .into_iter()
             .map(|(label, source, replacement)| Attachment {
                 label: label.into(),
-                payload: AttachmentPayload::Queued { preview: source.preview(), source, replacement },
+                payload: AttachmentPayload::Queued {
+                    preview: source.preview(),
+                    source,
+                    replacement,
+                },
             })
             .collect();
         input.set_content(text, cx);
@@ -1015,7 +1123,11 @@ impl PromptInput {
     /// were queued, whether inline bytes or a path on the runtime's machine.
     pub(crate) fn queued_edit_payload(
         &self,
-    ) -> (String, Vec<(String, String)>, Vec<jcode_sdk::api::Attachment>) {
+    ) -> (
+        String,
+        Vec<(String, String)>,
+        Vec<jcode_sdk::api::Attachment>,
+    ) {
         let mut located: Vec<_> = self
             .attachments
             .iter()
@@ -1027,14 +1139,24 @@ impl PromptInput {
         let mut edits = Vec::new();
         for (range, attachment) in located {
             let replacement = match &attachment.payload {
-                AttachmentPayload::Queued { source, replacement, .. } => {
+                AttachmentPayload::Queued {
+                    source,
+                    replacement,
+                    ..
+                } => {
                     match source {
-                        QueuedAttachment::Image(mime, data) => images.push((mime.clone(), data.clone())),
+                        QueuedAttachment::Image(mime, data) => {
+                            images.push((mime.clone(), data.clone()))
+                        }
                         QueuedAttachment::File(file) => files.push(file.clone()),
                     }
                     (replacement.as_str() != attachment.label.as_ref()).then(|| replacement.clone())
                 }
-                AttachmentPayload::Image { media_type, encoded, .. } => {
+                AttachmentPayload::Image {
+                    media_type,
+                    encoded,
+                    ..
+                } => {
                     images.push((media_type.clone(), encoded.to_string()));
                     None
                 }
@@ -1592,6 +1714,9 @@ impl PromptInput {
             |(start, cursor, _)| self.content[start..cursor].to_string(),
         );
         let trimmed = command_content.trim_start();
+        if !trimmed.contains('\n') && (trimmed == "/mode" || trimmed.starts_with("/mode ")) {
+            return mode_suggestions(trimmed, &self.command_skills, self.current_mode.as_deref());
+        }
         let mut suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
                 let query = trimmed.strip_prefix("/model").unwrap_or_default();
@@ -1663,7 +1788,12 @@ impl PromptInput {
     pub(super) fn draft_with_command(&self, value: &str) -> (String, Option<usize>) {
         match self.embedded_command_span() {
             Some((start, _, end)) => {
-                let draft = format!("{}{}{}", &self.content[..start], value, &self.content[end..]);
+                let draft = format!(
+                    "{}{}{}",
+                    &self.content[..start],
+                    value,
+                    &self.content[end..]
+                );
                 (draft, Some(start + value.len()))
             }
             None => (value.to_string(), None),
@@ -1858,16 +1988,25 @@ impl PromptInput {
         let mut attachments = std::mem::take(&mut self.attachments);
         attachments.sort_by_key(|a| content.find(a.label.as_ref()).unwrap_or(usize::MAX));
         let normalize_images = attachments.iter().any(|attachment| {
-            matches!(&attachment.payload, AttachmentPayload::File { image: Some(_), .. })
+            matches!(
+                &attachment.payload,
+                AttachmentPayload::File { image: Some(_), .. }
+            )
         });
         let mut images = Vec::new();
         let mut files = Vec::new();
         let mut replacements = Vec::new();
         let mut history_content = content.clone();
         for attachment in attachments {
-            let range = content.find(attachment.label.as_ref()).map(|start| start..start + attachment.label.len());
+            let range = content
+                .find(attachment.label.as_ref())
+                .map(|start| start..start + attachment.label.len());
             match attachment.payload {
-                AttachmentPayload::Image { media_type, encoded, .. } => {
+                AttachmentPayload::Image {
+                    media_type,
+                    encoded,
+                    ..
+                } => {
                     images.push((media_type, encoded.to_string()));
                     if let Some(range) = range {
                         let output = normalize_images.then(|| format!("[#image {}]", images.len()));
@@ -1890,7 +2029,9 @@ impl PromptInput {
                         images.push((image.media_type, image.encoded.to_string()));
                         reference.push_str(&format!(" [#image {}]", images.len()));
                     }
-                    if let Some(range) = range { replacements.push((range, Some(reference), path)); }
+                    if let Some(range) = range {
+                        replacements.push((range, Some(reference), path));
+                    }
                 }
             }
         }
@@ -2067,16 +2208,26 @@ impl PromptInput {
     }
 
     fn attach_pasted_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
-        let mut attached_size: u64 = self.attachments.iter().filter_map(|attachment| match &attachment.payload {
-            AttachmentPayload::File { file, .. } => Some(file.size),
-            AttachmentPayload::Queued { source: QueuedAttachment::File(jcode_sdk::api::Attachment::File { size, .. }), .. } => Some(*size),
-            _ => None,
-        }).sum();
+        let mut attached_size: u64 = self
+            .attachments
+            .iter()
+            .filter_map(|attachment| match &attachment.payload {
+                AttachmentPayload::File { file, .. } => Some(file.size),
+                AttachmentPayload::Queued {
+                    source: QueuedAttachment::File(jcode_sdk::api::Attachment::File { size, .. }),
+                    ..
+                } => Some(*size),
+                _ => None,
+            })
+            .sum();
         for path in paths {
             let metadata = match std::fs::metadata(path) {
-                Ok(metadata) if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 => metadata,
+                Ok(metadata) if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 => {
+                    metadata
+                }
                 Ok(_) => {
-                    self.attachment_notice = Some("File must be at most 10 MiB and not a directory".into());
+                    self.attachment_notice =
+                        Some("File must be at most 10 MiB and not a directory".into());
                     continue;
                 }
                 Err(error) => {
@@ -2090,7 +2241,10 @@ impl PromptInput {
             }
             let bytes = match std::fs::File::open(path).and_then(|file| {
                 let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut std::io::Read::take(file, 10 * 1024 * 1024 + 1), &mut bytes)?;
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(file, 10 * 1024 * 1024 + 1),
+                    &mut bytes,
+                )?;
                 Ok(bytes)
             }) {
                 Ok(bytes) if bytes.len() as u64 == metadata.len() => bytes,
@@ -2106,13 +2260,24 @@ impl PromptInput {
             attached_size += metadata.len();
             let size = Some(metadata.len());
             let file = SubmittedFile {
-                name: path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned(),
-                mime: mime_guess::from_path(path).first_or_octet_stream().to_string(),
+                name: path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                mime: mime_guess::from_path(path)
+                    .first_or_octet_stream()
+                    .to_string(),
                 size: metadata.len(),
                 data: base64::engine::general_purpose::STANDARD.encode(&bytes),
             };
-            let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().replace(['[', ']', '\n', '\r'], " ");
-            let size_label = size.map_or_else(|| "unknown size".to_string(), |size| format!("{size} B"));
+            let name = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .replace(['[', ']', '\n', '\r'], " ");
+            let size_label =
+                size.map_or_else(|| "unknown size".to_string(), |size| format!("{size} B"));
             let description = format!("{name}, {size_label}");
             let mut marker = format!("[#{description}]");
             let mut n = 2;
@@ -2121,18 +2286,33 @@ impl PromptInput {
                 n += 1;
             }
             let image = file_drop::image_media_type(path).and_then(|media_type| {
-                if !size.is_some_and(|size| size <= 20 * 1024 * 1024) { return None; }
-                let image = crate::clipboard_image::from_bytes(media_type.to_owned(), bytes.clone()).ok()?;
+                if !size.is_some_and(|size| size <= 20 * 1024 * 1024) {
+                    return None;
+                }
+                let image =
+                    crate::clipboard_image::from_bytes(media_type.to_owned(), bytes.clone())
+                        .ok()?;
                 let preview = preview_image(&image.media_type, image.bytes.clone())?;
-                Some(FileImage { media_type: image.media_type, encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes).into(), preview })
+                Some(FileImage {
+                    media_type: image.media_type,
+                    encoded: base64::engine::general_purpose::STANDARD
+                        .encode(image.bytes)
+                        .into(),
+                    preview,
+                })
             });
             self.undo.push(self.edit_snapshot());
             self.redo.clear();
-            let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+            let range =
+                self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
             self.remove_chips_in_range(&range);
             let mut content = self.content.to_string();
             let mut inserted = String::new();
-            if content[..range.start].chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+            if content[..range.start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace())
+            {
                 inserted.push(' ');
             }
             inserted.push_str(&marker);
@@ -2142,12 +2322,21 @@ impl PromptInput {
             self.control_revision = self.control_revision.wrapping_add(1);
             let cursor = range.start + inserted.len();
             self.selected_range = cursor..cursor;
-            self.attachments.push(Attachment { label: marker.into(), payload: AttachmentPayload::File { path: path.clone(), image, file } });
+            self.attachments.push(Attachment {
+                label: marker.into(),
+                payload: AttachmentPayload::File {
+                    path: path.clone(),
+                    image,
+                    file,
+                },
+            });
         }
         self.attachment_preview = None;
         self.marked_range = None;
         self.ghost_on_edit(cx);
-        if let Some(on_change) = &self.on_change { on_change(&self.content, cx); }
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
     }
 
@@ -2343,8 +2532,10 @@ impl PromptInput {
             return;
         }
         // An open slash menu is the nearest overlay. Esc hides it and keeps
-        // the draft; it must never fall through to stopping the agent.
-        if self.picker_prefix.is_none() && !self.command_suggestions().is_empty() {
+        // the draft; it must never fall through to stopping the agent. The
+        // model menu keeps its own close path, which restores a stashed draft.
+        if self.picker_prefix.is_none() && !in_model_menu && !self.command_suggestions().is_empty()
+        {
             self.accepted_command = Some(self.content.clone());
             cx.notify();
             return;
@@ -2546,11 +2737,11 @@ impl PromptInput {
         self.model_stage = Default::default();
         self.suggestions_revision += 1;
         self.set_content(String::new(), cx);
-        if prefix == "/effort"
+        if (prefix == "/effort" || prefix == "/mode")
             && let Some(index) = self
                 .command_suggestions()
                 .iter()
-                .position(|row| row.help == "Current")
+                .position(|row| row.help == "Current" || row.detail.as_deref() == Some("Current"))
         {
             self.command_selection = index;
             self.reveal_command(index);
@@ -2644,7 +2835,11 @@ impl PromptInput {
         }
     }
 
-    pub(crate) fn append_queued_files(&mut self, files: Vec<SubmittedFile>, cx: &mut Context<Self>) {
+    pub(crate) fn append_queued_files(
+        &mut self,
+        files: Vec<SubmittedFile>,
+        cx: &mut Context<Self>,
+    ) {
         let mut content = self.content.to_string();
         for file in files {
             let name = file.name.replace(['[', ']', '\n', '\r'], " ");
@@ -2654,9 +2849,15 @@ impl PromptInput {
                 marker = format!("[#{name}, {} B #{index}]", file.size);
                 index += 1;
             }
-            let image = base64::engine::general_purpose::STANDARD.decode(&file.data).ok()
+            let image = base64::engine::general_purpose::STANDARD
+                .decode(&file.data)
+                .ok()
                 .and_then(|bytes| preview_image(&file.mime, bytes))
-                .map(|preview| FileImage { media_type: file.mime.clone(), encoded: file.data.clone().into(), preview });
+                .map(|preview| FileImage {
+                    media_type: file.mime.clone(),
+                    encoded: file.data.clone().into(),
+                    preview,
+                });
             if !content.is_empty() && !content.ends_with(char::is_whitespace) {
                 content.push(' ');
             }
@@ -2664,7 +2865,11 @@ impl PromptInput {
             // The recalled prompt already contains the original path.
             self.attachments.push(Attachment {
                 label: marker.into(),
-                payload: AttachmentPayload::File { path: std::path::PathBuf::new(), image, file },
+                payload: AttachmentPayload::File {
+                    path: std::path::PathBuf::new(),
+                    image,
+                    file,
+                },
             });
         }
         self.set_content(content, cx);
@@ -2718,7 +2923,11 @@ impl PromptInput {
             }
             self.attachments.push(Attachment {
                 label: marker.into(),
-                payload: AttachmentPayload::Image { media_type, encoded: encoded.into(), preview },
+                payload: AttachmentPayload::Image {
+                    media_type,
+                    encoded: encoded.into(),
+                    preview,
+                },
             });
         }
         for (range, marker) in replacements.into_iter().rev() {
@@ -2753,6 +2962,30 @@ impl PromptInput {
         self.command_skills = skills;
         self.suggestions_revision += 1;
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_suggestion_values(&self) -> Vec<String> {
+        self.command_suggestions()
+            .iter()
+            .map(|row| row.value.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_command_value(&self) -> Option<String> {
+        self.command_suggestions()
+            .get(self.command_selection)
+            .map(|row| row.value.clone())
+    }
+
+    /// The session's pinned skill, for the `/mode` menu's Current mark.
+    pub(crate) fn set_current_mode(&mut self, mode: Option<String>, cx: &mut Context<Self>) {
+        if self.current_mode != mode {
+            self.current_mode = mode;
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
     }
 
     fn on_mouse_down(
@@ -4013,7 +4246,15 @@ impl Render for PromptInput {
                                                             ..
                                                         } => Some(preview.clone()),
                                                         AttachmentPayload::Text(_) => None,
-                                                        AttachmentPayload::File { image, .. } | AttachmentPayload::Queued { preview: image, .. } => image.as_ref().map(|image| image.preview.clone()),
+                                                        AttachmentPayload::File {
+                                                            image, ..
+                                                        }
+                                                        | AttachmentPayload::Queued {
+                                                            preview: image,
+                                                            ..
+                                                        } => image
+                                                            .as_ref()
+                                                            .map(|image| image.preview.clone()),
                                                     },
                                                     &attachment.label,
                                                     "composer-image-chip",
@@ -4091,7 +4332,9 @@ mod tests {
             input
         });
         vcx.run_until_parked();
-        let chip = vcx.debug_bounds("composer-image-chip").expect("pasted text chip");
+        let chip = vcx
+            .debug_bounds("composer-image-chip")
+            .expect("pasted text chip");
         vcx.simulate_click(chip.center(), Default::default());
         input.read_with(vcx, |input, _| {
             assert_eq!(input.content.as_ref(), text);
@@ -4108,7 +4351,9 @@ mod tests {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
         let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| *result.borrow_mut() = Some((text, images)));
+            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *result.borrow_mut() = Some((text, images))
+            });
             input.attach_pasted_files(std::slice::from_ref(&path), cx);
             input
         });
@@ -4118,12 +4363,19 @@ mod tests {
             let snapshot = input.snapshot();
             input.restore(snapshot, cx);
         });
-        input.update_in(vcx, |input, window, cx| input.dispatch_submission(input.content.to_string(), false, window, cx));
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(input.content.to_string(), false, window, cx)
+        });
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
         assert!(text.contains(path.to_str().unwrap()));
         assert_eq!(images.len(), 1);
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(&images[0].1).unwrap(), bytes);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&images[0].1)
+                .unwrap(),
+            bytes
+        );
     }
 
     #[gpui::test]
@@ -4138,12 +4390,17 @@ mod tests {
         };
         let expected = file.clone();
         let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input = PromptInput::new_with_queue_files(cx, "test", move |text, _, files, _, _, _| *result.borrow_mut() = Some((text, files)));
+            let mut input =
+                PromptInput::new_with_queue_files(cx, "test", move |text, _, files, _, _, _| {
+                    *result.borrow_mut() = Some((text, files))
+                });
             input.recall_prompt("/tmp/notes.txt", Vec::new(), cx);
             input.append_queued_files(vec![file], cx);
             input
         });
-        input.update_in(vcx, |input, window, cx| input.dispatch_submission(input.content.to_string(), false, window, cx));
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(input.content.to_string(), false, window, cx)
+        });
         let files = sent.borrow();
         let (text, files) = files.as_ref().unwrap();
         assert_eq!(text.trim(), "/tmp/notes.txt");
@@ -4160,17 +4417,27 @@ mod tests {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
         let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input = PromptInput::new_with_queue_files(cx, "test", move |_, _, files, _, _, _| *result.borrow_mut() = Some(files));
+            let mut input =
+                PromptInput::new_with_queue_files(cx, "test", move |_, _, files, _, _, _| {
+                    *result.borrow_mut() = Some(files)
+                });
             input.attach_pasted_files(std::slice::from_ref(&path), cx);
             input
         });
         std::fs::write(&path, b"changed!").unwrap();
-        input.update_in(vcx, |input, window, cx| input.dispatch_submission(input.content.to_string(), false, window, cx));
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(input.content.to_string(), false, window, cx)
+        });
         let files = sent.borrow();
         let file = &files.as_ref().unwrap()[0];
         assert_eq!(file.name, "notes.txt");
         assert_eq!(file.mime, "text/plain");
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(&file.data).unwrap(), b"original");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&file.data)
+                .unwrap(),
+            b"original"
+        );
     }
 
     #[gpui::test]
@@ -4182,12 +4449,19 @@ mod tests {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
         let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| *result.borrow_mut() = Some((text, images)));
+            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *result.borrow_mut() = Some((text, images))
+            });
             input.attach_pasted_files(std::slice::from_ref(&path), cx);
-            input.attach_image(crate::clipboard_image::from_bytes("image/png".into(), bytes.to_vec()).unwrap(), cx);
+            input.attach_image(
+                crate::clipboard_image::from_bytes("image/png".into(), bytes.to_vec()).unwrap(),
+                cx,
+            );
             input
         });
-        input.update_in(vcx, |input, window, cx| input.dispatch_submission(input.content.to_string(), false, window, cx));
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(input.content.to_string(), false, window, cx)
+        });
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
         assert!(text.contains("[#image 1]"));
@@ -5262,11 +5536,15 @@ mod tests {
             .unwrap()
         });
         window
-            .update(cx, |input, window, cx| window.focus(&input.focus_handle, cx))
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
             .unwrap();
         cx.simulate_input(*window, "/swarm");
         window
-            .update(cx, |input, _, _| assert!(!input.command_suggestions().is_empty()))
+            .update(cx, |input, _, _| {
+                assert!(!input.command_suggestions().is_empty())
+            })
             .unwrap();
         cx.simulate_keystrokes(*window, "escape");
         window
