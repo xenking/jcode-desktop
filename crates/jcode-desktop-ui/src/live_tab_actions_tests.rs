@@ -46,6 +46,15 @@ fn hovered_inactive_tab_close_targets_that_tab_only(cx: &mut gpui::TestAppContex
         w
     });
     vcx.run_until_parked();
+    // Hover the tab first: it pops out and its X appears at the popped edge.
+    let tab = vcx.debug_bounds("live-session-tab-1-slot").unwrap();
+    vcx.update(|window, cx| window.simulate_mouse_move(tab.center(), cx));
+    vcx.run_until_parked();
+    workspace.update(vcx, |w, cx| {
+        w.live_tabs.settle();
+        cx.notify();
+    });
+    vcx.run_until_parked();
     let close = vcx.debug_bounds("close-session-button-1").unwrap();
     vcx.update(|window, cx| window.simulate_mouse_move(close.center(), cx));
     vcx.run_until_parked();

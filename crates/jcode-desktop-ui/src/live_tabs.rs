@@ -231,17 +231,12 @@ impl TabLayout {
     }
 
     /// Pop a hovered tab out: full height and at least the focused tab's width.
-    /// It grows leftward from its resting right edge (shifting right at the
-    /// track's start), so the pointer that hovered it always stays inside,
-    /// hover cannot flicker, and the close button, which lives at the slot's
-    /// right edge, sits at the popped body's right edge too.
+    /// It grows only rightward (shifting left at the track's end), so the
+    /// pointer that hovered it always stays inside and hover cannot flicker.
     fn pop_out(tab: TabGeometry, focused_width: f32, available: f32) -> TabGeometry {
         let width = tab.width.max(focused_width).max(160.0).min(available);
         TabGeometry {
-            left: (tab.left + tab.width - width)
-                .max(0.0)
-                .min(available - width)
-                .max(0.0),
+            left: tab.left.min(available - width).max(0.0),
             width,
             height: TAB_HEIGHT,
         }
@@ -615,9 +610,7 @@ impl Workspace {
             .map(|(position, key)| {
                 let tab = layout[position];
                 let tab = if Some(position) == hovered {
-                    // Anchor to the exposed slot, where the close button lives.
-                    let (left, width) = TabLayout::exposed(&layout, position, selected);
-                    TabLayout::pop_out(TabGeometry { left, width, ..tab }, focused_width, available)
+                    TabLayout::pop_out(tab, focused_width, available)
                 } else {
                     tab
                 };
@@ -680,14 +673,20 @@ impl Workspace {
                 .blend(accent.opacity(if focused { 0.16 } else { 0.05 }));
             let current = geometry[position];
             let (exposed_left, visible) = TabLayout::exposed_in(&geometry, position, &paint_order);
-            // The pointer target is the tab's resting slot, never its popped
-            // or animating body. A popped tab is a preview only: it must not
-            // swallow the hover and clicks meant for the neighbours it covers,
-            // and a slot that never moves under the pointer cannot flicker.
-            let (slot_left, slot_width) = TabLayout::exposed(&layout, position, selected);
+            // The pointer target is the tab's resting slot, except while it is
+            // popped: then it is the whole popped body (its final geometry,
+            // not the animating one), so the actions at the body's right edge
+            // stay reachable and what you see is what you click. The popped
+            // body always covers the resting slot, so it cannot flicker.
+            let (rest_left, rest_width) = TabLayout::exposed(&layout, position, selected);
+            let (slot_left, slot_width) = if popped {
+                (targets[position].1.left, targets[position].1.width)
+            } else {
+                (rest_left, rest_width)
+            };
             let slot_padding = (slot_width / 12.0).min(6.0);
             if let Some(index) = index {
-                let x = slot_left + slot_width / 2.0;
+                let x = rest_left + rest_width / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
@@ -1624,10 +1623,11 @@ mod tests {
         }
     }
 
-    /// A popped tab is only a preview. The pointer always addresses the tab
-    /// whose resting slot it is over, even where a popped neighbour covers it.
+    /// A popped tab owns its whole popped body: hover stays on it while the
+    /// pointer travels to its close button at the body's right edge, and a
+    /// click there closes that tab. Its resting slot never moves.
     #[gpui::test]
-    fn hover_and_click_follow_resting_slots_under_a_popped_tab(cx: &mut gpui::TestAppContext) {
+    fn popped_tab_owns_its_body_and_its_close_sits_at_the_body_edge(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -1647,40 +1647,85 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let slot = |vcx: &mut gpui::VisualTestContext, i: usize| {
-            vcx.debug_bounds(format!("live-session-tab-{i}-slot").leak())
-                .unwrap()
-                .center()
-        };
-        // Sweep both ways without leaving the row, so each move starts under
-        // the previous tab's popped body.
-        for i in [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0] {
-            let point = slot(vcx, i);
-            vcx.simulate_mouse_move(point, None, gpui::Modifiers::default());
+        let rest: Vec<_> = (0..8)
+            .map(|i| {
+                vcx.debug_bounds(format!("live-session-tab-{i}-slot").leak())
+                    .unwrap()
+                    .center()
+            })
+            .collect();
+        let away = gpui::point(px(350.0), px(400.0));
+        let settle = |vcx: &mut gpui::VisualTestContext| {
             vcx.run_until_parked();
             workspace.update(vcx, |w, cx| {
                 w.live_tabs.settle();
                 cx.notify();
             });
             vcx.run_until_parked();
+        };
+        for i in [0, 1, 2, 4, 5, 6, 7] {
+            vcx.simulate_mouse_move(away, None, gpui::Modifiers::default());
+            settle(vcx);
+            vcx.simulate_mouse_move(rest[i], None, gpui::Modifiers::default());
+            settle(vcx);
             workspace.read_with(vcx, |w, _| {
                 let key = w.slots[i].panel.entity_id().as_u64();
                 assert_eq!(w.live_tabs.hovered, Some(key), "pointer over slot {i}");
                 assert_eq!(w.active, 3, "hover never changes focus");
             });
-            assert_eq!(
-                slot(vcx, i),
-                point,
-                "slot {i} must not move under the pointer"
+            let body = vcx
+                .debug_bounds(format!("live-session-tab-{i}").leak())
+                .unwrap();
+            let slot = vcx
+                .debug_bounds(format!("live-session-tab-{i}-slot").leak())
+                .unwrap();
+            assert!(
+                slot.contains(&rest[i]),
+                "popped body still holds the pointer"
             );
+            assert_eq!(slot, body, "the hit area is exactly the popped body");
+            let close = vcx
+                .debug_bounds(format!("close-session-button-{i}").leak())
+                .unwrap();
+            assert!(
+                (body.right() - close.right()).abs() <= px(12.0),
+                "close X of tab {i} sits at the popped right edge: {close:?} in {body:?}"
+            );
+            // Travel to the X: hover stays on this tab the whole way.
+            for step in 1..=4 {
+                let t = step as f32 / 4.0;
+                let x = rest[i].x + (close.center().x - rest[i].x) * t;
+                vcx.simulate_mouse_move(
+                    gpui::point(x, close.center().y),
+                    None,
+                    gpui::Modifiers::default(),
+                );
+                settle(vcx);
+                workspace.read_with(vcx, |w, _| {
+                    let key = w.slots[i].panel.entity_id().as_u64();
+                    assert_eq!(w.live_tabs.hovered, Some(key), "tab {i} stays popped");
+                });
+            }
         }
-        // Tab 1 is popped over tab 2's slot. Clicking there selects tab 2.
-        let (over, under) = (slot(vcx, 1), slot(vcx, 2));
-        vcx.simulate_mouse_move(over, None, gpui::Modifiers::default());
+        // Clicking the X at the popped edge closes that tab, not a neighbour.
+        vcx.simulate_mouse_move(away, None, gpui::Modifiers::default());
+        settle(vcx);
+        vcx.simulate_mouse_move(rest[5], None, gpui::Modifiers::default());
+        settle(vcx);
+        let close = vcx.debug_bounds("close-session-button-5").unwrap();
+        vcx.simulate_mouse_move(close.center(), None, gpui::Modifiers::default());
+        settle(vcx);
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        vcx.simulate_click(under, gpui::Modifiers::default());
-        vcx.run_until_parked();
-        workspace.read_with(vcx, |w, _| assert_eq!(w.active, 2));
+        workspace.read_with(vcx, |w, cx| {
+            let closed: Vec<_> = w
+                .slots
+                .iter()
+                .filter(|slot| slot.closing)
+                .map(|slot| slot.panel.read(cx).session_id.clone())
+                .collect();
+            assert_eq!(closed, ["hover-session-5"]);
+        });
     }
 
     #[gpui::test]
@@ -1759,11 +1804,6 @@ mod tests {
                 // Every point of the resting tab stays covered by the popped tab.
                 assert!(pop.left <= rest.left + 0.001);
                 assert!(pop.left + pop.width >= rest.left + rest.width - 0.001);
-                // Away from the track start the popped right edge is the
-                // resting one, so the slot's close button lands on the edge.
-                if rest.left + rest.width >= pop.width {
-                    assert!((pop.left + pop.width - rest.left - rest.width).abs() < 0.001);
-                }
             }
         }
     }
