@@ -241,6 +241,9 @@ pub struct PromptInput {
     current_effort: Option<String>,
     /// The session's pinned skill, marked in the `/mode` menu.
     current_mode: Option<String>,
+    /// Level picked on a model row with the effort keys, sent with the
+    /// switch. Cleared when the model menu closes.
+    picker_effort: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
     control_revision: u64,
@@ -1020,6 +1023,7 @@ impl PromptInput {
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
             current_mode: None,
+            picker_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
             control_revision: 0,
@@ -2048,6 +2052,7 @@ impl PromptInput {
         self.content = "".into();
         self.expanded_model_groups.clear();
         self.model_stage = Default::default();
+        self.picker_effort = None;
         self.suggestions_revision += 1;
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
@@ -2070,6 +2075,10 @@ impl PromptInput {
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        // On a model row, ←/→ pick the level the switch will use.
+        if self.step_picker_effort(-1, cx) {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -2078,6 +2087,9 @@ impl PromptInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.step_picker_effort(1, cx) {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
@@ -2720,6 +2732,7 @@ impl PromptInput {
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
             self.model_stage = Default::default();
+            self.picker_effort = None;
             self.suggestions_revision += 1;
         }
     }
@@ -2735,6 +2748,7 @@ impl PromptInput {
         }
         self.picker_prefix = Some(prefix);
         self.model_stage = Default::default();
+        self.picker_effort = None;
         self.suggestions_revision += 1;
         self.set_content(String::new(), cx);
         if (prefix == "/effort" || prefix == "/mode")
@@ -4117,6 +4131,22 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            // Inside the model menu the effort keys set the highlighted
+            // row's level instead of the running session's.
+            .capture_action(cx.listener(|this, _: &crate::effort::IncreaseEffort, _, cx| {
+                if this.step_picker_effort(1, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &crate::effort::DecreaseEffort, _, cx| {
+                if this.step_picker_effort(-1, cx) {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
@@ -5840,13 +5870,13 @@ mod tests {
                 );
             })
             .unwrap();
-        // Step one opens the effort list, step two submits the pair.
-        cx.simulate_keystrokes(*window, "enter enter");
+        // One Enter switches. No level is in force here, so none is forced.
+        cx.simulate_keystrokes(*window, "enter");
         window
             .update(cx, |input, _, _| {
                 assert_eq!(
                     input.history.last().map(String::as_str),
-                    Some("/model openai-api:atlas-5 --effort medium")
+                    Some("/model openai-api:atlas-5")
                 );
                 assert!(input.content.is_empty());
                 assert!(input.expanded_model_groups.is_empty());
@@ -5959,11 +5989,12 @@ mod tests {
                     cx,
                 );
                 let suggestions = input.command_suggestions();
-                assert_eq!(input.command_selection, 1);
-                // No effort levels for this id, so Enter submits directly.
+                // The highlight follows the route, not the slot, when usage
+                // reorders the list.
+                assert_eq!(suggestions[input.command_selection].value, "/model a-rare");
                 assert_eq!(
-                    accepted_command_submission(&suggestions, input.command_selection).as_deref(),
-                    Some("/model a-rare")
+                    suggestions[input.command_selection].action,
+                    Some(model_stage::StageStep::Submit("/model a-rare".into()))
                 );
                 input.set_content("/model favorite".into(), cx);
                 assert_eq!(input.command_suggestions()[0].value, "/model z-favorite");

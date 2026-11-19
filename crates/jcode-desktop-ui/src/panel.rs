@@ -11527,12 +11527,6 @@ mod tests {
             );
         });
         vcx.simulate_keystrokes("enter");
-        vcx.run_until_parked();
-        assert!(
-            commands.try_recv().is_err(),
-            "Enter on a model opens the effort step instead of switching"
-        );
-        vcx.simulate_keystrokes("enter");
         let received = commands.recv_timeout(std::time::Duration::from_millis(100));
         match received {
             Ok(Command::SetModel { session_id, model }) => {
@@ -11541,13 +11535,6 @@ mod tests {
             }
             _ => panic!("picker did not emit SetModel"),
         }
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::SessionOperation {
-                operation: SessionOperation::SetEffort(_),
-                ..
-            })
-        ));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());

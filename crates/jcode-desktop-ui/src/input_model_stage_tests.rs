@@ -149,7 +149,69 @@ fn manage_view_lists_every_route_and_enter_toggles_without_leaving(cx: &mut Test
 }
 
 #[gpui::test]
-fn enter_on_a_model_opens_its_effort_list_and_esc_goes_back(cx: &mut TestAppContext) {
+fn enter_on_a_model_switches_with_the_level_in_force(cx: &mut TestAppContext) {
+    crate::config::set_hidden_models(&[]).unwrap();
+    let (window, submitted) = window(cx);
+    window
+        .update(cx, |input, _, cx| {
+            input.set_effort_state(
+                crate::effort::ladder(None, Some("gpt-5.5")),
+                Some("high".into()),
+                cx,
+            );
+            input.set_content("/model".into(), cx);
+            input.command_selection = values(input)
+                .iter()
+                .position(|row| row == "/model openai-oauth:gpt-5.6-sol")
+                .unwrap();
+        })
+        .unwrap();
+    cx.simulate_keystrokes(*window, "enter");
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["/model openai-oauth:gpt-5.6-sol --effort high"],
+        "one Enter switches, keeping the level the session runs at"
+    );
+}
+
+#[gpui::test]
+fn arrows_pick_the_level_on_the_highlighted_model_row(cx: &mut TestAppContext) {
+    crate::config::set_hidden_models(&[]).unwrap();
+    let (window, submitted) = window(cx);
+    window
+        .update(cx, |input, _, cx| {
+            input.set_effort_state(
+                crate::effort::ladder(None, Some("gpt-5.5")),
+                Some("medium".into()),
+                cx,
+            );
+            input.set_content("/model".into(), cx);
+            input.command_selection = values(input)
+                .iter()
+                .position(|row| row == "/model openai-oauth:gpt-5.6-sol")
+                .unwrap();
+        })
+        .unwrap();
+    cx.simulate_keystrokes(*window, "right right left right");
+    window
+        .update(cx, |input, _, _| {
+            assert_eq!(
+                input.content.as_ref(),
+                "/model",
+                "arrows never move the caret here"
+            );
+            assert_eq!(input.row_effort("openai-oauth:gpt-5.6-sol"), Some("xhigh"));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(*window, "enter");
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["/model openai-oauth:gpt-5.6-sol --effort xhigh"]
+    );
+}
+
+#[gpui::test]
+fn a_model_without_a_known_level_switches_without_forcing_one(cx: &mut TestAppContext) {
     crate::config::set_hidden_models(&[]).unwrap();
     let (window, submitted) = window(cx);
     window
@@ -162,55 +224,10 @@ fn enter_on_a_model_opens_its_effort_list_and_esc_goes_back(cx: &mut TestAppCont
         })
         .unwrap();
     cx.simulate_keystrokes(*window, "enter");
-    window
-        .update(cx, |input, _, _| {
-            assert!(matches!(
-                input.model_stage,
-                model_stage::ModelStage::Efforts { .. }
-            ));
-            assert_eq!(input.content.as_ref(), "/model ");
-            let rows = input.command_suggestions();
-            let levels: Vec<_> = rows.iter().map(|row| row.value.as_str()).collect();
-            // Exactly the model's ladder, no model rows and no swarm sentinel.
-            assert_eq!(
-                levels,
-                [
-                    "/effort none",
-                    "/effort minimal",
-                    "/effort low",
-                    "/effort medium",
-                    "/effort high",
-                    "/effort xhigh",
-                    "/effort max"
-                ]
-            );
-            assert!(
-                rows[0]
-                    .header
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("Reasoning effort")
-            );
-            assert_eq!(rows[input.command_selection].value, "/effort medium");
-        })
-        .unwrap();
-    cx.simulate_keystrokes(*window, "escape");
-    window
-        .update(cx, |input, _, _| {
-            assert_eq!(input.model_stage, model_stage::ModelStage::Models);
-            assert_eq!(
-                input.command_suggestions()[input.command_selection].value,
-                "/model openai-oauth:gpt-5.6-sol",
-                "back lands on the model that was open"
-            );
-        })
-        .unwrap();
-    assert!(submitted.borrow().is_empty());
-    // Second Esc, with no step left, closes the menu.
-    cx.simulate_keystrokes(*window, "escape");
-    window
-        .update(cx, |input, _, _| assert!(input.content.is_empty()))
-        .unwrap();
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["/model openai-oauth:gpt-5.6-sol"]
+    );
 }
 
 #[gpui::test]
@@ -220,13 +237,11 @@ fn effort_step_submits_model_and_level_together(cx: &mut TestAppContext) {
     window
         .update(cx, |input, _, cx| {
             input.set_content("/model".into(), cx);
-            input.command_selection = values(input)
-                .iter()
-                .position(|row| row == "/model openai-oauth:gpt-5.6-sol")
-                .unwrap();
+            let spec = "openai-oauth:gpt-5.6-sol".to_string();
+            input.go_to_model_stage(model_stage::ModelStage::Efforts { model: spec }, cx);
         })
         .unwrap();
-    cx.simulate_keystrokes(*window, "enter down enter");
+    cx.simulate_keystrokes(*window, "down enter");
     assert_eq!(
         submitted.borrow().as_slice(),
         ["/model openai-oauth:gpt-5.6-sol --effort high"]
@@ -252,7 +267,6 @@ fn model_without_effort_control_switches_immediately(cx: &mut TestAppContext) {
                 .unwrap_or_else(|| panic!("{:?}", values(input)));
         })
         .unwrap();
-    cx.simulate_keystrokes(*window, "enter");
     cx.simulate_keystrokes(*window, "enter");
     assert_eq!(submitted.borrow().as_slice(), ["/model llama3"]);
 }

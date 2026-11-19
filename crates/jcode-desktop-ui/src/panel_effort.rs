@@ -381,13 +381,12 @@ mod tests {
         let model = vcx.debug_bounds("panel-model").unwrap();
         vcx.simulate_click(model.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("/ m o d e l space c l a u d e - o p u s - 5 - 5 enter");
+        // Pick the level on the model row with the arrows, then one Enter
+        // switches model and effort together.
+        vcx.simulate_keystrokes("/ m o d e l space c l a u d e - o p u s - 5 - 5");
         vcx.run_until_parked();
-        assert!(
-            commands.try_iter().next().is_none(),
-            "model selection waits for effort"
-        );
-        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m enter");
+        // The session runs at high, so one step left is medium.
+        vcx.simulate_keystrokes("left enter");
         vcx.run_until_parked();
         let sent: Vec<_> = commands.try_iter().collect();
         assert!(sent.iter().any(|command| matches!(command, Command::SetModel { model, .. } if model == "claude-oauth:claude-opus-5-5")), "selected model reaches bridge");

@@ -48,15 +48,16 @@ impl PromptInput {
         )
         .into_iter()
         .map(|row| {
-            let action = row
-                .value
-                .strip_prefix("/model ")
-                .filter(|spec| !self.picker_efforts(spec).is_empty())
-                .map(|spec| {
-                    model_stage::StageStep::Goto(model_stage::ModelStage::Efforts {
-                        model: spec.to_string(),
-                    })
-                });
+            // Enter switches model and effort together: the row carries the
+            // level picked with the effort keys (or the one in force).
+            let action = row.value.strip_prefix("/model ").map(|spec| {
+                model_stage::StageStep::Submit(match self.row_effort(spec) {
+                    Some(effort) => {
+                        format!("/model {spec}{}{effort}", model_stage::EFFORT_FLAG)
+                    }
+                    None => format!("/model {spec}"),
+                })
+            });
             CommandSuggestion {
                 value: row.value,
                 help: String::new(),
@@ -85,13 +86,59 @@ impl PromptInput {
         rows
     }
 
-    /// Levels offered in step two. `swarm` is a Jcode sentinel, not something
-    /// the model accepts, so it is not a reasoning choice here.
+    /// Levels offered on a model row. `swarm` is a Jcode sentinel, not
+    /// something the model accepts, so it is not a reasoning choice here.
     pub(super) fn picker_efforts(&self, spec: &str) -> Vec<&'static str> {
         model_stage::model_efforts(spec, &self.model_details)
             .into_iter()
             .filter(|effort| !effort.starts_with("swarm"))
             .collect()
+    }
+
+    /// The level a switch to `spec` would use: the one picked in the menu,
+    /// else the one in force, clamped to what `spec` accepts. `None` when
+    /// neither is known, so the switch keeps the model's own default.
+    pub(super) fn row_effort(&self, spec: &str) -> Option<&'static str> {
+        let wanted = self
+            .picker_effort
+            .as_deref()
+            .or(self.current_effort.as_deref())?;
+        model_stage::preferred_effort(&self.picker_efforts(spec), Some(wanted))
+    }
+
+    /// The model row under the highlight, if the menu is on its model step.
+    fn selected_model_row(&self) -> Option<String> {
+        if self.model_stage != model_stage::ModelStage::Models {
+            return None;
+        }
+        self.command_suggestions()
+            .get(self.command_selection)
+            .and_then(|row| row.value.strip_prefix("/model "))
+            .map(str::to_owned)
+    }
+
+    /// Step the highlighted model's level. True when the menu used the key.
+    pub(super) fn step_picker_effort(&mut self, direction: i8, cx: &mut Context<Self>) -> bool {
+        let Some(spec) = self.selected_model_row() else {
+            return false;
+        };
+        let ladder = self.picker_efforts(&spec);
+        if ladder.is_empty() {
+            return false;
+        }
+        let current = self.row_effort(&spec);
+        if let Some(next) = crate::effort::step(&ladder, current, direction) {
+            self.set_picker_effort(next, cx);
+        }
+        true
+    }
+
+    pub(crate) fn set_picker_effort(&mut self, effort: &str, cx: &mut Context<Self>) {
+        if self.picker_effort.as_deref() != Some(effort) {
+            self.picker_effort = Some(effort.to_owned());
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
     }
 
     /// Step two: only the levels this model supports.
@@ -347,32 +394,26 @@ impl PromptInput {
                 return base.child(header);
             };
             let parts = model_menu::header_parts(model, &self.model_details);
+            // Show the credential's live quota instead of how it signs in:
+            // one bar per window with what is left and when it resets.
+            let quota = self
+                .model_details
+                .get(model)
+                .and_then(|detail| {
+                    cx.try_global::<crate::panel::usage::StatusAccounts>()
+                        .map(|accounts| {
+                            model_menu::route_quota(
+                                &accounts.0,
+                                &detail.provider,
+                                &detail.api_method,
+                            )
+                        })
+                })
+                .filter(|quota| !quota.is_empty());
+            let label = header.clone();
             base.child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
-                .child(
-                    div()
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(parts.provider),
-                )
-                .child(
-                    div()
-                        .debug_selector(move || format!("model-picker-auth-{index}"))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .px_2()
-                        .py(px(1.0))
-                        .rounded_full()
-                        .bg(Theme::global().INPUT_BG)
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .child(
-                            gpui::svg()
-                                .data(parts.auth.icon())
-                                .size(px(11.0))
-                                .flex_none()
-                                .text_color(faint),
-                        )
-                        .child(parts.auth.label()),
-                )
+                .child(div().text_color(Theme::global().TEXT_DIM).child(label))
+                .children(quota.map(|quota| header_quota(index, &quota)))
         });
         // Effort rows lead with the drawn level mark (never a text glyph),
         // the same shape the composer pill paints.
@@ -494,6 +535,11 @@ impl PromptInput {
                             })
                             .child(suggestion.help),
                     )
+                    .children(
+                        model
+                            .filter(|_| selected)
+                            .and_then(|spec| self.render_row_efforts(index, spec, ink, cx)),
+                    )
                     .child(
                         div()
                             .w(px(14.0))
@@ -525,8 +571,7 @@ impl PromptInput {
                                     on_change(&this.content, cx);
                                 }
                             } else {
-                                let (draft, cursor) =
-                                    this.draft_with_command(&suggestion.value);
+                                let (draft, cursor) = this.draft_with_command(&suggestion.value);
                                 this.set_content(draft, cx);
                                 if let Some(cursor) = cursor {
                                     this.selected_range = cursor..cursor;
@@ -548,6 +593,59 @@ impl PromptInput {
             )
             .into_any_element()
     }
+
+    /// The highlighted model row's levels as a strip of drawn marks. The
+    /// level the switch will use is filled; a click picks another. Enter or
+    /// a click on the row then switches model and effort together.
+    fn render_row_efforts(
+        &self,
+        index: usize,
+        spec: &str,
+        ink: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let ladder = self.picker_efforts(spec);
+        if ladder.is_empty() {
+            return None;
+        }
+        let chosen = self.row_effort(spec);
+        let marks = ladder.into_iter().enumerate().map(|(rung, effort)| {
+            let on = chosen == Some(effort);
+            div()
+                .id(("model-row-effort", index * 16 + rung))
+                .debug_selector(move || format!("model-row-effort-{index}-{effort}"))
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1p5()
+                .h(px(20.))
+                .rounded_full()
+                .when(on, |pill| pill.bg(ink.opacity(0.14)))
+                .text_size(px(10.5))
+                .text_color(ink)
+                .opacity(if on { 1. } else { 0.55 })
+                .cursor_pointer()
+                .children(crate::effort_icon::icon(effort, 11.0))
+                .when(on, |pill| pill.child(effort_row_label(effort)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_picker_effort(effort, cx);
+                    }),
+                )
+        });
+        Some(
+            div()
+                .debug_selector(move || format!("model-row-efforts-{index}"))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_0p5()
+                .children(marks)
+                .into_any_element(),
+        )
+    }
 }
 
 /// The label of an `/effort <level>` row in the picker's effort step: the level
@@ -555,4 +653,74 @@ impl PromptInput {
 /// drawn beside it by `effort_icon`, so the label carries no text glyph.
 pub(super) fn effort_row_label(effort: &str) -> String {
     crate::effort::spoken(effort)
+}
+
+/// Quota beside a provider header: per window a short name, a thin bar, the
+/// share left (or used, per `display.usage_display`), and the reset time.
+fn header_quota(index: usize, quota: &model_menu::RouteQuota) -> gpui::Div {
+    let theme = Theme::global();
+    let show_used = jcode_base::config::config().display.usage_display_used();
+    let windows = quota.windows.iter().enumerate().map(|(window, limit)| {
+        let used = limit.used;
+        let figure = if show_used {
+            format!("{used:.0}% used")
+        } else {
+            format!("{:.0}% left", 100. - used)
+        };
+        let color = crate::panel::usage::usage_color(used, theme);
+        div()
+            .debug_selector(move || format!("model-picker-quota-{index}-{window}"))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(div().text_color(theme.TEXT_FAINT).child(limit.name.clone()))
+            .child(
+                div()
+                    .w(px(44.))
+                    .h(px(4.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(theme.INLINE_CODE_BG)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(used / 100.))
+                            .rounded_full()
+                            .bg(color),
+                    ),
+            )
+            .child(div().text_color(color).child(figure))
+            .children(limit.reset_in.clone().map(|reset| {
+                div()
+                    .text_color(theme.TEXT_FAINT)
+                    .child(format!("· {reset}"))
+            }))
+    });
+    div()
+        .debug_selector(move || format!("model-picker-quota-{index}"))
+        .ml_1()
+        .flex()
+        .items_center()
+        .gap_3()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .font_weight(gpui::FontWeight::NORMAL)
+        .font_family(theme.FONT_MONO)
+        .text_size(px(10.5))
+        .children(windows)
+        .children((quota.banked_resets > 0).then(|| {
+            let count = quota.banked_resets;
+            div().text_color(theme.TEXT_DIM).child(if count == 1 {
+                "↻ 1 reset".to_string()
+            } else {
+                format!("↻ {count} resets")
+            })
+        }))
+        .children(
+            quota
+                .money
+                .clone()
+                .map(|money| div().text_color(theme.TEXT_DIM).child(money)),
+        )
 }

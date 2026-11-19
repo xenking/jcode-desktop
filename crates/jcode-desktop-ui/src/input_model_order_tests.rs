@@ -97,7 +97,7 @@ fn expanded(details: &HashMap<String, ModelDetails>) -> Vec<(String, Vec<String>
 }
 
 #[test]
-fn picker_groups_by_provider_then_family_newest_first() {
+fn picker_groups_by_usage_then_models_by_usage_then_newest_first() {
     let details = from_routes(&fixture());
     let groups = expanded(&details);
     assert_eq!(
@@ -105,12 +105,43 @@ fn picker_groups_by_provider_then_family_newest_first() {
             .iter()
             .map(|(header, _)| header.as_str())
             .collect::<Vec<_>>(),
+        ["OpenAI", "Anthropic", "OpenRouter · API key"],
+        "the provider used most leads"
+    );
+    assert_eq!(
+        groups[1].1,
         [
-            "Anthropic · Signed in",
-            "OpenAI · Signed in",
-            "OpenRouter · API key"
+            "claude-opus-4-8",
+            "claude-fable-5-2",
+            "claude-sonnet-5-5",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-opus-4-6",
         ],
-        "providers are alphabetical and stable, never usage-ordered"
+        "inside a group the most used model comes first"
+    );
+}
+
+/// Without usage the catalog order is deterministic: provider name, then
+/// family, releases newest first.
+#[test]
+fn unused_catalog_groups_by_provider_then_family_newest_first() {
+    let mut routes = fixture();
+    for route in &mut routes {
+        route.usage = None;
+    }
+    let details = from_routes(&routes);
+    let groups = expanded(&details);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|(header, _)| header.as_str())
+            .collect::<Vec<_>>(),
+        ["Anthropic", "OpenAI", "OpenRouter · API key"],
+        "unused providers stay alphabetical"
     );
     assert_eq!(
         groups[0].1,
@@ -159,7 +190,11 @@ fn picker_groups_by_provider_then_family_newest_first() {
 
 #[test]
 fn collapsed_groups_lead_with_base_models_not_variants_or_aliases() {
-    let details = from_routes(&fixture());
+    let mut routes = fixture();
+    for route in &mut routes {
+        route.usage = None;
+    }
+    let details = from_routes(&routes);
     let models: Vec<String> = details.keys().cloned().collect();
     let rows = grouped_rows(&models, &details, None, &HashSet::new(), "");
     let router: Vec<_> = rows
@@ -179,15 +214,10 @@ fn collapsed_groups_lead_with_base_models_not_variants_or_aliases() {
 }
 
 #[test]
-fn ordering_ignores_input_order_and_usage() {
+fn ordering_ignores_input_order() {
     let routes = fixture();
     let forward = expanded(&from_routes(&routes));
     let mut reversed = routes.clone();
     reversed.reverse();
-    for route in &mut reversed {
-        if let Some(usage) = route.usage.as_mut() {
-            usage.count = 0;
-        }
-    }
     assert_eq!(forward, expanded(&from_routes(&reversed)));
 }
