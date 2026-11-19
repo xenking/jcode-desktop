@@ -2342,6 +2342,13 @@ impl PromptInput {
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
+        // An open slash menu is the nearest overlay. Esc hides it and keeps
+        // the draft; it must never fall through to stopping the agent.
+        if self.picker_prefix.is_none() && !self.command_suggestions().is_empty() {
+            self.accepted_command = Some(self.content.clone());
+            cx.notify();
+            return;
+        }
         if let Some(cancel) = &self.on_overlay_cancel
             && cancel(cx)
         {
@@ -5234,6 +5241,43 @@ mod tests {
                 assert!(input.command_suggestions().is_empty())
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn escape_hides_slash_menu_before_overlay_cancel(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let cancels = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = cancels.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    PromptInput::new(cx, "test", |_, _, _, _| {}).with_on_overlay_cancel(
+                        move |_| {
+                            seen.set(seen.get() + 1);
+                            true
+                        },
+                    )
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| window.focus(&input.focus_handle, cx))
+            .unwrap();
+        cx.simulate_input(*window, "/swarm");
+        window
+            .update(cx, |input, _, _| assert!(!input.command_suggestions().is_empty()))
+            .unwrap();
+        cx.simulate_keystrokes(*window, "escape");
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.command_suggestions().is_empty(), "menu hidden");
+                assert_eq!(input.content.as_ref(), "/swarm", "draft kept");
+            })
+            .unwrap();
+        assert_eq!(cancels.get(), 0, "first Esc must not stop the agent");
+        cx.simulate_keystrokes(*window, "escape");
+        assert_eq!(cancels.get(), 1, "with no menu, Esc stops as before");
     }
 
     #[gpui::test]

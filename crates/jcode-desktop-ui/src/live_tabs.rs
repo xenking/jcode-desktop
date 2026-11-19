@@ -231,12 +231,17 @@ impl TabLayout {
     }
 
     /// Pop a hovered tab out: full height and at least the focused tab's width.
-    /// It grows only rightward (shifting left at the track's end), so the
-    /// pointer that hovered it always stays inside and hover cannot flicker.
+    /// It grows leftward from its resting right edge (shifting right at the
+    /// track's start), so the pointer that hovered it always stays inside,
+    /// hover cannot flicker, and the close button, which lives at the slot's
+    /// right edge, sits at the popped body's right edge too.
     fn pop_out(tab: TabGeometry, focused_width: f32, available: f32) -> TabGeometry {
         let width = tab.width.max(focused_width).max(160.0).min(available);
         TabGeometry {
-            left: tab.left.min(available - width).max(0.0),
+            left: (tab.left + tab.width - width)
+                .max(0.0)
+                .min(available - width)
+                .max(0.0),
             width,
             height: TAB_HEIGHT,
         }
@@ -610,7 +615,9 @@ impl Workspace {
             .map(|(position, key)| {
                 let tab = layout[position];
                 let tab = if Some(position) == hovered {
-                    TabLayout::pop_out(tab, focused_width, available)
+                    // Anchor to the exposed slot, where the close button lives.
+                    let (left, width) = TabLayout::exposed(&layout, position, selected);
+                    TabLayout::pop_out(TabGeometry { left, width, ..tab }, focused_width, available)
                 } else {
                     tab
                 };
@@ -1752,6 +1759,11 @@ mod tests {
                 // Every point of the resting tab stays covered by the popped tab.
                 assert!(pop.left <= rest.left + 0.001);
                 assert!(pop.left + pop.width >= rest.left + rest.width - 0.001);
+                // Away from the track start the popped right edge is the
+                // resting one, so the slot's close button lands on the edge.
+                if rest.left + rest.width >= pop.width {
+                    assert!((pop.left + pop.width - rest.left - rest.width).abs() < 0.001);
+                }
             }
         }
     }
