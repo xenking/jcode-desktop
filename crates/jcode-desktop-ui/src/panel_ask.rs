@@ -4,6 +4,24 @@
 use super::*;
 use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
+const COMMENT_ICON: &[u8] = include_bytes!("../../../assets/icons/comment.svg");
+
+struct AskActionTooltip(&'static str);
+
+impl gpui::Render for AskActionTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        div()
+            .px_2()
+            .py_1()
+            .rounded_full()
+            .bg(theme.TOOL_BG)
+            .text_size(px(11.))
+            .text_color(theme.TEXT)
+            .child(self.0)
+    }
+}
+
 /// Completed asks remain readable in the transcript, including after history reload.
 pub(super) fn result_text(input: &str, output: &str, error: Option<&str>) -> String {
     let result = error
@@ -211,8 +229,14 @@ impl AskCard {
         }
     }
 
+    /// Question tabs, plus a review tab once there is more than one answer
+    /// to look over. A single question is answered and sent from its own tab.
+    pub(super) fn tab_count(&self) -> usize {
+        self.questions.len() + usize::from(self.questions.len() > 1)
+    }
+
     pub(super) fn switch_tab(&mut self, q: usize) {
-        let q = q.min(self.questions.len());
+        let q = q.min(self.tab_count().saturating_sub(1));
         if self.cursor_question != q {
             self.cursor_question = q;
             self.cursor_option = 0;
@@ -583,10 +607,10 @@ impl Panel {
                 self.answer_ask(AskResponse::default(), cx);
             }
             "left" if !editing => {
-                card.switch_tab((q + card.questions.len()) % (card.questions.len() + 1));
+                card.switch_tab((q + card.tab_count() - 1) % card.tab_count());
             }
             "right" if !editing => {
-                card.switch_tab((q + 1) % (card.questions.len() + 1));
+                card.switch_tab((q + 1) % card.tab_count());
             }
             "up" | "k" if count > 0 => {
                 card.cursor_option = (card.cursor_option + count - 1) % count
@@ -611,7 +635,7 @@ impl Panel {
                 }
             }
             "enter" => {
-                if q < card.questions.len() {
+                if q + 1 < card.tab_count() {
                     card.switch_tab(q + 1);
                     window.focus(&self.focus_handle, cx);
                 } else if card.complete() {
@@ -840,7 +864,7 @@ impl Panel {
             .flex()
             .flex_wrap()
             .gap_1();
-        for q in 0..=card.questions.len() {
+        for q in 0..card.tab_count() {
             let label = match card.questions.get(q) {
                 Some(question) => match question.header.as_deref().filter(|s| !s.trim().is_empty())
                 {
@@ -955,8 +979,10 @@ impl Panel {
                             .size(px(14.)),
                         )
                     });
+                let has_comment = !card.comments[q][o].trim().is_empty();
                 let row = div()
                     .id(("ask-option-row", q * 16 + o))
+                    .items_start()
                     .flex()
                     .gap_2()
                     .min_w_0()
@@ -967,12 +993,17 @@ impl Panel {
                     .when(!selected, |el| el.hover(|el| el.bg(theme.INPUT_BG)))
                     .child(mark)
                     .child(
+                        // The text owns the row's free width. Sized from its
+                        // own measure beside a growing spacer, a stale narrow
+                        // measure left it one character wide.
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(
                                 div()
+                                    .min_w_0()
                                     .debug_selector(move || format!("ask-label-{q}-{o}"))
                                     .child(if o < 9 {
                                         format!("{}. {}", o + 1, option.label)
@@ -990,15 +1021,38 @@ impl Panel {
                                 )
                             }),
                     )
-                    .child(div().flex_1())
                     .child(
                         div()
                             .id(("ask-comment-button", q * 16 + o))
                             .debug_selector(move || format!("ask-comment-button-{q}-{o}"))
-                            .px_2()
+                            .flex_none()
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .rounded_full()
-                            .text_color(theme.TEXT_DIM)
-                            .child("Comment")
+                            .cursor_pointer()
+                            .bg(theme.TOOL_BG)
+                            .border_1()
+                            .border_color(if has_comment {
+                                theme.ACCENT
+                            } else {
+                                theme.INPUT_BORDER
+                            })
+                            .hover(|el| el.bg(theme.ACCENT_DIM))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| AskActionTooltip("Comment")).into()
+                            })
+                            .child(
+                                gpui::svg()
+                                    .data(COMMENT_ICON)
+                                    .size(px(14.))
+                                    .text_color(if has_comment {
+                                        theme.ACCENT
+                                    } else {
+                                        theme.TEXT
+                                    }),
+                            )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(card) = this.ask_card.as_mut() {
                                     card.cursor_option = o;
@@ -1136,6 +1190,7 @@ impl Panel {
                 }),
         );
         let complete = card.complete();
+        let last_tab = card.cursor_question + 1 >= card.tab_count();
         Some(
             body.child(
                 div()
@@ -1165,27 +1220,26 @@ impl Panel {
                             .py_1()
                             .rounded_full()
                             .when(
-                                complete || card.cursor_question < card.questions.len(),
+                                complete || !last_tab,
                                 |el| {
                                     el.cursor_pointer()
                                         .bg(theme.ACCENT_DIM)
                                         .text_color(theme.TEXT)
                                 },
                             )
-                            .when(
-                                !complete && card.cursor_question == card.questions.len(),
-                                |el| el.text_color(theme.TEXT_FAINT),
-                            )
+                            .when(!complete && last_tab, |el| {
+                                el.text_color(theme.TEXT_FAINT)
+                            })
                             .child(if card.submitting {
                                 "Sending…"
-                            } else if card.cursor_question < card.questions.len() {
+                            } else if !last_tab {
                                 "Next"
                             } else {
                                 "Submit"
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(card) = this.ask_card.as_mut()
-                                    && card.cursor_question < card.questions.len()
+                                    && card.cursor_question + 1 < card.tab_count()
                                 {
                                     card.switch_tab(card.cursor_question + 1);
                                     window.focus(&this.focus_handle, cx);
@@ -1280,6 +1334,73 @@ mod tests {
                 {"description": "Embedded, zero-ops, single node", "label": "SQLite"},
                 {"description": "Managed NoSQL on AWS", "label": "DynamoDB"}]}]
     }"#;
+
+    /// A long option description (the real ask that collapsed: each label was
+    /// painted one character per line beside an empty spacer).
+    #[gpui::test]
+    fn long_option_text_keeps_the_row_width(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        // Verbatim from the session journal of the ask that collapsed.
+        let value = serde_json::json!({
+            "ev": "ask_request", "session_id": "session-a", "request_id": "ask-1",
+            "tool_call_id": "toolu_1",
+            "questions": [{"header": "Старый кеш", "options": [
+                {"description": "Новая версия этот файл не использует, данные в общей базе.", "label": "Удалить (Recommended)"},
+                {"description": "Файл останется на диске, приложение его не трогает.", "label": "Оставить"}],
+              "question": "Удалить старый кеш ~/Library/Application Support/ReddyMac/90813.sqlite (около 2 МБ)? Новая версия его не читает: все данные теперь в ~/.local/share/reddy/history.sqlite3. Восстановить после удаления нельзя, но это только копия того, что есть на сервере."}]
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&serde_json::from_value(value).unwrap(), cx);
+        });
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("ask-option-0-0").unwrap();
+        let label = vcx.debug_bounds("ask-label-0-0").unwrap();
+        let description = vcx.debug_bounds("ask-description-0-0").unwrap();
+        let comment = vcx.debug_bounds("ask-comment-button-0-0").unwrap();
+        assert!(
+            label.size.width > px(150.),
+            "the label keeps its width: {:?} of {:?}",
+            label.size.width,
+            row.size.width
+        );
+        assert!(description.size.width > px(150.));
+        assert!(label.size.height < px(40.), "the label stays on one line");
+        assert!(comment.right() <= row.right() && comment.left() >= label.right() - px(1.));
+        assert!(
+            comment.left() - label.right() < px(16.),
+            "the text fills the row up to the comment button"
+        );
+        assert!(
+            comment.size.width <= px(28.),
+            "the comment button is an icon, not a word"
+        );
+        assert!(
+            vcx.debug_bounds("ask-tab-1").is_none(),
+            "one question needs no review tab"
+        );
+        // One question: pick, then Enter sends. No review step.
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_keystrokes("1 enter");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert!(
+                panel.ask_card.as_ref().is_none_or(|card| card.submitting),
+                "Enter on the only question submits it"
+            );
+        });
+    }
 
     #[gpui::test]
     fn question_name_is_in_the_tab_strip(cx: &mut gpui::TestAppContext) {
