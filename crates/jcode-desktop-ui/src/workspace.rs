@@ -2351,6 +2351,13 @@ impl Workspace {
         }
 
         match update {
+            Update::DraftModels { current, routes } => {
+                Panel::publish_draft_models(current, routes, cx);
+                for slot in &self.slots {
+                    slot.panel
+                        .update(cx, |panel, cx| panel.seed_draft_models(cx));
+                }
+            }
             Update::Status(status) => self.status = status,
             Update::RemoteStatus {
                 host,
@@ -6248,6 +6255,7 @@ impl Workspace {
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
             let panel = &sidebar_panels[&slot.panel.entity_id()];
             if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
+                && slot.panel.read(cx).listable_conversation(cx)
                 && known.insert(panel.session_id.clone())
             {
                 catalog.push(jcode_sdk::SessionInfo {
@@ -10875,6 +10883,7 @@ mod tests {
             tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    draft_config: Default::default(),
                     transcript: None,
                     image_pane_open: false,
                     side_document: None,
@@ -11110,6 +11119,7 @@ mod tests {
                     tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            draft_config: Default::default(),
                             transcript: None,
                             image_pane_open: false,
                             side_document: None,

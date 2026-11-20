@@ -271,6 +271,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let panel = self.slots[index].panel.clone();
+        if panel.read(cx).session_deferred() {
+            return panel.into_any_element();
+        }
         let startup = panel.read(cx).is_startup_draft();
         let host = pending::remote_draft_host(&panel.read(cx).session_id).or_else(|| {
             startup

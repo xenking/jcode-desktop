@@ -1549,6 +1549,17 @@ impl PromptInput {
         !self.content.is_empty() || !self.attachments.is_empty()
     }
 
+    pub(crate) fn has_user_draft(&self) -> bool {
+        !self.content.trim().is_empty()
+            || !self.attachments.is_empty()
+            || self
+                .stashed_prompt
+                .as_ref()
+                .is_some_and(|(text, _, attachments)| {
+                    !text.trim().is_empty() || !attachments.is_empty()
+                })
+    }
+
     pub(crate) fn working_dir(&self) -> Option<&str> {
         self.working_dir.as_deref()
     }

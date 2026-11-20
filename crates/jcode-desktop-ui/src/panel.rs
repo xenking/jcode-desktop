@@ -227,7 +227,7 @@ pub(crate) enum DraftSession {
     Requested,
 }
 
-pub(crate) const DEFERRED_SESSION_STATUS: &str = "New session · starts with your first prompt";
+pub(crate) const DEFERRED_SESSION_STATUS: &str = "New session";
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -595,6 +595,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default, skip_serializing_if = "DraftConfig::is_empty")]
+    pub(crate) draft_config: DraftConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptSnapshot>,
     #[serde(default)]
@@ -852,10 +854,18 @@ pub struct Panel {
 
 /// What the user chose for a draft before its session exists. The runtime
 /// hears about it together with the first prompt, never earlier.
-#[derive(Default)]
-struct DraftConfig {
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DraftConfig {
     model: Option<String>,
     effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes: Vec<String>,
+}
+
+impl DraftConfig {
+    fn is_empty(&self) -> bool {
+        self.model.is_none() && self.effort.is_none() && self.modes.is_empty()
+    }
 }
 
 /// Model routes the runtime last reported to any panel of this app. A draft
@@ -865,12 +875,20 @@ struct KnownModelRoutes(Vec<jcode_sdk::ModelRouteInfo>);
 
 impl gpui::Global for KnownModelRoutes {}
 
+#[derive(Clone)]
+struct LocalDraftModels {
+    current: Option<String>,
+    routes: Vec<jcode_sdk::ModelRouteInfo>,
+}
+
+impl gpui::Global for LocalDraftModels {}
+
 /// `/model` and `/effort` only record a choice, so a draft answers them
 /// without a runtime session.
 pub(crate) fn is_draft_config_command(content: &str) -> bool {
     matches!(
         content.split_whitespace().next(),
-        Some("/model" | "/effort")
+        Some("/model" | "/models" | "/effort" | "/mode")
     )
 }
 
@@ -1149,6 +1167,8 @@ impl Panel {
                 return;
             }
             self.status = DEFERRED_SESSION_STATUS.into();
+            self.seed_draft_models(cx);
+            self.load_draft_skills(cx);
             cx.notify();
         }
     }
@@ -1163,31 +1183,60 @@ impl Panel {
         self.is_pending_session() && self.draft_session == DraftSession::Deferred
     }
 
-    /// Offer a draft the models another panel's session last reported. With
-    /// no report yet (first panel after launch) only a session can list them,
-    /// so reaching for the model list creates it.
+    pub(crate) fn listable_conversation(&self, cx: &App) -> bool {
+        !self.is_pending_session()
+            || self.has_queued_prompts()
+            || self.input.read(cx).has_user_draft()
+    }
+
+    /// Prefer the daemon's unbound catalog to any previously observed session.
     pub(crate) fn seed_draft_models(&mut self, cx: &mut Context<Self>) {
-        if !self.is_pending_session() || !self.available_models.is_empty() {
+        if !self.session_deferred() {
             return;
         }
-        let Some(routes) = cx
-            .try_global::<KnownModelRoutes>()
-            .map(|known| known.0.clone())
-            .filter(|routes| !routes.is_empty())
+        let catalog = cx.try_global::<LocalDraftModels>().cloned().or_else(|| {
+            cx.try_global::<KnownModelRoutes>()
+                .map(|known| LocalDraftModels {
+                    current: None,
+                    routes: known.0.clone(),
+                })
+        });
+        let Some(LocalDraftModels { current, routes }) = catalog.filter(|c| !c.routes.is_empty())
         else {
-            self.request_deferred_session(cx);
             return;
         };
+        if self.draft_config.model.is_none() && current.is_some() {
+            self.model = current;
+        }
         let models = available_model_names(&routes);
         self.available_models = models.clone();
-        let current = self.model.clone();
-        // Deferred: this runs inside the composer's own change callback.
-        let input = self.input.clone();
+        let panel = cx.weak_entity();
         cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                input.set_model_routes(models, &routes, current, cx);
-            })
+            let _ = panel.update(cx, |panel, cx| {
+                if !panel.session_deferred() {
+                    return;
+                }
+                let current = panel.model.clone();
+                panel.input.update(cx, |input, cx| {
+                    input.set_model_routes(models, &routes, current, cx);
+                });
+                if panel.recovery_picker_open {
+                    panel.open_model_picker(cx);
+                }
+                panel.sync_effort_menu(cx);
+                cx.notify();
+            });
         });
+    }
+
+    pub(crate) fn publish_draft_models(
+        current: Option<String>,
+        routes: Vec<jcode_sdk::ModelRouteInfo>,
+        cx: &mut App,
+    ) {
+        if !routes.is_empty() {
+            cx.set_global(LocalDraftModels { current, routes });
+        }
     }
 
     /// Record a model picked on a draft. Nothing is sent until the session
@@ -1212,7 +1261,11 @@ impl Panel {
     /// Send the draft's picked model and effort to its new session, ahead of
     /// the prompts queued behind them.
     fn apply_draft_config(&mut self, cx: &mut Context<Self>) {
-        let DraftConfig { model, effort } = std::mem::take(&mut self.draft_config);
+        let DraftConfig {
+            model,
+            effort,
+            modes,
+        } = std::mem::take(&mut self.draft_config);
         if let Some(model) = model {
             self.bridge.send(Command::SetModel {
                 session_id: self.session_id.clone(),
@@ -1222,6 +1275,13 @@ impl Panel {
         if let Some(effort) = effort {
             self.reasoning_effort = None;
             self.request_effort(&effort, cx);
+        }
+        for mode in modes {
+            self.bridge.send(Command::RuntimeCommand {
+                session_id: self.session_id.clone(),
+                command: jcode_sdk::api::RuntimeCommand::Mode,
+                args: vec!["toggle".into(), mode],
+            });
         }
     }
 
@@ -1248,6 +1308,8 @@ impl Panel {
             self.request_deferred_session(cx);
         } else {
             self.status = DEFERRED_SESSION_STATUS.into();
+            self.seed_draft_models(cx);
+            self.load_draft_skills(cx);
             cx.notify();
         }
     }
@@ -2259,6 +2321,7 @@ impl Panel {
             .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            draft_config: self.draft_config.clone(),
             transcript: None,
             image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
@@ -2313,14 +2376,26 @@ impl Panel {
         }
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
+        if self.is_pending_session() {
+            self.draft_config = snapshot.draft_config;
+            if let Some(model) = self.draft_config.model.clone() {
+                self.pick_draft_model(&model, cx);
+            }
+            self.reasoning_effort.clone_from(&self.draft_config.effort);
+            self.pinned_modes.clone_from(&self.draft_config.modes);
+            self.sync_effort_menu(cx);
+            self.sync_mode_menu(cx);
+        }
         self.stick_to_bottom = snapshot.stick_to_bottom;
         self.startup_layout = snapshot.startup_layout;
         self.pending_history_scroll =
             (!snapshot.stick_to_bottom).then_some((snapshot.scroll_x, snapshot.scroll_y));
         self.transcript_list
             .set_offset_from_scrollbar(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
-        self.input
-            .update(cx, |input, cx| input.restore(snapshot.draft, cx));
+        self.input.update(cx, |input, cx| {
+            input.restore(snapshot.draft, cx);
+            input.set_working_dir(self.working_dir.as_deref());
+        });
         self.schedule_ask_recovery(cx);
     }
 
@@ -2533,19 +2608,6 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
-                            // Commands are answered by the runtime, so a
-                            // slash is the commitment a prompt would be.
-                            // `/resume` and `/accounts` run without one, and
-                            // `/model` and `/effort` only record a choice:
-                            // none of them may leave an empty session behind.
-                            let command = content.split_whitespace().next().unwrap_or("");
-                            if command.starts_with('/')
-                                && !["/resume", "/accounts", "/model", "/effort"]
-                                    .iter()
-                                    .any(|local| local.starts_with(command))
-                            {
-                                this.request_deferred_session(cx);
-                            }
                             if content == "/model" || content.starts_with("/model ") {
                                 this.seed_draft_models(cx);
                             }
@@ -2678,6 +2740,10 @@ impl Panel {
             return self.handle_preview_command(content, cx);
         }
         let trimmed = content.trim();
+        if self.session_deferred() && trimmed.split_whitespace().next() == Some("/mode") {
+            self.select_draft_mode(trimmed["/mode".len()..].trim(), cx);
+            return true;
+        }
         if self.handle_skill_invocation(trimmed, cx) {
             return true;
         }

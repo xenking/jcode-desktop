@@ -96,6 +96,10 @@ const SIDE_QUESTION_REMINDER: &str = "This turn is a side question about the con
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
 pub enum Update {
+    DraftModels {
+        current: Option<String>,
+        routes: Vec<jcode_sdk::ModelRouteInfo>,
+    },
     /// Connection lifecycle status line, shown until connected.
     Status(String),
     /// Remote status persists independently of local runtime startup.
@@ -1151,6 +1155,11 @@ fn start_local_runtime(updates: UpdateSender) {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
     let _ = updates.send(Update::Connected);
+    if let Ok((current, routes)) =
+        connect("draft-models").and_then(|client| client.list_draft_models())
+    {
+        let _ = updates.send(Update::DraftModels { current, routes });
+    }
 }
 
 fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {

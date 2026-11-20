@@ -15,7 +15,73 @@ impl Panel {
             ]}), message: String::new(),
         }, cx);
     }
-    /// Keep the composer's `/mode` menu in sync with runtime acknowledgements.
+
+    pub(super) fn load_draft_skills(&mut self, cx: &mut Context<Self>) {
+        let cwd = self.working_dir.clone();
+        let directory = cwd.clone();
+        let skills = cx.background_executor().spawn(async move {
+            let skill_root = directory.as_deref().map(std::path::Path::new);
+            let registry = jcode_base::skill::SkillRegistry::load_for_working_dir(skill_root);
+            registry
+                .map(|registry| {
+                    let mut skills = Vec::new();
+                    let mut catalog = crate::mode_catalog::ModeCatalog::new();
+                    for skill in registry.list() {
+                        skills.push((skill.name.clone(), skill.description.clone()));
+                        catalog.insert(skill.name.clone(), crate::mode_catalog::ModeMetadata {
+                            icon: skill.icon.clone(),
+                            mode: skill.mode,
+                        });
+                    }
+                    (skills, catalog)
+                })
+                .unwrap_or_default()
+        });
+        cx.spawn(async move |panel, cx| {
+            let (skills, catalog) = skills.await;
+            let _ = panel.update(cx, |panel, cx| {
+                if !panel.session_deferred() || panel.working_dir != cwd {
+                    return;
+                }
+                panel.skills = skills;
+                panel.mode_catalog = catalog;
+                panel.sync_mode_menu(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn select_draft_mode(&mut self, argument: &str, cx: &mut Context<Self>) {
+        if argument.is_empty() {
+            self.open_picker_search(PickerKind::Mode, cx);
+            self.focus_pending = true;
+            cx.notify();
+            return;
+        }
+        let toggle = argument.strip_prefix("toggle ");
+        let name = toggle.unwrap_or(argument);
+        let modes = &mut self.draft_config.modes;
+        if name == "off" {
+            modes.clear();
+        } else if !self.skills.iter().any(|(skill, _)| skill == name) {
+            self.effort_notice(format!("Unknown mode: {name}"), cx);
+            return;
+        } else if toggle.is_some() {
+            if let Some(index) = modes.iter().position(|mode| mode == name) {
+                modes.remove(index);
+            } else {
+                modes.push(name.to_owned());
+            }
+        } else {
+            *modes = vec![name.to_owned()];
+        }
+        self.pinned_modes.clone_from(modes);
+        self.sync_mode_menu(cx);
+        cx.notify();
+    }
+
+    /// Keep the composer's `/mode` menu current after local or runtime changes.
     /// Deferred: `/mode` results can arrive inside the composer's callbacks.
     pub(super) fn sync_mode_menu(&self, cx: &mut Context<Self>) {
         let modes = self.mode_names().to_vec();

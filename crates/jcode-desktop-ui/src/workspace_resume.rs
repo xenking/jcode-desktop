@@ -266,7 +266,7 @@ impl Workspace {
         }
     }
 
-    fn resume_sessions(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
+    pub(super) fn resume_sessions(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
         let mut sessions = self.sessions.clone();
         // Keep local drafts and already-open chats reachable when switching the
         // standalone window's primary conversation. Never discard their editors.
@@ -274,6 +274,7 @@ impl Workspace {
             let panel = slot.panel.read(cx);
             if !slot.closing
                 && panel.supports_voice()
+                && panel.listable_conversation(cx)
                 && !sessions.iter().any(|s| s.session_id == panel.session_id)
             {
                 sessions.push(jcode_sdk::SessionInfo {

@@ -71,7 +71,14 @@ impl Panel {
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode;
-        let (model_label, effort) = self.composer_identity();
+        let (mut model_label, effort) = self.composer_identity();
+        if self.session_deferred() && self.model.is_none() {
+            model_label = "Models".into();
+        }
+        let effort = effort.or_else(|| {
+            (self.session_deferred() && self.model.is_some() && !self.effort_ladder().is_empty())
+                .then(|| "default".to_owned())
+        });
         let remote_machine = (!screenshot_mode)
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
@@ -88,6 +95,10 @@ impl Panel {
             .filter(|dir| !screenshot_mode && !dir.is_empty())
             .map(|dir| (location_label(dir), dir.to_owned()));
         let can_switch_location = remote_machine.is_none() && self.offers_directory_switch();
+        let location = location.or_else(|| {
+            (can_switch_location && self.session_deferred() && !screenshot_mode)
+                .then(|| ("Choose folder".into(), "Choose a working folder".into()))
+        });
         // Usage limits and status share the pill row, so the panel needs no
         // separate footer bar below the composer. The build label is gone from
         // the footer entirely: the version lives in Settings → About and the
@@ -196,10 +207,11 @@ impl Panel {
                         // An unknown value keeps its word.
                         let mark = crate::effort_icon::icon(&effort, BAR_ICON);
                         let word = mark.is_none().then(|| {
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .child(crate::effort::label(&effort).to_string())
+                            div().min_w_0().truncate().child(if effort == "default" {
+                                "Effort".to_owned()
+                            } else {
+                                crate::effort::label(&effort).to_string()
+                            })
                         });
                         composer_pill("panel-model-effort")
                             .flex_shrink(3.)
@@ -212,8 +224,12 @@ impl Panel {
                                 cx.stop_propagation();
                             }))
                     }))
-                    .children(self.mode_label().map(|mode| {
-                        let hover = format!("Active modes: {}", self.mode_names().join(", "));
+                    .children(self.mode_label().or_else(|| self.session_deferred().then(|| "Mode".into())).map(|mode| {
+                        let hover = if self.mode_names().is_empty() {
+                            "Choose session modes".to_owned()
+                        } else {
+                            format!("Active modes: {}", self.mode_names().join(", "))
+                        };
                         composer_pill("panel-mode")
                             .flex_shrink(3.)
                             .min_w_0()
@@ -588,7 +604,7 @@ impl Panel {
             && !self.awaiting_persisted
             && !self.restored_transcript
             && self.provisional_items == 0
-            && self.items.is_empty()
+            && (self.session_deferred() || self.items.is_empty())
             && self.pending_users.is_empty()
             && !self.has_queued_prompts()
             && !self.activity_active()
@@ -609,8 +625,12 @@ impl Panel {
         self.status = super::DEFERRED_SESSION_STATUS.into();
         self.connection_phase.clear();
         self.history_loaded = false;
-        self.input
-            .update(cx, |input, cx| input.set_pending_session(true, cx));
+        let directory = self.working_dir.as_deref();
+        self.input.update(cx, |input, cx| {
+            input.set_pending_session(true, cx);
+            input.set_working_dir(directory);
+        });
+        self.load_draft_skills(cx);
         cx.notify();
         previous
     }

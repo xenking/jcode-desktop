@@ -60,7 +60,11 @@ impl Workspace {
             // chosen folder lands next to the conversation it came from.
             return false;
         }
-        let request_id = pending::next_draft_id();
+        let request_id = if panel.read(cx).session_deferred() {
+            panel.read(cx).session_id.clone()
+        } else {
+            pending::next_draft_id()
+        };
         let previous = panel.update(cx, |panel, cx| {
             panel.retarget_draft(request_id.clone(), directory.to_owned(), cx)
         });

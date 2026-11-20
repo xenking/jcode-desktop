@@ -140,7 +140,7 @@ impl Panel {
     }
 
     /// A quiet confirmation under the composer, like the TUI status notice.
-    fn effort_notice(&mut self, notice: String, cx: &mut Context<Self>) {
+    pub(super) fn effort_notice(&mut self, notice: String, cx: &mut Context<Self>) {
         let input = self.input.clone();
         cx.defer(move |cx| input.update(cx, |input, cx| input.set_transient_notice(notice, cx)));
     }

@@ -661,6 +661,96 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn new_draft_without_a_directory_can_choose_one_in_place(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _commands) = setup(cx);
+    workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let id = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+    let location = vcx
+        .debug_bounds("composer-location")
+        .expect("location on fresh draft");
+    vcx.simulate_click(location.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+    let dir = tempfile::tempdir().unwrap();
+    workspace.update(vcx, |w, cx| {
+        assert!(w.switch_source_directory(
+            w.folder_picker_source,
+            dir.path().to_str().unwrap(),
+            cx
+        ));
+        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots[w.active].panel.entity_id(), panel.entity_id());
+        assert_eq!(panel.read(cx).session_id, id);
+        assert_eq!(panel.read(cx).working_dir.as_deref(), dir.path().to_str());
+    });
+}
+
+#[gpui::test]
+fn opening_the_model_picker_on_a_first_draft_does_not_create_a_session(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    assert!(panel.read_with(vcx, |panel, _| panel.session_deferred()));
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::DraftModels {
+                current: Some("gpt-5.6-terra".into()),
+                routes: vec![jcode_sdk::ModelRouteInfo {
+                    model: "gpt-5.6-terra".into(),
+                    provider: "openai".into(),
+                    api_method: "openai-api".into(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                }],
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("panel-model-effort").is_some());
+    assert!(vcx.debug_bounds("panel-mode").is_some());
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel.composer_identity_for_test().0.contains("5.6")
+    }));
+    assert!(
+        !commands
+            .try_iter()
+            .any(|cmd| matches!(cmd, Command::CreateSession { .. }))
+    );
+}
+
+#[gpui::test]
+fn resume_only_lists_pending_panels_with_user_content(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let draft = workspace.read_with(vcx, |w, cx| {
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert!(!workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+    vcx.simulate_input("saved draft");
+    vcx.run_until_parked();
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+    vcx.simulate_keystrokes("ctrl-s");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-stashed").is_some());
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+}
+
+#[gpui::test]
 fn a_session_is_created_by_the_first_prompt_not_by_opening_the_panel(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -729,7 +819,7 @@ fn closing_an_untouched_draft_never_reaches_the_runtime(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
-fn a_runtime_command_creates_the_session_but_resume_does_not(cx: &mut gpui::TestAppContext) {
+fn typing_a_runtime_command_does_not_create_an_empty_session(cx: &mut gpui::TestAppContext) {
     let (_workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
@@ -743,8 +833,8 @@ fn a_runtime_command_creates_the_session_but_resume_does_not(cx: &mut gpui::Test
     vcx.simulate_input("/compact");
     vcx.run_until_parked();
     assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateSession { .. })),
-        "a command the runtime answers needs its session"
+        commands.try_recv().is_err(),
+        "typing a command must not create an empty session"
     );
 }
 
