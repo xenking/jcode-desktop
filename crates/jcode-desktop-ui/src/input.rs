@@ -910,6 +910,27 @@ impl PromptInput {
             .collect()
     }
 
+    fn image_chip_numbers(&self) -> Vec<Option<usize>> {
+        let mut ranges = self.chip_ranges();
+        ranges.sort_unstable_by_key(|(_, range)| range.start);
+        let mut numbers = vec![None; self.attachments.len()];
+        let mut number = 0;
+        for (index, _) in ranges {
+            if matches!(
+                self.attachments[index].payload,
+                AttachmentPayload::Image { .. }
+                    | AttachmentPayload::Queued {
+                        source: QueuedAttachment::Image(..),
+                        ..
+                    }
+            ) {
+                number += 1;
+                numbers[index] = Some(number);
+            }
+        }
+        numbers
+    }
+
     fn expanded_chip_range(&self, mut edit: Range<usize>) -> Range<usize> {
         for (_, chip) in self.chip_ranges() {
             if (edit.start < chip.end && edit.end > chip.start)
@@ -3950,6 +3971,7 @@ impl Element for TextElement {
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("PromptInput");
+        let image_chip_numbers = self.image_chip_numbers();
         #[cfg(test)]
         crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
@@ -4269,7 +4291,7 @@ impl Render for PromptInput {
                                         |(index, bounds)| {
                                             let attachment = self.attachments.get(*index)?;
                                             Some(
-                                                crate::image_chip::chip(
+                                                crate::image_chip::chip_with_label(
                                                     match &attachment.payload {
                                                         AttachmentPayload::Image {
                                                             preview,
@@ -4286,7 +4308,10 @@ impl Render for PromptInput {
                                                             .as_ref()
                                                             .map(|image| image.preview.clone()),
                                                     },
-                                                    &attachment.label,
+                                                    image_chip_numbers[*index].map_or_else(
+                                                        || crate::image_chip::label(&attachment.label),
+                                                        crate::image_chip::numbered_label,
+                                                    ),
                                                     "composer-image-chip",
                                                     "composer-image-thumbnail",
                                                     "composer-image-label",
@@ -4798,6 +4823,7 @@ mod tests {
             input.attach_image(image(1), cx);
             input.selected_range = 0..0;
             input.attach_image(image(2), cx);
+            assert_eq!(input.image_chip_numbers(), [Some(2), Some(1)]);
         });
         vcx.run_until_parked();
         let position = input.read_with(vcx, |input, _| {

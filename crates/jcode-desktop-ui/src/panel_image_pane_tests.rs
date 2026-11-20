@@ -71,12 +71,15 @@ fn session_image_marker_labels_the_user_chip(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| {
         let mut image = image_preview::fixture_image();
         image.source = jcode_sdk::RenderedImageSource::UserInput;
-        *panel.items = vec![Item::User(format!("Inspect {marker}")), Item::Image(image)];
+        *panel.items = vec![Item::User(format!("Inspect {marker}(then continue)")), Item::Image(image)];
         assert_eq!(panel.user_image_markers(0), vec![(1, marker.to_string())]);
         cx.notify();
     });
     vcx.run_until_parked();
     let chip = vcx.debug_bounds("transcript-image-chip").expect("session ID chip");
+    assert!(chip.size.width < px(100.), "storage ID reserved excess inline space: {chip:?}");
+    let label = vcx.debug_bounds("transcript-image-label").expect("label");
+    assert!(chip.right() - label.right() <= px(16.), "chip leaves a gap after its label: {chip:?} {label:?}");
     vcx.simulate_click(chip.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("image-preview-full").is_some());

@@ -356,7 +356,6 @@ impl Panel {
         let expanded = self.prompt_queue.card_expanded.as_deref() == Some(&key);
         let selected = self.prompt_queue.card_menu.as_deref() == Some(&key);
         let preview = self.render_queued_content(&prompt.content, &prompt.images, cx);
-        let full = prompt.content.clone();
         let key_text = key.clone();
         let send_label = queue_row_send_label(prompt.after_yield);
         let theme = Theme::global();
@@ -466,7 +465,7 @@ impl Panel {
                     )),
             )
             .when(expanded, |el| {
-                el.child(div().px_4().pb_2().text_color(theme.TEXT).child(full))
+                el.child(self.render_expanded_queued_content(&prompt.content, &prompt.images, cx))
             })
             .into_any_element()
     }
@@ -555,7 +554,6 @@ impl Panel {
         let mutations = self.prompt_queue.remote_mutations_supported
             && !self.prompt_queue.remote_removing.contains(&id);
         let editing_supported = self.prompt_queue.remote_editing_supported;
-        let full = prompt.content.clone();
         let failed = self.prompt_queue.remote_failures.contains_key(&id);
         let can_send = !pending && self.queue_connection_ready() && self.queued_remote_sendable(prompt);
         let group: SharedString = format!("queue-row-remote-{id}").into();
@@ -695,7 +693,7 @@ impl Panel {
                     }),
             )
             .when(expanded, |el| {
-                el.child(div().px_4().pb_2().text_color(theme.TEXT).child(full))
+                el.child(self.render_expanded_queued_content(&prompt.content, &prompt.images, cx))
             })
             .when_some(
                 self.prompt_queue.remote_failures.get(&id).cloned(),

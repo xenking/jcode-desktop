@@ -1331,6 +1331,24 @@ impl Panel {
                 }
             });
         }
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| {
+                    let image = image_preview::fixture_image();
+                    let attachment = (image.media_type, image.data);
+                    panel.seed_screenshot_expanded_queue_image(attachment.clone());
+                    panel.input.update(cx, |input, cx| {
+                        input.recall_prompt(
+                            "Draft [#image 2] and [#image 1] with more text",
+                            vec![attachment.clone(), attachment],
+                            cx,
+                        );
+                    });
+                    cx.notify();
+                });
+            });
+        }
         let activity_owner = cx.entity();
         let (fixture_tool_durations, fixture_tool_wall_times) = demo_tool_times(fixture.as_deref());
         let queue_items_scroll = gpui::ScrollHandle::new();
@@ -12146,8 +12164,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         };
         return vec![
             Item::User(
-                "The bottom inset is off on some sessions [#image 1](transcription and TLDR video). \
-                 And the compaction issue from [#image 2] happened again."
+                "The bottom inset is off on some sessions [#img_0123456789abcdef0123456789abcdef](transcription and TLDR video). \
+                 And the compaction issue from [#img_abcdef0123456789abcdef0123456789] happened again."
                     .into(),
             ),
             pasted("first"),

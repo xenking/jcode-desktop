@@ -720,6 +720,19 @@ impl Panel {
         }
     }
 
+    pub(super) fn seed_screenshot_expanded_queue_image(&mut self, image: (String, String)) {
+        self.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
+            active_skill: None,
+            client_id: "screenshot-image".into(),
+            content: "[image]".into(),
+            images: vec![image],
+            attachments: vec![],
+            mode: jcode_sdk::api::QueuedPromptMode::Steer,
+            editing: false,
+        });
+        self.prompt_queue.card_expanded = Some("remote-screenshot-image".into());
+    }
+
     /// Screenshot fixture: open the first seeded row in its inline editor,
     /// with a multi-line message, a screenshot, a file sent by path and a
     /// file sent inline, as a user would see it while editing.
@@ -1693,9 +1706,10 @@ impl Panel {
         images: &[(String, String)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let (content, _) = crate::image_chip::numbered_text(content, images.len());
         let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
         let ranges = crate::input::image_marker_ranges(&flat);
-        if ranges.is_empty() && images.is_empty() {
+        if ranges.is_empty() {
             return div().min_w_0().truncate().child(flat).into_any_element();
         }
         let mut row = div()
@@ -1722,32 +1736,79 @@ impl Panel {
             .cursor_pointer();
             if let Some(image) = image {
                 chip = chip.on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_image_preview(image.clone(), window, cx)
+                    this.open_image_preview(image.clone(), window, cx);
+                    cx.stop_propagation();
                 }));
             }
             row = row.child(chip);
             offset = range.end;
         }
-        row = row.child(flat[offset..].to_owned());
-        for (index, (media, data)) in images.iter().enumerate().skip(ranges.len()) {
-            let image = TranscriptImage::new(media.clone(), data.clone(), None);
-            row = row.child(
-                crate::image_chip::chip(
-                    image.preview.clone(),
-                    &format!("[#image {}]", index + 1),
-                    "queue-image-chip",
-                    "queue-image-thumbnail",
-                    "queue-image-label",
-                )
-                .id(("queue-image-chip", index))
-                .flex_none()
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_image_preview(image.clone(), window, cx)
-                })),
-            );
+        row.child(flat[offset..].to_owned()).into_any_element()
+    }
+
+    fn render_expanded_queued_content(
+        &self,
+        content: &str,
+        images: &[(String, String)],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (content, _) = crate::image_chip::numbered_text(content, images.len());
+        let ranges = crate::input::image_marker_ranges(&content);
+        let body = div()
+            .debug_selector(|| "queue-expanded-content".into())
+            .px_4()
+            .pb_2()
+            .min_w_0()
+            .text_color(Theme::global().TEXT);
+        if ranges.is_empty() {
+            return body.child(content.into_owned()).into_any_element();
         }
-        row.into_any_element()
+        let images: Vec<_> = images
+            .iter()
+            .map(|(media, data)| TranscriptImage::new(media.clone(), data.clone(), None))
+            .collect();
+        let chips = ranges
+            .iter()
+            .enumerate()
+            .map(|(index, range)| {
+                (
+                    range.clone(),
+                    content[range.clone()].to_owned(),
+                    images.get(index).and_then(|image| image.preview.clone()),
+                )
+            })
+            .collect();
+        let display = crate::image_chip::mask_markers(&content, ranges.iter().cloned());
+        let highlights = ranges
+            .iter()
+            .cloned()
+            .map(|range| (range, crate::image_chip::hidden_marker()));
+        let text = gpui::StyledText::new(display).with_highlights(highlights);
+        let layout = text.layout().clone();
+        let panel = cx.entity().downgrade();
+        let text = gpui::InteractiveText::new("queue-expanded-images", text)
+            .on_click(ranges, move |index, window, cx| {
+                if let Some(image) = images.get(index) {
+                    let _ = panel.update(cx, |panel, cx| {
+                        panel.open_image_preview(image.clone(), window, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            });
+        body.child(
+            div().relative().text_size(px(13.)).child(text).child(
+                crate::image_chip::PositionedChips::with_selectors(
+                    layout,
+                    chips,
+                    (
+                        "queue-expanded-image-chip",
+                        "queue-expanded-image-thumbnail",
+                        "queue-expanded-image-label",
+                    ),
+                ),
+            ),
+        )
+        .into_any_element()
     }
 }
 

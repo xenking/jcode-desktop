@@ -215,7 +215,8 @@ impl Panel {
             .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
         // The model receives `<transcription>` tags. People see a pill instead.
         let (visible, transcribed) = super::voice::tag::strip(text);
-        let text: &str = &visible;
+        let (visible, labels) = crate::image_chip::numbered_text(&visible, 0);
+        let text = visible.as_ref();
         let preview = compact_prompt(text);
         let expanded = self.expanded_prompts.contains(&(index, pinned));
         let collapsed = preview.is_some() && !expanded;
@@ -241,8 +242,6 @@ impl Panel {
         // Markers are part of the message even when its image payload has not
         // arrived (or is absent from an older history). Never gate rendering
         // the chip on the presence of a corresponding image item.
-        let labels = crate::input::image_marker_ranges(text)
-            .into_iter().map(|range| text[range].to_owned()).collect();
         let indices: Vec<_> = self.user_image_markers(index)
             .into_iter().map(|(index, _)| index).collect();
         for image_index in &indices {

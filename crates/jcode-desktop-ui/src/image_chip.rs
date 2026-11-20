@@ -5,7 +5,7 @@ use gpui::{
     InspectorElementId, IntoElement, LayoutId, Pixels, Position, Style, TextLayout, Window, div,
     img, prelude::*, px, relative, size,
 };
-use std::{ops::Range, sync::Arc};
+use std::{borrow::Cow, ops::Range, sync::Arc};
 
 /// Replace marker glyphs while preserving byte offsets used by selection and IME.
 pub(crate) fn mask_markers(text: &str, ranges: impl IntoIterator<Item = Range<usize>>) -> String {
@@ -28,6 +28,24 @@ pub(crate) fn mask_transcript_markers(text: &str, ranges: impl IntoIterator<Item
 #[cfg(test)]
 mod tests {
     #[test]
+    fn attachment_label_matches_omp() {
+        assert_eq!(super::label("[#image 1]"), "[Image #1]");
+        assert_eq!(super::label("[#image 12]"), "[Image #12]");
+    }
+
+    #[test]
+    fn numbered_text_keeps_prose_and_numbers_attachments_by_position() {
+        let (text, markers) = super::numbered_text(
+            "До [#image 12](так)\nПосле [#img_0123456789abcdef0123456789abcdef]",
+            3,
+        );
+        assert_eq!(text, "До [#image 1](так)\nПосле [#image 2] [#image 3]");
+        assert_eq!(markers, ["[#image 1]", "[#image 2]", "[#image 3]"]);
+        assert_eq!(super::numbered_text("[image]", 1).0, "[#image 1]");
+        assert_eq!(super::numbered_text("[image]", 0).0, "[image]");
+    }
+
+    #[test]
     fn masked_markers_preserve_offsets_without_visible_marker_glyphs() {
         let source = "café [#image 1] and [#image 22]";
         let ranges = crate::input::image_marker_ranges(source);
@@ -40,8 +58,57 @@ mod tests {
     }
 }
 
-/// The storage marker never appears in the visible label.
+/// Normalize display text before shaping, so a storage ID takes up no more
+/// room than a numbered marker. The original prompt and wire IDs are untouched.
+pub(crate) fn numbered_text(text: &str, image_count: usize) -> (Cow<'_, str>, Vec<String>) {
+    let text = if image_count != 0 && text.trim() == "[image]" {
+        ""
+    } else {
+        text
+    };
+    let ranges = crate::input::image_marker_ranges(text);
+    let markers: Vec<_> = (1..=ranges.len().max(image_count))
+        .map(|number| format!("[#image {number}]"))
+        .collect();
+    if markers.is_empty() {
+        return (Cow::Borrowed(text), markers);
+    }
+    let mut shown = String::with_capacity(text.len());
+    let mut offset = 0;
+    for (range, marker) in ranges.iter().zip(&markers) {
+        shown.push_str(&text[offset..range.start]);
+        shown.push_str(marker);
+        offset = range.end;
+    }
+    shown.push_str(&text[offset..]);
+    for marker in &markers[ranges.len()..] {
+        if !shown.is_empty() && !shown.ends_with(char::is_whitespace) {
+            shown.push(' ');
+        }
+        shown.push_str(marker);
+    }
+    (Cow::Owned(shown), markers)
+}
+
+pub(crate) fn numbered_label(number: usize) -> String {
+    format!("[Image #{number}]")
+}
+
+pub(crate) fn hidden_marker() -> gpui::HighlightStyle {
+    gpui::HighlightStyle {
+        fade_out: Some(1.),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn label(marker: &str) -> String {
+    if let Some(number) = marker
+        .strip_prefix("[#image ")
+        .and_then(|s| s.strip_suffix(']'))
+        && let Ok(number) = number.parse::<usize>()
+    {
+        return numbered_label(number);
+    }
     marker
         .strip_prefix("[#")
         .and_then(|s| s.strip_suffix(']'))
@@ -56,6 +123,22 @@ pub(crate) fn chip(
     image_selector: &'static str,
     label_selector: &'static str,
 ) -> gpui::Div {
+    chip_with_label(
+        image,
+        label(marker),
+        chip_selector,
+        image_selector,
+        label_selector,
+    )
+}
+
+pub(crate) fn chip_with_label(
+    image: Option<Arc<Image>>,
+    label: String,
+    chip_selector: &'static str,
+    image_selector: &'static str,
+    label_selector: &'static str,
+) -> gpui::Div {
     let missing = image.is_none();
     div()
         .debug_selector(move || chip_selector.into())
@@ -63,8 +146,8 @@ pub(crate) fn chip(
         .bg(Theme::global().USER_BG)
         .flex()
         .items_center()
-        .gap(px(3.))
-        .px(px(3.))
+        .gap(px(2.))
+        .px(px(2.))
         .overflow_hidden()
         .children(image.map(|image| {
             img(crate::image_cache::source(image))
@@ -83,8 +166,8 @@ pub(crate) fn chip(
             div()
                 .debug_selector(move || label_selector.into())
                 .whitespace_nowrap()
-                .text_size(px(10.))
-                .child(label(marker)),
+                .text_size(px(9.5))
+                .child(label),
         )
 }
 
@@ -227,7 +310,7 @@ impl Element for PositionedChips {
             );
             #[cfg(test)]
             if let Some(image) = image {
-                let origin = start + gpui::point(px(3.), (window.line_height() - px(14.)) / 2.);
+                let origin = start + gpui::point(px(2.), (window.line_height() - px(14.)) / 2.);
                 self.thumbnails
                     .push((image.clone(), Bounds::new(origin, size(px(14.), px(14.)))));
             }

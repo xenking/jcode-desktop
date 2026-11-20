@@ -230,6 +230,54 @@ fn queue_card_scrolls_and_expands_long_text(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn expanded_queue_renders_clickable_inline_thumbnails(cx: &mut gpui::TestAppContext) {
+    for remote in [false, true] {
+        let image = image_preview::fixture_image();
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new("queue-image".into(), None, None, crate::harness::spawn_inert(), cx);
+            panel.history_loaded = true;
+            panel.startup_layout = None;
+            panel.status = "running".into();
+            panel.items.push(Item::User("initial".into()));
+            let images = vec![("image/png".into(), image.data.clone())];
+            if remote {
+                panel.prompt_queue.remote.push(jcode_sdk::api::QueuedPrompt {
+                    active_skill: None,
+                    client_id: "with-image".into(),
+                    content: "[image]".into(),
+                    images,
+                    attachments: vec![],
+                    mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                    editing: false,
+                });
+            } else {
+                panel.submit_or_queue("first line\nInspect [#image 1] then continue".into(), images, true, cx);
+            }
+            panel
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let row = if remote { "queue-row-text-remote-0" } else { "queue-row-text-0" };
+        let summary = vcx.debug_bounds(row).expect("queue summary");
+        vcx.simulate_click(gpui::point(summary.right() - px(5.), summary.center().y), Default::default());
+        vcx.run_until_parked();
+        let thumbnail = vcx.debug_bounds("queue-expanded-image-thumbnail").expect("expanded queue thumbnail");
+        let summary = vcx.debug_bounds(row).expect("expanded queue summary");
+        assert!(thumbnail.top() >= summary.bottom());
+        let body = vcx.debug_bounds("queue-expanded-content").expect("expanded queue content");
+        assert_eq!(thumbnail.top() > body.top() + px(14.), !remote, "the local image follows an explicit line break");
+        let chip = vcx.debug_bounds("queue-expanded-image-chip").expect("expanded queue image chip");
+        let label = vcx.debug_bounds("queue-expanded-image-label").expect("expanded queue image label");
+        assert!(label.right() <= chip.right(), "label must fit inside the chip: {label:?} {chip:?}");
+        vcx.simulate_click(thumbnail.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+        assert!(panel.read_with(vcx, |panel, _| panel.prompt_queue.card_expanded.is_some()));
+    }
+}
+
+#[gpui::test]
 fn queue_card_matches_composer_and_never_blocks_the_transcript(cx: &mut gpui::TestAppContext) {
     let (_panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(

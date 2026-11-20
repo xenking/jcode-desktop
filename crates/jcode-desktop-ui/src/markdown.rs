@@ -1207,7 +1207,7 @@ fn styled_line_layout(
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
-    highlights.extend(chips.iter().map(|(range, _, _)| (range.clone(), HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() })));
+    highlights.extend(chips.iter().map(|(range, _, _)| (range.clone(), crate::image_chip::hidden_marker())));
     let prefix = if avatar { AVATAR_PREFIX } else { "" };
     let shift =
         |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
@@ -1459,7 +1459,7 @@ fn code_block_with_selection(
         && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
             highlights.push(highlight);
         }
-    highlights.extend(markers.iter().map(|(range, _)| (range.clone(), HighlightStyle { color: Some(gpui::transparent_black()), ..Default::default() })));
+    highlights.extend(markers.iter().map(|(range, _)| (range.clone(), crate::image_chip::hidden_marker())));
     let display = crate::image_chip::mask_markers(&plain, markers.iter().map(|(range, _)| range.clone()));
     let positioned = images.as_ref().map(|images| markers.iter().map(|(range, index)| {
         (range.clone(), plain[range.clone()].to_string(), images.previews.get(*index).cloned().flatten())

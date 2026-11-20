@@ -88,18 +88,7 @@ impl Panel {
         let number = self.items[start..index].iter().filter(|item| {
             matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
         }).count() + 1;
-        let label = match self.items.get(start) {
-            Some(Item::User(text)) => crate::input::image_marker_ranges(text)
-                .into_iter()
-                .map(|range| text[range].to_string())
-                .nth(number - 1),
-            _ => None,
-        }
-        .unwrap_or_else(|| format!("[#image {number}]"));
-        let label = label
-            .trim_start_matches("[#")
-            .trim_end_matches(']')
-            .to_owned();
+        let label = crate::image_chip::numbered_label(number);
         let preview = image.clone();
         div()
             .flex()
