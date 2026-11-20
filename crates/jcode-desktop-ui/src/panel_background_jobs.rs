@@ -140,6 +140,7 @@ impl Panel {
             focus,
         )
         .debug_selector(move || format!("background-job-row-{index}"))
+        .flex_none()
         .w_full()
         .min_w_0()
         .min_h(px(20.0))
@@ -176,6 +177,13 @@ impl Panel {
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
             let task_id = (this.background_jobs.selected.as_ref() != Some(&id)).then(|| id.clone());
+            if task_id.is_some() {
+                // The detail follows all rows. Reveal it even when opening a
+                // task from a list taller than the viewport.
+                this.swarm_list_scroll.scroll_to_item(
+                    this.swarm_picker_rows.len() + this.background_jobs.tasks.len(),
+                );
+            }
             this.select_background_job(task_id, cx);
         }))
         .into_any_element()
@@ -248,6 +256,7 @@ impl Panel {
             div()
                 .id("background-job-detail")
                 .debug_selector(|| "background-job-detail".into())
+                .flex_none()
                 .w_full()
                 .min_w_0()
                 .mt_1()

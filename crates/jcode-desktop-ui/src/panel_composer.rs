@@ -348,11 +348,12 @@ impl Panel {
         let ask = self.render_ask_card(window, cx);
         div()
             .debug_selector(|| "composer".into())
+            .relative()
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .children(self.render_swarm_list(cx))
+            .children(self.render_swarm_list(window, cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
             .children(self.picker_search.as_ref().map(|(_, search)| {

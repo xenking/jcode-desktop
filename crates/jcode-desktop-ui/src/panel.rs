@@ -729,6 +729,7 @@ pub struct Panel {
     swarm_list_open: bool,
     swarm_list_focus: FocusHandle,
     swarm_picker_rows: Vec<FocusHandle>,
+    swarm_list_scroll: ScrollHandle,
     swarm_trigger_focus: FocusHandle,
     /// Animated status marks (activity icon, worker spinner and rows).
     swarm_marks: crate::swarm_glyph::Marks,
@@ -1562,6 +1563,7 @@ impl Panel {
             swarm_list_open: false,
             swarm_list_focus: cx.focus_handle(),
             swarm_picker_rows: Vec::new(),
+            swarm_list_scroll: ScrollHandle::new(),
             swarm_trigger_focus: cx.focus_handle(),
             swarm_marks: Default::default(),
             swarm_usage: Default::default(),
@@ -7119,12 +7121,7 @@ impl Render for Panel {
             }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.swarm_list_open && event.keystroke.key == "escape" {
-                    let focus = this.swarm_list_focus.clone();
-                    let trigger = this.composer_popover_trigger.take();
-                    this.dismiss_composer_popover(&focus, true, window, cx);
-                    if let Some(trigger) = trigger {
-                        window.focus(&trigger, cx);
-                    }
+                    this.close_swarm_to_trigger(window, cx);
                     cx.stop_propagation();
                 } else if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);

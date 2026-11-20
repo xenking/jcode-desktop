@@ -5,6 +5,7 @@
 //! with their status, and each row opens that worker's chat.
 
 use super::*;
+use crate::input::popup::{self, Popup};
 use crate::swarm_glyph::{Icon, Mark, Motion};
 use crate::swarm_view::{Activity, Indicator, Turn, Worker};
 
@@ -12,9 +13,6 @@ use crate::swarm_view::{Activity, Indicator, Turn, Worker};
 pub(crate) struct OpenSwarmWorker(pub String);
 
 impl gpui::EventEmitter<OpenSwarmWorker> for Panel {}
-
-/// Rows listed before the rest fold into `+N`.
-const MAX_ROWS: usize = 12;
 
 impl Panel {
     /// This panel's own session record, when the workspace read one for it.
@@ -267,14 +265,15 @@ impl Panel {
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
                 if this.swarm_list_open {
-                    let focus = this.swarm_list_focus.clone();
-                    this.dismiss_composer_popover(&focus, true, window, cx);
+                    this.close_swarm_to_trigger(window, cx);
                 } else {
                     if this.picker_search.take().is_some() {
                         this.model_picker_open = false;
                     }
                     this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
                     this.swarm_list_open = true;
+                    this.swarm_list_scroll
+                        .set_offset(gpui::point(px(0.), px(0.)));
                     window.focus(&this.swarm_list_focus, cx);
                 }
                 cx.notify();
@@ -290,8 +289,17 @@ impl Panel {
         )
     }
 
+    pub(super) fn close_swarm_to_trigger(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_composer_popover(&self.swarm_list_focus.clone(), false, window, cx);
+        window.focus(&self.swarm_trigger_focus, cx);
+    }
+
     /// The list opened by the count: worker chats and session background tasks.
-    pub(super) fn render_swarm_list(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_swarm_list(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         if !self.swarm_list_open {
             return None;
         }
@@ -302,25 +310,15 @@ impl Panel {
             return None;
         }
         let theme = Theme::global();
-        let job_total = self.background_jobs.tasks.len();
-        let worker_count = workers.len().min(MAX_ROWS - job_total.min(MAX_ROWS / 2));
-        let jobs = self
-            .background_jobs
-            .tasks
-            .iter()
-            .take(MAX_ROWS - worker_count)
-            .cloned()
-            .collect::<Vec<_>>();
-        let extra = workers.len() - worker_count + job_total - jobs.len();
+        let jobs = self.background_jobs.tasks.clone();
         let owner = cx.weak_entity();
         let focus = self.swarm_list_focus.clone();
         let key_focus = focus.clone();
         self.swarm_picker_rows
-            .resize_with(worker_count, || cx.focus_handle());
+            .resize_with(workers.len(), || cx.focus_handle());
         let mut row_focus = self.swarm_picker_rows.clone();
         let mut rows = workers
             .iter()
-            .take(worker_count)
             .enumerate()
             .map(|(index, worker)| {
                 let id = worker.session_id.clone();
@@ -358,6 +356,7 @@ impl Panel {
                     &row_focus[index],
                 )
                 .debug_selector(move || format!("swarm-list-worker-{index}"))
+                .flex_none()
                 .min_h(px(20.0))
                 .w_full()
                 .min_w_0()
@@ -367,7 +366,7 @@ impl Panel {
                 .flex()
                 .items_center()
                 .gap(px(5.0))
-                .rounded_md()
+                .rounded_full()
                 .cursor_pointer()
                 .hover(|el| el.bg(theme.USER_BG))
                 .text_size(px(11.0))
@@ -411,13 +410,13 @@ impl Panel {
                 .children(model.map(|model| {
                     div()
                         .debug_selector(move || format!("swarm-list-model-{index}"))
-                        .flex_none()
+                        .min_w_0()
                         .flex()
                         .items_center()
                         .gap(px(3.0))
                         .text_color(theme.TEXT_FAINT)
                         .child(provider)
-                        .child(model)
+                        .child(div().min_w_0().truncate().child(model))
                         // Same circle as the composer pill, right after the
                         // model it applies to.
                         .children(effort.map(|effort| {
@@ -462,67 +461,94 @@ impl Panel {
             rows.push(self.render_background_job_row(index, job, &focus, cx));
             row_focus.push(focus);
         }
+        let scroll = self.swarm_list_scroll.clone();
+        let limit = popup::scroll_height(window.viewport_size().height, false);
         Some(
-            div()
-                .debug_selector(|| "swarm-list".into())
-                .track_focus(&self.swarm_list_focus)
-                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                    let first_tab = crate::keyboard::tab_direction(event)
-                        .filter(|_| key_focus.is_focused(window))
-                        .and_then(|reverse| {
-                            if reverse {
-                                row_focus.last()
-                            } else {
-                                row_focus.first()
-                            }
-                        })
-                        .cloned();
-                    if let Some(next) = first_tab
-                        .or_else(|| crate::keyboard::arrow_peer(event, &row_focus, window, cx))
-                    {
-                        window.focus(&next, cx);
-                        cx.stop_propagation();
-                    }
-                })
-                .relative()
-                .w_full()
-                .min_w_0()
-                .mb(px(4.0))
-                .p_1()
-                .flex()
-                .flex_col()
-                .rounded_lg()
-                .bg(theme.HEADER_BG)
-                .border_1()
-                .border_color(theme.PANEL_BORDER)
-                .child(
-                    gpui::canvas(
-                        |_, _, _| (),
-                        move |bounds, _, window, _| {
-                            let owner = owner.clone();
-                            let focus = focus.clone();
-                            crate::popover::dismiss_outside(window, [bounds], move |window, cx| {
-                                let _ = owner.update(cx, |panel, cx| {
-                                    panel.dismiss_composer_popover(&focus, true, window, cx);
-                                });
-                            });
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
+            gpui::deferred(
+                Popup::new(
+                    div()
+                        .id("swarm-list")
+                        .debug_selector(|| "swarm-list".into())
+                        .track_focus(&self.swarm_list_focus)
+                        .on_key_down(cx.listener(
+                            move |panel, event: &gpui::KeyDownEvent, window, cx| {
+                                if key_focus.is_focused(window)
+                                    && event.keystroke.modifiers == gpui::Modifiers::default()
+                                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                {
+                                    panel.close_swarm_to_trigger(window, cx);
+                                    cx.stop_propagation();
+                                    return;
+                                }
+                                let tab_peer = crate::keyboard::tab_direction(event)
+                                    .and_then(|reverse| {
+                                        if key_focus.is_focused(window) {
+                                            return if reverse {
+                                                row_focus.last()
+                                            } else {
+                                                row_focus.first()
+                                            };
+                                        }
+                                        let current = row_focus
+                                            .iter()
+                                            .position(|row| row.is_focused(window))?;
+                                        let peer = if reverse {
+                                            current.checked_sub(1)?
+                                        } else {
+                                            current + 1
+                                        };
+                                        row_focus.get(peer)
+                                    })
+                                    .cloned();
+                                if let Some(next) = tab_peer.or_else(|| {
+                                    crate::keyboard::arrow_peer(event, &row_focus, window, cx)
+                                }) {
+                                    if let Some(index) =
+                                        row_focus.iter().position(|row| row == &next)
+                                    {
+                                        scroll.scroll_to_item(index);
+                                    }
+                                    window.focus(&next, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .w_full()
+                        .min_w_0()
+                        .max_h_full()
+                        .p_1()
+                        .flex()
+                        .flex_col()
+                        .rounded_xl()
+                        .bg(theme.HEADER_BG)
+                        .border_1()
+                        .border_color(theme.PANEL_BORDER_FOCUS)
+                        .shadow_lg()
+                        .occlude()
+                        .child(
+                            div()
+                                .id("swarm-list-scroll")
+                                .debug_selector(|| "swarm-list-scroll".into())
+                                .track_scroll(&self.swarm_list_scroll)
+                                .max_h(limit)
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .children(rows)
+                                .children(self.render_background_job_detail(cx)),
+                        ),
+                    px(5.),
                 )
-                .children(rows)
-                .children(self.render_background_job_detail(cx))
-                .when(extra > 0, |el| {
-                    el.child(
-                        div()
-                            .px_2()
-                            .text_size(px(10.5))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(format!("+{extra} more")),
-                    )
-                })
-                .into_any_element(),
+                .at_composer_end(px(480.))
+                .dismiss_outside(Some(std::rc::Rc::new(move |window, cx| {
+                    let _ = owner.update(cx, |panel, cx| {
+                        panel.dismiss_composer_popover(&focus, true, window, cx);
+                    });
+                }))),
+            )
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 }
@@ -555,6 +581,17 @@ mod tests {
         let mut value = value;
         value["session_id"] = serde_json::json!("activity-bar");
         serde_json::from_value(value).unwrap()
+    }
+
+    fn press(vcx: &mut gpui::VisualTestContext, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+        vcx.run_until_parked();
     }
 
     #[gpui::test]
@@ -640,6 +677,222 @@ mod tests {
     }
 
     #[gpui::test]
+    fn swarm_overlay_preserves_the_transcript_viewport_and_scroll(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = (0..80)
+                .map(|n| Item::Assistant(format!("History {n}")))
+                .collect();
+            panel.set_swarm_workers(vec![worker("rose", "running")], cx);
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        panel.update(vcx, |panel, cx| panel.scroll_transcript_direct(400.0, cx));
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        let geometry = |panel: &Panel, _app: &App| {
+            let top = panel.transcript_list.logical_scroll_top();
+            (
+                panel.transcript_list.viewport_bounds(),
+                top.item_ix,
+                top.offset_in_item,
+                panel.transcript_end_pad,
+            )
+        };
+        let before = panel.read_with(vcx, geometry);
+        let composer_before = vcx.debug_bounds("composer").unwrap();
+        for open in [true, false] {
+            let pill = vcx.debug_bounds("composer-workers").unwrap();
+            vcx.simulate_click(pill.center(), Default::default());
+            vcx.run_until_parked();
+            scroll_momentum_tests::settle(vcx);
+            assert_eq!(panel.read_with(vcx, geometry), before);
+            assert_eq!(vcx.debug_bounds("composer").unwrap(), composer_before);
+            assert_eq!(vcx.debug_bounds("swarm-list").is_some(), open);
+        }
+    }
+
+    #[gpui::test]
+    fn swarm_background_is_confined_to_a_card_above_the_composer(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(1100.), px(650.)));
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "running")], cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_click(pill.center(), Default::default());
+        vcx.run_until_parked();
+        let card = vcx.debug_bounds("swarm-list").unwrap();
+        let composer = vcx.debug_bounds("composer").unwrap();
+        assert!(
+            card.size.width < composer.size.width,
+            "{card:?} vs {composer:?}"
+        );
+        assert!(card.bottom() < composer.top(), "{card:?} vs {composer:?}");
+        assert!(pill.center().x >= card.left() && pill.center().x <= card.right());
+        let outside = gpui::point(card.left() - px(5.), card.center().y);
+        vcx.simulate_click(outside, Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list").is_none());
+    }
+
+    #[gpui::test]
+    fn swarm_trigger_toggles_on_release_without_closing_on_press(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "running")], cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_click(pill.center(), Default::default());
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_mouse_down(pill.center(), gpui::MouseButton::Left, Default::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("swarm-list").is_some(),
+            "still open on press"
+        );
+        vcx.simulate_mouse_up(pill.center(), gpui::MouseButton::Left, Default::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("swarm-list").is_none(),
+            "closed on release"
+        );
+        let trigger = panel.read_with(vcx, |panel, _| panel.swarm_trigger_focus.clone());
+        assert!(
+            vcx.update(|window, _| trigger.is_focused(window)),
+            "focus returns to trigger"
+        );
+        for key in ["space", "enter"] {
+            press(vcx, key);
+            assert!(vcx.debug_bounds("swarm-list").is_some(), "{key} opens");
+            press(vcx, key);
+            assert!(vcx.debug_bounds("swarm-list").is_none(), "{key} closes");
+            assert!(vcx.update(|window, _| trigger.is_focused(window)));
+        }
+    }
+
+    #[gpui::test]
+    fn effort_and_mode_pills_toggle_with_mouse_and_can_open_with_enter_or_space(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &event(serde_json::json!({
+                    "ev":"runtime_info", "provider":"openai", "model":"gpt-5.6-sol",
+                    "reasoning_effort":"high", "routes":[]
+                })),
+                cx,
+            );
+            panel.active_skill = Some("test-mode".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for (selector, kind) in [
+            ("panel-model-effort", PickerKind::Effort),
+            ("panel-mode", PickerKind::Mode),
+        ] {
+            let is_open = |panel: &Panel, _app: &App| {
+                panel
+                    .picker_search
+                    .as_ref()
+                    .is_some_and(|(open, _)| *open == kind)
+            };
+            let pill = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(pill.center(), Default::default());
+            vcx.run_until_parked();
+            assert!(panel.read_with(vcx, is_open), "{selector} opens");
+            let pill = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_mouse_down(pill.center(), gpui::MouseButton::Left, Default::default());
+            vcx.run_until_parked();
+            assert!(
+                panel.read_with(vcx, is_open),
+                "{selector}: still open on press"
+            );
+            vcx.simulate_mouse_up(pill.center(), gpui::MouseButton::Left, Default::default());
+            vcx.run_until_parked();
+            assert!(
+                !panel.read_with(vcx, is_open),
+                "{selector}: closes on release"
+            );
+            let trigger =
+                panel.read_with(vcx, |panel, _| panel.picker_triggers[kind as usize].clone());
+            for key in ["enter", "space"] {
+                vcx.update(|window, cx| window.focus(&trigger, cx));
+                vcx.run_until_parked();
+                press(vcx, key);
+                assert!(panel.read_with(vcx, is_open), "{selector}: {key} opens");
+                press(vcx, "escape");
+                assert!(!panel.read_with(vcx, is_open));
+                assert!(vcx.update(|window, _| trigger.is_focused(window)));
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn a_long_swarm_list_scrolls_without_moving_the_transcript(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(1060.), px(590.)));
+        panel.update(vcx, |panel, cx| {
+            *panel.items = (0..80)
+                .map(|n| Item::Assistant(format!("History {n}")))
+                .collect();
+            panel.set_swarm_workers(
+                (0..30)
+                    .map(|n| worker(&format!("rose{n}"), "running"))
+                    .collect(),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        panel.update(vcx, |panel, cx| panel.scroll_transcript_direct(400.0, cx));
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_click(pill.center(), Default::default());
+        vcx.run_until_parked();
+        let bounds = vcx.debug_bounds("swarm-list-scroll").unwrap();
+        assert!(bounds.size.height <= px(280.));
+        let offset = |panel: &Panel, _app: &App| panel.swarm_list_scroll.offset().y;
+        let transcript = |panel: &Panel, _app: &App| {
+            let top = panel.transcript_list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        };
+        let before = panel.read_with(vcx, transcript);
+        let first = panel.read_with(vcx, |panel, _| panel.swarm_picker_rows[0].clone());
+        press(vcx, "tab");
+        assert!(vcx.update(|window, _| first.is_focused(window)));
+        for _ in 0..29 {
+            press(vcx, "tab");
+        }
+        assert!(panel.read_with(vcx, offset) < px(0.));
+        press(vcx, "down");
+        assert_eq!(panel.read_with(vcx, offset), px(0.));
+        press(vcx, "up"); // wrap to the last worker and reveal it
+        let last = panel.read_with(vcx, |panel, _| panel.swarm_picker_rows[29].clone());
+        assert!(vcx.update(|window, _| last.is_focused(window)));
+        assert!(panel.read_with(vcx, offset) < px(0.));
+        press(vcx, "down");
+        assert_eq!(panel.read_with(vcx, offset), px(0.));
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-150.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        assert!(panel.read_with(vcx, offset) < px(0.));
+        assert_eq!(panel.read_with(vcx, transcript), before);
+    }
+
+    #[gpui::test]
     fn auto_lane_row_can_be_opened_with_mouse_enter_or_space(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         let id = "session_puppy_1795159580000_abc";
@@ -703,7 +956,10 @@ mod tests {
             let pill = vcx.debug_bounds("composer-workers").expect("tasks pill");
             vcx.simulate_click(pill.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("swarm-list").is_some(), "opened list: {key:?}");
+            assert!(
+                vcx.debug_bounds("swarm-list").is_some(),
+                "opened list: {key:?}"
+            );
             let row = vcx
                 .debug_bounds("background-job-row-0")
                 .unwrap_or_else(|| panic!("background job row: {key:?}"));
@@ -732,7 +988,10 @@ mod tests {
             assert!(vcx.debug_bounds("background-job-cancel").is_none());
             vcx.simulate_click(pill.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("swarm-list").is_none(), "dismissed list: {key:?}");
+            assert!(
+                vcx.debug_bounds("swarm-list").is_none(),
+                "dismissed list: {key:?}"
+            );
             panel.update(vcx, |panel, cx| panel.apply(&snapshot("running", None), cx));
             vcx.run_until_parked();
         }

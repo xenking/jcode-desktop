@@ -11,7 +11,7 @@ const CHROME: f32 = 10.;
 /// Room for a group header and about three model rows.
 const MIN_ABOVE: f32 = 200.;
 
-pub(super) fn scroll_height(viewport: Pixels, model: bool) -> Pixels {
+pub(crate) fn scroll_height(viewport: Pixels, model: bool) -> Pixels {
     let height = f32::from(viewport);
     px((height * if model { 0.6 } else { 0.35 })
         .min(if model { 480. } else { 280. })
@@ -52,24 +52,36 @@ fn available_side(composer: Bounds<Pixels>, viewport: Size<Pixels>, gap: Pixels)
     }
 }
 
-pub(super) struct Popup {
+pub(crate) struct Popup {
     child: AnyElement,
     gap: Pixels,
     dismiss: Option<Dismiss>,
+    anchor: Anchor,
 }
 
-pub(super) type Dismiss = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+enum Anchor {
+    SearchInput,
+    ComposerEnd { max_width: Pixels },
+}
+
+pub(crate) type Dismiss = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
 impl Popup {
-    pub(super) fn new(child: impl IntoElement, gap: Pixels) -> Self {
+    pub(crate) fn new(child: impl IntoElement, gap: Pixels) -> Self {
         Self {
             child: child.into_any_element(),
             gap,
             dismiss: None,
+            anchor: Anchor::SearchInput,
         }
     }
 
-    pub(super) fn dismiss_outside(mut self, dismiss: Option<Dismiss>) -> Self {
+    pub(crate) fn at_composer_end(mut self, max_width: Pixels) -> Self {
+        self.anchor = Anchor::ComposerEnd { max_width };
+        self
+    }
+
+    pub(crate) fn dismiss_outside(mut self, dismiss: Option<Dismiss>) -> Self {
         self.dismiss = dismiss;
         self
     }
@@ -121,6 +133,10 @@ impl Element for Popup {
             .size
             .width
             .min((viewport.width - px(2. * EDGE)).max(px(0.)));
+        let width = match self.anchor {
+            Anchor::SearchInput => width,
+            Anchor::ComposerEnd { max_width } => width.min(max_width),
+        };
         let (above, available) = available_side(bounds, viewport, self.gap);
         // max_h_full on the popup resolves against this definite space. Its
         // flex/min_h_0 scroll subtree shrinks without hiding borders or rows.
@@ -132,15 +148,16 @@ impl Element for Popup {
             window,
             cx,
         );
-        let anchor = if above {
-            bounds.origin
-        } else {
-            point(
-                bounds.left(),
-                bounds.bottom() + self.gap + measured.height + self.gap,
-            )
+        let x = match self.anchor {
+            Anchor::SearchInput => bounds.left(),
+            Anchor::ComposerEnd { .. } => bounds.right() - measured.width,
         };
-        let origin = origin(anchor, measured, viewport, self.gap);
+        let y = if above {
+            bounds.top()
+        } else {
+            bounds.bottom() + measured.height + self.gap * 2.
+        };
+        let origin = origin(point(x, y), measured, viewport, self.gap);
         self.child.prepaint_at(origin, window, cx);
         Bounds::new(origin, measured)
     }
@@ -148,7 +165,7 @@ impl Element for Popup {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        input: Bounds<Pixels>,
+        anchor: Bounds<Pixels>,
         _: &mut (),
         popup: &mut Bounds<Pixels>,
         window: &mut Window,
@@ -156,9 +173,17 @@ impl Element for Popup {
     ) {
         self.child.paint(window, cx);
         if let Some(dismiss) = self.dismiss.clone() {
-            crate::popover::dismiss_outside(window, [input, *popup], move |window, cx| {
-                dismiss(window, cx);
-            });
+            let dismiss = move |window: &mut Window, cx: &mut App| dismiss(window, cx);
+            match self.anchor {
+                Anchor::SearchInput => {
+                    crate::popover::dismiss_outside(window, [anchor, *popup], dismiss)
+                }
+                // The main composer is the positioning reference, not part of
+                // this popover's interactive surface.
+                Anchor::ComposerEnd { .. } => {
+                    crate::popover::dismiss_outside(window, [*popup], dismiss)
+                }
+            }
         }
     }
 }

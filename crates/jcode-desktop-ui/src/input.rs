@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[path = "input_popup.rs"]
-mod popup;
+pub(crate) mod popup;
 
 #[path = "input_layout.rs"]
 mod layout;
