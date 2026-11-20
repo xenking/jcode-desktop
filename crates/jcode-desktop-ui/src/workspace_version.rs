@@ -204,7 +204,9 @@ fn about_status(
         (UpdateState::ReadyToRestart { .. }, _) => "Restart to finish".to_string(),
         (UpdateState::Available { .. }, _) => "Downloading…".to_string(),
         (UpdateState::Checking, _) => "Checking for updates…".to_string(),
-        (_, ReleaseStatus::Current { latest }) => format!("Latest release: v{latest}"),
+        (_, ReleaseStatus::Current { latest }) => {
+            format!("No channel update ({})", version_tag(latest))
+        }
         (_, ReleaseStatus::Source) => "Local source build".to_string(),
         (_, ReleaseStatus::Error { .. }) => "Unable to check".to_string(),
         (_, ReleaseStatus::Checking) | (_, ReleaseStatus::Unknown) => {
@@ -259,6 +261,13 @@ pub(super) fn render_about_block(
                         .min_w_0()
                         .truncate()
                         .text_color(theme.TEXT_DIM)
+                        .tooltip(|_, cx| {
+                            cx.new(|_| live_tabs::TabTooltip(
+                                "Checks this update channel. Betas published separately may not appear here."
+                                    .into(),
+                            ))
+                            .into()
+                        })
                         .child(status.to_string()),
                 )
                 .child(
@@ -611,7 +620,7 @@ mod tests {
                 },
                 None
             ),
-            "Latest release: v1.0.0"
+            "No channel update (v1.0.0)"
         );
         assert_eq!(
             about_status(

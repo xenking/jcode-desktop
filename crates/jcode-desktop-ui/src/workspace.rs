@@ -9166,6 +9166,9 @@ impl Render for SidebarChrome {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Single-panel and modal layouts return before rendering the version
+        // footer. They still need the launch check and periodic updater.
+        updates::ensure_release_check();
         let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
         if self.show_sidebar {
@@ -14768,6 +14771,8 @@ mod tests {
     fn the_update_chip_paints_only_while_the_updater_has_something_to_say(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _update_guard = updates::test_lock();
+        updates::set_release_status(updates::ReleaseStatus::Unknown);
         cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -14790,10 +14795,14 @@ mod tests {
             cx.run_until_parked();
         };
 
-        let _update_guard = updates::test_lock();
         // A current app says nothing at all.
         updates::set(updates::UpdateState::Idle);
         draw(cx);
+        assert_ne!(
+            updates::release_status(),
+            updates::ReleaseStatus::Unknown,
+            "single-panel windows must initialize update checks without a version footer"
+        );
         assert!(
             cx.debug_bounds("update-chip").is_none(),
             "a current app should not paint an update chip"
