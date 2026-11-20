@@ -6,6 +6,8 @@
 //! - Working: a yellow fill grows left to right with completed todos, and a
 //!   soft highlight sweeps across the tab so an unchanged count still reads
 //!   as alive.
+//! - Waiting: a dashed outline marks waiting on workers or background work.
+//! - Question: a solid accent outline marks an unanswered ask card.
 //! - Done: a green wash breathes gently until the session is viewed or a new
 //!   turn starts.
 //! - Error: a quiet red wash.
@@ -22,7 +24,7 @@ use gpui::{
 
 use crate::theme::Theme;
 
-use super::MinimapSessionState;
+use super::{MinimapSessionState, Panel};
 
 /// 60 Hz on the shared animation grid, so every animated tab wakes in the
 /// same frame instead of each re-rendering the header on its own.
@@ -35,6 +37,14 @@ const BREATH_SECONDS: f32 = 2.6;
 /// instead of snapping it to its new width.
 const PROGRESS_EASE: f32 = 0.18;
 
+impl Panel {
+    pub(crate) fn set_tab_waiting(&mut self, waiting: bool, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.tab_dependency_waiting, waiting) != waiting {
+            cx.notify();
+        }
+    }
+}
+
 /// Seconds since a process-wide epoch. Every tab animates in lockstep, and
 /// phase never depends on how many ticks were delivered.
 fn clock() -> f32 {
@@ -45,11 +55,26 @@ fn clock() -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabMode {
     Working,
+    Waiting,
+    Question,
     /// Finished while out of view. Cleared once the session is seen.
     Done,
     Error,
     /// An interrupted plan, shown quietly.
     Paused,
+}
+
+impl TabMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Question => "question",
+            Self::Done => "done",
+            Self::Error => "error",
+            Self::Paused => "paused",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,10 +109,26 @@ impl TabRing {
             color,
             progress: match mode {
                 TabMode::Working | TabMode::Paused => progress,
-                TabMode::Done | TabMode::Error => None,
+                TabMode::Done | TabMode::Error | TabMode::Waiting | TabMode::Question => None,
             },
             mode,
         })
+    }
+
+    pub(super) fn waiting() -> Self {
+        Self {
+            color: Theme::global().LINK,
+            progress: None,
+            mode: TabMode::Waiting,
+        }
+    }
+
+    pub(super) fn question() -> Self {
+        Self {
+            color: Theme::global().CODE_CONTROL,
+            progress: None,
+            mode: TabMode::Question,
+        }
     }
 
     #[allow(dead_code)]
@@ -230,9 +271,17 @@ fn paint(
             bounds,
             radius,
             gpui::transparent_black(),
-            px(1.),
+            if ring.mode == TabMode::Question {
+                px(2.)
+            } else {
+                px(1.)
+            },
             color,
-            gpui::BorderStyle::Solid,
+            if ring.mode == TabMode::Waiting {
+                gpui::BorderStyle::Dashed
+            } else {
+                gpui::BorderStyle::Solid
+            },
         )
     };
     let left = f32::from(bounds.origin.x);
@@ -283,6 +332,10 @@ fn paint(
             };
             window.paint_quad(rounded(ring.color.opacity(0.10 + 0.12 * breath)));
             window.paint_quad(outline(ring.color.opacity(0.45 + 0.45 * breath)));
+        }
+        TabMode::Waiting | TabMode::Question => {
+            window.paint_quad(rounded(ring.color.opacity(0.11)));
+            window.paint_quad(outline(ring.color.opacity(0.90)));
         }
         TabMode::Error => {
             window.paint_quad(rounded(ring.color.opacity(0.12)));

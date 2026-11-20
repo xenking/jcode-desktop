@@ -78,6 +78,7 @@ mod history;
 mod recovery;
 #[path = "harness_search.rs"]
 mod search;
+mod tab_wait;
 
 /// Decode the host carried by a persisted remote panel ID.
 pub fn remote_host(session_id: &str) -> Option<String> {
@@ -220,6 +221,10 @@ pub enum Update {
     TodoState {
         session_id: String,
         state: Option<jcode_sdk::todo::TodoSnapshot>,
+    },
+    TabWaitingState {
+        session_id: String,
+        waiting: bool,
     },
     /// A per-session connection died.
     SessionLost {
@@ -2855,6 +2860,8 @@ fn session_worker_with_connector(
             });
         }
 
+        let mut tab_wait = tab_wait::State::default();
+        tab_wait.refresh(&client, real_id, &session_id, &updates);
         loop {
             loop {
                 let command = match next_worker_command(&commands, &mut pending) {
@@ -3631,6 +3638,9 @@ fn session_worker_with_connector(
                 history.load(&client, real_id, &session_id, &updates);
             }
 
+            if !turn_active && tab_wait.refresh_due() {
+                tab_wait.refresh(&client, real_id, &session_id, &updates);
+            }
             let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 reported_disconnected_events = false;
@@ -3685,6 +3695,7 @@ fn session_worker_with_connector(
                     // payload eligible for recovery on a later busy error.
                     unaccepted_sends.clear();
                 }
+                let was_active = turn_active;
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
                 let retry_decision = turn_retry.observe(&event, std::time::Instant::now());
@@ -3711,6 +3722,9 @@ fn session_worker_with_connector(
                     session_id: session_id.clone(),
                     event: namespace_event(event, &address),
                 });
+                if was_active && !turn_active {
+                    tab_wait.refresh(&client, real_id, &session_id, &updates);
+                }
                 // The panel clears its phase when a turn ends, so announce
                 // the pending retry after forwarding the closing event.
                 match retry_decision {

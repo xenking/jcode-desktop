@@ -1475,6 +1475,9 @@ impl Workspace {
                 }
                 workspace.active = panel_count / 2;
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES").as_deref() == Ok("1") {
+                workspace.seed_tab_status_fixture(cx);
+            }
             workspace.focus_pending = true;
             if workspace_stream_fixture::enabled() {
                 workspace._stream_fixture = Some(workspace_stream_fixture::spawn(
@@ -2825,6 +2828,11 @@ impl Workspace {
                     }
                 }
             }
+            Update::TabWaitingState { session_id, waiting } => {
+                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.read(cx).session_id == session_id) {
+                    slot.panel.update(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
+                }
+            }
             Update::EffortSettled {
                 session_id,
                 effort,
@@ -2955,6 +2963,7 @@ impl Workspace {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
                             panel.set_queue_mutations_supported(false, cx);
+                            panel.set_tab_waiting(false, cx);
                             panel.connection_lost(&reason, cx);
                         });
                         break;
@@ -3110,6 +3119,39 @@ impl Workspace {
                 .update(cx, |panel, cx| panel.set_pending_awaits(awaits, cx));
         }
         cx.notify();
+    }
+
+    fn seed_tab_status_fixture(&self, cx: &mut Context<Self>) {
+        use jcode_sdk::ApiEvent;
+        for (index, slot) in self.slots.iter().take(4).enumerate() {
+            slot.panel.update(cx, |panel, cx| {
+                let session_id = panel.session_id.clone();
+                let status = |status: &str| ApiEvent::SessionStatus {
+                    session_id: session_id.clone(), status: status.into(), pending_soft_interrupts: None,
+                };
+                match index {
+                    0 => panel.apply(&status("running"), cx),
+                    1 => panel.set_tab_waiting(true, cx),
+                    2 => {
+                        let event = serde_json::from_value(serde_json::json!({
+                            "ev":"ask_request", "session_id":session_id,
+                            "request_id":"fixture-ask", "tool_call_id":"fixture-tool",
+                            "questions":[{"header":"Choice", "question":"Continue?", "options":[
+                                {"label":"Yes", "description":"Continue the work"},
+                                {"label":"No", "description":"Stop here"}
+                            ]}]
+                        })).expect("valid ask fixture");
+                        panel.apply(&event, cx);
+                    }
+                    3 => {
+                        panel.set_surface_focused(false, cx);
+                        panel.apply(&status("running"), cx);
+                        panel.apply(&status("idle"), cx);
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
     }
 
     /// Select an open session's tab and activate the app, so an agent that

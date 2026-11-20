@@ -179,11 +179,20 @@ class Instance:
     def start(self):
         for name in ("home", "runtime", "config", "cache", "data", "logs", "jcode", "tmp"):
             (self.profile / name).mkdir(parents=True, mode=0o700)
-        (self.profile / "desktop.toml").write_text('[appearance]\nreduce_motion = true\n[workspace]\ncoaching_hints = false\n')
+        reduce_motion = "false" if self.manifest["fixture"] == "orb-todos" else "true"
+        (self.profile / "desktop.toml").write_text(f'[appearance]\nreduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         modes = ["--single-panel"]
+        if self.manifest["fixture"] == "orb-todos":
+            modes = []
+        if self.manifest["fixture"] == "tab-statuses":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
+                       JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES="1",
+                       JCODE_DESKTOP_SCREENSHOT_PANELS="4",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES="Working,Waiting,Question,Done")
+            modes = []
         if self.manifest["fixture"] == "swarm-worktree":
             lead, worker = seed_swarm_worktrees(self.profile, env)
             env.update(JCODE_DESKTOP_WORKING_DIR=str(lead),
@@ -301,6 +310,8 @@ class Instance:
             return self.swarm_journey(name)
         if name == "compaction":
             return self.compaction_journey()
+        if name == "tab-statuses":
+            return self.tab_status_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -342,6 +353,31 @@ class Instance:
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
         save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def tab_status_journey(self):
+        if self.manifest["fixture"] != "tab-statuses":
+            raise RuntimeError("journey requires the tab-statuses fixture")
+        listing = self.drive("list")
+        sessions = [panel["session"] for row in listing["navigation"]["rows"]
+                    for panel in row["panels"] if not panel["closing"]]
+        panels = [self.drive("state", session=session)["panel"] for session in sessions]
+        expected = ["working", "waiting", "question", "done"]
+        if [panel["tab_activity"] for panel in panels] != expected:
+            raise RuntimeError("tab activities did not match the four independent fixture states")
+        first = self.screenshot("tab-statuses-before.png")
+        question = panels[2]["ask"]
+        self.drive("click", {"selector": question["option_selectors"][0]}, session=sessions[2])
+        after = self.drive("state", session=sessions[2])["panel"]
+        if after["tab_activity"] != "question" or after["ask"]["chosen"] == question["chosen"]:
+            raise RuntimeError("choosing a response did not preserve the unanswered question frame")
+        time.sleep(.2)
+        last = self.screenshot("tab-statuses-after.png")
+        if first["sha256"] == last["sha256"]:
+            raise RuntimeError("choosing a response produced no screenshot change")
+        report = {"journey": "tab-statuses", "passed": True, "states": expected,
+                  "before": first, "after": last, "scope": "native UI on offline fixture"}
+        save(self.run / "tab-statuses-proof.json", report)
         return report
 
     def compaction_journey(self):
@@ -598,7 +634,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -606,7 +642,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

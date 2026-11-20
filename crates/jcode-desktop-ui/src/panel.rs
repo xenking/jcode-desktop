@@ -659,6 +659,7 @@ pub struct Panel {
     /// Coordinator-only: background swarm awaits still in flight. The daemon
     /// persists them, so a reload no longer makes the coordinator look idle.
     pending_awaits: Vec<jcode_sdk::PendingAwait>,
+    tab_dependency_waiting: bool,
     /// This session's own record, when it is a swarm worker. Headless workers
     /// answer no model probe on attach, so their model and effort come from
     /// here instead of reading as unset.
@@ -990,11 +991,32 @@ impl Panel {
         // status as work, which would mark merely connected sessions.
         let state = match self.minimap_state() {
             MinimapSessionState::Error => MinimapSessionState::Error,
+            _ if self.ask_card.as_ref().is_some_and(|card| !card.submitting) => {
+                return Some(TabRing::question());
+            }
+            _ if self.activity_active() && self.has_live_wait_tool() => {
+                return Some(TabRing::waiting());
+            }
             _ if self.activity_active() => MinimapSessionState::Working,
+            _ if self.tab_dependency_waiting
+                || self.agent_activity() == crate::swarm_view::Activity::WaitingOnWorkers => {
+                return Some(TabRing::waiting());
+            }
             _ if self.finished_unseen => MinimapSessionState::Complete,
             _ => MinimapSessionState::Idle,
         };
         TabRing::resolve(state, self.latest_todo_progress())
+    }
+
+    fn has_live_wait_tool(&self) -> bool {
+        self.items.iter().rev().take_while(|item| !matches!(item, Item::User(_))).any(|item| {
+            let Item::Tool { name, input, done: false, .. } = item else { return false; };
+            matches!(name.as_str(), "bg" | "swarm")
+                && serde_json::from_str::<serde_json::Value>(input).is_ok_and(|input| {
+                    matches!((name.as_str(), input["action"].as_str()),
+                        ("bg", Some("wait")) | ("swarm", Some("await_members")))
+                })
+        })
     }
 
     pub(crate) fn tab_outline(&self) -> gpui::AnyView {
@@ -1385,6 +1407,7 @@ impl Panel {
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             swarm_workers: Vec::new(),
             pending_awaits: Vec::new(),
+            tab_dependency_waiting: false,
             worker_record: None,
             swarm_list_open: false,
             swarm_marks: Default::default(),
@@ -8629,6 +8652,48 @@ mod tests {
             panel.apply(&status("idle"), cx);
         });
         assert_eq!(mode(vcx), None);
+    }
+
+    #[gpui::test]
+    fn tab_waits_for_parked_work_and_live_questions(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("waiting-tab", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        panel.update(vcx, |panel, cx| {
+            use super::tab_outline::TabMode;
+            let mode = |panel: &Panel| panel.tab_ring().map(|ring| ring.mode);
+            assert_eq!(mode(panel), None);
+            panel.set_pending_awaits(vec![jcode_sdk::PendingAwait {
+                requested_ids: vec!["worker".into()], deadline_unix_ms: u64::MAX,
+            }], cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_pending_awaits(Vec::new(), cx);
+            assert_eq!(mode(panel), None);
+
+            panel.set_tab_waiting(true, cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_tab_waiting(false, cx);
+            assert_eq!(mode(panel), None);
+
+            for (wire, expected) in [
+                (serde_json::json!({"ev":"tool_start", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg"}), TabMode::Working),
+                (serde_json::json!({"ev":"tool_input_delta", "session_id":"waiting-tab", "call_id":"bg-1", "delta":"{\"action\":\"wait\"}"}), TabMode::Waiting),
+                (serde_json::json!({"ev":"tool_done", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg", "output":"Completed"}), TabMode::Working),
+            ] {
+                panel.apply(&serde_json::from_value(wire).unwrap(), cx);
+                assert_eq!(mode(panel), Some(expected));
+            }
+
+            let event: ApiEvent = serde_json::from_value(serde_json::json!({
+                "ev":"ask_request", "session_id":"waiting-tab", "request_id":"ask-1", "tool_call_id":"tool-1",
+                "questions":[{"header":"Choice", "question":"Continue?", "options":[{"label":"Yes"},{"label":"No"}]}]
+            })).unwrap();
+            panel.apply(&event, cx);
+            assert_eq!(mode(panel), Some(TabMode::Question));
+        });
     }
 
     #[gpui::test]

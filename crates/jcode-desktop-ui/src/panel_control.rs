@@ -223,6 +223,7 @@ impl Panel {
             "session_id": self.session_id,
             "title": self.title.to_string(),
             "status": self.status,
+            "tab_activity": self.tab_ring().map(|ring| ring.mode.label()),
             "connection_phase": self.connection_phase,
             "model": self.model,
             "provider": self.provider,
