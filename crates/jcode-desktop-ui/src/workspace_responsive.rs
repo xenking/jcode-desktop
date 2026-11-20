@@ -123,58 +123,54 @@ impl Workspace {
         left: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        div()
-            .id("compact-sidebar-toggle")
-            .debug_selector(|| "compact-sidebar-toggle".into())
-            .absolute()
-            .left(px(left + 4.0))
-            .top_0()
-            .size(px(28.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .cursor_pointer()
-            .text_size(px(15.0))
-            .text_color(Theme::global().TEXT_DIM)
-            .occlude()
-            .tooltip(|_, cx| {
-                cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
-                    .into()
-            })
-            .hover(|el| {
-                el.bg(Theme::global().PANEL_BG)
-                    .text_color(Theme::global().TEXT)
-            })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    if this.show_sidebar {
-                        this.compact_sidebar_open = !this.compact_sidebar_open;
-                    } else {
-                        // Restores a sidebar hidden with Ctrl+B or its hide
-                        // button. Wide windows reset the drawer flag on render.
-                        this.show_sidebar = true;
-                        this.compact_sidebar_open = true;
-                    }
-                    // The drawer owns Escape while open. A persistent sidebar
-                    // toggle must leave keyboard focus in the chat composer.
-                    if is_compact(f32::from(window.viewport_size().width)) {
-                        window.focus(&this.focus_handle, cx);
-                    }
-                    cx.notify();
-                }),
-            )
-            .child("☰")
-            .into_any_element()
+        let owner = cx.weak_entity();
+        crate::keyboard::press_button(div().id("compact-sidebar-toggle"), move |window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+            let _ = owner.update(cx, |this, cx| {
+                if this.show_sidebar {
+                    this.compact_sidebar_open = !this.compact_sidebar_open;
+                } else {
+                    // Restores a sidebar hidden with Ctrl+B or its hide button.
+                    this.show_sidebar = true;
+                    this.compact_sidebar_open = true;
+                }
+                if is_compact(f32::from(window.viewport_size().width)) {
+                    window.focus(&this.focus_handle, cx);
+                }
+                cx.notify();
+            });
+        })
+        .debug_selector(|| "compact-sidebar-toggle".into())
+        .absolute()
+        .left(px(left + 4.0))
+        .top_0()
+        .size(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .cursor_pointer()
+        .text_size(px(15.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .occlude()
+        .tooltip(|_, cx| {
+            cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
+                .into()
+        })
+        .hover(|el| {
+            el.bg(Theme::global().PANEL_BG)
+                .text_color(Theme::global().TEXT)
+        })
+        .child("☰")
+        .into_any_element()
     }
 
     pub(super) fn render_compact_sidebar_overlay(
         &mut self,
         fullscreen: bool,
         progress: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let offset = -SIDEBAR_WIDTH * (1.0 - progress);
@@ -214,7 +210,7 @@ impl Workspace {
                     .border_r_1()
                     .border_color(Theme::global().PANEL_BORDER)
                     .occlude()
-                    .child(self.render_sidebar(fullscreen, cx)),
+                    .child(self.render_sidebar(fullscreen, window, cx)),
             )
             .child(
                 div()

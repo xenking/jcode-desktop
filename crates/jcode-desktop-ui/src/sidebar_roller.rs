@@ -38,6 +38,10 @@ pub(super) struct Roller {
     remainder: f32,
     view: Option<SidebarView>,
     expanded: bool,
+    trigger_focus: Option<gpui::FocusHandle>,
+    menu_focus: Option<gpui::FocusHandle>,
+    rows: Vec<gpui::FocusHandle>,
+    blur: Option<gpui::Subscription>,
 }
 
 impl Roller {
@@ -139,8 +143,31 @@ impl Workspace {
     pub(super) fn render_sidebar_roller(
         &mut self,
         fullscreen: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let trigger_focus = self
+            .sidebar_roller
+            .trigger_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let menu_focus = self
+            .sidebar_roller
+            .menu_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        if self.sidebar_roller.rows.is_empty() {
+            self.sidebar_roller.rows = (0..COUNT).map(|_| cx.focus_handle()).collect();
+        }
+        if self.sidebar_roller.blur.is_none() {
+            self.sidebar_roller.blur =
+                Some(cx.on_focus_out(&menu_focus, window, |this, _, _, cx| {
+                    if this.sidebar_roller.expanded {
+                        this.sidebar_roller.expanded = false;
+                        cx.notify();
+                    }
+                }));
+        }
         // Restore from the existing sidebar view, including after a hot reload.
         // Scrolling previews pages live, but never launches an action.
         if self.sidebar_roller.view != Some(self.sidebar_view) {
@@ -159,83 +186,98 @@ impl Workspace {
             .copied()
             .find(|tab| tab.2 == Some(self.sidebar_view))
             .unwrap_or(TABS[0]);
-        let trigger = div()
-            .id("sidebar-section-trigger")
-            .debug_selector(|| "sidebar-section-trigger".into())
-            .flex_none()
-            .size(px(28.0))
-            .rounded_full()
-            .when(self.sidebar_roller.expanded, |el| {
-                el.bg(Theme::global().TOOL_BG)
-            })
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            // Only this button owns section hover and wheel navigation.
-            .occlude()
-            .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
-            .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
-            .hover(|el| el.bg(Theme::global().TOOL_BG))
-            .tooltip(move |_, cx| {
-                cx.new(|_| {
-                    remotes::HeaderTooltip(
-                        format!(
-                            "Sidebar sections · {label}. Click to open or scroll to switch sections."
-                        )
-                        .into(),
+        let trigger = crate::keyboard::tracked_button(
+            div().id("sidebar-section-trigger"),
+            &trigger_focus,
+        )
+        .debug_selector(|| "sidebar-section-trigger".into())
+        .flex_none()
+        .size(px(28.0))
+        .rounded_full()
+        .when(self.sidebar_roller.expanded, |el| {
+            el.bg(Theme::global().TOOL_BG)
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        // Only this button owns section hover and wheel navigation.
+        .occlude()
+        .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
+        .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
+        .hover(|el| el.bg(Theme::global().TOOL_BG))
+        .tooltip(move |_, cx| {
+            cx.new(|_| {
+                remotes::HeaderTooltip(
+                    format!(
+                        "Sidebar sections · {label}. Click to open or scroll to switch sections."
                     )
-                })
-                .into()
+                    .into(),
+                )
             })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    this.sidebar_roller.expanded = true;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div().debug_selector(move || id.into()).child(
-                    gpui::svg()
-                        .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
-                        .size(px(16.0))
-                        .text_color(Theme::global().TEXT_DIM),
-                ),
-            );
-        let toggle = div()
-            .id("workspace-sidebar-toggle")
-            .debug_selector(|| "workspace-sidebar-toggle".into())
-            .flex_none()
-            .size(px(28.0))
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .occlude()
-            .hover(|el| el.bg(Theme::global().TOOL_BG))
-            .tooltip(|_, cx| {
-                cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
-                    .into()
-            })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    this.sidebar_roller.expanded = false;
-                    this.toggle_sidebar(&ToggleSidebar, window, cx);
-                }),
-            )
-            .child(
+            .into()
+        })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                this.sidebar_roller.expanded = true;
+                cx.notify();
+            }),
+        )
+        .on_click(cx.listener(|this, event, window, cx| {
+            if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                this.sidebar_roller.expanded = true;
+                let index = TABS
+                    .iter()
+                    .position(|tab| tab.2 == Some(this.sidebar_view))
+                    .unwrap_or(0);
+                window.focus(&this.sidebar_roller.rows[index], cx);
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
+        .child(
+            div().debug_selector(move || id.into()).child(
                 gpui::svg()
-                    .data(include_bytes!("../../../assets/icons/menu.svg").as_slice())
+                    .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
                     .size(px(16.0))
                     .text_color(Theme::global().TEXT_DIM),
-            );
+            ),
+        );
+        let owner = cx.weak_entity();
+        let toggle = crate::keyboard::press_button(
+            div().id("workspace-sidebar-toggle"),
+            move |window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                let _ = owner.update(cx, |this, cx| {
+                    this.sidebar_roller.expanded = false;
+                    this.toggle_sidebar(&ToggleSidebar, window, cx);
+                });
+            },
+        )
+        .debug_selector(|| "workspace-sidebar-toggle".into())
+        .flex_none()
+        .size(px(28.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .occlude()
+        .hover(|el| el.bg(Theme::global().TOOL_BG))
+        .tooltip(|_, cx| {
+            cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
+                .into()
+        })
+        .child(
+            gpui::svg()
+                .data(include_bytes!("../../../assets/icons/menu.svg").as_slice())
+                .size(px(16.0))
+                .text_color(Theme::global().TEXT_DIM),
+        );
         // The section menu and the sidebar toggle share the destination row,
         // so the sidebar has no separate header line. The toggle sits rightmost.
         let controls = div()
@@ -271,41 +313,52 @@ impl Workspace {
                 let (id, label, view) = TABS[index];
                 let selected = view == Some(self.sidebar_view);
                 row = row.child(
-                    div()
-                        .id(format!("{id}-expanded"))
-                        .debug_selector(move || format!("{id}-expanded"))
-                        .flex_1()
-                        .min_w_0()
-                        .h(px(32.0))
-                        .px_2()
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor_pointer()
-                        .bg(if selected {
-                            Theme::global().ACCENT_DIM
-                        } else {
-                            Theme::global().PANEL_BG
-                        })
-                        .text_color(if selected {
-                            Theme::global().TEXT
-                        } else {
-                            Theme::global().TEXT_DIM
-                        })
-                        .hover(|el| {
-                            el.bg(Theme::global().HEADER_BG)
-                                .text_color(Theme::global().TEXT)
-                        })
-                        .child(label)
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.activate_roller_tab(index, window, cx);
-                            }),
-                        ),
+                    crate::keyboard::tracked_button(
+                        div().id(format!("{id}-expanded")),
+                        &self.sidebar_roller.rows[index],
+                    )
+                    .debug_selector(move || format!("{id}-expanded"))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(32.0))
+                    .px_2()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(if selected {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().PANEL_BG
+                    })
+                    .text_color(if selected {
+                        Theme::global().TEXT
+                    } else {
+                        Theme::global().TEXT_DIM
+                    })
+                    .hover(|el| {
+                        el.bg(Theme::global().HEADER_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
+                    .child(label)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.activate_roller_tab(index, window, cx);
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, event, window, cx| {
+                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                            this.activate_roller_tab(index, window, cx);
+                            this.sidebar_roller.expanded = false;
+                            window.focus(this.sidebar_roller.trigger_focus.as_ref().unwrap(), cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    })),
                 );
             }
             pages = pages.child(row);
@@ -314,32 +367,34 @@ impl Workspace {
         let mut actions = div().flex().flex_wrap().gap_1();
         for (index, &(id, label, _)) in TABS.iter().enumerate().skip(6) {
             actions = actions.child(
-                div()
-                    .id(format!("{id}-expanded"))
-                    .debug_selector(move || format!("{id}-expanded"))
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .when(index == target, |el| el.bg(Theme::global().ACCENT_DIM))
-                    .hover(|el| {
-                        el.bg(Theme::global().HEADER_BG)
-                            .text_color(Theme::global().TEXT)
-                    })
-                    .child(if label == "+" { "new chat" } else { label })
-                    // Fire on click, not mouse-down: the pop-out sits over the
-                    // canvas, and closing it mid-press would hand the mouse-up
-                    // to the panel underneath, refocusing it.
-                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.sidebar_roller.expanded = false;
-                        this.activate_roller_tab(index, window, cx);
-                    })),
+                crate::keyboard::tracked_button(
+                    div().id(format!("{id}-expanded")),
+                    &self.sidebar_roller.rows[index],
+                )
+                .debug_selector(move || format!("{id}-expanded"))
+                .px_2()
+                .py_1()
+                .rounded_full()
+                .cursor_pointer()
+                .text_color(Theme::global().TEXT_DIM)
+                .when(index == target, |el| el.bg(Theme::global().ACCENT_DIM))
+                .hover(|el| {
+                    el.bg(Theme::global().HEADER_BG)
+                        .text_color(Theme::global().TEXT)
+                })
+                .child(if label == "+" { "new chat" } else { label })
+                // Fire on click, not mouse-down: the pop-out sits over the
+                // canvas, and closing it mid-press would hand the mouse-up
+                // to the panel underneath, refocusing it.
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.sidebar_roller.expanded = false;
+                    this.activate_roller_tab(index, window, cx);
+                })),
             );
         }
         div()
@@ -359,8 +414,16 @@ impl Workspace {
             .pr_2()
             .pb_2()
             // The transparent bridge must not occlude the sidebar controls below it.
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered && this.sidebar_roller.expanded {
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                if !*hovered
+                    && this.sidebar_roller.expanded
+                    && !this
+                        .sidebar_roller
+                        .menu_focus
+                        .as_ref()
+                        .unwrap()
+                        .contains_focused(window, cx)
+                {
                     this.sidebar_roller.expanded = false;
                     this.sidebar_roller.remainder = 0.0;
                     cx.notify();
@@ -370,6 +433,23 @@ impl Workspace {
             .child(
                 div()
                     .debug_selector(|| "sidebar-section-menu".into())
+                    .track_focus(self.sidebar_roller.menu_focus.as_ref().unwrap())
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.sidebar_roller.expanded = false;
+                            window.focus(this.sidebar_roller.trigger_focus.as_ref().unwrap(), cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        } else if let Some(next) = crate::keyboard::arrow_peer(
+                            event,
+                            &this.sidebar_roller.rows,
+                            window,
+                            cx,
+                        ) {
+                            window.focus(&next, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
                     .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -434,6 +514,46 @@ pub(super) fn sidebar_traffic_light_inset(fullscreen: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn keyboard_opens_sections_and_escape_returns_to_trigger(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        let trigger =
+            workspace.read_with(vcx, |w, _| w.sidebar_roller.trigger_focus.clone().unwrap());
+        vcx.update(|window, cx| {
+            let root = workspace.read(cx).focus_handle.clone();
+            window.focus(&root, cx);
+        });
+        let tab_to_trigger = |vcx: &mut gpui::VisualTestContext| {
+            (0..40).any(|_| {
+                vcx.simulate_keystrokes("tab");
+                vcx.update(|window, _| trigger.is_focused(window))
+            })
+        };
+        assert!(
+            tab_to_trigger(vcx),
+            "Tab reaches the sidebar section trigger"
+        );
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-section-menu").is_some());
+        vcx.simulate_keystrokes("down");
+        let next = workspace.read_with(vcx, |w, _| w.sidebar_roller.rows[1].clone());
+        assert!(vcx.update(|window, _| next.is_focused(window)));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-section-menu").is_none());
+        assert!(vcx.update(|window, _| trigger.is_focused(window)));
+    }
 
     #[gpui::test]
     fn hamburger_only_toggles_sidebar(cx: &mut gpui::TestAppContext) {
@@ -731,7 +851,10 @@ mod tests {
         let new = vcx.debug_bounds("sidebar-new-session-expanded").unwrap();
         vcx.simulate_click(new.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(commands.try_recv().is_err(), "a new panel creates nothing yet");
+        assert!(
+            commands.try_recv().is_err(),
+            "a new panel creates nothing yet"
+        );
         workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
         let Ok(Command::CreateSession {
             request_id: Some(request_id),
