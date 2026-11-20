@@ -31,6 +31,7 @@ pub(super) fn session() -> Session {
             covers_up_to_turn: ARCHIVED,
             original_turn_count: ARCHIVED,
             compacted_count: ARCHIVED,
+            plan_context: None,
         }
         .into(),
     );
