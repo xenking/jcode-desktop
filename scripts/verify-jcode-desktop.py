@@ -188,6 +188,10 @@ class Instance:
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         modes = ["--single-panel"]
+        if self.manifest["fixture"] == "cache-card":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
+                       JCODE_DESKTOP_SCREENSHOT_BAR="high",
+                       JCODE_DESKTOP_SCREENSHOT_CACHE_CARD="1")
         if self.manifest["fixture"] == "draft-session":
             (self.profile / "00-sample-project").mkdir()
             modes = []
@@ -984,7 +988,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--jcode-bin", type=Path)

@@ -18,3 +18,4 @@ pub mod todoist;
 #[cfg(test)]
 #[path = "global_search_tests.rs"]
 mod global_search_tests;
+pub mod prompt_cache;

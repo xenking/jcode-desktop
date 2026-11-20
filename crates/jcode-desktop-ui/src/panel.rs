@@ -107,6 +107,8 @@ mod ask;
 mod ask_images;
 #[path = "panel_background_jobs.rs"]
 mod background_jobs;
+#[path = "panel_cache_card.rs"]
+mod cache_card;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -695,6 +697,7 @@ pub struct Panel {
     /// Display-only: it feeds the composer status line, never the transcript.
     memory_activity: Option<jcode_sdk::api::MemoryActivitySnapshot>,
     response_stats: response_stats::Tracker,
+    cache_telemetry: cache_card::CacheTelemetry,
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -1542,6 +1545,7 @@ impl Panel {
             context_tokens: usage_fixture.then_some(100_000),
             memory_activity: None,
             response_stats: response_stats::Tracker::default(),
+            cache_telemetry: cache_card::CacheTelemetry::default(),
             items,
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
@@ -3883,6 +3887,7 @@ impl Panel {
             ApiEvent::TextDelta { .. }
                 | ApiEvent::ReasoningDelta { .. }
                 | ApiEvent::TokenUsage { .. }
+                | ApiEvent::RequestUsage { .. }
                 | ApiEvent::ContextOccupancy { .. }
                 | ApiEvent::ModelInfo { .. }
                 | ApiEvent::RuntimeInfo { .. }
@@ -4407,8 +4412,10 @@ impl Panel {
             ApiEvent::ContextOccupancy { prompt_tokens, .. } => {
                 self.context_tokens = Some(*prompt_tokens);
             }
+            ApiEvent::RequestUsage { .. } => self.cache_telemetry.observe(event),
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
+                    self.cache_telemetry.miss(&notice);
                     // Keep the notice in order: settle text streamed so far.
                     self.flush_reasoning();
                     self.flush_streaming();

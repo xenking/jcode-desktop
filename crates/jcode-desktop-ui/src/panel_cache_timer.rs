@@ -62,7 +62,7 @@ pub(crate) fn label(remaining_secs: u64) -> String {
 }
 
 /// `1h`, `5m`, `47m`: compact spans for the hover text.
-fn span(secs: u64) -> String {
+pub(super) fn span(secs: u64) -> String {
     if secs >= 3600 && secs.is_multiple_of(3600) {
         format!("{}h", secs / 3600)
     } else if secs >= 60 {
@@ -70,42 +70,6 @@ fn span(secs: u64) -> String {
     } else {
         format!("{}s", secs)
     }
-}
-
-fn tokens_text(tokens: Option<u64>) -> String {
-    match tokens {
-        Some(tokens) if tokens >= 1_000_000 => {
-            format!(" · {:.1}M cached tokens", tokens as f64 / 1e6)
-        }
-        Some(tokens) if tokens >= 1_000 => format!(" · {}K cached tokens", tokens / 1_000),
-        Some(tokens) => format!(" · {tokens} cached tokens"),
-        None => String::new(),
-    }
-}
-
-/// Hover copy: the window, when it was last touched and what it holds.
-pub(super) fn tooltip(facts: &CacheFacts) -> String {
-    let retention = if facts.is_estimate {
-        format!("{} retention (estimate)", span(facts.ttl_secs))
-    } else {
-        format!("{} retention", span(facts.ttl_secs))
-    };
-    let state = if facts.is_cold() {
-        format!(
-            "expired {} ago",
-            span(facts.written_ago_secs.saturating_sub(facts.ttl_secs))
-        )
-    } else {
-        format!(
-            "{} left · last cache use {} ago",
-            span(facts.remaining_secs),
-            span(facts.written_ago_secs)
-        )
-    };
-    format!(
-        "Prompt cache: {retention} · {state}{} · Estimated expiry",
-        tokens_text(facts.cached_tokens)
-    )
 }
 
 /// Build the facts from the newest cache touch. Split out from the panel so
@@ -177,8 +141,15 @@ impl Panel {
     /// The cache countdown pill (timer mark + `47m`), dimmed once the window lapses and warm when it is
     /// nearly over. A leaf view so its tick never rebuilds the composer.
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let facts = self.cache_facts()?;
-        Some(self.swarm_marks.cache_pill(facts, cx))
+        let facts = self.cache_facts();
+        let known_window = self.provider.as_deref().is_some_and(|provider| {
+            jcode_base::provider::cache_ttl_for_provider_model(provider, self.model.as_deref())
+                .is_some()
+        });
+        (known_window || self.cache_telemetry.has_requests()).then(|| {
+            self.swarm_marks
+                .cache_pill(facts, cx.entity().downgrade(), cx)
+        })
     }
 }
 
@@ -238,21 +209,23 @@ pub(super) fn tone(facts: &CacheFacts, theme: &Theme) -> gpui::Rgba {
 /// The countdown as a leaf view: one 15s tick while the window is open, none
 /// once it has lapsed, so an idle panel is not repainted for a static label.
 pub(crate) struct CachePill {
-    facts: CacheFacts,
+    facts: Option<CacheFacts>,
+    panel: gpui::WeakEntity<Panel>,
     anchor: Instant,
     tick_pending: Rc<Cell<bool>>,
 }
 
 impl CachePill {
-    pub(crate) fn new(facts: CacheFacts) -> Self {
+    pub(crate) fn new(facts: Option<CacheFacts>, panel: gpui::WeakEntity<Panel>) -> Self {
         Self {
             facts,
+            panel,
             anchor: Instant::now(),
             tick_pending: Rc::default(),
         }
     }
 
-    pub(crate) fn set(&mut self, facts: CacheFacts, cx: &mut Context<Self>) {
+    pub(crate) fn set(&mut self, facts: Option<CacheFacts>, cx: &mut Context<Self>) {
         if self.facts != facts {
             self.facts = facts;
             self.anchor = Instant::now();
@@ -261,13 +234,14 @@ impl CachePill {
     }
 
     /// Facts with the seconds that passed since they were taken subtracted.
-    fn live(&self) -> CacheFacts {
+    fn live(&self) -> Option<CacheFacts> {
+        let facts = self.facts?;
         let elapsed = self.anchor.elapsed().as_secs();
-        CacheFacts {
-            remaining_secs: self.facts.remaining_secs.saturating_sub(elapsed),
-            written_ago_secs: self.facts.written_ago_secs.saturating_add(elapsed),
-            ..self.facts
-        }
+        Some(CacheFacts {
+            remaining_secs: facts.remaining_secs.saturating_sub(elapsed),
+            written_ago_secs: facts.written_ago_secs.saturating_add(elapsed),
+            ..facts
+        })
     }
 }
 
@@ -275,7 +249,7 @@ impl Render for CachePill {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("CachePill");
         let facts = self.live();
-        if !facts.is_cold() && !self.tick_pending.replace(true) {
+        if facts.is_some_and(|facts| !facts.is_cold()) && !self.tick_pending.replace(true) {
             let pending = self.tick_pending.clone();
             let id = cx.entity_id();
             let weak = cx.entity().downgrade();
@@ -289,14 +263,16 @@ impl Render for CachePill {
             .detach();
         }
         let theme = Theme::global();
-        let hover = tooltip(&facts);
-        let ink = tone(&facts, theme);
-        let icon = if facts.is_cold() {
+        let panel = self.panel.clone();
+        let pill = cx.entity().downgrade();
+        let ink = facts.map_or(theme.TEXT_FAINT, |facts| tone(&facts, theme));
+        let icon = if facts.is_some_and(|facts| facts.is_cold()) {
             crate::swarm_glyph::Icon::Snowflake
         } else {
             crate::swarm_glyph::Icon::Timer
         };
         super::composer::composer_pill("panel-cache")
+            .relative()
             .flex_none()
             .px_2()
             .gap_1()
@@ -313,14 +289,27 @@ impl Render for CachePill {
             .child(
                 div()
                     .debug_selector(|| "panel-cache-label".into())
-                    .child(label(facts.remaining_secs)),
+                    .child(facts.map_or_else(|| "–".into(), |facts| label(facts.remaining_secs))),
             )
+            .children(crate::fixture_control_targets::marker(
+                || "hover:panel-cache".into(),
+                || {
+                    panel
+                        .upgrade()
+                        .map(|panel| panel.read(cx).session_id.clone())
+                },
+            ))
             .tooltip(move |_, cx| {
-                cx.new(|_| {
-                    super::usage::RowsTooltip::separated(
-                        "Prompt cache",
-                        hover.strip_prefix("Prompt cache: ").unwrap_or(&hover),
-                    )
+                cx.new(|cx| {
+                    if let Some(panel) = panel.upgrade() {
+                        cx.observe(&panel, |_, _, cx| cx.notify()).detach();
+                    }
+                    if let Some(pill) = pill.upgrade() {
+                        cx.observe(&pill, |_, _, cx| cx.notify()).detach();
+                    }
+                    super::cache_card::CacheTooltip {
+                        panel: panel.clone(),
+                    }
                 })
                 .into()
             })
@@ -425,18 +414,10 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_names_the_window_and_the_last_write() {
-        let warm = facts(3600, false, 0, 12 * 60_000, Some(18_200));
-        let hover = tooltip(&warm);
-        assert!(hover.contains("1h retention"), "{hover}");
-        assert!(hover.contains("48m left"), "{hover}");
-        assert!(hover.contains("last cache use 12m ago"), "{hover}");
-        assert!(hover.contains("18K cached tokens"), "{hover}");
-
-        let cold = facts(300, true, 0, 600_000, None);
-        let hover = tooltip(&cold);
-        assert!(hover.contains("5m retention (estimate)"), "{hover}");
-        assert!(hover.contains("expired 5m ago"), "{hover}");
+    fn retention_duration_formats_hours_minutes_and_seconds() {
+        assert_eq!(span(3600), "1h");
+        assert_eq!(span(300), "5m");
+        assert_eq!(span(20), "20s");
     }
 
     /// The bar shows the countdown for a provider whose retention is known,

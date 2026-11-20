@@ -80,6 +80,7 @@ pub(crate) fn marker(
 
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
+        || selector == "hover:panel-cache"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
@@ -129,6 +130,18 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
+    if selector == "hover:panel-cache" {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.refresh();
+        window.draw(cx).clear(cx);
+        return true;
+    }
     let wheel = match selector {
         "history:scroll-up" => Some((12_000., gpui::TouchPhase::Moved)),
         "scroll:tool" => Some((-12_000., gpui::TouchPhase::Started)),

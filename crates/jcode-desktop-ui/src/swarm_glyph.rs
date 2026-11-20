@@ -257,7 +257,8 @@ impl Marks {
     /// window so its countdown anchor moves with the facts.
     pub(crate) fn cache_pill<T: 'static>(
         &mut self,
-        facts: crate::panel::cache_timer::CacheFacts,
+        facts: Option<crate::panel::cache_timer::CacheFacts>,
+        panel: gpui::WeakEntity<crate::panel::Panel>,
         cx: &mut Context<T>,
     ) -> AnyElement {
         match self.cache.clone() {
@@ -266,7 +267,7 @@ impl Marks {
                 view.into_any_element()
             }
             None => {
-                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(facts));
+                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(facts, panel));
                 self.cache = Some(view.clone());
                 view.into_any_element()
             }

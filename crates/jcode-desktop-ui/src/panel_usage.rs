@@ -112,20 +112,12 @@ impl Render for ContextTooltip {
                     ),
             )
             .children(self.percent.map(|percent| {
-                div()
-                    .debug_selector(|| "context-tooltip-bar".into())
-                    .w_full()
-                    .h(px(4.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(theme.INLINE_CODE_BG)
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(percent.clamp(0., 100.) / 100.))
-                            .rounded_full()
-                            .bg(usage_color(percent, theme)),
-                    )
+                usage_bar(
+                    "context-tooltip-bar".into(),
+                    percent,
+                    usage_color(percent, theme),
+                    theme,
+                )
             }))
             .children(self.window.map(|window| {
                 div()
@@ -209,19 +201,8 @@ impl Render for LimitsTooltip {
                 .map(|(index, limit)| limit_row(index, limit, theme))
                 .collect(),
         };
-        div()
+        meter_card(theme)
             .debug_selector(|| "panel-limits-tooltip".into())
-            .px_3()
-            .py_2()
-            .min_w(px(220.))
-            .rounded_xl()
-            .bg(theme.HEADER_BG)
-            .border_1()
-            .border_color(theme.PANEL_BORDER)
-            .text_size(px(11.))
-            .flex()
-            .flex_col()
-            .gap_1p5()
             .child(
                 div()
                     .text_color(theme.TEXT)
@@ -253,9 +234,60 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
             }
         })
         .unwrap_or_else(|| "not reported".into());
-    let value_selector = format!("panel-limit-value-{index}-{value}");
+    meter_row(
+        MeterIds {
+            row: format!("panel-limit-{index}"),
+            value: format!("panel-limit-value-{index}-{value}"),
+            bar: format!("panel-limit-bar-{index}"),
+        },
+        limit.name.clone(),
+        value,
+        used.map(|used| (used, usage_color(used, theme))),
+        limit
+            .reset_in
+            .as_ref()
+            .map(|reset| format!("Resets in {reset}")),
+        theme,
+    )
+    .into_any_element()
+}
+
+pub(super) fn meter_card(theme: &Theme) -> gpui::Div {
     div()
-        .debug_selector(move || format!("panel-limit-{index}"))
+        .px_3()
+        .py_2()
+        .min_w(px(220.))
+        .rounded_xl()
+        .bg(theme.HEADER_BG)
+        .border_1()
+        .border_color(theme.PANEL_BORDER)
+        .text_size(px(11.))
+        .flex()
+        .flex_col()
+        .gap_1p5()
+}
+
+pub(super) struct MeterIds {
+    pub row: String,
+    pub value: String,
+    pub bar: String,
+}
+
+pub(super) fn meter_row(
+    ids: MeterIds,
+    name: String,
+    value: String,
+    bar: Option<(f32, gpui::Rgba)>,
+    detail: Option<String>,
+    theme: &Theme,
+) -> gpui::Div {
+    let MeterIds {
+        row,
+        value: value_selector,
+        bar: bar_selector,
+    } = ids;
+    div()
+        .debug_selector(move || row.clone())
         .flex()
         .flex_col()
         .gap_0p5()
@@ -265,35 +297,32 @@ fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElemen
                 .items_center()
                 .gap_2()
                 .text_color(theme.TEXT_DIM)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(limit.name.clone()),
-                )
+                .child(div().flex_1().min_w_0().truncate().child(name))
                 .child(
                     div()
                         .debug_selector(move || value_selector.clone())
-                        .flex_none()
+                        .min_w_0()
+                        .truncate()
                         .font_family(theme.FONT_MONO)
                         .child(value),
                 ),
         )
-        .children(used.map(|used| usage_bar(index, used, theme)))
-        .children(limit.reset_in.as_ref().map(|reset| {
-            div()
-                .text_size(px(10.))
-                .text_color(theme.TEXT_FAINT)
-                .child(format!("Resets in {reset}"))
-        }))
-        .into_any_element()
+        .children(bar.map(|(percent, ink)| usage_bar(bar_selector, percent, ink, theme)))
+        .children(detail.map(|detail| meter_detail(detail, theme)))
 }
 
-/// Shared quota bar for both the panel and sidebar limit cards.
-fn usage_bar(index: usize, used: f32, theme: &Theme) -> gpui::Div {
+pub(super) fn meter_detail(detail: String, theme: &Theme) -> gpui::Div {
     div()
-        .debug_selector(move || format!("panel-limit-bar-{index}"))
+        .truncate()
+        .text_size(px(10.))
+        .text_color(theme.TEXT_FAINT)
+        .child(detail)
+}
+
+/// Shared meter track and fill for context, quota and cache cards.
+fn usage_bar(selector: String, percent: f32, ink: gpui::Rgba, theme: &Theme) -> gpui::Div {
+    div()
+        .debug_selector(move || selector.clone())
         .w_full()
         .h(px(4.))
         .rounded_full()
@@ -302,9 +331,9 @@ fn usage_bar(index: usize, used: f32, theme: &Theme) -> gpui::Div {
         .child(
             div()
                 .h_full()
-                .w(relative(used / 100.))
+                .w(relative(percent.clamp(0., 100.) / 100.))
                 .rounded_full()
-                .bg(usage_color(used, theme)),
+                .bg(ink),
         )
 }
 

@@ -1459,8 +1459,15 @@ impl Workspace {
                 // otherwise sync on the first session-list update.
                 workspace.sync_swarm_strips(cx);
                 if let Some(slot) = workspace.slots.first() {
-                    slot.panel
-                        .update(cx, |panel, cx| panel.apply_bar_fixture(&effort, cx));
+                    slot.panel.update(cx, |panel, cx| {
+                        panel.apply_bar_fixture(&effort, cx);
+                        if crate::fixture_control_targets::enabled()
+                            && std::env::var("JCODE_DESKTOP_SCREENSHOT_CACHE_CARD").as_deref()
+                                == Ok("1")
+                        {
+                            panel.apply_cache_card_fixture(cx);
+                        }
+                    });
                 }
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {

@@ -78,8 +78,8 @@ impl Tracker {
                     *self.stats.tool_calls.get_or_insert(0) += 1;
                 }
             }
-            // The harness emits one usage event per completed model request.
-            // Sum tool rounds, never session totals or latest context occupancy.
+            // Legacy response-footer counters. Prompt cache request accounting
+            // uses RequestUsage instead, since these snapshots can repeat.
             ApiEvent::TokenUsage {
                 input,
                 output,
