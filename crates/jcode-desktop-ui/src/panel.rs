@@ -5396,18 +5396,26 @@ impl Panel {
                 percent,
                 done,
             } => {
-                // The row keeps one line while collapsed and wraps to the whole
-                // label and summary when the user opens it.
                 let key = expandable::key::task(task_id);
                 let expanded = self.expanded_regions.contains(&key);
                 let (row_summary, exit_code) = background_task::summary_parts(summary);
-                // Collapsed, the row is one line: a multi-line progress
-                // summary shows its first line, the rest when opened.
-                let row_summary = if expanded {
-                    row_summary
-                } else {
-                    row_summary.lines().next().unwrap_or_default().to_owned()
-                };
+                // One ellipsis budget, with the title ahead of progress text.
+                let mut header = label.clone();
+                let summary_start = header.len();
+                if !row_summary.is_empty() {
+                    header.push_str(" · ");
+                    header.push_str(&row_summary);
+                }
+                let summary_style = (summary_start < header.len()).then(|| {
+                    (
+                        summary_start..header.len(),
+                        gpui::HighlightStyle {
+                            color: Some(Theme::global().TEXT_FAINT.into()),
+                            ..Default::default()
+                        },
+                    )
+                });
+                let header = gpui::StyledText::new(header).with_highlights(summary_style);
                 let toggle_key = key.clone();
                 let background_task_id = task_id.clone();
                 let done_for_click = *done
@@ -5429,6 +5437,7 @@ impl Panel {
                             .gap_2()
                             .flex_none()
                             .min_w_0()
+                            .overflow_hidden()
                             .px_1()
                             .py(px(2.0))
                             .cursor_pointer()
@@ -5442,25 +5451,18 @@ impl Panel {
                             .child(crate::tool_icon::render_badge(
                                 "bg",
                                 *done,
-                                summary.to_lowercase().contains("failed"),
+                                *done
+                                    && (exit_code.is_some()
+                                        || summary.to_lowercase().contains("failed")),
                             ))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
+                                    .debug_selector(|| "background-task-title".into())
                                     .text_color(Theme::global().TOOL_TEXT)
-                                    .child(label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .when(!expanded, |el| {
-                                        el.max_w(relative(0.6)).min_w_0().truncate()
-                                    })
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(row_summary),
+                                    .child(header),
                             )
                             .when_some(exit_code, |el, code| {
                                 el.child(
@@ -5473,11 +5475,12 @@ impl Panel {
                                         .child(format!("exit {code}")),
                                 )
                             })
-                            .when_some(percent.filter(|value| value.is_finite()), |el, percent| {
+                            .when_some(percent.filter(|value| !*done && value.is_finite()), |el, percent| {
                                 el.child(
                                     div()
                                         .flex_none()
                                         .w(px(40.0))
+                                        .debug_selector(|| "background-task-progress".into())
                                         .h(px(2.0))
                                         .rounded_full()
                                         .bg(Theme::global().TOOL_BORDER)
@@ -5486,11 +5489,17 @@ impl Panel {
                                                 .h_full()
                                                 .w(relative((percent / 100.0).clamp(0.0, 1.0)))
                                                 .rounded_full()
-                                                .bg(Theme::global().ACCENT),
+                                                .bg(Theme::global().WARN),
                                         ),
                                 )
                             })
-                            .children(tool_card_token_pill(detail.as_deref().unwrap_or(""))),
+                            .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
+                            .when(crate::fixture_control_targets::background_tasks(), |el| {
+                                el.relative().children(crate::fixture_control_targets::marker(
+                                    || key.clone(),
+                                    || Some(self.session_id.clone()),
+                                ))
+                            }),
                     )
                     .when(expanded, |el| {
                         el.child(
@@ -12092,7 +12101,15 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         return vec![
             Item::User("Run the checks in the background".into()),
             Item::BackgroundTask {
-                task_id: "running".into(),
+                task_id: "rollout-plan".into(),
+                label: "Сверить установленную пару daemon и Desktop".into(),
+                summary: "100% · [8/8] verify          plan  daemon + current + bundle report the pair; bridge answers search_sessions; SUPublicEDKey set; rollback on failure".into(),
+                detail: Some("```text\n[8/8] verify          plan  daemon + current + bundle report the pair\n```".into()),
+                percent: Some(100.0),
+                done: true,
+            },
+            Item::BackgroundTask {
+                task_id: "building".into(),
                 label: "Workspace tests".into(),
                 summary: "35% · Running integration tests".into(),
                 detail: None,

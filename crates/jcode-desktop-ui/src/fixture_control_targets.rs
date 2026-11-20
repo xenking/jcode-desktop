@@ -22,6 +22,11 @@ pub(crate) fn draft_session() -> bool {
     enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
 }
 
+pub(crate) fn background_tasks() -> bool {
+    enabled()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("background-tasks")
+}
+
 struct Capture {
     selector: String,
     session: String,
@@ -81,6 +86,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || (draft_session() && (selector.starts_with("draft-model-row:")
             || matches!(selector, "composer-location" | "folder-picker-entry-0" | "folder-picker-open" | "panel-model" | "panel-model-effort" | "draft-effort-high")))
         || selector.starts_with("proof-pointer:")
+        || (background_tasks() && selector.starts_with("task:"))
         || matches!(selector, "compaction-divider" | "history:scroll-up")
         || (transcript_scroll_fixture()
             && matches!(

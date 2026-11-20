@@ -186,6 +186,41 @@ fn background_completion_opens_output_preview(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn background_header_keeps_a_single_title_budget_when_expanded(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = panel_with(cx, vec![Item::BackgroundTask {
+        task_id: "task-1".into(),
+        label: "Сверить установленную пару daemon и Desktop".into(),
+        summary: format!("35% · {}", "Very long progress details ".repeat(20)),
+        detail: Some("```text\nactual output\n```".into()),
+        percent: Some(35.0),
+        done: false,
+    }]);
+    let window = vcx.window_handle();
+    vcx.simulate_window_resize(window, gpui::size(px(530.), px(400.)));
+    vcx.run_until_parked();
+    for expanded in [false, true] {
+        let row = vcx.debug_bounds("background-task-expand").unwrap();
+        let title = vcx.debug_bounds("background-task-title").unwrap();
+        assert!(title.size.width > row.size.width / 2., "{title:?} vs {row:?} (expanded={expanded})");
+        assert!(title.right() <= row.right() && row.size.height <= px(28.), "{title:?} vs {row:?}");
+        if !expanded {
+            click(vcx, "background-task-expand");
+        }
+    }
+    assert!(vcx.debug_bounds("background-task-output").is_some());
+}
+
+#[gpui::test]
+fn background_finished_row_has_no_live_progress_bar(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = panel_with(cx, vec![Item::BackgroundTask {
+        task_id: "task-1".into(), label: "Build".into(), summary: "100% · completed".into(),
+        detail: None, percent: Some(100.0), done: true,
+    }]);
+    assert!(vcx.debug_bounds("background-task-expand").is_some());
+    assert!(vcx.debug_bounds("background-task-progress").is_none());
+}
+
+#[gpui::test]
 fn background_full_output_replaces_truncated_preview(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(cx, vec![Item::BackgroundTask {
         task_id: "task-1".into(), label: "Build".into(), summary: "✓ completed · 2s · exit 0".into(),

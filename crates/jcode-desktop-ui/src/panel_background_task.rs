@@ -16,6 +16,7 @@ pub(super) fn summary_parts(summary: &str) -> (String, Option<i32>) {
                 !part.is_empty() && *part != "exit n/a"
             }
         })
+        .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>();
     (parts.join(" · "), exit_code)
 }

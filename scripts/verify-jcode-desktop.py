@@ -356,6 +356,15 @@ class Instance:
             self.drive("click", {"selector": selector})
             expected_regions = set(before["panel"]["expanded_regions"]) ^ {call}
             expected = lambda s: set(s["panel"]["expanded_regions"]) == expected_regions and s["panel"]["composer"] == before["panel"]["composer"]
+        elif name == "background-tasks":
+            if self.manifest["fixture"] != name:
+                raise RuntimeError("relaunch with --fixture background-tasks")
+            selector = "task:rollout-plan"
+            if selector in before["panel"]["expanded_regions"]:
+                raise RuntimeError("background task must start collapsed")
+            self.drive("click", {"selector": selector})
+            expected_regions = set(before["panel"]["expanded_regions"]) | {selector}
+            expected = lambda s: set(s["panel"]["expanded_regions"]) == expected_regions and s["panel"]["composer"] == before["panel"]["composer"]
         elif name == "composer":
             self.drive("set_composer", {"text": "Verification draft, no provider request"})
             expected = lambda s: s["panel"]["composer"] == "Verification draft, no provider request"
@@ -839,7 +848,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -847,7 +856,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")
