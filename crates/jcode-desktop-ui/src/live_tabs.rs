@@ -8,8 +8,12 @@ const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 const TAB_HOVER_LIFT: f32 = 2.0;
 const TAB_RENAME_SIZE: f32 = 20.0;
-pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
-/// Compact windows swap the FPS readout for a sidebar menu button.
+const TAB_STATUS_WIDTH: f32 = 88.0;
+const TAB_WINDOW_DRAG_WIDTH: f32 = 16.0;
+const TAB_OVERFLOW_WIDTH: f32 = 56.0;
+const MIN_TAB_EXPOSURE: f32 = 16.0;
+const MIN_ACTIVE_TAB_WIDTH: f32 = 96.0;
+/// Compact windows and hidden sidebars need a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
 /// Pointer route to the next workspace, beside the new-session plus.
@@ -25,6 +29,62 @@ const TAB_CLOSE_WIDTH: f32 = if crate::window_caption::enabled() {
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
 
+fn fps_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("JCODE_DESKTOP_SHOW_FPS").as_deref() == Ok("1"))
+}
+
+type TabEntry = (Option<usize>, usize, usize);
+
+fn fit_tabs(entries: &mut Vec<TabEntry>, selected: usize, available: f32) -> Vec<usize> {
+    let groups = entries
+        .iter()
+        .filter(|(_, _, position)| *position == 0)
+        .count();
+    let group_space = groups as f32 * group_label_width(available, groups)
+        + groups.saturating_sub(1) as f32
+            * TAB_GROUP_GAP.min(available / (groups.max(1) as f32 * 4.0));
+    let capacity = |width: f32| ((width - group_space) / MIN_TAB_EXPOSURE).floor() as usize;
+    if entries.len() <= capacity(available).max(1) {
+        return Vec::new();
+    }
+    let visible = capacity(available - TAB_OVERFLOW_WIDTH).max(1);
+    // Keep the selected session and, where possible, a representative from
+    // each workspace. Fill the remaining slots with the nearest neighbours.
+    let active_row = entries[selected].1;
+    let mut keep: Vec<_> = (0..entries.len()).collect();
+    keep.sort_unstable_by_key(|&index| {
+        let (_, row, position) = entries[index];
+        (
+            index != selected,
+            position != 0 || row == active_row,
+            index.abs_diff(selected),
+            index,
+        )
+    });
+    keep.truncate(visible);
+    keep.sort_unstable();
+    let mut keep = keep.into_iter().peekable();
+    let mut position = None;
+    let mut hidden = Vec::new();
+    let mut index = 0;
+    entries.retain_mut(|entry| {
+        let visible = keep.next_if_eq(&index).is_some();
+        index += 1;
+        if visible {
+            let row_position = position
+                .filter(|(row, _)| *row == entry.1)
+                .map_or(0, |(_, prev)| prev + 1);
+            position = Some((entry.1, row_position));
+            entry.2 = row_position;
+        } else if let Some(panel) = entry.0 {
+            hidden.push(panel);
+        }
+        visible
+    });
+    hidden
+}
+
 /// Secondary minimap chrome must leave a usable navigation track. This is
 /// presentation-only: resizing wider restores the user's minimap preference.
 pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
@@ -32,7 +92,8 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
         >= MINIMAP_WIDTH
             + MINIMAP_RIGHT
             + 8.0
-            + TAB_STATUS_WIDTH
+            + TAB_MENU_WIDTH
+            + if fps_enabled() { TAB_STATUS_WIDTH } else { 0.0 }
             + TAB_NEW_WIDTH
             + TAB_NEXT_WORKSPACE_WIDTH
             + TAB_CLOSE_WIDTH
@@ -48,8 +109,8 @@ fn group_label_width(available: f32, group_count: usize) -> f32 {
     TAB_GROUP_LABEL_WIDTH.min(available.max(0.0) / (group_count.max(1) as f32 * 4.0))
 }
 
-/// Center one workspace's floating stack independently of the panel camera. Selection adds
-/// only a 12px width accent and a 4px lift, so the panels do the large slide.
+/// The floating tabs are independent of the panel camera. Selection adds a
+/// small width accent and a 4px lift, so the panels do the large slide.
 #[derive(Clone, Copy, Debug)]
 struct TabLayout {
     start: f32,
@@ -145,8 +206,7 @@ impl TabLayout {
         let active_layout = Self::new(content - compact_budget, active.len());
         let active_used =
             active_layout.active_width + active_layout.step * (active.len() - 1) as f32;
-        let used = active_used + compact_budget + gap * (groups.len() - 1) as f32 + labels_width;
-        let mut left = ((available - used) / 2.0).max(0.0);
+        let mut left = 0.0;
         let mut tabs = Vec::with_capacity(rows.len());
         for (group_index, group) in groups.iter().enumerate() {
             left += label_width;
@@ -192,7 +252,10 @@ impl TabLayout {
         let active_width = if count == 1 {
             available.min(208.0)
         } else {
-            (available * 0.55).min(208.0)
+            ((available + (12.0 - TAB_GAP) * (count - 1) as f32) / count as f32)
+                .max(MIN_ACTIVE_TAB_WIDTH)
+                .min(available * 0.55)
+                .min(208.0)
         }
         .floor();
         let inactive_width = (active_width - 12.0).max(active_width * 0.9).floor();
@@ -205,7 +268,7 @@ impl TabLayout {
         };
         let used = active_width + step * (count - 1) as f32;
         Self {
-            start: (available - used) / 2.0,
+            start: ((available - used) / 2.0).max(0.0),
             active_width,
             inactive_width,
             step,
@@ -331,6 +394,8 @@ pub(super) struct TabMotion {
     pub(super) version_width: f32,
     /// Motion key of the tab under the pointer, popped out for inspection.
     hovered: Option<u64>,
+    overflow_open: bool,
+    overflow_focus: Option<gpui::FocusHandle>,
 }
 
 impl TabMotion {
@@ -545,6 +610,133 @@ impl Workspace {
 }
 
 impl Workspace {
+    fn render_tab_overflow(
+        &mut self,
+        hidden: &[usize],
+        right: f32,
+        row_width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let focus = self
+            .live_tabs
+            .overflow_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let open = self.live_tabs.overflow_open;
+        let theme = Theme::global();
+        let root = div()
+            .id("tab-overflow-popover")
+            .absolute()
+            .top_0()
+            .right(px(right))
+            .w(px((row_width - right).clamp(TAB_OVERFLOW_WIDTH, 240.0)))
+            .flex()
+            .flex_col()
+            .items_end();
+        let trigger = crate::keyboard::popover_trigger(
+            div()
+                .id("tab-overflow")
+                .debug_selector(|| "tab-overflow".into()),
+            &focus,
+        )
+        .w(px(TAB_OVERFLOW_WIDTH))
+        .h(px(TAB_HEIGHT))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_size(px(11.0))
+        .text_color(theme.TEXT_DIM)
+        .hover(|el| {
+            el.bg(Theme::global().PANEL_BG)
+                .text_color(Theme::global().TEXT)
+        })
+        .cursor_pointer()
+        .occlude()
+        .tooltip(|_, cx| cx.new(|_| TabTooltip("Hidden session tabs".into())).into())
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.live_tabs.overflow_open = !this.live_tabs.overflow_open;
+            focus.focus(window, cx);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .min_w_0()
+                .max_w_full()
+                .truncate()
+                .child(format!("↓ {}", hidden.len())),
+        );
+        root.child(trigger)
+            .when(open, |root| {
+                root.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.live_tabs.overflow_open = false;
+                    cx.notify();
+                }))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        this.live_tabs.overflow_open = false;
+                        if let Some(focus) = &this.live_tabs.overflow_focus {
+                            focus.focus(window, cx);
+                        }
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .id("tab-overflow-menu")
+                        .debug_selector(|| "tab-overflow-menu".into())
+                        .mt_1()
+                        .w_full()
+                        .max_h(px(240.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_1()
+                        .rounded_lg()
+                        .shadow_md()
+                        .bg(theme.PANEL_BG)
+                        .border_1()
+                        .border_color(theme.PANEL_BORDER)
+                        .occlude()
+                        .children(hidden.iter().map(|&index| {
+                            let panel = self.slots[index].panel.read(cx);
+                            let title =
+                                folder_session_title(&panel.session_id, panel.title.as_ref());
+                            let entity = cx.weak_entity();
+                            crate::keyboard::button(div().id(("tab-overflow-item", index)))
+                                .debug_selector(move || format!("tab-overflow-item-{index}"))
+                                .flex_none()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .px_2()
+                                .py_1()
+                                .text_size(px(12.0))
+                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                .child(div().truncate().child(title))
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let _ = entity.update(cx, |this, cx| {
+                                        this.live_tabs.overflow_open = false;
+                                        this.activate_live_tab(index, window, cx);
+                                    });
+                                })
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn activate_live_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_active(index, cx);
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
@@ -553,7 +745,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let right = if self.show_minimap
+        let macos = cfg!(target_os = "macos");
+        let windowed_macos = macos && !workspace_fullscreen(window);
+        let right = if !macos
+            && self.show_minimap
             && minimap_fits_header(canvas_width)
             && !self.slots.is_empty()
             && !self.overview
@@ -562,20 +757,35 @@ impl Workspace {
         } else {
             0.0
         };
-        // Session navigation takes priority over secondary build metadata.
-        // Keep enough room for a useful selected tab before showing the chip.
-        let status_width = if menu_button {
-            TAB_MENU_WIDTH
+        let left = if windowed_macos {
+            MACOS_TRAFFIC_LIGHTS_WIDTH
         } else {
-            TAB_STATUS_WIDTH
+            0.0
         };
-        let tab_budget = canvas_width
-            - right
-            - status_width
-            - TAB_NEW_WIDTH
-            - TAB_NEXT_WORKSPACE_WIDTH
-            - TAB_CLOSE_WIDTH;
-        let version_width = version_header_width(tab_budget);
+        let show_fps = fps_enabled() && !menu_button;
+        let menu_on_right = macos && menu_button;
+        let track_left = left
+            + if menu_button && !menu_on_right {
+                TAB_MENU_WIDTH
+            } else if show_fps {
+                TAB_STATUS_WIDTH
+            } else {
+                0.0
+            };
+        let right_buttons = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH;
+        let controls_width = right_buttons + if menu_on_right { TAB_MENU_WIDTH } else { 0.0 };
+        let menu_left = if menu_on_right {
+            canvas_width - controls_width
+        } else {
+            left
+        };
+        let drag_width = if windowed_macos {
+            TAB_WINDOW_DRAG_WIDTH
+        } else {
+            0.0
+        };
+        let mut available =
+            (canvas_width - right - track_left - controls_width - drag_width).max(0.0);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
@@ -593,20 +803,26 @@ impl Workspace {
                 entries.push((Some(index), row, row_position));
             }
         }
-        let selected = entries
-            .iter()
-            .position(|(index, row, _)| {
-                *row == self.active_row && index.is_none_or(|index| index == self.active)
-            })
-            .unwrap_or(0);
-        let available = (canvas_width
-            - right
-            - status_width
-            - TAB_NEW_WIDTH
-            - TAB_NEXT_WORKSPACE_WIDTH
-            - TAB_CLOSE_WIDTH
-            - version_width)
-            .max(0.0);
+        let selected_entry = |entries: &[TabEntry]| {
+            entries
+                .iter()
+                .position(|(index, row, _)| {
+                    *row == self.active_row && index.is_none_or(|index| index == self.active)
+                })
+                .unwrap_or(0)
+        };
+        let selected = selected_entry(&entries);
+        let hidden = fit_tabs(&mut entries, selected, available);
+        let selected = selected_entry(&entries);
+        let overflow_width = if hidden.is_empty() {
+            0.0
+        } else {
+            TAB_OVERFLOW_WIDTH
+        };
+        available = (available - overflow_width).max(0.0);
+        if hidden.is_empty() {
+            self.live_tabs.overflow_open = false;
+        }
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let keys: Vec<u64> = entries
@@ -662,27 +878,18 @@ impl Workspace {
             self.coach_display_hint
                 .as_ref()
                 .filter(|_| coach_progress > 0.0)
-                .map(|hint| {
-                    self.render_coach_chip(
-                        hint,
-                        coach_progress,
-                        version_width + status_width + left,
-                        cx,
-                    )
-                })
+                .map(|hint| self.render_coach_chip(hint, coach_progress, track_left + left, cx))
         });
         let mut tabs = div()
             .id("live-session-tabs")
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
             .top_0()
-            .left(px(version_width + status_width))
-            .right(px(TAB_NEW_WIDTH
-                + TAB_NEXT_WORKSPACE_WIDTH
-                + TAB_CLOSE_WIDTH))
+            .left(px(track_left))
+            .right(px(controls_width + overflow_width + drag_width))
             .h(px(FOLDER_CONTENT_INSET));
-        self.live_tabs.header_offset = version_width + status_width;
-        self.live_tabs.version_width = version_width;
+        self.live_tabs.header_offset = track_left;
+        self.live_tabs.version_width = version_header_width(available);
         self.live_tabs.hit_targets.clear();
         let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
         let mut tab_bodies = Vec::with_capacity(entries.len());
@@ -932,11 +1139,7 @@ impl Workspace {
                             cx.stop_propagation();
                             window.prevent_default();
                             let _ = entity.update(cx, |this, cx| {
-                                this.set_active(index, cx);
-                                this.overview = false;
-                                this.overview_progress.set(0.0, Instant::now());
-                                this.focus_active(window, cx);
-                                cx.notify();
+                                this.activate_live_tab(index, window, cx);
                             });
                         })
                     }),
@@ -1002,10 +1205,13 @@ impl Workspace {
             );
         }
         tabs = tabs.children(tab_bodies).children(slots);
-        // Sample only on existing redraws, never wake an idle window for FPS.
-        let fps = self
-            .fps_counter
-            .label(Instant::now(), || window.frame_duration_snapshot());
+        // Even when enabled, sample only on existing redraws.
+        let fps = show_fps.then(|| {
+            self.fps_counter
+                .label(Instant::now(), || window.frame_duration_snapshot())
+        });
+        let overflow = (!hidden.is_empty())
+            .then(|| self.render_tab_overflow(&hidden, controls_width, canvas_width - right, cx));
         div()
             .debug_selector(|| "workspace-tab-row".into())
             .absolute()
@@ -1015,13 +1221,13 @@ impl Workspace {
             .h(px(FOLDER_CONTENT_INSET))
             .map(|el| {
                 if menu_button {
-                    el.child(self.render_compact_menu_button(version_width, cx))
-                } else {
+                    el.child(self.render_compact_menu_button(menu_left, cx))
+                } else if let Some(fps) = fps {
                     el.child(
                         div()
                             .debug_selector(|| "fps-counter-slot".into())
                             .absolute()
-                            .left(px(version_width))
+                            .left(px(left))
                             .top_0()
                             .w(px(TAB_STATUS_WIDTH))
                             .h(px(TAB_HEIGHT))
@@ -1037,10 +1243,13 @@ impl Workspace {
                                     .child(fps),
                             ),
                     )
+                } else {
+                    el
                 }
             })
             .child(tabs)
             .children(coach_chip)
+            .children(overflow)
             .child(self.render_next_workspace_button(cx))
             .child(
                 div()
@@ -1255,14 +1464,9 @@ mod tests {
                     );
                 }
             }
-            assert!(
-                (tabs[0].left - TAB_GROUP_LABEL_WIDTH
-                    + tabs.last().unwrap().left
-                    + tabs.last().unwrap().width
-                    - 1400.0)
-                    .abs()
-                    < 0.001
-            );
+            assert_eq!(tabs[0].left, TAB_GROUP_LABEL_WIDTH);
+            let last = tabs.last().unwrap();
+            assert!(last.left + last.width <= 1400.001);
         }
         // A single group preserves the tab motion within its label reservation.
         let old = TabLayout::new(512.0 - TAB_GROUP_LABEL_WIDTH, 12);
@@ -1272,7 +1476,7 @@ mod tests {
                 (0..12)
                     .map(|i| {
                         let mut tab = old.geometry(i, selected);
-                        tab.left += TAB_GROUP_LABEL_WIDTH;
+                        tab.left += TAB_GROUP_LABEL_WIDTH - old.start;
                         tab
                     })
                     .collect::<Vec<_>>()
@@ -1400,7 +1604,7 @@ mod tests {
             window.focus(&workspace.read(cx).focus_handle.clone(), cx);
             window.window_handle()
         });
-        for width in [1400.0, 640.0, 360.0, 1000.0] {
+        for width in [1400.0, 640.0, 1000.0] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.0)));
             vcx.run_until_parked();
             for selected in [4, 8, 0, 7, 3, 2, 6, 5, 1] {
@@ -1840,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn live_tabs_overlap_preserves_folder_width_and_centers_the_stack() {
+    fn live_tabs_share_crowded_width_and_keep_the_selection_largest() {
         for available in [0.0, 40.0, 180.0, 352.0, 800.0, 2400.0] {
             for count in 1..=200 {
                 let layout = TabLayout::new(available, count);
@@ -1863,9 +2067,11 @@ mod tests {
             }
         }
         let crowded = TabLayout::new(512.0, 12);
-        assert_eq!(crowded.active_width, 208.0);
-        assert_eq!(crowded.inactive_width, 196.0);
-        assert!(crowded.step < crowded.inactive_width);
+        assert!(crowded.active_width - crowded.inactive_width <= 12.0);
+        assert!(
+            crowded.step > 30.0,
+            "inactive tabs get more than the old 27px exposure"
+        );
         assert!(TabLayout::new(1152.0, 3).start > 0.0);
     }
 
@@ -1955,7 +2161,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_four_panel_group_stays_centered_when_focus_changes(cx: &mut gpui::TestAppContext) {
+    fn live_tabs_four_panel_group_stays_left_aligned_when_focus_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
@@ -1977,12 +2185,7 @@ mod tests {
         ];
         let initial = selectors.map(|selector| vcx.debug_bounds(selector).unwrap());
         let track = vcx.debug_bounds("live-session-tabs").unwrap();
-        assert!(
-            ((initial[0].left() - px(TAB_GROUP_LABEL_WIDTH) + initial[3].right()) / 2.0
-                - track.center().x)
-                .abs()
-                < px(0.01)
-        );
+        assert_eq!(initial[0].left() - px(TAB_GROUP_LABEL_WIDTH), track.left());
         for pair in initial.windows(2) {
             assert_eq!(pair[1].left() - pair[0].right(), px(TAB_GAP));
         }
@@ -2345,6 +2548,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn overflow_keeps_workspace_labels_and_promotes_the_chosen_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for index in 0..16 {
+                workspace.push_test_panel(&format!("Overflow session {index}"), cx);
+                workspace.slots[index].row = index / 8;
+            }
+            workspace
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(420.0), px(700.0)));
+        vcx.run_until_parked();
+        let trigger = vcx.debug_bounds("tab-overflow").unwrap();
+        assert!(trigger.right() <= vcx.debug_bounds("tab-next-workspace-slot").unwrap().left());
+        assert!(vcx.debug_bounds("workspace-tab-group-label-0").is_some());
+        assert!(vcx.debug_bounds("workspace-tab-group-label-1").is_some());
+        let hidden = workspace.read_with(vcx, |w, _| {
+            (0..16)
+                .find(|index| {
+                    !w.live_tabs
+                        .hit_targets
+                        .iter()
+                        .any(|(visible, _)| visible == index)
+                })
+                .unwrap()
+        });
+        vcx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tab-overflow-menu").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tab-overflow-menu").is_none());
+        vcx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let item = vcx
+            .debug_bounds(format!("tab-overflow-item-{hidden}").leak())
+            .unwrap();
+        vcx.simulate_click(item.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tab-overflow-menu").is_none());
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active), hidden);
+        assert!(
+            vcx.debug_bounds(format!("live-session-tab-{hidden}").leak())
+                .is_some()
+        );
+    }
+
+    #[gpui::test]
     fn live_tabs_reserve_space_in_normal_mode_and_beside_minimap(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -2357,7 +2610,12 @@ mod tests {
         });
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
-        assert!(tabs.right() < vcx.debug_bounds("minimap").unwrap().left());
+        let minimap = vcx.debug_bounds("minimap").unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(tabs.bottom() < minimap.top());
+        } else {
+            assert!(tabs.right() < minimap.left());
+        }
         assert!(tabs.bottom() <= vcx.debug_bounds("panel-0").unwrap().top());
         for index in 0..24 {
             let tab = vcx

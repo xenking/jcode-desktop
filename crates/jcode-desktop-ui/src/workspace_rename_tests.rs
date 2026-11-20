@@ -267,16 +267,12 @@ fn rename_button_stays_clickable_without_squeezing_compact_tabs(cx: &mut gpui::T
         vcx.run_until_parked();
         hover_selected_tab(vcx);
         let button = vcx.debug_bounds("rename-session-button");
-        let fps = vcx
-            .debug_bounds("fps-counter")
-            .or_else(|| vcx.debug_bounds("compact-sidebar-toggle"))
-            .unwrap();
         let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
         assert!(tabs.size.width > px(0.0), "width={width}");
         if let Some(button) = button {
             let tab = vcx.debug_bounds("live-session-tab-0").unwrap();
             assert!(button.left() >= tab.left() && button.right() <= tab.right());
-            assert!(button.left() >= fps.right());
+            assert!(button.left() >= tabs.left() && button.right() <= tabs.right());
             click(vcx, "rename-session-button");
         } else {
             // Tiny exposed tabs keep their label and use the keyboard action.

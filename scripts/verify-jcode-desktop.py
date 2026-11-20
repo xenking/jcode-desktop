@@ -208,6 +208,16 @@ class Instance:
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="orb-todos",
                        JCODE_DESKTOP_CONTROL_TODO_SESSION=session)
             modes = []
+        if self.manifest["fixture"] == "tabbar":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
+                       JCODE_DESKTOP_SCREENSHOT_PANELS="12",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES=(
+                           "Release checklist,Build and validate,API integration,Desktop navigation,"
+                           "Layout review,Runtime diagnostics,Provider configuration,Session recovery,"
+                           "Tool output,Workspace settings,Regression tests,Follow-up"))
+            if self.manifest.get("fullscreen_layout"):
+                env["JCODE_DESKTOP_SCREENSHOT_FULLSCREEN"] = "1"
+            modes = []
         if self.manifest["fixture"] == "tab-statuses":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES="1",
@@ -255,7 +265,10 @@ class Instance:
                         # The async bridge can update after the hidden window's first frame.
                         self.screenshot("compaction-initial.png")
                         state = self.native({"action": "state", "target": self.target})
-                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker", "draft-session", "background-jobs"):
+                    fixture = self.manifest["fixture"]
+                    if (state["panel"].get("visible_transcript_items")
+                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs")
+                            or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
                         save(self.run / "run.json", self.manifest)
@@ -889,6 +902,8 @@ def supervise(run):
 
 def launch(args):
     require_safe_host()
+    if args.fullscreen_layout and args.fixture != "tabbar":
+        raise RuntimeError("--fullscreen-layout requires --fixture tabbar")
     if args.fixture == "background-jobs" and not all(
         path and path.is_file() and os.access(path, os.X_OK) for path in (args.jcode_bin, args.bridge_bin)
     ):
@@ -928,6 +943,7 @@ def launch(args):
                 "supervisor_socket": str(scratch / "supervisor.sock"), "token": secrets.token_hex(32),
                 "binary": str(binary), "binary_sha256": digest(binary), "version": version,
                 "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
+                "fullscreen_layout": args.fullscreen_layout,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
                 "lifetime_seconds": args.lifetime,
@@ -968,7 +984,9 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs"), default="expandable")
+            child.add_argument("--fullscreen-layout", action="store_true",
+                               help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--jcode-bin", type=Path)
             child.add_argument("--bridge-bin", type=Path)
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",

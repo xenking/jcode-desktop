@@ -336,9 +336,9 @@ avatar and no extra text.
 
 ## FPS counter
 
-The FPS readout sits on the left of the session tab row, with a **+** button on
-the right to open a new session. No separate header takes space above the tabs.
-It samples the presentation intervals of actual animation frames
+The session tab row does not show FPS by default. Launch Desktop with
+`JCODE_DESKTOP_SHOW_FPS=1` to enable the readout in a wide window with the sidebar
+visible. It samples the presentation intervals of actual animation frames
 at most four times per second. Deliberate idle gaps do not count as slow frames:
 `FPS · idle` means no new animated frames were presented in the last sample.
 Sampling only happens on existing redraws, so the counter never creates an idle

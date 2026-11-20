@@ -560,11 +560,7 @@ mod tests {
         assert!(menu.right() <= toggle.left(), "hamburger sits rightmost");
         let row = vcx.debug_bounds("machine-destination-switcher").unwrap();
         let sidebar = vcx.debug_bounds("sidebar").unwrap();
-        assert_eq!(
-            row.top(),
-            sidebar.top() + px(sidebar_traffic_light_inset(false)),
-            "no separate header line"
-        );
+        assert_eq!(row.top(), sidebar.top(), "no separate header line");
         assert!(toggle.top() >= row.top() && toggle.bottom() <= row.bottom());
         let directory = vcx.debug_bounds("default-directory-button").unwrap();
         assert!(directory.right() <= menu.left());

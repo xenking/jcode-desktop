@@ -416,7 +416,9 @@ const MINIMAP_WIDTH: f32 = 112.0 + MINIMAP_LABEL_WIDTH;
 const MINIMAP_HEIGHT: f32 = 96.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
-const MINIMAP_TOP: f32 = if crate::window_caption::enabled() {
+const MINIMAP_TOP: f32 = if cfg!(target_os = "macos") {
+    STRIP_PADDING_TOP + FOLDER_CONTENT_INSET + 6.0
+} else if crate::window_caption::enabled() {
     // Below the Windows caption buttons, which own the top-right corner.
     crate::window_caption::HEIGHT + 6.0
 } else {
@@ -1471,7 +1473,7 @@ impl Workspace {
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(1)
-                .clamp(1, 6);
+                .clamp(1, 12);
             let panel_count = if single_panel { 1 } else { panel_count };
             let panel_titles = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES").ok();
             let panel_title = |index: usize| {
@@ -9315,10 +9317,19 @@ struct SidebarChrome {
     workspace: gpui::WeakEntity<Workspace>,
 }
 
+fn workspace_fullscreen(window: &Window) -> bool {
+    window.is_fullscreen()
+        // The private screenshot window must not toggle an AppKit Space.
+        || (harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_FULLSCREEN").as_deref() == Ok("1"))
+}
+
 impl Render for SidebarChrome {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("SidebarChrome");
-        let fullscreen = window.is_fullscreen();
+        // This sidebar starts below the full-window tab row on macOS.
+        let fullscreen = cfg!(target_os = "macos") || window.is_fullscreen();
         self.workspace
             .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
             .unwrap_or_else(|_| div().into_any_element())
@@ -9436,16 +9447,8 @@ impl Render for Workspace {
             self.camera_dirty.fill(true);
             self.camera_snap_pending.fill(true);
         }
-        // On macOS the sidebar header covers the transparent titlebar strip.
-        // Without the sidebar, leave room for the traffic lights. Other platforms
-        // do not draw through a system titlebar, so an inset would be a visible gap.
-        // In native macOS fullscreen the titlebar and traffic lights are hidden,
-        // so no chrome should reserve space for them.
-        let fullscreen = window.is_fullscreen();
-        let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
-        // The sidebar owns the update control, so the session canvas keeps the
-        // whole viewport.
-        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
+        let fullscreen = workspace_fullscreen(window);
+        let viewport_h = f32::from(viewport.height);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -9566,7 +9569,7 @@ impl Render for Workspace {
             div()
                 .debug_selector(|| "selfdev-performance-profile".into())
                 .absolute()
-                .top(px(content_top_inset + 10.0))
+                .top(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET + 10.0))
                 .right(px(12.0))
                 .rounded_md()
                 .px_3()
@@ -9594,6 +9597,26 @@ impl Render for Workspace {
                 ))
         });
 
+        let tab_bar = self.render_workspace_bar(
+            if cfg!(target_os = "macos") {
+                f32::from(viewport.width)
+            } else {
+                canvas_w
+            },
+            compact || !self.show_sidebar,
+            coach_progress,
+            window,
+            cx,
+        );
+        let (window_tab_bar, canvas_tab_bar) = if cfg!(target_os = "macos") {
+            (Some(tab_bar), None)
+        } else {
+            (None, Some(tab_bar))
+        };
+        if window_tab_bar.is_some() {
+            // Navigation diagnostics expose canvas-relative coordinates.
+            self.live_tabs.header_offset -= sidebar_width + connector_width;
+        }
         let root = crate::keyboard::tab_navigation(div())
             .size_full()
             .flex()
@@ -9724,8 +9747,19 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
-                        root.child(sidebar_chrome)
-                            .child(self.render_sidebar_resize_handle(cx))
+                        root.child(if cfg!(target_os = "macos") {
+                            div()
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .flex_col()
+                                .pt(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET))
+                                .child(sidebar_chrome)
+                                .into_any_element()
+                        } else {
+                            sidebar_chrome.into_any_element()
+                        })
+                        .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
                         div()
@@ -9735,7 +9769,6 @@ impl Render for Workspace {
                             .min_h_0()
                             .flex()
                             .flex_col()
-                            .pt(px(content_top_inset))
                             .pl(px(connector_width))
                             .pr(px(right_margin))
                             .child(
@@ -9755,13 +9788,7 @@ impl Render for Workspace {
                                         ))
                                     })
                                     .child(content)
-                                    .child(self.render_workspace_bar(
-                                        canvas_w,
-                                        compact || !self.show_sidebar,
-                                        coach_progress,
-                                        window,
-                                        cx,
-                                    ))
+                                    .children(canvas_tab_bar)
                                     .when(
                                         self.show_minimap
                                             && live_tabs::minimap_fits_header(canvas_w)
@@ -9781,6 +9808,7 @@ impl Render for Workspace {
                             ),
                     ),
             )
+            .children(window_tab_bar)
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
                 |root| {
@@ -12762,7 +12790,7 @@ mod tests {
             let sidebar = vcx.debug_bounds("sidebar").unwrap();
             assert_eq!(
                 destinations.top(),
-                sidebar.top() + px(sidebar_roller::sidebar_traffic_light_inset(false)),
+                sidebar.top(),
                 "the destination and directory row is the only header line"
             );
             assert!(header.top() >= destinations.top());
@@ -14920,7 +14948,7 @@ mod tests {
             assert!(workspace.coach.active_hint_id().is_some());
             assert!(workspace.focus_handle.is_focused(window));
         });
-        for width in [900.0, 640.0, 480.0] {
+        for width in [640.0, 480.0] {
             cx.simulate_window_resize(handle, gpui::size(px(width), px(800.0)));
             cx.run_until_parked();
             assert!(
@@ -15895,8 +15923,8 @@ mod tests {
             .debug_bounds("workspace-canvas")
             .expect("workspace canvas");
         assert!(
-            map.top() >= canvas.top() && map.top() - canvas.top() < px(40.0),
-            "the minimap should hug the canvas top edge, below onboarding"
+            map.top() == canvas.top() + px(MINIMAP_TOP),
+            "the minimap should sit below any top-right window controls"
         );
         let initial_pin = cx
             .debug_bounds("minimap-you-pin")

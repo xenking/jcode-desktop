@@ -31,7 +31,11 @@ impl Workspace {
             .id("sidebar-resize-handle")
             .debug_selector(|| "sidebar-resize-handle".into())
             .absolute()
-            .top_0()
+            .top(px(if cfg!(target_os = "macos") {
+                STRIP_PADDING_TOP + FOLDER_CONTENT_INSET
+            } else {
+                0.0
+            }))
             .bottom_0()
             .left(px(self.sidebar_custom_width - 4.0))
             .w(px(8.0))
@@ -67,8 +71,7 @@ impl Workspace {
                     if event.dragging() {
                         this.sidebar_custom_width = f32::from(event.position.x).clamp(
                             180.0,
-                            (f32::from(window.viewport_size().width) * 0.4)
-                                .clamp(180.0, 480.0),
+                            (f32::from(window.viewport_size().width) * 0.4).clamp(180.0, 480.0),
                         );
                     } else {
                         this.sidebar_resizing = false;
@@ -115,9 +118,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The only compact sidebar affordance: a pill in the tab row where the
-    /// FPS readout normally sits. Workspaces stay reachable through the
-    /// numbered tab groups, so no extra column is spent on them.
+    /// Keep sidebar access in compact windows without adding another column.
     pub(super) fn render_compact_menu_button(
         &self,
         left: f32,

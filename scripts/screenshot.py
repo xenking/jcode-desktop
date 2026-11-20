@@ -464,6 +464,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.fps_header_interact:
+            env["JCODE_DESKTOP_SHOW_FPS"] = "1"
         if args.release_status:
             env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
         if args.update_clicked:
