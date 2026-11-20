@@ -650,6 +650,9 @@ pub struct Panel {
     pub reasoning_effort: Option<String>,
     skills: Vec<(String, String)>,
     active_skill: Option<String>,
+    pinned_modes: Vec<String>,
+    mode_multiselect: bool,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
     /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
@@ -1022,7 +1025,8 @@ impl Panel {
             }
             _ if self.activity_active() => MinimapSessionState::Working,
             _ if self.tab_dependency_waiting
-                || self.agent_activity() == crate::swarm_view::Activity::WaitingOnWorkers => {
+                || self.agent_activity() == crate::swarm_view::Activity::WaitingOnWorkers =>
+            {
                 return Some(TabRing::waiting());
             }
             _ if self.finished_unseen => MinimapSessionState::Complete,
@@ -1032,14 +1036,28 @@ impl Panel {
     }
 
     fn has_live_wait_tool(&self) -> bool {
-        self.items.iter().rev().take_while(|item| !matches!(item, Item::User(_))).any(|item| {
-            let Item::Tool { name, input, done: false, .. } = item else { return false; };
-            matches!(name.as_str(), "bg" | "swarm")
-                && serde_json::from_str::<serde_json::Value>(input).is_ok_and(|input| {
-                    matches!((name.as_str(), input["action"].as_str()),
-                        ("bg", Some("wait")) | ("swarm", Some("await_members")))
-                })
-        })
+        self.items
+            .iter()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .any(|item| {
+                let Item::Tool {
+                    name,
+                    input,
+                    done: false,
+                    ..
+                } = item
+                else {
+                    return false;
+                };
+                matches!(name.as_str(), "bg" | "swarm")
+                    && serde_json::from_str::<serde_json::Value>(input).is_ok_and(|input| {
+                        matches!(
+                            (name.as_str(), input["action"].as_str()),
+                            ("bg", Some("wait")) | ("swarm", Some("await_members"))
+                        )
+                    })
+            })
     }
 
     pub(crate) fn tab_outline(&self) -> gpui::AnyView {
@@ -1376,6 +1394,12 @@ impl Panel {
                 }
             });
         }
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mode-picker") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| panel.seed_mode_picker_fixture(cx));
+            });
+        }
         if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
             let panel = cx.weak_entity();
             cx.defer(move |cx| {
@@ -1410,6 +1434,9 @@ impl Panel {
             reasoning_effort: usage_fixture.then(|| "high".into()),
             skills: Vec::new(),
             active_skill: None,
+            pinned_modes: Vec::new(),
+            mode_multiselect: false,
+            mode_catalog: Default::default(),
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
@@ -3051,15 +3078,18 @@ impl Panel {
             let placeholder = match kind {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
-                PickerKind::Mode => "Search modes…",
+                PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {
                     panel.update(app, |panel, cx| {
-                        if content.starts_with("/model ")
-                            || content.starts_with("/effort ")
-                            || content.starts_with("/mode ")
-                        {
+                        if kind == PickerKind::Mode {
+                            if content.starts_with("/mode toggle ") || content == "/mode off" {
+                                panel.handle_runtime_command(&content, cx);
+                            }
+                            return;
+                        }
+                        if content.starts_with("/model ") || content.starts_with("/effort ") {
                             panel.handle_slash_command(&content, cx);
                         }
                         panel.picker_search = None;
@@ -3758,8 +3788,20 @@ impl Panel {
                     return;
                 }
                 if *command == jcode_sdk::api::RuntimeCommand::Mode {
-                    self.active_skill = data["pinned_skill"].as_str().map(str::to_owned);
+                    self.mode_multiselect = data["pinned_skills"].is_array();
+                    self.pinned_modes = crate::mode_catalog::pinned_names(data, "pinned_skill");
+                    // A modern daemon already applied these modes to its session.
+                    // Do not send its compatibility primary back as a legacy replacement.
+                    self.active_skill = if self.mode_multiselect {
+                        None
+                    } else {
+                        self.pinned_modes.first().cloned()
+                    };
                     self.sync_mode_menu(cx);
+                    if message.is_empty() {
+                        cx.notify();
+                        return;
+                    }
                 }
                 if *command == jcode_sdk::api::RuntimeCommand::Skills {
                     let skills = data["skills"]
@@ -3773,13 +3815,35 @@ impl Panel {
                             ))
                         })
                         .collect::<Vec<_>>();
-                    self.skills = skills.clone();
-                    if self.active_skill.is_none() {
-                        self.active_skill = data["active_skill"].as_str().map(str::to_owned);
+                    self.skills = skills;
+                    self.mode_catalog = data["skills"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|skill| {
+                            Some((
+                                skill["name"].as_str()?.to_owned(),
+                                crate::mode_catalog::ModeMetadata {
+                                    mode: skill["mode"].as_bool(),
+                                    icon: skill["icon"].as_str().map(str::to_owned),
+                                },
+                            ))
+                        })
+                        .collect();
+                    let multiselect = data["pinned_skills"].is_array();
+                    if multiselect
+                        && !self.mode_multiselect
+                        && self.active_skill == self.pinned_modes.first().cloned()
+                    {
+                        self.active_skill = None;
+                    }
+                    self.mode_multiselect = multiselect;
+                    self.pinned_modes = crate::mode_catalog::pinned_names(data, "active_skill");
+                    if !multiselect && self.active_skill.is_none() {
+                        self.active_skill = self.pinned_modes.first().cloned();
                     }
                     self.sync_mode_menu(cx);
-                    self.input
-                        .update(cx, |input, cx| input.set_skills(skills, cx));
+                    cx.notify();
                     if message.is_empty() {
                         return;
                     }
@@ -8645,11 +8709,14 @@ mod tests {
     #[gpui::test]
     fn tab_waits_for_parked_work_and_live_questions(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
             workspace.push_test_panel("waiting-tab", cx);
             workspace
         });
-        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
         panel.update(vcx, |panel, cx| {
             use super::tab_outline::TabMode;
             let mode = |panel: &Panel| panel.tab_ring().map(|ring| ring.mode);
@@ -12115,7 +12182,12 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-streaming") {
         return tool_streaming::fixture_items();
     }
-    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("empty" | "compaction")) {
+    if crate::harness::screenshot_mode()
+        && matches!(
+            fixture.as_deref(),
+            Some("empty" | "compaction" | "mode-picker")
+        )
+    {
         return Vec::new();
     }
     if !crate::harness::screenshot_mode()

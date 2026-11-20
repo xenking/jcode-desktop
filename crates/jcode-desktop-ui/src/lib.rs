@@ -32,6 +32,7 @@ mod live_profile;
 mod markdown;
 mod markdown_inline_code;
 pub mod memory;
+mod mode_catalog;
 mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;

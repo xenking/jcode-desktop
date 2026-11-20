@@ -228,6 +228,8 @@ impl Panel {
             "model": self.model,
             "provider": self.provider,
             "reasoning_effort": self.reasoning_effort,
+            "active_modes": self.mode_names(),
+            "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),
             "composer": self.input.read(cx).snapshot().content,
             "loaded_transcript_items": &*self.items,
             "visible_transcript_items": visible,

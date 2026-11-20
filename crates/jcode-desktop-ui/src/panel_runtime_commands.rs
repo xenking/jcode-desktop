@@ -36,7 +36,7 @@ fn parse_runtime_command(content: &str) -> Option<(RuntimeCommand, Vec<String>)>
 
 impl Panel {
     pub(super) fn handle_runtime_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
-        let Some((command, args)) = parse_runtime_command(content) else {
+        let Some((command, mut args)) = parse_runtime_command(content) else {
             return false;
         };
         if self.is_side_document() || self.preview_state.is_some() {
@@ -44,6 +44,17 @@ impl Panel {
                 "Runtime commands require a live session.".into(),
             ));
         } else {
+            if command == RuntimeCommand::Mode
+                && !self.mode_multiselect
+                && let [toggle, name] = args.as_slice()
+                && toggle == "toggle"
+            {
+                args = vec![if self.mode_names().contains(name) {
+                    "off".into()
+                } else {
+                    name.clone()
+                }];
+            }
             self.bridge.send(Command::RuntimeCommand {
                 session_id: self.session_id.clone(),
                 command,

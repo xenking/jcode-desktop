@@ -244,7 +244,7 @@ class Instance:
                         # The async bridge can update after the hidden window's first frame.
                         self.screenshot("compaction-initial.png")
                         state = self.native({"action": "state", "target": self.target})
-                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] == "empty":
+                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker"):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
                         save(self.run / "run.json", self.manifest)
@@ -327,6 +327,8 @@ class Instance:
             return self.compaction_journey()
         if name == "tab-statuses":
             return self.tab_status_journey()
+        if name == "mode-picker":
+            return self.mode_picker_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -367,6 +369,37 @@ class Instance:
         save(self.run / f"{name}-after.json", after)
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
+        save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def mode_picker_journey(self):
+        if self.manifest["fixture"] != "mode-picker":
+            raise RuntimeError("journey requires the mode-picker fixture")
+        name = "mode-picker"
+        expected = ["selfdev", "swarm", "poteto-mode"]
+        frames = {}
+        for stage, text in [("before", "Verification draft"), ("after", "/mode"),
+                            ("filtered", "/mode quiet"), ("closed", "Verification draft")]:
+            self.drive("set_composer", {"text": text})
+            state = self.drive("state")
+            if state["panel"]["composer"] != text or state["panel"]["active_modes"] != expected:
+                raise RuntimeError(f"mode-picker fixture or composer mismatch at {stage}")
+            rows = state["panel"]["mode_rows"]
+            names = {"before": [], "after": [*expected, "quiet", "verify-jcode", "write-guide", "off"],
+                     "filtered": ["quiet"], "closed": []}
+            if [row["name"] for row in rows] != names[stage]:
+                raise RuntimeError(f"mode-picker rows mismatch at {stage}")
+            if stage == "after" and ([row["name"] for row in rows if row["active"]] != expected
+                                     or [row["section"] for row in rows if row["section"]] != ["Active", "Modes", "Skills", "Actions"]
+                                     or rows[3]["icon"] != "☾" or not all(row["icon"] for row in rows)):
+                raise RuntimeError("mode-picker active marks, sections or icons mismatch")
+            save(self.run / f"{name}-{stage}.json", state)
+            frames[stage] = self.screenshot(f"{name}-{stage}.png")
+        hashes = {stage: frame["sha256"] for stage, frame in frames.items()}
+        if len({hashes[stage] for stage in ("before", "after", "filtered")}) != 3 or hashes["before"] != hashes["closed"]:
+            raise RuntimeError("mode picker did not visually open, filter and close")
+        report = {"journey": name, "passed": True, "active_modes": expected, "frames": frames,
+                  "scope": "native menu and chips with seeded runtime response; no backend mutations"}
         save(self.run / f"{name}-proof.json", report)
         return report
 
@@ -649,7 +682,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -657,7 +690,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

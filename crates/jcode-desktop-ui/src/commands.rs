@@ -156,7 +156,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/skills",
         "Show loaded skills and jcode-endorsed recommendations",
     ),
-    RegisteredCommand::public("/mode", "Show or set the session skill mode"),
+    RegisteredCommand::public("/mode", "Toggle the skills pinned as session modes"),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),
     RegisteredCommand::public("/applets", "Open the applet component showcase"),

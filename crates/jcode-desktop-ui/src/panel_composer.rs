@@ -213,13 +213,11 @@ impl Panel {
                             }))
                     }))
                     .children(self.mode_label().map(|mode| {
-                        let hover = format!(
-                            "Session mode: {}",
-                            self.active_skill.as_deref().unwrap_or(&mode)
-                        );
+                        let hover = format!("Active modes: {}", self.mode_names().join(", "));
                         composer_pill("panel-mode")
                             .flex_shrink(3.)
-                            .min_w(px(32.))
+                            .min_w_0()
+                            .max_w(relative(0.4))
                             .child(div().min_w_0().truncate().child(mode))
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {

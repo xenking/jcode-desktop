@@ -239,8 +239,8 @@ pub struct PromptInput {
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
-    /// The session's pinned skill, marked in the `/mode` menu.
-    current_mode: Option<String>,
+    current_modes: Vec<String>,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
     /// Level picked on a model row with the effort keys, sent with the
     /// switch. Cleared when the model menu closes.
     picker_effort: Option<String>,
@@ -442,35 +442,54 @@ fn command_suggestions_with_efforts(
         .collect()
 }
 
-/// The `/mode` menu: Off, then every loaded skill, the current one marked.
-/// Pinning a skill makes it the session's mode until switched off.
 fn mode_suggestions(
     input: &str,
     skills: &[(String, String)],
-    current: Option<&str>,
+    active: &[String],
+    catalog: &crate::mode_catalog::ModeCatalog,
 ) -> Vec<CommandSuggestion> {
     let query = input
         .strip_prefix("/mode")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    let row = |name: &str, help: &str| CommandSuggestion {
-        value: format!("/mode {name}"),
-        help: help.to_string(),
-        detail: (current.unwrap_or("off") == name).then(|| "Current".into()),
-        header: None,
-        toggle: None,
-        action: None,
+    let mut rows = Vec::new();
+    let mut group = None;
+    let mut push = |section: &'static str, name: &str, help: &str| {
+        if !name.to_ascii_lowercase().contains(&query) {
+            return;
+        }
+        let header = (group.replace(section) != Some(section)).then(|| section.into());
+        rows.push(CommandSuggestion {
+            value: format!("/mode {name}"),
+            help: help.to_owned(),
+            detail: None,
+            header,
+            toggle: None,
+            action: None,
+        });
     };
-    std::iter::once(row("off", "No pinned skill"))
-        .chain(skills.iter().map(|(name, help)| row(name, help)))
-        .filter(|row| {
-            query.is_empty()
-                || row.value["/mode ".len()..]
-                    .to_ascii_lowercase()
-                    .contains(&query)
-        })
-        .collect()
+    for name in active {
+        let help = skills
+            .iter()
+            .find(|(skill, _)| skill == name)
+            .map_or("Pinned in this session", |(_, help)| help);
+        push("Active", name, help);
+    }
+    for (section, modes) in [("Modes", true), ("Skills", false)] {
+        for (name, help) in skills {
+            if name != "off"
+                && !active.contains(name)
+                && crate::mode_catalog::is_mode(name, catalog.get(name)) == modes
+            {
+                push(section, name, help);
+            }
+        }
+    }
+    if !active.is_empty() {
+        push("Actions", "off", "Clear all active modes");
+    }
+    rows
 }
 
 fn accepted_command_submission(
@@ -748,7 +767,8 @@ pub(crate) struct PickerSettings {
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
     skills: Vec<(String, String)>,
-    current_mode: Option<String>,
+    current_modes: Vec<String>,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
 }
 
 impl PromptInput {
@@ -777,7 +797,8 @@ impl PromptInput {
             effort_ladder: self.effort_ladder.clone(),
             current_effort: self.current_effort.clone(),
             skills: self.command_skills.clone(),
-            current_mode: self.current_mode.clone(),
+            current_modes: self.current_modes.clone(),
+            mode_catalog: self.mode_catalog.clone(),
         }
     }
 
@@ -792,7 +813,8 @@ impl PromptInput {
         self.effort_ladder = settings.effort_ladder;
         self.current_effort = settings.current_effort;
         self.command_skills = settings.skills;
-        self.current_mode = settings.current_mode;
+        self.current_modes = settings.current_modes;
+        self.mode_catalog = settings.mode_catalog;
         self.suggestions_revision += 1;
         cx.notify();
     }
@@ -1043,7 +1065,8 @@ impl PromptInput {
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
-            current_mode: None,
+            current_modes: Vec::new(),
+            mode_catalog: Default::default(),
             picker_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
@@ -1393,6 +1416,13 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.attachments.is_empty()
+            && self.accepted_command.as_ref() != Some(&self.content)
+            && let Some(name) = self.selected_mode_name()
+        {
+            self.toggle_mode_row(&name, window, cx);
+            return;
+        }
         if self.complete_slash_command(cx) {
             return;
         }
@@ -1740,7 +1770,12 @@ impl PromptInput {
         );
         let trimmed = command_content.trim_start();
         if !trimmed.contains('\n') && (trimmed == "/mode" || trimmed.starts_with("/mode ")) {
-            return mode_suggestions(trimmed, &self.command_skills, self.current_mode.as_deref());
+            return mode_suggestions(
+                trimmed,
+                &self.command_skills,
+                &self.current_modes,
+                &self.mode_catalog,
+            );
         }
         let mut suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
@@ -1858,6 +1893,23 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_prefix == Some("/mode") {
+            if let Some(close) = &self.on_overlay_cancel {
+                close(cx);
+            }
+            return;
+        }
+        if self.accepted_command.as_ref() != Some(&self.content)
+            && self.attachments.is_empty()
+            && self.content.trim_start().split_whitespace().next() == Some("/mode")
+            && !self.content.contains('\n')
+        {
+            self.set_content(String::new(), cx);
+            if let Some(on_change) = &self.on_change {
+                on_change(&self.content, cx);
+            }
+            return;
+        }
         self.submit_prompt(false, window, cx);
     }
 
@@ -2772,7 +2824,7 @@ impl PromptInput {
         self.picker_effort = None;
         self.suggestions_revision += 1;
         self.set_content(String::new(), cx);
-        if (prefix == "/effort" || prefix == "/mode")
+        if prefix == "/effort"
             && let Some(index) = self
                 .command_suggestions()
                 .iter()
@@ -3014,13 +3066,62 @@ impl PromptInput {
             .map(|row| row.value.clone())
     }
 
-    /// The session's pinned skill, for the `/mode` menu's Current mark.
-    pub(crate) fn set_current_mode(&mut self, mode: Option<String>, cx: &mut Context<Self>) {
-        if self.current_mode != mode {
-            self.current_mode = mode;
-            self.suggestions_revision += 1;
-            cx.notify();
+    pub(crate) fn set_current_modes(
+        &mut self,
+        modes: Vec<String>,
+        catalog: crate::mode_catalog::ModeCatalog,
+        cx: &mut Context<Self>,
+    ) {
+        if self.current_modes == modes && self.mode_catalog == catalog {
+            return;
         }
+        let selected = self.selected_mode_name();
+        self.current_modes = modes;
+        self.mode_catalog = catalog;
+        self.suggestions_revision += 1;
+        if let Some(index) = selected.and_then(|name| {
+            self.command_suggestions()
+                .iter()
+                .position(|row| row.value.strip_prefix("/mode ") == Some(&name))
+        }) {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn mode_rows_for_control(&self) -> Vec<serde_json::Value> {
+        if self.accepted_command.as_ref() == Some(&self.content) {
+            return Vec::new();
+        }
+        self.command_suggestions()
+            .iter()
+            .filter_map(|row| {
+                let name = row.value.strip_prefix("/mode ")?;
+                Some(serde_json::json!({
+                    "name": name, "section": row.header,
+                    "active": self.current_modes.iter().any(|active| active == name),
+                    "icon": crate::mode_catalog::icon(name, self.mode_catalog.get(name)),
+                }))
+            })
+            .collect()
+    }
+
+    fn selected_mode_name(&self) -> Option<String> {
+        self.command_suggestions()
+            .get(self.command_selection)?
+            .value
+            .strip_prefix("/mode ")
+            .map(str::to_owned)
+    }
+
+    fn toggle_mode_row(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let command = if name == "off" {
+            "/mode off".to_owned()
+        } else {
+            format!("/mode toggle {name}")
+        };
+        (self.on_submit)(command, Vec::new(), Vec::new(), false, window, cx);
     }
 
     fn on_mouse_down(
@@ -4003,7 +4104,7 @@ impl Render for PromptInput {
         let command_visible = self.command_completion
             && self.accepted_command.as_ref() != Some(&self.content)
             && (!suggestions.is_empty()
-                || self.picker_prefix == Some("/model")
+                || matches!(self.picker_prefix, Some("/model" | "/mode"))
                 || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
@@ -4110,7 +4211,13 @@ impl Render for PromptInput {
                                                         .py_2()
                                                         .text_size(px(12.0))
                                                         .text_color(Theme::global().TEXT_FAINT)
-                                                        .child("No models match"),
+                                                        .child(
+                                                            if self.picker_prefix == Some("/mode") {
+                                                                "No modes or skills match"
+                                                            } else {
+                                                                "No models match"
+                                                            },
+                                                        ),
                                                 )
                                             })
                                             .when(!suggestions.is_empty(), |el| {
@@ -4155,20 +4262,24 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::right))
             // Inside the model menu the effort keys set the highlighted
             // row's level instead of the running session's.
-            .capture_action(cx.listener(|this, _: &crate::effort::IncreaseEffort, _, cx| {
-                if this.step_picker_effort(1, cx) {
-                    cx.stop_propagation();
-                } else {
-                    cx.propagate();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &crate::effort::DecreaseEffort, _, cx| {
-                if this.step_picker_effort(-1, cx) {
-                    cx.stop_propagation();
-                } else {
-                    cx.propagate();
-                }
-            }))
+            .capture_action(
+                cx.listener(|this, _: &crate::effort::IncreaseEffort, _, cx| {
+                    if this.step_picker_effort(1, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &crate::effort::DecreaseEffort, _, cx| {
+                    if this.step_picker_effort(-1, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
@@ -4309,7 +4420,11 @@ impl Render for PromptInput {
                                                             .map(|image| image.preview.clone()),
                                                     },
                                                     image_chip_numbers[*index].map_or_else(
-                                                        || crate::image_chip::label(&attachment.label),
+                                                        || {
+                                                            crate::image_chip::label(
+                                                                &attachment.label,
+                                                            )
+                                                        },
                                                         crate::image_chip::numbered_label,
                                                     ),
                                                     "composer-image-chip",

@@ -344,6 +344,12 @@ impl PromptInput {
             Theme::global().TEXT_DIM
         };
         let model = suggestion.value.strip_prefix("/model ");
+        let mode = suggestion.value.strip_prefix("/mode ");
+        let active_mode =
+            mode.is_some_and(|name| self.current_modes.iter().any(|active| active == name));
+        let mode_icon = mode
+            .map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)).to_owned());
+        let mode_target = mode.map(str::to_owned);
         let logo_svg = |provider: &str, fallback: &str, size: f32, color: gpui::Rgba| {
             match crate::accounts::logo(provider) {
                 Some(bytes) => gpui::svg()
@@ -436,7 +442,16 @@ impl PromptInput {
             // Effort rows keep the level name beside the drawn mark: a
             // picker has no hover to hide it in.
             (None, Some(effort)) => effort_row_label(effort),
-            _ => suggestion.value.clone(),
+            _ => mode.map_or_else(
+                || suggestion.value.clone(),
+                |name| {
+                    if name == "off" {
+                        "Clear all".into()
+                    } else {
+                        name.into()
+                    }
+                },
+            ),
         };
         div()
             .w_full()
@@ -489,6 +504,11 @@ impl PromptInput {
                             .gap_3()
                             .children(logo)
                             .children(effort_mark)
+                            .children(
+                                mode_icon.map(|icon| {
+                                    div().w(px(18.0)).flex_none().truncate().child(icon)
+                                }),
+                            )
                             .font_family(if model.is_some() || stage_row {
                                 Theme::global().FONT_UI
                             } else {
@@ -545,7 +565,12 @@ impl PromptInput {
                             .w(px(14.0))
                             .flex_none()
                             .text_color(ink)
-                            .when(selected, |marker| {
+                            .when(active_mode, |marker| {
+                                marker
+                                    .debug_selector(move || format!("mode-picker-active-{index}"))
+                                    .child("✓")
+                            })
+                            .when(mode.is_none() && selected, |marker| {
                                 marker
                                     .debug_selector(|| "slash-command-selected".into())
                                     .child("✓")
@@ -556,6 +581,11 @@ impl PromptInput {
                         cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             window.focus(&this.focus_handle, cx);
+                            if let Some(name) = &mode_target {
+                                this.command_selection = index;
+                                this.toggle_mode_row(name, window, cx);
+                                return;
+                            }
                             if let Some(key) = suggestion.toggle.clone() {
                                 this.toggle_model_group(key, cx);
                                 return;
