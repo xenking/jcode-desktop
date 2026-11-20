@@ -592,14 +592,29 @@ mod tests {
         let composer = vcx.update(|window, cx| window.focused(cx));
         vcx.simulate_keystrokes("tab");
         assert_ne!(vcx.update(|window, cx| window.focused(cx)), composer);
-        // The microphone sits beside the composer, then model and effort.
-        vcx.simulate_keystrokes("tab tab");
-        let trigger = vcx.update(|window, cx| window.focused(cx)).expect("effort focus");
-        assert_eq!(trigger, panel.read_with(vcx, |p, _| p.picker_triggers[PickerKind::Effort as usize].clone()));
+        let trigger = panel.read_with(vcx, |p, _| {
+            p.picker_triggers[PickerKind::Effort as usize].clone()
+        });
+        for _ in 0..24 {
+            if vcx.update(|window, _| trigger.is_focused(window)) {
+                break;
+            }
+            vcx.simulate_keystrokes("tab");
+        }
+        assert!(
+            vcx.update(|window, _| trigger.is_focused(window)),
+            "Tab never reached effort"
+        );
         vcx.simulate_keystrokes("enter");
-        vcx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("enter").unwrap() });
+        vcx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
         vcx.run_until_parked();
-        assert!(panel.read_with(vcx, |p, _| p.picker_search.as_ref().is_some_and(|(kind, _)| *kind == PickerKind::Effort)));
+        assert!(panel.read_with(vcx, |p, _| {
+            p.picker_search
+                .as_ref()
+                .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+        }));
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("picker-search").is_none());

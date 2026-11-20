@@ -96,6 +96,8 @@ pub(crate) struct AskCard {
     pub cursor_question: usize,
     pub cursor_option: usize,
     comment_open: Vec<Vec<bool>>,
+    tab_focus: Vec<gpui::FocusHandle>,
+    option_focus: Vec<Vec<gpui::FocusHandle>>,
     confirming_decline: bool,
     pub voice_target: Option<(usize, Option<usize>)>,
     pub submitting: bool,
@@ -122,6 +124,8 @@ impl AskCard {
             other: vec![None; n],
             other_inputs: Vec::new(),
             comment_inputs: Vec::new(),
+            tab_focus: Vec::new(),
+            option_focus: Vec::new(),
             cursor_question: 0,
             cursor_option: 0,
             confirming_decline: false,
@@ -492,8 +496,7 @@ impl Panel {
         let theme = Theme::global();
         let active = self.voice_active()
             && self.ask_card.as_ref().and_then(|card| card.voice_target) == Some((q, option));
-        div()
-            .id(("ask-voice", q * 16 + option.map_or(0, |o| o + 1)))
+        crate::keyboard::button(div().id(("ask-voice", q * 16 + option.map_or(0, |o| o + 1))))
             .debug_selector(move || format!("ask-voice-{q}-{}", option.map_or(0, |o| o + 1)))
             .relative()
             .size(px(28.))
@@ -557,8 +560,8 @@ impl Panel {
         let Some(card) = self.ask_card.as_ref() else {
             return false;
         };
-        if card.submitting {
-            return true;
+        if event.keystroke.key == "tab" || card.submitting {
+            return false;
         }
         let editing = card
             .other_inputs
@@ -571,7 +574,7 @@ impl Panel {
             cx.notify();
             return true;
         }
-        if editing && key != "tab" && !(key == "enter" && !event.keystroke.modifiers.shift) {
+        if editing && !(key == "enter" && !event.keystroke.modifiers.shift) {
             return false;
         }
         if !editing
@@ -617,15 +620,6 @@ impl Panel {
             }
             "down" | "j" if count > 0 => card.cursor_option = (card.cursor_option + 1) % count,
             "space" if count > 0 => card.toggle(q, card.cursor_option.min(count - 1)),
-            "tab" => {
-                let next = if event.keystroke.modifiers.shift {
-                    q.saturating_sub(1)
-                } else {
-                    q + 1
-                };
-                card.switch_tab(next);
-                window.focus(&self.focus_handle, cx);
-            }
             "n" if count > 0 => {
                 let o = card.cursor_option.min(count - 1);
                 card.open_comment(q, o);
@@ -769,6 +763,12 @@ impl Panel {
         if let Some(card) = self.ask_card.as_mut() {
             card.other_inputs = other_inputs;
             card.comment_inputs = comment_inputs;
+            card.tab_focus = (0..card.tab_count()).map(|_| cx.focus_handle()).collect();
+            card.option_focus = card
+                .questions
+                .iter()
+                .map(|q| (0..q.options.len()).map(|_| cx.focus_handle()).collect())
+                .collect();
         }
     }
 
@@ -874,9 +874,35 @@ impl Panel {
                 None => "Review".to_owned(),
             };
             let label_selector = format!("ask-tab-label-{label}");
+            let button = div().id(("ask-tab", q));
+            let button = if let Some(focus) = card.tab_focus.get(q) {
+                crate::keyboard::tracked_button(button, focus)
+            } else {
+                crate::keyboard::button(button)
+            };
             tabs = tabs.child(
-                div()
-                    .id(("ask-tab", q))
+                button
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if event.keystroke.modifiers != gpui::Modifiers::default() {
+                                return;
+                            }
+                            let Some(card) = this.ask_card.as_mut() else {
+                                return;
+                            };
+                            let next = match event.keystroke.key.as_str() {
+                                "left" => (q + card.tab_count() - 1) % card.tab_count(),
+                                "right" => (q + 1) % card.tab_count(),
+                                _ => return,
+                            };
+                            card.switch_tab(next);
+                            if let Some(handle) = card.tab_focus.get(next) {
+                                window.focus(handle, cx);
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        },
+                    ))
                     .debug_selector(move || format!("ask-tab-{q}"))
                     .min_w_0()
                     .max_w_full()
@@ -898,10 +924,13 @@ impl Panel {
                             .truncate()
                             .child(label),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(cx.listener(move |this, event, window, cx| {
+                        cx.stop_propagation();
                         if let Some(card) = this.ask_card.as_mut() {
                             card.switch_tab(q);
-                            window.focus(&this.focus_handle, cx);
+                            if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                window.focus(&this.focus_handle, cx);
+                            }
                             cx.notify();
                         }
                     })),
@@ -978,8 +1007,29 @@ impl Panel {
                         )
                     });
                 let has_comment = !card.comments[q][o].trim().is_empty();
-                let row = div()
-                    .id(("ask-option-row", q * 16 + o))
+                let row = div().id(("ask-option-row", q * 16 + o));
+                let row = if let Some(focus) = card.option_focus.get(q).and_then(|rows| rows.get(o))
+                {
+                    crate::keyboard::tracked_button(row, focus)
+                } else {
+                    crate::keyboard::button(row)
+                };
+                let row = row
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            let Some(card) = this.ask_card.as_mut() else {
+                                return;
+                            };
+                            let Some(rows) = card.option_focus.get(q) else {
+                                return;
+                            };
+                            if let Some(next) = crate::keyboard::arrow_peer(event, rows, window, cx)
+                            {
+                                window.focus(&next, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
                     .items_start()
                     .flex()
                     .gap_2()
@@ -1020,8 +1070,7 @@ impl Panel {
                             }),
                     )
                     .child(
-                        div()
-                            .id(("ask-comment-button", q * 16 + o))
+                        crate::keyboard::button(div().id(("ask-comment-button", q * 16 + o)))
                             .debug_selector(move || format!("ask-comment-button-{q}-{o}"))
                             .flex_none()
                             .size(px(26.))
@@ -1038,19 +1087,14 @@ impl Panel {
                                 theme.INPUT_BORDER
                             })
                             .hover(|el| el.bg(theme.ACCENT_DIM))
-                            .tooltip(|_, cx| {
-                                cx.new(|_| AskActionTooltip("Comment")).into()
-                            })
-                            .child(
-                                gpui::svg()
-                                    .data(COMMENT_ICON)
-                                    .size(px(14.))
-                                    .text_color(if has_comment {
-                                        theme.ACCENT
-                                    } else {
-                                        theme.TEXT
-                                    }),
-                            )
+                            .tooltip(|_, cx| cx.new(|_| AskActionTooltip("Comment")).into())
+                            .child(gpui::svg().data(COMMENT_ICON).size(px(14.)).text_color(
+                                if has_comment {
+                                    theme.ACCENT
+                                } else {
+                                    theme.TEXT
+                                },
+                            ))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(card) = this.ask_card.as_mut() {
                                     card.cursor_option = o;
@@ -1066,12 +1110,15 @@ impl Panel {
                                 }
                             })),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(cx.listener(move |this, event, window, cx| {
+                        cx.stop_propagation();
                         if let Some(card) = this.ask_card.as_mut() {
                             card.cursor_question = q;
                             card.cursor_option = o;
                             card.toggle(q, o);
-                            window.focus(&this.focus_handle, cx);
+                            if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                window.focus(&this.focus_handle, cx);
+                            }
                             cx.notify();
                         }
                     }));
@@ -1196,8 +1243,7 @@ impl Panel {
                     .gap_2()
                     .justify_end()
                     .child(
-                        div()
-                            .id("ask-decline")
+                        crate::keyboard::button(div().id("ask-decline"))
                             .debug_selector(|| "ask-decline".into())
                             .px_3()
                             .py_1()
@@ -1213,21 +1259,17 @@ impl Panel {
                     .child(
                         div()
                             .id("ask-submit")
+                            .when(complete || !last_tab, crate::keyboard::button)
                             .debug_selector(|| "ask-submit".into())
                             .px_3()
                             .py_1()
                             .rounded_full()
-                            .when(
-                                complete || !last_tab,
-                                |el| {
-                                    el.cursor_pointer()
-                                        .bg(theme.ACCENT_DIM)
-                                        .text_color(theme.TEXT)
-                                },
-                            )
-                            .when(!complete && last_tab, |el| {
-                                el.text_color(theme.TEXT_FAINT)
+                            .when(complete || !last_tab, |el| {
+                                el.cursor_pointer()
+                                    .bg(theme.ACCENT_DIM)
+                                    .text_color(theme.TEXT)
                             })
+                            .when(!complete && last_tab, |el| el.text_color(theme.TEXT_FAINT))
                             .child(if card.submitting {
                                 "Sending…"
                             } else if !last_tab {
@@ -1495,23 +1537,19 @@ mod tests {
         vcx.simulate_keystrokes("right");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("ask-question-1").is_some());
-        vcx.simulate_keystrokes("shift-tab");
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("ask-question-0").is_some());
-        vcx.simulate_keystrokes("tab");
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("ask-question-1").is_some());
-        vcx.simulate_keystrokes("n");
+        vcx.simulate_keystrokes("left right n");
         vcx.run_until_parked();
         vcx.simulate_input("second comment");
         vcx.simulate_keystrokes("shift-tab");
         vcx.run_until_parked();
         assert!(
-            vcx.debug_bounds("ask-question-0").is_some(),
-            "shift-tab from an editor must switch tabs"
+            vcx.debug_bounds("ask-question-1").is_some(),
+            "Tab navigates controls without switching questions"
         );
-        vcx.simulate_keystrokes("tab");
-        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
         vcx.simulate_keystrokes("1 left");
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
@@ -1822,7 +1860,7 @@ mod tests {
         let event: jcode_sdk::ApiEvent = serde_json::from_value(value).unwrap();
         panel.update(vcx, |panel, cx| panel.apply(&event, cx));
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("j k up space tab j space enter");
+        vcx.simulate_keystrokes("j k up space right j space enter");
         vcx.run_until_parked();
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();

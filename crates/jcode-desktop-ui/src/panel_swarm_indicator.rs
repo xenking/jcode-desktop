@@ -234,43 +234,46 @@ impl Panel {
                 ))
         });
         Some(
-            crate::keyboard::popover_trigger(super::composer::composer_pill("composer-workers"), &self.swarm_trigger_focus)
-                .flex_none()
-                .px_2()
-                .gap_1()
-                .when(open, |el| {
-                    el.bg(theme.chip_active_background()).text_color(theme.TEXT)
+            crate::keyboard::popover_trigger(
+                super::composer::composer_pill("composer-workers"),
+                &self.swarm_trigger_focus,
+            )
+            .flex_none()
+            .px_2()
+            .gap_1()
+            .when(open, |el| {
+                el.bg(theme.chip_active_background()).text_color(theme.TEXT)
+            })
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::usage::RowsTooltip {
+                    title: "Workers".into(),
+                    rows: tooltip.lines().map(str::to_owned).collect(),
                 })
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::usage::RowsTooltip {
-                        title: "Workers".into(),
-                        rows: tooltip.lines().map(str::to_owned).collect(),
-                    })
-                    .into()
-                })
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    if this.swarm_list_open {
-                        let focus = this.swarm_list_focus.clone();
-                        this.dismiss_composer_popover(&focus, true, window, cx);
-                    } else {
-                        if this.picker_search.take().is_some() {
-                            this.model_picker_open = false;
-                        }
-                        this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
-                        this.swarm_list_open = true;
-                        window.focus(&this.swarm_list_focus, cx);
+                .into()
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                if this.swarm_list_open {
+                    let focus = this.swarm_list_focus.clone();
+                    this.dismiss_composer_popover(&focus, true, window, cx);
+                } else {
+                    if this.picker_search.take().is_some() {
+                        this.model_picker_open = false;
                     }
-                    cx.notify();
-                }))
-                .children(crate::fixture_control_targets::marker(
-                    || "swarm-status".into(),
-                    || Some(self.session_id.clone()),
-                ))
-                .child(cluster)
-                .children(count)
-                .children(wait)
-                .into_any_element(),
+                    this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
+                    this.swarm_list_open = true;
+                    window.focus(&this.swarm_list_focus, cx);
+                }
+                cx.notify();
+            }))
+            .children(crate::fixture_control_targets::marker(
+                || "swarm-status".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .child(cluster)
+            .children(count)
+            .children(wait)
+            .into_any_element(),
         )
     }
 
@@ -284,6 +287,10 @@ impl Panel {
         let extra = indicator.workers.len().saturating_sub(MAX_ROWS);
         let owner = cx.weak_entity();
         let focus = self.swarm_list_focus.clone();
+        let count = indicator.workers.len().min(MAX_ROWS);
+        self.swarm_picker_rows
+            .resize_with(count, || cx.focus_handle());
+        let row_focus = self.swarm_picker_rows.clone();
         let rows = indicator
             .workers
             .iter()
@@ -324,117 +331,125 @@ impl Panel {
                 );
                 let tokens = worker.tokens_text();
                 let cost = worker.cost_text();
-                div()
-                    .id(("swarm-list-worker", index))
-                    .debug_selector(move || format!("swarm-list-worker-{index}"))
-                    .min_h(px(20.0))
-                    .when(expanded, |el| el.items_start().flex_wrap())
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.USER_BG))
-                    .text_size(px(11.0))
-                    .text_color(theme.TEXT_DIM)
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| {
-                            super::usage::RowsTooltip::separated(
-                                tooltip_name.clone(),
-                                tooltip
-                                    .strip_prefix(&format!("{} · ", tooltip_name))
-                                    .unwrap_or(&tooltip),
-                            )
-                        })
-                        .into()
+                crate::keyboard::tracked_button(
+                    div().id(("swarm-list-worker", index)),
+                    &row_focus[index],
+                )
+                .debug_selector(move || format!("swarm-list-worker-{index}"))
+                .min_h(px(20.0))
+                .when(expanded, |el| el.items_start().flex_wrap())
+                .px_2()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.USER_BG))
+                .text_size(px(11.0))
+                .text_color(theme.TEXT_DIM)
+                .tooltip(move |_, cx| {
+                    cx.new(|_| {
+                        super::usage::RowsTooltip::separated(
+                            tooltip_name.clone(),
+                            tooltip
+                                .strip_prefix(&format!("{} · ", tooltip_name))
+                                .unwrap_or(&tooltip),
+                        )
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.swarm_list_open = false;
-                        cx.emit(OpenSwarmWorker(id.clone()));
-                        cx.notify();
-                    }))
-                    .children(crate::fixture_control_targets::marker(
-                        || format!("status-worker:{}", worker.session_id),
-                        || Some(self.session_id.clone()),
+                    .into()
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.swarm_list_open = false;
+                    cx.emit(OpenSwarmWorker(id.clone()));
+                    cx.notify();
+                }))
+                .children(crate::fixture_control_targets::marker(
+                    || format!("status-worker:{}", worker.session_id),
+                    || Some(self.session_id.clone()),
+                ))
+                .child(div().flex_none().size(px(11.0)).children(mark))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.5))
+                        .children(worker.icon.map(|icon| icon.to_owned())),
+                )
+                .children(worker.label.clone().map(|label| {
+                    div()
+                        .min_w_0()
+                        .when(!expanded, |el| el.truncate())
+                        .when(expanded, |el| el.max_w_full())
+                        .text_color(theme.TEXT_FAINT)
+                        .child(label)
+                }))
+                .when(label_truncated, |el| {
+                    let key = toggle_key.clone();
+                    el.child(expandable::glyph_toggle(
+                        format!("swarm-list-worker-expand-{index}").into(),
+                        expanded,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            expandable::flip(&mut this.expanded_regions, &key);
+                            this.transcript_measurements.dirty = true;
+                            cx.notify();
+                        }),
                     ))
-                    .child(div().flex_none().size(px(11.0)).children(mark))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.5))
-                            .children(worker.icon.map(|icon| icon.to_owned())),
-                    )
-                    .children(worker.label.clone().map(|label| {
-                        div()
-                            .min_w_0()
-                            .when(!expanded, |el| el.truncate())
-                            .when(expanded, |el| el.max_w_full())
-                            .text_color(theme.TEXT_FAINT)
-                            .child(label)
-                    }))
-                    .when(label_truncated, |el| {
-                        let key = toggle_key.clone();
-                        el.child(expandable::glyph_toggle(
-                            format!("swarm-list-worker-expand-{index}").into(),
-                            expanded,
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                expandable::flip(&mut this.expanded_regions, &key);
-                                this.transcript_measurements.dirty = true;
-                                cx.notify();
-                            }),
-                        ))
-                    })
-                    .child(div().flex_1())
-                    .children(model.map(|model| {
-                        div()
-                            .debug_selector(move || format!("swarm-list-model-{index}"))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(3.0))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(provider)
-                            .child(model)
-                            // Same circle as the composer pill, right after the
-                            // model it applies to.
-                            .children(effort.map(|effort| {
-                                div()
-                                    .debug_selector(move || format!("swarm-list-effort-{index}"))
-                                    .flex_none()
-                                    // A drawn rung in its own heat tint.
-                                    .child(effort)
-                            }))
-                    }))
-                    .children(tokens.map(|tokens| {
-                        div()
-                            .debug_selector(move || format!("swarm-list-tokens-{index}"))
-                            .flex_none()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(tokens)
-                    }))
-                    .children(cost.map(|cost| {
-                        div()
-                            .debug_selector(move || format!("swarm-list-cost-{index}"))
-                            .flex_none()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(cost)
-                    }))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("swarm-list-state-{index}"))
-                            .flex_none()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(worker.status_text()),
-                    )
+                })
+                .child(div().flex_1())
+                .children(model.map(|model| {
+                    div()
+                        .debug_selector(move || format!("swarm-list-model-{index}"))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .text_color(theme.TEXT_FAINT)
+                        .child(provider)
+                        .child(model)
+                        // Same circle as the composer pill, right after the
+                        // model it applies to.
+                        .children(effort.map(|effort| {
+                            div()
+                                .debug_selector(move || format!("swarm-list-effort-{index}"))
+                                .flex_none()
+                                // A drawn rung in its own heat tint.
+                                .child(effort)
+                        }))
+                }))
+                .children(tokens.map(|tokens| {
+                    div()
+                        .debug_selector(move || format!("swarm-list-tokens-{index}"))
+                        .flex_none()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(tokens)
+                }))
+                .children(cost.map(|cost| {
+                    div()
+                        .debug_selector(move || format!("swarm-list-cost-{index}"))
+                        .flex_none()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(cost)
+                }))
+                .child(
+                    div()
+                        .debug_selector(move || format!("swarm-list-state-{index}"))
+                        .flex_none()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(worker.status_text()),
+                )
             })
             .collect::<Vec<_>>();
         Some(
             div()
                 .debug_selector(|| "swarm-list".into())
                 .track_focus(&self.swarm_list_focus)
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    if let Some(next) = crate::keyboard::arrow_peer(event, &row_focus, window, cx) {
+                        window.focus(&next, cx);
+                        cx.stop_propagation();
+                    }
+                })
                 .relative()
                 .w_full()
                 .min_w_0()

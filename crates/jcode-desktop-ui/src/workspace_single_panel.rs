@@ -147,7 +147,7 @@ impl Workspace {
         });
         let back = self.active != 0;
         let inset = content_top_inset(false, window.is_fullscreen());
-        let root = div()
+        let root = crate::keyboard::tab_navigation(div())
             .debug_selector(|| "single-panel-root".into())
             .size_full()
             .relative()
@@ -191,8 +191,7 @@ impl Workspace {
             .on_action(cx.listener(Self::close_change_review))
             .when(back, |root| {
                 root.child(
-                    div()
-                        .id("single-panel-back")
+                    crate::keyboard::button(div().id("single-panel-back"))
                         .debug_selector(|| "single-panel-back".into())
                         .flex_none()
                         .px_3()

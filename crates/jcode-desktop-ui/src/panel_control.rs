@@ -229,6 +229,15 @@ impl Panel {
                 "viewport_height": f32::from(self.transcript_list.viewport_bounds().size.height),
             })
         });
+        let picker_name = |kind| match kind {
+            PickerKind::Model => "model",
+            PickerKind::Effort => "effort",
+            PickerKind::Mode => "mode",
+        };
+        let picker_trigger_focus = [PickerKind::Model, PickerKind::Effort, PickerKind::Mode]
+            .into_iter()
+            .find(|kind| self.picker_triggers[*kind as usize].is_focused(window))
+            .map(picker_name);
         serde_json::json!({
             "scroll_fixture": scroll_fixture,
             "session_id": self.session_id,
@@ -242,7 +251,11 @@ impl Panel {
             "reasoning_effort": self.reasoning_effort,
             "active_modes": self.mode_names(),
             "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),
+            "picker": self.picker_search.as_ref().map(|(kind, _)| picker_name(*kind)),
             "composer": self.input.read(cx).snapshot().content,
+            "composer_focus": self.input.read(cx).focus_handle.is_focused(window),
+            "picker_trigger_focus": picker_trigger_focus,
+            "swarm_trigger_focus": self.swarm_trigger_focus.is_focused(window),
             "loaded_transcript_items": &*self.items,
             "visible_transcript_items": visible,
             "streaming_text": self.streaming_text,

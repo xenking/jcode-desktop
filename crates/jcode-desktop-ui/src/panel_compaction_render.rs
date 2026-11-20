@@ -109,7 +109,7 @@ impl super::Panel {
         // element stateful, so erase it before wrapping it in the column.
         let line = if row.has_detail() {
             let entity = cx.entity().downgrade();
-            line.id((selector, index))
+            crate::keyboard::button(line.id((selector, index)))
                 .cursor_pointer()
                 .on_click(move |_, _, cx| {
                     let _ = entity.update(cx, |panel, cx| {
@@ -142,7 +142,7 @@ impl super::Panel {
         self.toggle_transcript_divider(index, Divider::Compaction)
     }
 
-    pub(crate) fn toggle_transcript_divider(&mut self, index: usize, kind: Divider) -> bool {
+    pub(super) fn toggle_transcript_divider(&mut self, index: usize, kind: Divider) -> bool {
         // `items` derefs mutably, which bumps the transcript revision, so the
         // cached transcript documents are rebuilt after a toggle.
         let row = match kind {

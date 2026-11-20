@@ -96,9 +96,11 @@ impl Open {
         Self {
             prompt,
             card: match item {
-                Item::Tool { call_id, name, .. } => regions.contains(call_id) ^ {
-                    name == "agentgrep" && crate::config::display().show_agentgrep_output
-                },
+                Item::Tool { call_id, name, .. } => {
+                    regions.contains(call_id) ^ {
+                        name == "agentgrep" && crate::config::display().show_agentgrep_output
+                    }
+                }
                 _ => false,
             },
             notice: regions.contains(&key::notice(index)),
@@ -193,8 +195,7 @@ pub(crate) fn toggle(
 ) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     let selector = id.clone();
-    div()
-        .id(id)
+    crate::keyboard::button(div().id(id))
         .debug_selector(move || selector.to_string())
         .flex_none()
         .px_2()
@@ -218,8 +219,7 @@ pub(crate) fn glyph_toggle(
 ) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     let selector = id.clone();
-    div()
-        .id(id)
+    crate::keyboard::button(div().id(id))
         .debug_selector(move || selector.to_string())
         .flex_none()
         .flex()
@@ -296,9 +296,7 @@ mod tests {
     fn expanded_body_paints_a_page_and_keeps_the_rest_for_copy() {
         let short = "a\nb";
         assert_eq!(expanded_body(short), ("a\nb".to_string(), 0));
-        let long: String = (0..MAX_LINES + 7)
-            .map(|n| format!("line {n}\n"))
-            .collect();
+        let long: String = (0..MAX_LINES + 7).map(|n| format!("line {n}\n")).collect();
         let (body, hidden) = expanded_body(&long);
         assert_eq!(hidden, 7);
         assert_eq!(body.lines().count(), MAX_LINES);
@@ -367,10 +365,13 @@ mod tests {
             error: None,
         };
         let mut regions = HashSet::new();
-        assert_eq!(Open::for_row(&regions, &tool, 4, true), Open {
-            prompt: true,
-            ..Open::default()
-        });
+        assert_eq!(
+            Open::for_row(&regions, &tool, 4, true),
+            Open {
+                prompt: true,
+                ..Open::default()
+            }
+        );
         regions.insert("call".into());
         let open = Open::for_row(&regions, &tool, 4, false);
         assert!(open.card);

@@ -61,6 +61,45 @@ pub(super) fn handle_window_request(
             )
         };
     }
+    if let DesktopAction::PressKey {
+        target,
+        key,
+        allow_user_window,
+    } = &request.action
+        && let Some(key) = key.strip_prefix("fixture:")
+    {
+        if !allow_user_window || !fixture_input_enabled {
+            return error(
+                "user_window_protected",
+                "fixture keys require the isolated fixture",
+            );
+        }
+        if let Err(response) = workspace.read(cx).control_target(target, window, cx) {
+            return response;
+        }
+        if !matches!(
+            key,
+            "tab" | "shift-tab" | "enter" | "space" | "escape" | "up" | "down" | "left" | "right"
+        ) {
+            return error("unsupported_key", "unknown fixture navigation key");
+        }
+        let keystroke = gpui::Keystroke::parse(key).expect("fixture navigation keys are valid");
+        window.dispatch_event(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+            cx,
+        );
+        window.refresh();
+        window.draw(cx).clear(cx);
+        return ok(json!({"key": key}));
+    }
     // Hidden windows do not receive compositor frames. Drawing can also
     // update entities, so refresh before leasing the Workspace for capture.
     if matches!(&request.action, DesktopAction::Render { .. }) {

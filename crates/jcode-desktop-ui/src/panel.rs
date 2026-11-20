@@ -698,6 +698,7 @@ pub struct Panel {
     /// The worker list opened from the composer's count is showing.
     swarm_list_open: bool,
     swarm_list_focus: FocusHandle,
+    swarm_picker_rows: Vec<FocusHandle>,
     swarm_trigger_focus: FocusHandle,
     /// Animated status marks (activity icon, worker spinner and rows).
     swarm_marks: crate::swarm_glyph::Marks,
@@ -1428,6 +1429,9 @@ impl Panel {
             );
         let usage_fixture =
             crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens");
+        let effort_fixture = usage_fixture
+            || (crate::fixture_control_targets::enabled()
+                && fixture.as_deref() == Some("mode-picker"));
         let activity_status = if crate::harness::screenshot_mode() {
             match fixture.as_deref() {
                 Some("orb-working" | "orb-todos") => "running",
@@ -1491,11 +1495,11 @@ impl Panel {
             working_dir,
             status: activity_status.into(),
             connection_phase: String::new(),
-            model: usage_fixture.then(|| "gpt-5.6-sol".into()),
-            provider: usage_fixture.then(|| "openai".into()),
+            model: effort_fixture.then(|| "gpt-5.6-sol".into()),
+            provider: effort_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
             account_label: usage_fixture.then(|| "work@example.com".into()),
-            reasoning_effort: usage_fixture.then(|| "high".into()),
+            reasoning_effort: effort_fixture.then(|| "high".into()),
             skills: Vec::new(),
             active_skill: None,
             pinned_modes: Vec::new(),
@@ -1525,6 +1529,7 @@ impl Panel {
             worker_record: None,
             swarm_list_open: false,
             swarm_list_focus: cx.focus_handle(),
+            swarm_picker_rows: Vec::new(),
             swarm_trigger_focus: cx.focus_handle(),
             swarm_marks: Default::default(),
             swarm_usage: Default::default(),
@@ -6513,8 +6518,8 @@ impl Render for Panel {
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
-        let pinned_todo = latest_todo
-            .filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
+        let pinned_todo =
+            latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
         let tail_header = tail_headers[usize::from(publish_tracker.is_some())];

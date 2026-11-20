@@ -286,8 +286,7 @@ impl Panel {
                     )
                     .when(state.focused.is_some(), |header| {
                         header.child(
-                            div()
-                                .id("orchestration-all-sessions")
+                            crate::keyboard::button(div().id("orchestration-all-sessions"))
                                 .flex_none()
                                 .rounded_full()
                                 .bg(Theme::global().HEADER_BG)
@@ -319,55 +318,55 @@ fn render_session(
     let total = session.todos.len();
     let done = session.completed_todos();
     let target = session.as_unfinished();
-    let mut card = div()
-        .id(("orchestration-session", index))
-        .debug_selector(move || format!("orchestration-session-{index}"))
-        .px_3()
-        .py_2()
-        .rounded_xl()
-        .bg(theme.HEADER_BG)
-        .cursor_pointer()
-        .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-        .on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
-            // Routing into the workspace may read this panel. Never hold a
-            // Panel update lease while invoking the opener.
+    let mut card = crate::keyboard::press_button(
+        div().id(("orchestration-session", index)),
+        move |window, cx| {
+            // Opening a session may read this panel, so do not take its update lease.
             if let Some(open) = &opener {
                 open(target.clone(), window, cx);
                 cx.stop_propagation();
             }
-        })
-        .on_mouse_up(gpui::MouseButton::Left, |_event, _window, cx| {
-            cx.stop_propagation()
-        })
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(status_pill(index, session.running))
-                .child(
+        },
+    )
+    .debug_selector(move || format!("orchestration-session-{index}"))
+    .px_3()
+    .py_2()
+    .rounded_xl()
+    .bg(theme.HEADER_BG)
+    .cursor_pointer()
+    .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+    .on_mouse_up(gpui::MouseButton::Left, |_event, _window, cx| {
+        cx.stop_propagation()
+    })
+    .flex()
+    .flex_col()
+    .gap_1()
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(status_pill(index, session.running))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.TEXT)
+                    .child(session.title.clone()),
+            )
+            .when(total > 0, |row| {
+                row.child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.TEXT)
-                        .child(session.title.clone()),
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(format!("{done}/{total}")),
                 )
-                .when(total > 0, |row| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(format!("{done}/{total}")),
-                    )
-                }),
-        );
+            }),
+    );
     if let Some(dir) = session.working_dir.as_deref() {
         card = card.child(
             div()

@@ -452,7 +452,7 @@ impl Workspace {
         colors: TabCloseColors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        Self::tab_action(("close-session-button", index), diameter)
+        crate::keyboard::button(Self::tab_action(("close-session-button", index), diameter))
             .debug_selector(move || format!("close-session-button-{index}"))
             .bg(colors.background)
             .text_color(colors.glyph)
@@ -895,18 +895,18 @@ impl Workspace {
                         move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
                     })
                     .when_some(index, |el, index| {
-                        el.on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
+                        let entity = cx.weak_entity();
+                        crate::keyboard::press_button(el, move |window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            let _ = entity.update(cx, |this, cx| {
                                 this.set_active(index, cx);
                                 this.overview = false;
                                 this.overview_progress.set(0.0, Instant::now());
                                 this.focus_active(window, cx);
                                 cx.notify();
-                            }),
-                        )
+                            });
+                        })
                     }),
             );
         }

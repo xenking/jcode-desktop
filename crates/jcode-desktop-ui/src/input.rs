@@ -4164,8 +4164,7 @@ impl Render for PromptInput {
             .flex()
             .flex_col()
             .key_context("PromptInput")
-            .track_focus(&self.focus_handle(cx))
-            .tab_index(0)
+            .track_focus(&self.focus_handle(cx).tab_index(0).tab_stop(true))
             .relative()
             .child({
                 let measured = self.composer_bounds.clone();
@@ -4187,92 +4186,99 @@ impl Render for PromptInput {
             })
             .when(command_visible, |el| {
                 el.child(
-                    gpui::deferred(popup::Popup::new(
-                        div()
-                            .id("slash-command-suggestions")
-                            .debug_selector(|| "slash-command-overlay".into())
-                            .w_full()
-                            .max_h_full()
-                            .opacity(0.65 + 0.35 * menu_progress)
-                            .flex()
-                            .flex_col()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .bg(Theme::global().HEADER_BG)
-                            .shadow_lg()
-                            .occlude()
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex()
-                                    .flex_col()
-                                    .min_h_0()
-                                    .p_1()
-                                    .child(
-                                        div()
-                                            .id("slash-command-scroll")
-                                            .debug_selector(|| "slash-command-scroll".into())
-                                            .min_h_0()
-                                            .flex()
-                                            .flex_col()
-                                            .max_h(popup::scroll_height(
-                                                window.viewport_size().height,
-                                                self.picker_prefix == Some("/model")
-                                                    || self
-                                                        .content
-                                                        .trim_start()
-                                                        .starts_with("/model"),
-                                            ))
-                                            .on_scroll_wheel(cx.listener(|_, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            }))
-                                            .pr(px(crate::scrollbar::GUTTER - 4.0))
-                                            .when(suggestions.is_empty(), |el| {
-                                                el.child(
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(px(12.0))
-                                                        .text_color(Theme::global().TEXT_FAINT)
-                                                        .child(match self.picker_prefix {
-                                                            Some("/effort") => "No effort levels match",
-                                                            Some("/mode") => "No modes or skills match",
-                                                            _ => "No models match",
-                                                        }),
-                                                )
-                                            })
-                                            .when(!suggestions.is_empty(), |el| {
-                                                let input = cx.entity();
-                                                el.child(
-                                                    gpui::list(
-                                                        self.command_scroll.clone(),
-                                                        move |index, _, cx| {
-                                                            input.update(cx, |input, cx| {
-                                                                input.render_command_row(
-                                                                    index,
-                                                                    suggestions[index].clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                        },
+                    gpui::deferred(
+                        popup::Popup::new(
+                            div()
+                                .id("slash-command-suggestions")
+                                .debug_selector(|| "slash-command-overlay".into())
+                                .w_full()
+                                .max_h_full()
+                                .opacity(0.65 + 0.35 * menu_progress)
+                                .flex()
+                                .flex_col()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                                .bg(Theme::global().HEADER_BG)
+                                .shadow_lg()
+                                .occlude()
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex()
+                                        .flex_col()
+                                        .min_h_0()
+                                        .p_1()
+                                        .child(
+                                            div()
+                                                .id("slash-command-scroll")
+                                                .debug_selector(|| "slash-command-scroll".into())
+                                                .min_h_0()
+                                                .flex()
+                                                .flex_col()
+                                                .max_h(popup::scroll_height(
+                                                    window.viewport_size().height,
+                                                    self.picker_prefix == Some("/model")
+                                                        || self
+                                                            .content
+                                                            .trim_start()
+                                                            .starts_with("/model"),
+                                                ))
+                                                .on_scroll_wheel(cx.listener(|_, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    cx.notify();
+                                                }))
+                                                .pr(px(crate::scrollbar::GUTTER - 4.0))
+                                                .when(suggestions.is_empty(), |el| {
+                                                    el.child(
+                                                        div()
+                                                            .px_3()
+                                                            .py_2()
+                                                            .text_size(px(12.0))
+                                                            .text_color(Theme::global().TEXT_FAINT)
+                                                            .child(match self.picker_prefix {
+                                                                Some("/effort") => {
+                                                                    "No effort levels match"
+                                                                }
+                                                                Some("/mode") => {
+                                                                    "No modes or skills match"
+                                                                }
+                                                                _ => "No models match",
+                                                            }),
                                                     )
-                                                    .with_sizing_behavior(
-                                                        gpui::ListSizingBehavior::Infer,
+                                                })
+                                                .when(!suggestions.is_empty(), |el| {
+                                                    let input = cx.entity();
+                                                    el.child(
+                                                        gpui::list(
+                                                            self.command_scroll.clone(),
+                                                            move |index, _, cx| {
+                                                                input.update(cx, |input, cx| {
+                                                                    input.render_command_row(
+                                                                        index,
+                                                                        suggestions[index].clone(),
+                                                                        cx,
+                                                                    )
+                                                                })
+                                                            },
+                                                        )
+                                                        .with_sizing_behavior(
+                                                            gpui::ListSizingBehavior::Infer,
+                                                        )
+                                                        .min_h_0()
+                                                        .w_full(),
                                                     )
-                                                    .min_h_0()
-                                                    .w_full(),
-                                                )
-                                            }),
-                                    )
-                                    .child(crate::scrollbar::vertical_list(
-                                        &self.command_scroll,
-                                        "slash-command-scrollbar",
-                                    )),
-                            ),
-                        px(4.0 + 6.0 * (1.0 - menu_progress)),
-                    ).dismiss_outside(self.on_picker_outside.clone()))
+                                                }),
+                                        )
+                                        .child(crate::scrollbar::vertical_list(
+                                            &self.command_scroll,
+                                            "slash-command-scrollbar",
+                                        )),
+                                ),
+                            px(4.0 + 6.0 * (1.0 - menu_progress)),
+                        )
+                        .dismiss_outside(self.on_picker_outside.clone()),
+                    )
                     .with_priority(1),
                 )
             })

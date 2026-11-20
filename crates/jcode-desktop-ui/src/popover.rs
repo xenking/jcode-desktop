@@ -10,7 +10,9 @@ pub(crate) fn dismiss_outside<const N: usize>(
     window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
         if phase == DispatchPhase::Capture
             && !window.has_active_prompt()
-            && !regions.iter().any(|bounds| bounds.contains(&event.position))
+            && !regions
+                .iter()
+                .any(|bounds| bounds.contains(&event.position))
         {
             let dismiss = dismiss.clone();
             window.defer(cx, move |window, cx| dismiss(window, cx));

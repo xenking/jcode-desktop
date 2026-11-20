@@ -2852,9 +2852,17 @@ impl Workspace {
                     }
                 }
             }
-            Update::TabWaitingState { session_id, waiting } => {
-                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.read(cx).session_id == session_id) {
-                    slot.panel.update(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
+            Update::TabWaitingState {
+                session_id,
+                waiting,
+            } => {
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| slot.panel.read(cx).session_id == session_id)
+                {
+                    slot.panel
+                        .update(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
                 }
             }
             Update::EffortSettled {
@@ -3151,7 +3159,9 @@ impl Workspace {
             slot.panel.update(cx, |panel, cx| {
                 let session_id = panel.session_id.clone();
                 let status = |status: &str| ApiEvent::SessionStatus {
-                    session_id: session_id.clone(), status: status.into(), pending_soft_interrupts: None,
+                    session_id: session_id.clone(),
+                    status: status.into(),
+                    pending_soft_interrupts: None,
                 };
                 match index {
                     0 => panel.apply(&status("running"), cx),
@@ -3164,7 +3174,8 @@ impl Workspace {
                                 {"label":"Yes", "description":"Continue the work"},
                                 {"label":"No", "description":"Stop here"}
                             ]}]
-                        })).expect("valid ask fixture");
+                        }))
+                        .expect("valid ask fixture");
                         panel.apply(&event, cx);
                     }
                     3 => {
@@ -6863,9 +6874,15 @@ impl Workspace {
                                 )
                             });
                             let session = session.clone();
+                            let keyboard_session = session.clone();
                             list = list.child(
-                                div()
-                                    .id(("sidebar-session", sidebar_index))
+                                crate::keyboard::button(div().id(("sidebar-session", sidebar_index)))
+                                    .on_click(cx.listener(move |this, event, window, cx| {
+                                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                            cx.stop_propagation();
+                                            this.activate_session(keyboard_session.clone(), window, cx);
+                                        }
+                                    }))
                                     .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                                         let current = this.sidebar_hovered_session.as_deref() == Some(hover_id.as_str());
                                         if *hovering && !current {
@@ -7069,8 +7086,21 @@ impl Workspace {
                                                 .text_size(px(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
                                                 .when_some(todo_progress, |line, (done, total)| line.child(
-                                                    div()
-                                                        .id(("sidebar-todos", sidebar_index))
+                                                    crate::keyboard::press_button(
+                                                        div().id(("sidebar-todos", sidebar_index)),
+                                                        {
+                                                            let todo_session = todo_session.clone();
+                                                            let entity = cx.weak_entity();
+                                                            move |window, cx| {
+                                                                window.prevent_default();
+                                                                cx.stop_propagation();
+                                                                let _ = entity.update(cx, |this, cx| {
+                                                                    this.sidebar_gesture = None;
+                                                                    this.show_orchestration(Some(todo_session.clone()), window, cx);
+                                                                });
+                                                            }
+                                                        },
+                                                    )
                                                         .min_w_0().flex().items_center().gap(px(2.0))
                                                         .relative()
                                                         .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
@@ -7082,12 +7112,6 @@ impl Workspace {
                                                         .rounded_full().pr(px(2.0)).cursor_pointer()
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
                                                         .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                            window.prevent_default();
-                                                            cx.stop_propagation();
-                                                            this.sidebar_gesture = None;
-                                                            this.show_orchestration(Some(todo_session.clone()), window, cx);
-                                                        }))
                                                         .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
                                                             gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
                                                         ))
@@ -7381,36 +7405,39 @@ impl Workspace {
                                                 .child("OpenRig"),
                                         )
                                         .child(
-                                            div()
-                                                .id("sidebar-orchestration")
-                                                .debug_selector(|| "sidebar-orchestration".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(11.0))
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _, window, cx| {
-                                                        this.open_orchestration(
-                                                            &OpenOrchestration,
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    }),
-                                                )
-                                                .child("orchestration"),
+                                            crate::keyboard::press_button(
+                                                div().id("sidebar-orchestration"),
+                                                {
+                                                    let owner = cx.weak_entity();
+                                                    move |window, cx| {
+                                                        let _ = owner.update(cx, |this, cx| {
+                                                            this.open_orchestration(
+                                                                &OpenOrchestration,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                },
+                                            )
+                                            .debug_selector(|| "sidebar-orchestration".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .child("orchestration"),
                                         )
                                         .child(
                                             div()
@@ -7529,36 +7556,39 @@ impl Workspace {
                                                 .child("folder"),
                                         )
                                         .child(
-                                            div()
-                                                .id("sidebar-new-session")
-                                                // Tagged so a render test can click the real button
-                                                // and confirm it counts as a slow path, not as
-                                                // knowledge of super-enter.
-                                                .debug_selector(|| "sidebar-new-session".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(16.0))
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _event, _window, cx| {
-                                                        this.missed("new_panel", cx);
-                                                        this.open_new_session(cx);
-                                                    }),
-                                                )
-                                                .child("+"),
+                                            crate::keyboard::press_button(
+                                                div().id("sidebar-new-session"),
+                                                {
+                                                    let owner = cx.weak_entity();
+                                                    move |_, cx| {
+                                                        let _ = owner.update(cx, |this, cx| {
+                                                            this.missed("new_panel", cx);
+                                                            this.open_new_session(cx);
+                                                        });
+                                                    }
+                                                },
+                                            )
+                                            // Tagged so a render test can click the real button
+                                            // and confirm it counts as a slow path, not as
+                                            // knowledge of super-enter.
+                                            .debug_selector(|| "sidebar-new-session".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(16.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .child("+"),
                                         ),
                                 ),
                         )
@@ -9527,7 +9557,7 @@ impl Render for Workspace {
                 ))
         });
 
-        let root = div()
+        let root = crate::keyboard::tab_navigation(div())
             .size_full()
             .flex()
             .flex_col()
@@ -9540,17 +9570,6 @@ impl Render for Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
-            .tab_group()
-            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, window, cx| {
-                if let Some(reverse) = crate::keyboard::tab_direction(event) {
-                    if reverse {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
-                    }
-                    cx.stop_propagation();
-                }
-            }))
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
             .capture_action(cx.listener(Self::begin_voice_hold))
