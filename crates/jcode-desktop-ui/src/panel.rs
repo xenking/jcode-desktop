@@ -3432,6 +3432,12 @@ impl Panel {
         let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
         for image in images {
+            if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                if let Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor {
+                    images_by_prompt.entry(ordinal).or_default().push(image);
+                }
+                continue;
+            }
             if let Some(index) = image.history_message_index {
                 // The boundary counts protocol messages, including hidden tool
                 // rows, rather than visible desktop transcript items.
@@ -3464,8 +3470,12 @@ impl Panel {
                     if let Some(at) = message.timestamp_ms {
                         user_times.insert(items.len(), at);
                     }
-                    items.push(Item::User(message.content));
-                    if let Some(images) = images_by_prompt.remove(&user_ordinal) {
+                    let prompt = Item::User(message.content);
+                    let is_prompt = prompt::is_pinnable_prompt(&prompt);
+                    items.push(prompt);
+                    if let Some(images) = images_by_prompt.remove(&user_ordinal)
+                        && is_prompt
+                    {
                         items.extend(
                             images
                                 .into_iter()
@@ -3528,9 +3538,6 @@ impl Panel {
         }
         if let Some(images) = images_by_message.remove(&message_count) {
             trailing_images.splice(0..0, images);
-        }
-        for images in images_by_prompt.into_values() {
-            trailing_images.extend(images);
         }
         items.extend(
             trailing_images
@@ -3732,9 +3739,7 @@ impl Panel {
             // Wait for authoritative idle before reconciling it with a saved
             // suffix. Buffered deltas must not be appended to a history prefix.
             self.defer_reconnect_history(&messages);
-            for image in images {
-                self.insert_rendered_image(image);
-            }
+            self.reconcile_history_images(&messages, images);
             self.send_queued_prompts(cx);
             cx.notify();
             return;
@@ -4504,6 +4509,11 @@ impl Panel {
     }
 
     fn insert_rendered_image(&mut self, image: jcode_sdk::RenderedImage) {
+        // Side-pane events have no user-message boundary. Pasted images arrive
+        // with the local echo or as part of history, never as tool side effects.
+        if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+            return;
+        }
         if self.items.iter().any(|item| {
             matches!(item, Item::Image(existing)
                 if existing.anchor == image.anchor && existing.source == image.source
@@ -4537,6 +4547,10 @@ impl Panel {
             self.flush_streaming();
             self.items.len()
         });
+        self.insert_transcript_image(insertion, TranscriptImage::from_rendered(image));
+    }
+
+    fn insert_transcript_image(&mut self, insertion: usize, image: TranscriptImage) {
         for index in &mut self.pending_users {
             if *index >= insertion {
                 *index += 1;
@@ -4550,15 +4564,16 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
+        self.expanded_prompts = std::mem::take(&mut self.expanded_prompts)
+            .into_iter()
+            .map(|index| index + usize::from(index >= insertion))
+            .collect();
         if let Some(selected) = &mut self.image_pane_selected
             && *selected >= insertion
         {
             *selected += 1;
         }
-        self.items.insert(
-            insertion,
-            Item::Image(TranscriptImage::from_rendered(image)),
-        );
+        self.items.insert(insertion, Item::Image(image));
     }
 
     fn flush_reasoning(&mut self) {
@@ -4931,6 +4946,7 @@ impl Panel {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
         let mut inline_images = HashSet::new();
+        let mut user_attachments_end = 0;
         let completed_asks: HashSet<&str> = self
             .items
             .iter()
@@ -5006,6 +5022,11 @@ impl Panel {
             }
             // Filter presentation only, never persisted items.
             if matches!(item, Item::User(_)) {
+                user_attachments_end = if prompt::is_pinnable_prompt(item) {
+                    self.user_attachment_range(index).end
+                } else {
+                    index + 1
+                };
                 inline_images = self
                     .user_image_markers(index)
                     .into_iter()
@@ -5013,6 +5034,15 @@ impl Panel {
                     .collect();
             }
             if inline_images.contains(&index) {
+                continue;
+            }
+            // A cached transcript from before the history merge fix can still
+            // contain detached copies appended after an unrelated tool row.
+            if index >= user_attachments_end
+                && matches!(item, Item::Image(image)
+                    if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput)
+                        && matches!(image.anchor, Some(jcode_sdk::RenderedImageAnchor::UserPrompt { .. })))
+            {
                 continue;
             }
             if let Item::BackgroundTask {

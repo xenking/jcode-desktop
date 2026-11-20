@@ -44,6 +44,82 @@ fn image_marker_history_message() -> jcode_sdk::HistoryMessage {
     }
 }
 
+#[gpui::test]
+fn reconnect_history_keeps_user_images_at_their_original_prompt(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("image-reconnect".into(), None, None, crate::harness::spawn_inert(), cx));
+    let ids = (1..=5).map(|n| format!("img_{n:032x}")).collect::<Vec<_>>();
+    let content = format!("Inspect {}", ids.iter().map(|id| format!("[#{id}]")).collect::<Vec<_>>().join(" "));
+    let messages = serde_json::from_value::<Vec<jcode_sdk::HistoryMessage>>(serde_json::json!([
+        {"role":"user", "content":content, "timestamp_ms":1795181596287i64},
+        {"role":"system", "content":"[auto] Continue the work below"},
+        {"role":"tool", "content":"Filesystem", "tool":{"id":"df","name":"bash","input":{"command":"df -h"}}}
+    ])).unwrap();
+    let fixture = image_preview::fixture_image();
+    let images = ids.iter().enumerate().map(|(i, id)| jcode_sdk::RenderedImage {
+        media_type: "image/png".into(),
+        data: if i < 2 { fixture.data.clone() } else { format!("jcode-lazy:{id}") },
+        label: None,
+        source: jcode_sdk::RenderedImageSource::UserInput,
+        anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        history_message_index: None,
+    }).collect::<Vec<_>>();
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(messages.clone(), vec![], cx);
+        // Desktop echoed the queued attachments before the history reply
+        // reintroduced them with anchors and potentially lazy bytes.
+        for _ in &ids {
+            panel.items.insert(1, Item::Image(fixture.clone()));
+        }
+        panel.load_history(messages.clone(), images.clone(), cx);
+        panel.load_bounded_history(crate::harness::BoundedHistoryPage {
+            messages,
+            images: ids.iter().zip(&images).map(|(id, image)| jcode_sdk::RenderedImage {
+                data: format!("jcode-lazy:{id}"), ..image.clone()
+            }).collect(),
+            before: None,
+            prompt_offset: Some(0),
+        }, cx);
+        assert_eq!(panel.session_image_indices(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(panel.user_image_markers(0).len(), 5);
+        assert!(panel.items[1..6].iter().all(|item| matches!(item, Item::Image(image) if image.preview.is_some())));
+        assert!(matches!(&panel.items[6], Item::Tool { name, .. } if name == "bash"));
+        assert_eq!(panel.transcript_render_rows().len(), 2);
+    });
+}
+
+#[gpui::test]
+fn restored_user_images_need_a_visible_owner_and_fill_its_missing_slots(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("history-image-owners".into(), None, None, crate::harness::spawn_inert(), cx));
+    let messages = serde_json::from_value::<Vec<jcode_sdk::HistoryMessage>>(serde_json::json!([
+        {"role":"user", "content":"You have 1 incomplete todo. Continue the work and update the todo tool."},
+        {"role":"user", "content":"Inspect [#image 1]"},
+        {"role":"tool", "content":"Filesystem", "tool":{"id":"df","name":"bash","input":{}}},
+    ])).unwrap();
+    let anchored = |ordinal| jcode_sdk::RenderedImage {
+        media_type: "image/png".into(), data: "jcode-lazy:abc".into(), label: None,
+        source: jcode_sdk::RenderedImageSource::UserInput,
+        anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }),
+        history_message_index: None,
+    };
+    let rejected = vec![anchored(0), anchored(3), jcode_sdk::RenderedImage {
+        anchor: None, history_message_index: Some(2), ..anchored(1)
+    }];
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(messages.clone(), rejected.clone(), cx);
+        assert!(panel.session_image_indices().is_empty());
+        panel.load_history(messages, [rejected, vec![anchored(1)]].concat(), cx);
+        assert_eq!(panel.session_image_indices(), vec![2]);
+        assert!(matches!(&panel.items[3], Item::Tool { name, .. } if name == "bash"));
+        let rows_before = panel.transcript_render_rows().len();
+        // Existing hot-reload caches can still contain the previous loose copy.
+        panel.items.push(Item::Image(TranscriptImage::from_rendered(anchored(1))));
+        assert_eq!(panel.transcript_render_rows().len(), rows_before);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-chip-placeholder").is_some());
+    assert!(vcx.debug_bounds("transcript-user-image-chip").is_none());
+}
+
 fn assert_marker_masked_in_rendered_prompt() {
     let rendered = crate::markdown::take_rendered_prompt_text();
     let line = rendered.iter().find(|line| line.starts_with("text") && line.ends_with("more"))

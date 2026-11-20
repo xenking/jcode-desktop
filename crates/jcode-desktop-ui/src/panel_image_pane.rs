@@ -46,6 +46,69 @@ pub(super) fn gallery_loaded_image(
 }
 
 impl Panel {
+    pub(super) fn reconcile_history_images(
+        &mut self,
+        messages: &[jcode_sdk::HistoryMessage],
+        images: Vec<jcode_sdk::RenderedImage>,
+    ) {
+        let prompts: Vec<_> = messages.iter().filter(|message| message.role == "user").collect();
+        let mut next_slot = HashMap::<usize, usize>::new();
+        for image in images {
+            if !matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                self.insert_rendered_image(image);
+                continue;
+            }
+            let Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor else {
+                continue;
+            };
+            let Some(prompt) = prompts.get(ordinal) else {
+                continue;
+            };
+            // The ordinal belongs to the returned window, not the live panel.
+            // Timestamps distinguish repeated prompts; otherwise merge only an
+            // unambiguous text match (normally including stable image IDs).
+            let mut matches = self.items.iter().enumerate().filter_map(|(index, item)| {
+                let Item::User(text) = item else { return None };
+                (text == &prompt.content && prompt::is_pinnable_prompt(item)).then_some(index)
+            });
+            let Some(first) = matches.next() else { continue };
+            let owner = if let Some(second) = matches.next() {
+                let mut timed = [first, second].into_iter().chain(matches).filter(|index| {
+                    self.user_times.get(index).copied().is_some_and(|at| Some(at) == prompt.timestamp_ms)
+                });
+                let Some(owner) = timed.next() else { continue };
+                if timed.next().is_some() {
+                    continue;
+                }
+                owner
+            } else {
+                first
+            };
+            let range = self.user_attachment_range(owner);
+            let offset = next_slot.entry(ordinal).or_default();
+            let index = range.start + *offset;
+            *offset += 1;
+            if index < range.end {
+                let Item::Image(existing) = &mut self.items[index] else { unreachable!() };
+                let existing_lazy = existing.data.starts_with("jcode-lazy:");
+                let incoming_lazy = image.data.starts_with("jcode-lazy:");
+                if existing.data != image.data && !(incoming_lazy && !existing_lazy && existing.preview.is_some()) {
+                    *existing = TranscriptImage::from_rendered(image);
+                }
+            } else {
+                self.insert_transcript_image(range.end, TranscriptImage::from_rendered(image));
+            }
+        }
+    }
+
+    pub(super) fn user_attachment_range(&self, user_index: usize) -> std::ops::Range<usize> {
+        let start = user_index + 1;
+        let count = self.items[start..].iter().take_while(|item| {
+            matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
+        }).count();
+        start..start + count
+    }
+
     /// Match the submitted markers and user images in their original order.
     /// Images with no marker retain the fallback chip for older histories.
     pub(super) fn user_image_markers(&self, user_index: usize) -> Vec<(usize, String)> {
@@ -55,22 +118,8 @@ impl Panel {
         let labels = crate::input::image_marker_ranges(text)
             .into_iter()
             .map(|range| text[range].to_string());
-        let images = self
-            .items
-            .iter()
-            .enumerate()
-            .skip(user_index + 1)
-            .take_while(|(_, item)| !matches!(item, Item::User(_)))
-            .filter_map(|(index, item)| match item {
-                Item::Image(image)
-                    if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            });
         labels
-            .zip(images)
+            .zip(self.user_attachment_range(user_index))
             .map(|(label, index)| (index, label))
             .collect()
     }
@@ -89,6 +138,9 @@ impl Panel {
             matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
         }).count() + 1;
         let label = crate::image_chip::numbered_label(number);
+        if image.preview.is_none() {
+            self.request_history_thumbnail(image, false);
+        }
         let preview = image.clone();
         div()
             .flex()
@@ -116,6 +168,10 @@ impl Panel {
                             .object_fit(gpui::ObjectFit::Cover)
                     }))
                     .child(label)
+                    .when(image.preview.is_none(), |chip| {
+                        chip.child(div().debug_selector(|| "image-chip-placeholder".into())
+                            .child("No preview"))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_image_preview(preview.clone(), window, cx);
                         cx.stop_propagation();
