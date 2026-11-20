@@ -193,7 +193,7 @@ mod side_document;
 mod tab_outline;
 #[path = "panel_user_response.rs"]
 mod user_response;
-pub(crate) use tab_outline::TabRing;
+pub(crate) use tab_outline::{TabRing, tab_corner_radius};
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
 #[path = "panel_usage.rs"]

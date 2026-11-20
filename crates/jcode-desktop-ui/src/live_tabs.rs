@@ -789,7 +789,10 @@ impl Workspace {
                     .h(px(current.height))
                     .flex()
                     .items_center()
-                    .rounded_full()
+                    .rounded(crate::panel::tab_corner_radius(gpui::size(
+                        px(current.width),
+                        px(current.height),
+                    )))
                     // Crowded off-screen tabs can be narrower than two pixels.
                     // Their border must not force the layout wider than its slot.
                     // Use this single outline on every edge. An extra accent
