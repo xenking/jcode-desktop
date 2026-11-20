@@ -208,8 +208,8 @@ class Instance:
         if self.manifest["fixture"] == "tab-statuses":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES="1",
-                       JCODE_DESKTOP_SCREENSHOT_PANELS="4",
-                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES="Working,Waiting,Question,Done")
+                       JCODE_DESKTOP_SCREENSHOT_PANELS="5",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES="Working,Waiting,Question,Done,Idle")
             modes = []
         if self.manifest["fixture"] == "swarm-worktree":
             lead, worker = seed_swarm_worktrees(self.profile, env)
@@ -559,9 +559,9 @@ class Instance:
         sessions = [panel["session"] for row in listing["navigation"]["rows"]
                     for panel in row["panels"] if not panel["closing"]]
         panels = [self.drive("state", session=session)["panel"] for session in sessions]
-        expected = ["working", "waiting", "question", "done"]
+        expected = ["working", "waiting", "question", "done", None]
         if [panel["tab_activity"] for panel in panels] != expected:
-            raise RuntimeError("tab activities did not match the four independent fixture states")
+            raise RuntimeError("tab activities did not match the fixture states")
         first = self.screenshot("tab-statuses-before.png")
         question = panels[2]["ask"]
         self.drive("click", {"selector": question["option_selectors"][0]}, session=sessions[2])

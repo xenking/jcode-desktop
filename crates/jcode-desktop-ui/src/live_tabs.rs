@@ -324,6 +324,7 @@ impl TabTween {
 #[derive(Default)]
 pub(super) struct TabMotion {
     tabs: HashMap<u64, TabTween>,
+    close_focus: HashMap<u64, gpui::FocusHandle>,
     available: Option<f32>,
     pub(super) hit_targets: Vec<(usize, f32)>,
     pub(super) header_offset: f32,
@@ -345,6 +346,7 @@ impl TabMotion {
         self.available = Some(available);
         let keys: HashSet<_> = targets.iter().map(|(key, _)| *key).collect();
         self.tabs.retain(|key, _| keys.contains(key));
+        self.close_focus.retain(|key, _| keys.contains(key));
         targets
             .iter()
             .map(|(key, target)| {
@@ -450,34 +452,38 @@ impl Workspace {
         index: usize,
         diameter: f32,
         colors: TabCloseColors,
+        focus: &gpui::FocusHandle,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        crate::keyboard::button(Self::tab_action(("close-session-button", index), diameter))
-            .debug_selector(move || format!("close-session-button-{index}"))
-            .bg(colors.background)
-            .text_color(colors.glyph)
-            .text_size(px(diameter * 0.58))
-            .hover(move |style| {
-                style
-                    .bg(colors.hover_background)
-                    .text_color(colors.hover_glyph)
-            })
-            .tooltip(|_, cx| {
-                cx.new(|_| {
-                    TabTooltip(if cfg!(target_os = "macos") {
-                        "Close tab (⌘Q)".into()
-                    } else {
-                        "Close tab (Super+Q)".into()
-                    })
+        crate::keyboard::tracked_button(
+            Self::tab_action(("close-session-button", index), diameter),
+            focus,
+        )
+        .debug_selector(move || format!("close-session-button-{index}"))
+        .bg(colors.background)
+        .text_color(colors.glyph)
+        .text_size(px(diameter * 0.58))
+        .hover(move |style| {
+            style
+                .bg(colors.hover_background)
+                .text_color(colors.hover_glyph)
+        })
+        .tooltip(|_, cx| {
+            cx.new(|_| {
+                TabTooltip(if cfg!(target_os = "macos") {
+                    "Close tab (⌘Q)".into()
+                } else {
+                    "Close tab (Super+Q)".into()
                 })
-                .into()
             })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.set_active(index, cx);
-                this.close_panel(&ClosePanel, window, cx);
-            }))
-            .child("×")
+            .into()
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.set_active(index, cx);
+            this.close_panel(&ClosePanel, window, cx);
+        }))
+        .child("×")
     }
 
     fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -737,9 +743,19 @@ impl Workspace {
             let close_index = index.filter(|_| {
                 !compact && visible >= diameter + 24.0 && exposed_left + visible >= right - 0.01
             });
-            let reserve_rename = close_index.is_some() && focused && can_rename && visible >= 88.0;
-            let actions_width = if close_index.is_some() { diameter } else { 0.0 }
-                + if reserve_rename { TAB_RENAME_SIZE } else { 0.0 };
+            let close_focus = close_index.map(|_| {
+                self.live_tabs
+                    .close_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            let show_close = close_focus.as_ref().is_some_and(|handle| {
+                hot || (window.last_input_was_keyboard() && handle.is_focused(window))
+            });
+            let show_rename = show_close && hot && focused && can_rename && visible >= 88.0;
+            let actions_width = if show_close { diameter } else { 0.0 }
+                + if show_rename { TAB_RENAME_SIZE } else { 0.0 };
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
@@ -857,7 +873,19 @@ impl Workspace {
                     // The hit layer keeps actions reachable while the tab pops
                     // over its neighbours. Use the painted body's current edge
                     // and height, not the settled (pointer target) geometry.
-                    .when_some(close_index, |el, index| {
+                    .when_some(close_index.zip(close_focus), |el, (index, focus)| {
+                        if !show_close {
+                            // Keep the Tab stop without reserving title width or
+                            // leaving an invisible pointer target over the title.
+                            return el.child(
+                                crate::keyboard::tracked_button(
+                                    div().id(("close-session-button", index)),
+                                    &focus,
+                                )
+                                .absolute()
+                                .size_0(),
+                            );
+                        }
                         el.child(
                             div()
                                 .absolute()
@@ -868,10 +896,14 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .justify_end()
-                                .when(hot && reserve_rename, |el| {
-                                    el.child(self.render_tab_rename(cx))
-                                })
-                                .child(self.render_tab_close(index, diameter, close_colors, cx)),
+                                .when(show_rename, |el| el.child(self.render_tab_rename(cx)))
+                                .child(self.render_tab_close(
+                                    index,
+                                    diameter,
+                                    close_colors,
+                                    &focus,
+                                    cx,
+                                )),
                         )
                     })
                     .when(index.is_some(), |el| {

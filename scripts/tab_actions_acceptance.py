@@ -25,7 +25,7 @@ def hover_actions(ui):
     ui.native("mousemove", 400, 400)
     hidden = ui.capture("tab-actions-hidden")
     assert ink(hidden, rename) == 0, "Rename must be hidden at rest"
-    assert ink(hidden, close) > 3, "Close must be visible at rest"
+    assert ink(hidden, close) == 0, "Close must be hidden at rest"
     ui.native("mousemove", round(center), 26)
     hovered = ui.capture("tab-actions-hover")
     assert ink(hovered, rename) > 3, "Rename icon did not appear beside title"
@@ -47,7 +47,7 @@ def hover_actions(ui):
     ui.native("mousemove", 400, 400)
     hidden_again = ui.capture("tab-actions-hidden-again")
     assert ink(hidden_again, rename) == 0, "Rename stayed visible after leaving"
-    assert ink(hidden_again, close) > 3, "Close disappeared after leaving"
+    assert ink(hidden_again, close) == 0, "Close stayed visible after leaving"
     ui.native("mousemove", round(center), 26)
     assert ink(ui.capture("tab-actions-rename-ready"), rename) > 3, "Rename did not reappear"
     return rename, close
@@ -66,7 +66,7 @@ def verify(output, env, root):
         ui.wait_frame("tab-actions-closed", lambda image: phrase_bounds(
             ui.words(image, (794, 17, 966, 35), "tab-actions-empty", psm=7), "Empty workspace"))
         shutil.copyfile(ui.artifact("tab-actions-hover.png"), output)
-        report.update(passed=True, checks=["close-visible-at-rest", "rename-on-hover", "no-horizontal-title-shift",
+        report.update(passed=True, checks=["close-hidden-at-rest", "close-on-hover", "rename-on-hover", "no-horizontal-title-shift",
             "rename-shortcut", "close-shortcut", "new-shortcut", "rename-hidden-on-leave",
             "rename-click-opens", "close-click-closes-tab-not-window"])
     except Exception as error:

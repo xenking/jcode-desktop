@@ -20,9 +20,9 @@ fn title_actions_fit_and_rename_does_not_select_or_close(cx: &mut gpui::TestAppC
         vcx.run_until_parked();
         let tab = vcx.debug_bounds("live-session-tab-0").unwrap();
         let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
-        let close = vcx.debug_bounds("close-session-button-0").unwrap();
-        assert_close_fits_cap(tab, close);
-        assert!(title.right() <= close.left());
+        assert!(vcx.debug_bounds("close-session-button-0").is_none());
+        assert!(vcx.debug_bounds("close-session-button-1").is_none());
+        assert!(vcx.debug_bounds("rename-session-button").is_none());
         vcx.simulate_mouse_move(tab.center(), None, Default::default());
         vcx.run_until_parked();
         workspace.update(vcx, |w, cx| {
@@ -35,7 +35,10 @@ fn title_actions_fit_and_rename_does_not_select_or_close(cx: &mut gpui::TestAppC
         let rename = vcx.debug_bounds("rename-session-button").unwrap();
         let hovered_title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
         assert!(hovered_tab.size.height > tab.size.height);
+        assert_eq!(hovered_tab.size.width, tab.size.width);
         assert_close_fits_cap(hovered_tab, hovered_close);
+        assert_eq!(title.left(), hovered_title.left());
+        assert!(title.right() > hovered_close.left());
         assert!(hovered_title.right() <= rename.left());
         assert!(rename.right() <= hovered_close.left());
         vcx.simulate_click(rename.center(), gpui::Modifiers::default());
@@ -132,4 +135,40 @@ fn hovered_inactive_tab_close_targets_that_tab_only(cx: &mut gpui::TestAppContex
         assert_eq!(surviving, ["session_fox_original"]);
         assert!(w.rename_editor.is_none());
     });
+}
+
+#[gpui::test]
+fn tab_close_reveals_on_keyboard_focus_and_activates(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session_fox_keyboard", cx);
+        w
+    });
+    vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("close-session-button-0").is_none());
+
+    let reveal = |vcx: &mut gpui::VisualTestContext| {
+        for _ in 0..40 {
+            vcx.simulate_keystrokes("tab");
+            vcx.run_until_parked();
+            if let Some(close) = vcx.debug_bounds("close-session-button-0") {
+                assert_close_fits_cap(vcx.debug_bounds("live-session-tab-0").unwrap(), close);
+                return;
+            }
+        }
+        panic!("Tab did not reach the hidden close control");
+    };
+    reveal(vcx);
+    vcx.simulate_keystrokes("tab");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("close-session-button-0").is_none());
+
+    reveal(vcx);
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| assert!(w.slots.iter().all(|slot| slot.closing)));
 }
