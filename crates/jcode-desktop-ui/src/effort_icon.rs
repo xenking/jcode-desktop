@@ -8,6 +8,7 @@
 
 use gpui::{AnyElement, Bounds, PathBuilder, Pixels, Point, Rgba, Window, canvas, div, point};
 use gpui::{InteractiveElement, IntoElement, ParentElement, Styled, px};
+use gpui::prelude::FluentBuilder;
 
 use crate::theme::Theme;
 
@@ -53,19 +54,29 @@ pub(crate) fn ink(effort: &str, theme: &Theme) -> Rgba {
 /// The drawn mark for `effort` at `size` points, or `None` for an unknown
 /// level. The element carries `effort-icon-<level>` for tests.
 pub(crate) fn icon(effort: &str, size: f32) -> Option<AnyElement> {
+    draw(effort, size, None)
+}
+
+/// Picker rows invert their paper on selection. The mark keeps its own opaque
+/// paper and a solid outline, so neither hover nor selection washes it out.
+pub(crate) fn picker_icon(effort: &str, size: f32) -> Option<AnyElement> {
+    draw(effort, size, Some(picker_palette(effort, Theme::global())))
+}
+
+fn draw(effort: &str, size: f32, palette: Option<(Rgba, Rgba)>) -> Option<AnyElement> {
     let shape = shape(effort)?;
-    let theme = Theme::global();
-    let ink = ink(effort, theme);
     let key = effort.trim().to_ascii_lowercase();
+    let ink = palette.map_or_else(|| ink(effort, Theme::global()), |(ink, _)| ink);
     Some(
         div()
             .debug_selector(move || format!("effort-icon-{key}"))
             .flex_none()
-            .size(px(size))
+            .size(px(size + if palette.is_some() { 4. } else { 0. }))
+            .when_some(palette, |el, (_, bg)| el.rounded_full().bg(bg).p(px(2.)))
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |bounds, _, window, _| paint(shape, bounds, ink, window),
+                    move |bounds, _, window, _| paint(shape, bounds, ink, palette.is_some(), window),
                 )
                 .size_full(),
             )
@@ -73,14 +84,41 @@ pub(crate) fn icon(effort: &str, size: f32) -> Option<AnyElement> {
     )
 }
 
-fn faded(color: Rgba, alpha: f32) -> Rgba {
+fn luminance(color: Rgba) -> f32 {
+    let linear = |c: f32| {
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+fn contrast(a: f32, b: f32) -> f32 {
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+fn picker_palette(effort: &str, theme: &Theme) -> (Rgba, Rgba) {
+    let bg = Rgba { a: 1., ..theme.HEADER_BG };
+    let color = Rgba { a: 1., ..ink(effort, theme) };
+    let paper = luminance(bg);
+    let edge = if contrast(paper, 0.) >= contrast(paper, 1.) { 0. } else { 1. };
+    let fg = (0_u8..8)
+        .map(|step| {
+            let toward_edge = f32::from(step) / 8.;
+            let mix = |c| c + (edge - c) * toward_edge;
+            Rgba { r: mix(color.r), g: mix(color.g), b: mix(color.b), a: 1. }
+        })
+        .find(|fg| contrast(luminance(*fg), paper) >= 3.5)
+        .unwrap_or(Rgba { r: edge, g: edge, b: edge, a: 1. });
+    (fg, bg)
+}
+
+fn faded(color: Rgba, alpha: f32, solid: bool) -> Rgba {
     Rgba {
-        a: color.a * alpha,
+        a: color.a * if solid { 1. } else { alpha },
         ..color
     }
 }
 
-fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, window: &mut Window) {
+fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, solid: bool, window: &mut Window) {
     let center = bounds.center();
     let size = f32::from(bounds.size.width.min(bounds.size.height));
     let outer = size / 2.;
@@ -92,7 +130,7 @@ fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, window: &mut Window) {
             fill(
                 window,
                 annulus(center, outer, outer - weight),
-                faded(ink, 0.8),
+                faded(ink, 0.8, solid),
             );
             let d = outer * 0.55;
             let mut slash = PathBuilder::stroke(px(weight * 0.8));
@@ -104,7 +142,7 @@ fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, window: &mut Window) {
             fill(
                 window,
                 annulus(center, outer, outer - weight),
-                faded(ink, 0.45),
+                faded(ink, 0.45, solid),
             );
             fill(window, sector(center, outer - weight - 1.0, fraction), ink);
         }
@@ -112,7 +150,7 @@ fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, window: &mut Window) {
             fill(
                 window,
                 annulus(center, outer, outer - weight),
-                faded(ink, 0.4),
+                faded(ink, 0.4, solid),
             );
             fill(window, sector(center, outer - weight - 0.6, 1.), ink);
         }
@@ -128,7 +166,7 @@ fn paint(shape: Shape, bounds: Bounds<Pixels>, ink: Rgba, window: &mut Window) {
             links.line_to(nodes[1]);
             links.line_to(nodes[2]);
             links.close();
-            fill(window, links.build().ok(), faded(ink, 0.55));
+            fill(window, links.build().ok(), faded(ink, 0.55, solid));
             for at in nodes {
                 fill(window, sector(at, node, 1.), ink);
             }
@@ -190,6 +228,23 @@ fn annulus(center: Point<Pixels>, outer: f32, inner: f32) -> Option<gpui::Path<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_rung_marks_have_at_least_three_to_one_contrast() {
+        let mut minimum = 21.0_f32;
+        for preset in crate::theme::ThemePreset::ALL {
+            let theme = Theme::preview(preset);
+            for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max", "swarm", "swarm-deep"] {
+                let (fg, bg) = picker_palette(level, theme);
+                assert_eq!(bg.a, 1., "backplate must isolate the mark from either row color");
+                assert_eq!(faded(fg, 0.4, true).a, 1.);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                assert!(ratio >= 3., "{preset:?} {level}: {ratio:.2}:1");
+                minimum = minimum.min(ratio);
+            }
+        }
+        eprintln!("Minimum picker glyph contrast across all presets and levels: {minimum:.2}:1");
+    }
 
     /// Every rung and mode the picker offers is a drawn shape, the fill grows
     /// with the level, and max and the swarm modes get their own marks.

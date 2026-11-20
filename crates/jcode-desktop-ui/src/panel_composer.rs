@@ -186,7 +186,7 @@ impl Panel {
                     .gap_1()
                     .overflow_hidden()
                     .child(
-                        composer_pill("panel-model")
+                        crate::keyboard::popover_trigger(composer_pill("panel-model"), &self.picker_triggers[PickerKind::Model as usize])
                             .relative()
                             .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
                             .flex_shrink_1()
@@ -200,6 +200,7 @@ impl Panel {
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_model_picker(window, cx);
+                                this.remember_picker_trigger(PickerKind::Model);
                                 cx.stop_propagation();
                             })),
                     )
@@ -216,7 +217,7 @@ impl Panel {
                                 crate::effort::label(&effort).to_string()
                             })
                         });
-                        composer_pill("panel-model-effort")
+                        crate::keyboard::popover_trigger(composer_pill("panel-model-effort"), &self.picker_triggers[PickerKind::Effort as usize])
                             .relative()
                             .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
@@ -226,6 +227,7 @@ impl Panel {
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_effort_picker(window, cx);
+                                this.remember_picker_trigger(PickerKind::Effort);
                                 cx.stop_propagation();
                             }))
                     }))
@@ -235,7 +237,7 @@ impl Panel {
                         } else {
                             format!("Active modes: {}", self.mode_names().join(", "))
                         };
-                        composer_pill("panel-mode")
+                        crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
                             .flex_shrink(3.)
                             .min_w_0()
                             .max_w(relative(0.4))
@@ -243,6 +245,7 @@ impl Panel {
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_mode_picker(window, cx);
+                                this.remember_picker_trigger(PickerKind::Mode);
                                 cx.stop_propagation();
                             }))
                     }))
@@ -370,6 +373,12 @@ impl Panel {
             )
             .child(pills)
             .into_any_element()
+    }
+
+    fn remember_picker_trigger(&mut self, kind: PickerKind) {
+        self.composer_popover_trigger = self.picker_search.as_ref().and_then(|(opened, _)| {
+            (*opened == kind).then(|| self.picker_triggers[kind as usize].clone())
+        });
     }
 
     /// The ordinary composer, floating over the bottom of the transcript.
@@ -645,8 +654,7 @@ impl Panel {
 
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
-    div()
-        .id(id)
+    div().id(id)
         .debug_selector(move || id.into())
         .h(px(TAB_HEIGHT))
         .px_2p5()

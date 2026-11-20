@@ -234,7 +234,7 @@ impl Panel {
                 ))
         });
         Some(
-            super::composer::composer_pill("composer-workers")
+            crate::keyboard::popover_trigger(super::composer::composer_pill("composer-workers"), &self.swarm_trigger_focus)
                 .flex_none()
                 .px_2()
                 .gap_1()
@@ -248,9 +248,19 @@ impl Panel {
                     })
                     .into()
                 })
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.swarm_list_open = !this.swarm_list_open;
+                    if this.swarm_list_open {
+                        let focus = this.swarm_list_focus.clone();
+                        this.dismiss_composer_popover(&focus, true, window, cx);
+                    } else {
+                        if this.picker_search.take().is_some() {
+                            this.model_picker_open = false;
+                        }
+                        this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
+                        this.swarm_list_open = true;
+                        window.focus(&this.swarm_list_focus, cx);
+                    }
                     cx.notify();
                 }))
                 .children(crate::fixture_control_targets::marker(
@@ -272,6 +282,8 @@ impl Panel {
         let indicator = self.swarm_indicator()?;
         let theme = Theme::global();
         let extra = indicator.workers.len().saturating_sub(MAX_ROWS);
+        let owner = cx.weak_entity();
+        let focus = self.swarm_list_focus.clone();
         let rows = indicator
             .workers
             .iter()
@@ -422,6 +434,8 @@ impl Panel {
         Some(
             div()
                 .debug_selector(|| "swarm-list".into())
+                .track_focus(&self.swarm_list_focus)
+                .relative()
                 .w_full()
                 .min_w_0()
                 .mb(px(4.0))
@@ -432,6 +446,22 @@ impl Panel {
                 .bg(theme.HEADER_BG)
                 .border_1()
                 .border_color(theme.PANEL_BORDER)
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let owner = owner.clone();
+                            let focus = focus.clone();
+                            crate::popover::dismiss_outside(window, [bounds], move |window, cx| {
+                                let _ = owner.update(cx, |panel, cx| {
+                                    panel.dismiss_composer_popover(&focus, true, window, cx);
+                                });
+                            });
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
                 .children(rows)
                 .when(extra > 0, |el| {
                     el.child(
@@ -534,6 +564,29 @@ mod tests {
         // live count, no wait mark.
         assert!(vcx.debug_bounds("composer-workers-count").is_none());
         assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
+    }
+
+    #[gpui::test]
+    fn swarm_popover_dismisses_with_escape_and_outside_click(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "running")], cx);
+        });
+        vcx.run_until_parked();
+        for escape in [true, false] {
+            let pill = vcx.debug_bounds("composer-workers").expect("workers pill");
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("swarm-list").is_some());
+            if escape {
+                vcx.simulate_keystrokes("escape");
+            } else {
+                let input = vcx.debug_bounds("prompt-input").expect("composer");
+                vcx.simulate_click(input.center(), gpui::Modifiers::default());
+            }
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("swarm-list").is_none());
+        }
     }
 
     #[gpui::test]

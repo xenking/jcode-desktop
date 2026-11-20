@@ -435,7 +435,7 @@ impl PromptInput {
             .filter(|_| model.is_none())
             .and_then(|effort| {
                 let effort = effort.to_string();
-                crate::effort_icon::icon(&effort, 14.0).map(|icon| {
+                crate::effort_icon::picker_icon(&effort, 14.0).map(|icon| {
                     div()
                         .debug_selector(move || format!("effort-row-icon-{index}"))
                         .flex_none()
@@ -661,9 +661,8 @@ impl PromptInput {
                 .when(on, |pill| pill.bg(ink.opacity(0.14)))
                 .text_size(px(10.5))
                 .text_color(ink)
-                .opacity(if on { 1. } else { 0.55 })
                 .cursor_pointer()
-                .children(crate::effort_icon::icon(effort, 11.0))
+                .children(crate::effort_icon::picker_icon(effort, 11.0))
                 .when(on, |pill| pill.child(effort_row_label(effort)))
                 .on_mouse_down(
                     MouseButton::Left,

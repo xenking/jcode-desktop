@@ -1162,8 +1162,7 @@ impl Panel {
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
         let size = VOICE_BUTTON_SIZE;
-        let button = div()
-            .id("voice-toggle")
+        let button = crate::keyboard::button(div().id("voice-toggle"))
             .debug_selector(|| "voice-toggle".into())
             .relative()
             .flex_none()

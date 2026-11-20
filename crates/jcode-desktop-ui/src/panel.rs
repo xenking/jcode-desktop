@@ -697,6 +697,8 @@ pub struct Panel {
     worker_record: Option<jcode_sdk::WorkerMeta>,
     /// The worker list opened from the composer's count is showing.
     swarm_list_open: bool,
+    swarm_list_focus: FocusHandle,
+    swarm_trigger_focus: FocusHandle,
     /// Animated status marks (activity icon, worker spinner and rows).
     swarm_marks: crate::swarm_glyph::Marks,
     /// Worker spend (model, provider, total tokens) for inline swarm cards.
@@ -841,6 +843,9 @@ pub struct Panel {
     side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
+    picker_triggers: [FocusHandle; 3],
+    composer_popover_watch: Option<(FocusHandle, gpui::Subscription, gpui::Subscription)>,
+    composer_popover_trigger: Option<FocusHandle>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
@@ -1519,6 +1524,8 @@ impl Panel {
             tab_dependency_waiting: false,
             worker_record: None,
             swarm_list_open: false,
+            swarm_list_focus: cx.focus_handle(),
+            swarm_trigger_focus: cx.focus_handle(),
             swarm_marks: Default::default(),
             swarm_usage: Default::default(),
             swarm_row_focus: Default::default(),
@@ -1626,6 +1633,9 @@ impl Panel {
             side_question: None,
             model_picker_open: false,
             picker_search: None,
+            picker_triggers: std::array::from_fn(|_| cx.focus_handle()),
+            composer_popover_watch: None,
+            composer_popover_trigger: None,
             focus_pending: false,
             transcript_only: false,
             search_terms: Vec::new(),
@@ -3132,10 +3142,12 @@ impl Panel {
     }
 
     pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
+        self.swarm_list_open = false;
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
         let submit = cx.weak_entity();
         let cancel = cx.weak_entity();
+        let outside = cx.weak_entity();
         let search = cx.new(|cx| {
             let placeholder = match kind {
                 PickerKind::Model => "Search models…",
@@ -3160,6 +3172,7 @@ impl Panel {
                         }
                         panel.picker_search = None;
                         panel.model_picker_open = false;
+                        panel.composer_popover_trigger = None;
                         panel.focus_pending = true;
                         cx.notify();
                     });
@@ -3177,6 +3190,11 @@ impl Panel {
                 } else {
                     false
                 }
+            })
+            .with_on_picker_outside(move |focus, window, app| {
+                let _ = outside.update(app, |panel, cx| {
+                    panel.dismiss_composer_popover(focus, true, window, cx);
+                });
             });
             input.apply_picker_settings(settings, cx);
             input.start_picker_search(
@@ -3193,6 +3211,57 @@ impl Panel {
         self.picker_search = Some((kind, search));
         self.focus_pending = true;
         cx.notify();
+    }
+
+    fn composer_popover_focus(&self, cx: &App) -> Option<FocusHandle> {
+        self.picker_search
+            .as_ref()
+            .map(|(_, search)| search.read(cx).focus_handle.clone())
+            .or_else(|| self.swarm_list_open.then(|| self.swarm_list_focus.clone()))
+    }
+
+    fn dismiss_composer_popover(
+        &mut self,
+        expected: &FocusHandle,
+        restore_if_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // An outside click can open a different picker. Never dismiss that one.
+        if self.composer_popover_focus(cx).as_ref() != Some(expected) {
+            return;
+        }
+        let restore = restore_if_focused && expected.contains_focused(window, cx);
+        if self.picker_search.take().is_some() {
+            self.model_picker_open = false;
+        } else {
+            self.swarm_list_open = false;
+        }
+        self.composer_popover_trigger = None;
+        if restore {
+            self.focus_input(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn watch_composer_popover_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.composer_popover_focus(cx);
+        if self.composer_popover_watch.as_ref().map(|(f, _, _)| f) == focus.as_ref() {
+            return;
+        }
+        self.composer_popover_watch = focus.map(|focus| {
+            let blurred = focus.clone();
+            let deactivated = focus.clone();
+            let blur = cx.on_focus_out(&focus, window, move |panel, _, window, cx| {
+                panel.dismiss_composer_popover(&blurred, false, window, cx);
+            });
+            let activation = cx.observe_window_activation(window, move |panel, window, cx| {
+                if !window.is_window_active() {
+                    panel.dismiss_composer_popover(&deactivated, true, window, cx);
+                }
+            });
+            (focus, blur, activation)
+        });
     }
 
     /// Toggle the `/effort` suggestion menu from the effort pill.
@@ -6109,9 +6178,16 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Panel");
+        self.watch_composer_popover_focus(window, cx);
         self.expandable_viewport_height = self.transcript_list.viewport_bounds().size.height;
         if std::mem::take(&mut self.focus_pending) {
-            self.focus_input(window, cx);
+            if self.composer_popover_focus(cx).is_none()
+                && let Some(trigger) = self.composer_popover_trigger.take()
+            {
+                window.focus(&trigger, cx);
+            } else {
+                self.focus_input(window, cx);
+            }
         }
         if !self.tool_detail_motion.is_empty() {
             let now = Instant::now();
@@ -6949,7 +7025,15 @@ impl Render for Panel {
                 }
             }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.login.is_some() && event.keystroke.key == "escape" {
+                if this.swarm_list_open && event.keystroke.key == "escape" {
+                    let focus = this.swarm_list_focus.clone();
+                    let trigger = this.composer_popover_trigger.take();
+                    this.dismiss_composer_popover(&focus, true, window, cx);
+                    if let Some(trigger) = trigger {
+                        window.focus(&trigger, cx);
+                    }
+                    cx.stop_propagation();
+                } else if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
                     this.focus_input(window, cx);
                     cx.stop_propagation();

@@ -587,6 +587,57 @@ mod tests {
     }
 
     #[gpui::test]
+    fn keyboard_can_open_effort_and_escape_returns_to_its_trigger(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, _) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        let composer = vcx.update(|window, cx| window.focused(cx));
+        vcx.simulate_keystrokes("tab");
+        assert_ne!(vcx.update(|window, cx| window.focused(cx)), composer);
+        // The microphone sits beside the composer, then model and effort.
+        vcx.simulate_keystrokes("tab tab");
+        let trigger = vcx.update(|window, cx| window.focused(cx)).expect("effort focus");
+        assert_eq!(trigger, panel.read_with(vcx, |p, _| p.picker_triggers[PickerKind::Effort as usize].clone()));
+        vcx.simulate_keystrokes("enter");
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("enter").unwrap() });
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |p, _| p.picker_search.as_ref().is_some_and(|(kind, _)| *kind == PickerKind::Effort)));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_none());
+        assert!(vcx.update(|window, _| trigger.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn effort_picker_dismisses_on_focus_change_without_stealing_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        vcx.update(|window, _| window.activate_window());
+        vcx.run_until_parked();
+        vcx.simulate_input("valuable draft");
+        let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("picker-search").is_some());
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let outside = vcx.update(|window, cx| {
+            let outside = panel.read(cx).transcript_selection.read(cx).focus_handle();
+            window.focus(&outside, cx);
+            window.draw(cx).clear(cx);
+            outside
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        assert!(vcx.debug_bounds("picker-search").is_none());
+        assert!(vcx.update(|window, _| outside.is_focused(window)));
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        assert!(sent_efforts(&commands).is_empty());
+    }
+
+    #[gpui::test]
     fn effort_picker_keeps_draft_while_searching_selecting_and_cancelling(
         cx: &mut gpui::TestAppContext,
     ) {

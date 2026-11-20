@@ -219,6 +219,7 @@ pub struct PromptInput {
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
+    on_picker_outside: Option<popup::Dismiss>,
     command_models: Vec<String>,
     command_skills: Vec<(String, String)>,
     /// A standalone picker owns plain query text rather than a slash command.
@@ -1052,6 +1053,7 @@ impl PromptInput {
             on_submit: Box::new(on_submit),
             on_change: None,
             on_overlay_cancel: None,
+            on_picker_outside: None,
             command_models: Vec::new(),
             command_skills: Vec::new(),
             picker_prefix: None,
@@ -1624,6 +1626,17 @@ impl PromptInput {
 
     pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) -> bool + 'static) -> Self {
         self.on_overlay_cancel = Some(Box::new(cancel));
+        self
+    }
+
+    pub(crate) fn with_on_picker_outside(
+        mut self,
+        dismiss: impl Fn(&FocusHandle, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let focus = self.focus_handle.clone();
+        self.on_picker_outside = Some(std::rc::Rc::new(move |window, cx| {
+            dismiss(&focus, window, cx);
+        }));
         self
     }
 
@@ -4115,7 +4128,7 @@ impl Render for PromptInput {
         let command_visible = self.command_completion
             && self.accepted_command.as_ref() != Some(&self.content)
             && (!suggestions.is_empty()
-                || matches!(self.picker_prefix, Some("/model" | "/mode"))
+                || self.picker_prefix.is_some()
                 || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
@@ -4152,6 +4165,7 @@ impl Render for PromptInput {
             .flex_col()
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
+            .tab_index(0)
             .relative()
             .child({
                 let measured = self.composer_bounds.clone();
@@ -4222,13 +4236,11 @@ impl Render for PromptInput {
                                                         .py_2()
                                                         .text_size(px(12.0))
                                                         .text_color(Theme::global().TEXT_FAINT)
-                                                        .child(
-                                                            if self.picker_prefix == Some("/mode") {
-                                                                "No modes or skills match"
-                                                            } else {
-                                                                "No models match"
-                                                            },
-                                                        ),
+                                                        .child(match self.picker_prefix {
+                                                            Some("/effort") => "No effort levels match",
+                                                            Some("/mode") => "No modes or skills match",
+                                                            _ => "No models match",
+                                                        }),
                                                 )
                                             })
                                             .when(!suggestions.is_empty(), |el| {
@@ -4260,7 +4272,7 @@ impl Render for PromptInput {
                                     )),
                             ),
                         px(4.0 + 6.0 * (1.0 - menu_progress)),
-                    ))
+                    ).dismiss_outside(self.on_picker_outside.clone()))
                     .with_priority(1),
                 )
             })

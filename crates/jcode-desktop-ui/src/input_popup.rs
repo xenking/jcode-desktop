@@ -55,14 +55,23 @@ fn available_side(composer: Bounds<Pixels>, viewport: Size<Pixels>, gap: Pixels)
 pub(super) struct Popup {
     child: AnyElement,
     gap: Pixels,
+    dismiss: Option<Dismiss>,
 }
+
+pub(super) type Dismiss = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
 impl Popup {
     pub(super) fn new(child: impl IntoElement, gap: Pixels) -> Self {
         Self {
             child: child.into_any_element(),
             gap,
+            dismiss: None,
         }
+    }
+
+    pub(super) fn dismiss_outside(mut self, dismiss: Option<Dismiss>) -> Self {
+        self.dismiss = dismiss;
+        self
     }
 }
 
@@ -75,7 +84,7 @@ impl IntoElement for Popup {
 
 impl Element for Popup {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Bounds<Pixels>;
     fn id(&self) -> Option<ElementId> {
         None
     }
@@ -106,7 +115,7 @@ impl Element for Popup {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Bounds<Pixels> {
         let viewport = window.viewport_size();
         let width = bounds
             .size
@@ -131,20 +140,26 @@ impl Element for Popup {
                 bounds.bottom() + self.gap + measured.height + self.gap,
             )
         };
-        self.child
-            .prepaint_at(origin(anchor, measured, viewport, self.gap), window, cx);
+        let origin = origin(anchor, measured, viewport, self.gap);
+        self.child.prepaint_at(origin, window, cx);
+        Bounds::new(origin, measured)
     }
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        input: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        popup: &mut Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        if let Some(dismiss) = self.dismiss.clone() {
+            crate::popover::dismiss_outside(window, [input, *popup], move |window, cx| {
+                dismiss(window, cx);
+            });
+        }
     }
 }
 
