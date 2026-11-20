@@ -32,6 +32,14 @@ the user's real history.
   `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action open_session --params '{"session_id":"swarm-fixture-0"}'`,
   then `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state --session swarm-fixture-0`.
   Require the exact session. This is not clicking a search result.
+- **Sidebar todo counts:** launch with `--fixture sidebar-todos`. Capture the
+  sidebar with two project headers and no duplicate dock above the account footer.
+  Click `sidebar-todos:screenshot-fixture`, then
+  `sidebar-todos:session_owl_1795071600000_sidebar` with `drive --action click`.
+  Capture the orchestration panel after each click. The second capture must show
+  **Verify a background project**, phases 1 and 2, and the Review and Verification
+  lanes. `drive --action list` must show one orchestration panel and the original
+  chat only. This uses a private persisted snapshot, not a live daemon.
 - **Native browser paths, Linux:**
   `python3 scripts/verify-resume-panel.py target/resume-proof.png --binary target/debug/jcode-desktop`.
   Existing private-Xvfb acceptance covers workspace/single-panel browsing,

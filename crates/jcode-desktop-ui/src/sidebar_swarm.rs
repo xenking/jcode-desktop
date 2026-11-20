@@ -1423,12 +1423,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn todo_pill_activates_its_session(cx: &mut gpui::TestAppContext) {
+    fn todo_pill_opens_its_session_plan_without_opening_the_chat(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
             lead_with_workers(w, cx, &[]);
-            w.slots[w.active].panel.update(cx, |panel, cx| panel.test_set_todos(r#"[{"content":"Ship","status":"in_progress"},{"content":"Plan","status":"pending"},{"content":"Build","status":"completed"},{"content":"Skip","status":"cancelled"}]"#, cx));
+            w.slots[w.active].panel.update(cx, |panel, cx| panel.test_set_todos(r#"[{"content":"Ship","status":"in_progress","stage":2,"group":"Release"},{"content":"Build","status":"completed","stage":1,"group":"Build"}]"#, cx));
             let other = session("other", None);
             w.sessions.push(other.clone());
             w.active = w.open_session(other, cx);
@@ -1449,33 +1449,22 @@ mod tests {
         vcx.simulate_click(pill, gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "lead")
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                crate::panel::orchestration::SESSION_ID
+            );
         });
-        assert!(vcx.debug_bounds("pinned-todo-card").is_some());
-        for status in ["in_progress", "pending", "completed", "cancelled"] {
-            assert!(
-                vcx.debug_bounds(format!("pinned-todo-status-{status}").leak())
-                    .is_some(),
-                "missing {status}"
-            );
-        }
-        for item in ["Ship", "Plan", "Build", "Skip"] {
-            assert!(
-                vcx.debug_bounds(format!("pinned-todo-item-{item}").leak())
-                    .is_some(),
-                "missing {item}"
-            );
-        }
-        let pill = vcx
-            .debug_bounds(format!("sidebar-todos-{row}").leak())
-            .unwrap()
-            .center();
-        vcx.simulate_click(pill, gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("orchestration-todos-lead").is_some());
+        assert!(vcx.debug_bounds("pinned-todo-phase-1").is_some());
+        assert!(vcx.debug_bounds("pinned-todo-phase-2").is_some());
+        let title = vcx
+            .debug_bounds(format!("sidebar-session-title-{row}").leak())
+            .unwrap();
+        vcx.simulate_click(title.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("pinned-todo-card").is_none());
-        vcx.simulate_click(pill, gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("pinned-todo-card").is_some());
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "lead");
+        });
     }
 
     /// All three entry points open the worker: sidebar row, composer count

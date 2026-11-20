@@ -66,6 +66,7 @@ pub(crate) fn marker(
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
         || selector.starts_with("sidebar-worker:")
+        || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
         || matches!(selector, "compaction-divider" | "history:scroll-up")
 }

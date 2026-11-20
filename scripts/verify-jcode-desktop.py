@@ -188,8 +188,19 @@ class Instance:
         if self.manifest["fixture"] == "orb-todos":
             modes = []
         if self.manifest["fixture"] == "sidebar-todos":
+            session = "session_owl_1795071600000_sidebar"
+            todos = self.profile / "jcode" / "todos"
+            todos.mkdir()
+            save(todos / f"{session}.json", [
+                {"id": "review", "content": "Review the migration", "status": "completed",
+                 "priority": "high", "stage": 1, "group": "Review"},
+                {"id": "check", "content": "Check the isolated build", "status": "in_progress",
+                 "priority": "high", "stage": 2, "group": "Verification"},
+                {"id": "ship", "content": "Publish the result", "status": "pending",
+                 "priority": "medium", "stage": 2, "group": "Verification"},
+            ])
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="orb-todos",
-                       JCODE_DESKTOP_SCREENSHOT_COLLECTIONS="1")
+                       JCODE_DESKTOP_CONTROL_TODO_SESSION=session)
             modes = []
         if self.manifest["fixture"] == "tab-statuses":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",

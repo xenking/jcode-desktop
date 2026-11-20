@@ -423,6 +423,11 @@ pub enum Command {
     TodoState {
         session_id: String,
     },
+    /// Read a plan for the sidebar without owning or attaching to its session.
+    ReadTodoSnapshot {
+        session_id: String,
+        reply: async_channel::Sender<Option<jcode_sdk::todo::TodoSnapshot>>,
+    },
     /// Apply the persistent effects of a follow-up decision.
     AckTodoFollowUp {
         session_id: String,
@@ -572,6 +577,15 @@ impl Drop for BridgeLifetime {
 impl Bridge {
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    pub async fn read_todo_snapshot(
+        &self,
+        session_id: String,
+    ) -> Option<jcode_sdk::todo::TodoSnapshot> {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ReadTodoSnapshot { session_id, reply });
+        result.recv().await.ok().flatten()
     }
 
     /// Drain every pending update without blocking (test helpers only).
@@ -835,6 +849,10 @@ fn spawn_screenshot() -> Bridge {
         .spawn(move || {
             let history = screenshot_history::enabled().then(screenshot_history::session);
             while let Ok(command) = command_rx.recv() {
+                if let Command::ReadTodoSnapshot { session_id, reply } = &command {
+                    let _ = reply.try_send(persisted_todo_snapshot(session_id));
+                    continue;
+                }
                 if let Some(update) = history
                     .as_ref()
                     .and_then(|session| screenshot_history::reply(session, &command))
@@ -1635,6 +1653,23 @@ fn run_with_transports(
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
+            Command::ReadTodoSnapshot { session_id, reply } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-read-todo".into())
+                    .spawn(move || {
+                        let snapshot = persisted_todo_snapshot(&session_id).or_else(|| {
+                            let address = remote::SessionAddress::parse(&session_id).ok()?;
+                            let client = match &address.host {
+                                Some(host) => transports.connect(host),
+                                None => connect("todo-view"),
+                            }
+                            .ok()?;
+                            client.todo_state(&address.session_id).ok()
+                        });
+                        let _ = reply.try_send(snapshot);
+                    });
+            }
             Command::AckTodoFollowUp {
                 session_id,
                 effects,
@@ -2020,6 +2055,15 @@ pub fn todo_progress_in(home: &Path, sessions: &[SessionInfo]) -> HashMap<String
             })
         })
         .collect()
+}
+
+fn persisted_todo_snapshot(session_id: &str) -> Option<jcode_sdk::todo::TodoSnapshot> {
+    use jcode_sdk::todo::store;
+    if !store::is_safe_session_id(session_id) {
+        return None;
+    }
+    let snapshot = store::load_snapshot(&jcode_home()?, session_id);
+    (!snapshot.todos.is_empty()).then_some(snapshot)
 }
 
 /// One session a live process owns, for the orchestration panel. Built from

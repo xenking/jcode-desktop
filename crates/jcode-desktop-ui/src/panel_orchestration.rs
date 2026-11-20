@@ -2,9 +2,11 @@
 //! Deliberately shows nothing from the conversation itself.
 use std::time::Duration;
 
-use gpui::{Context, FontWeight, ScrollHandle, Task, Window, div, prelude::*, px};
+use gpui::{
+    Context, Entity, FontWeight, ScrollHandle, Subscription, Task, Window, div, prelude::*, px,
+};
 
-use super::{Panel, SessionOpener};
+use super::{Panel, SessionOpener, TodoCardPayload, render_todo_card_with_style};
 use crate::harness::{LiveSession, UnfinishedTodo};
 use crate::theme::Theme;
 
@@ -17,6 +19,21 @@ pub(super) struct State {
     scroll: ScrollHandle,
     opener: Option<SessionOpener>,
     _poll: Option<Task<()>>,
+    focused: Option<FocusedTodos>,
+}
+
+struct FocusedTodos {
+    session_id: String,
+    title: String,
+    plan: FocusedPlan,
+    _read: Option<Task<()>>,
+    _observe: Option<Subscription>,
+}
+
+enum FocusedPlan {
+    Loading,
+    Unavailable,
+    Ready(TodoCardPayload),
 }
 
 impl State {
@@ -28,6 +45,7 @@ impl State {
             scroll: ScrollHandle::new(),
             opener: None,
             _poll: None,
+            focused: None,
         }
     }
 }
@@ -75,6 +93,7 @@ impl Panel {
             scroll: ScrollHandle::new(),
             opener: Some(opener),
             _poll: poll,
+            focused: None,
         });
         panel
     }
@@ -90,10 +109,86 @@ impl Panel {
         }
     }
 
+    pub(crate) fn set_orchestration_focus(
+        &mut self,
+        target: Option<(jcode_sdk::SessionInfo, Option<Entity<Panel>>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.orchestration.as_mut() else {
+            return;
+        };
+        if target.is_none() && state.focused.is_none() {
+            return;
+        }
+        state.scroll.set_offset(gpui::point(px(0.), px(0.)));
+        state.focused = target.map(|(session, source)| {
+            let session_id = session.session_id;
+            let title = session
+                .title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| session_id.clone());
+            if let Some(source) = source
+                && let Some(payload) = source.read(cx).latest_todo_card().cloned()
+            {
+                let observed_id = session_id.clone();
+                let observe = cx.observe(&source, move |this, source, cx| {
+                    if let Some(payload) = source.read(cx).latest_todo_card().cloned() {
+                        this.receive_focused_plan(&observed_id, Some(payload), cx);
+                    }
+                });
+                FocusedTodos {
+                    session_id,
+                    title,
+                    plan: FocusedPlan::Ready(payload),
+                    _read: None,
+                    _observe: Some(observe),
+                }
+            } else {
+                let bridge = self.bridge.clone();
+                let id = session_id.clone();
+                let read = cx.spawn(async move |panel, cx| {
+                    let payload = bridge.read_todo_snapshot(id.clone()).await.map(Into::into);
+                    let _ =
+                        panel.update(cx, |panel, cx| panel.receive_focused_plan(&id, payload, cx));
+                });
+                FocusedTodos {
+                    session_id,
+                    title,
+                    plan: FocusedPlan::Loading,
+                    _read: Some(read),
+                    _observe: None,
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    fn receive_focused_plan(
+        &mut self,
+        id: &str,
+        payload: Option<TodoCardPayload>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(focus) = self
+            .orchestration
+            .as_mut()
+            .and_then(|state| state.focused.as_mut())
+        else {
+            return;
+        };
+        if focus.session_id != id
+            || matches!((&focus.plan, &payload), (FocusedPlan::Ready(known), Some(new)) if known == new)
+        {
+            return;
+        }
+        focus.plan = payload.map_or(FocusedPlan::Unavailable, FocusedPlan::Ready);
+        cx.notify();
+    }
+
     pub(super) fn render_orchestration(
         &mut self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let state = self.orchestration.as_ref().expect("orchestration state");
         let running = state.sessions.iter().filter(|s| s.running).count();
@@ -109,7 +204,35 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2();
-        if state.sessions.is_empty() {
+        if let Some(focus) = &state.focused {
+            let id = focus.session_id.clone();
+            list = list.child(
+                div()
+                    .debug_selector(move || format!("orchestration-todos-{id}"))
+                    .flex_none()
+                    .w_full()
+                    .child(match &focus.plan {
+                        FocusedPlan::Ready(payload) => render_todo_card_with_style(
+                            payload,
+                            true,
+                            "orchestration-todos",
+                            &self.transcript_selection,
+                            window,
+                            cx,
+                        ),
+                        plan => div()
+                            .pt_2()
+                            .text_size(px(12.))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(if matches!(plan, FocusedPlan::Loading) {
+                                "Loading session todos…"
+                            } else {
+                                "Could not load this session’s todos."
+                            })
+                            .into_any_element(),
+                    }),
+            );
+        } else if state.sessions.is_empty() {
             list = list.child(
                 div()
                     .mt_4()
@@ -121,9 +244,10 @@ impl Panel {
                         "Looking for live sessions…"
                     }),
             );
-        }
-        for (index, session) in state.sessions.iter().enumerate() {
-            list = list.child(render_session(index, session, state.opener.clone()));
+        } else {
+            for (index, session) in state.sessions.iter().enumerate() {
+                list = list.child(render_session(index, session, state.opener.clone()));
+            }
         }
         div()
             .size_full()
@@ -143,6 +267,7 @@ impl Panel {
                     .gap_2()
                     .child(
                         div()
+                            .flex_none()
                             .text_size(px(18.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Orchestration"),
@@ -150,10 +275,33 @@ impl Panel {
                     .child(
                         div()
                             .debug_selector(|| "orchestration-summary".into())
+                            .min_w_0()
+                            .truncate()
                             .text_size(px(11.))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(format!("{} live · {running} running", state.sessions.len())),
-                    ),
+                            .child(state.focused.as_ref().map_or_else(
+                                || format!("{} live · {running} running", state.sessions.len()),
+                                |focus| focus.title.clone(),
+                            )),
+                    )
+                    .when(state.focused.is_some(), |header| {
+                        header.child(
+                            div()
+                                .id("orchestration-all-sessions")
+                                .flex_none()
+                                .rounded_full()
+                                .bg(Theme::global().HEADER_BG)
+                                .px_2()
+                                .py_1()
+                                .text_size(px(11.))
+                                .cursor_pointer()
+                                .hover(|button| button.bg(Theme::global().TOOL_BG))
+                                .child("All sessions")
+                                .on_click(cx.listener(|panel, _, _, cx| {
+                                    panel.set_orchestration_focus(None, cx)
+                                })),
+                        )
+                    }),
             )
             .child(div().flex_1().min_h_0().relative().child(list).child(
                 crate::scrollbar::vertical(&state.scroll, "orchestration-scrollbar"),

@@ -1356,6 +1356,20 @@ impl Workspace {
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture(cx);
             workspace.init_collections_fixture();
+            if crate::fixture_control_targets::enabled()
+                && let Ok(session_id) = std::env::var("JCODE_DESKTOP_CONTROL_TODO_SESSION")
+                && let Some(home) = harness::jcode_home()
+            {
+                let mut session = workspace.sessions[0].clone();
+                session.session_id = session_id;
+                session.title = Some("Verify a background project".into());
+                session.working_dir = Some("/workspace/side-project".into());
+                session.transcript_bytes = Some(65_600_000);
+                session.user_connected = true;
+                workspace.sidebar_todo_progress =
+                    harness::todo_progress_in(&home, std::slice::from_ref(&session));
+                workspace.sessions.push(session);
+            }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_SWARM").as_deref() == Ok("real") {
                 workspace.load_real_swarm_fixture(cx);
             } else if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
@@ -4286,16 +4300,44 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_orchestration(None, window, cx);
+    }
+
+    fn show_orchestration(
+        &mut self,
+        target: Option<jcode_sdk::SessionInfo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = target.map(|session| {
+            let source = self
+                .slots
+                .iter()
+                .find(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
+            (session, source.map(|slot| slot.panel.clone()))
+        });
         if let Some(index) = self.slots.iter().position(|slot| {
-            slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
+            !slot.closing
+                && slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
         }) {
+            self.slots[index]
+                .panel
+                .update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
         }
         let opener = self.orchestration_opener(cx);
         let panel = cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx));
-        self.insert_spawned_panel(panel, window, cx);
+        if self.single_panel {
+            match panel_window::open_panel_window(panel, None, window, cx) {
+                Ok(panel) => panel.update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx)),
+                Err(error) => eprintln!("Could not open orchestration window: {error:#}"),
+            }
+        } else {
+            panel.update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
+            self.insert_spawned_panel(panel, window, cx);
+        }
     }
 
     fn open_openrig(&mut self, _: &OpenOpenrig, window: &mut Window, cx: &mut Context<Self>) {
@@ -7019,7 +7061,12 @@ impl Workspace {
                                                     div()
                                                         .id(("sidebar-todos", sidebar_index))
                                                         .min_w_0().flex().items_center().gap(px(2.0))
+                                                        .relative()
                                                         .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
+                                                        .children(crate::fixture_control_targets::marker(
+                                                            || format!("sidebar-todos:{}", todo_session.session_id),
+                                                            || None,
+                                                        ))
                                                         .when(done == total, |el| el.text_color(Theme::global().OK))
                                                         .rounded_full().pr(px(2.0)).cursor_pointer()
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
@@ -7028,8 +7075,7 @@ impl Workspace {
                                                             window.prevent_default();
                                                             cx.stop_propagation();
                                                             this.sidebar_gesture = None;
-                                                            this.activate_session(todo_session.clone(), window, cx);
-                                                            this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
+                                                            this.show_orchestration(Some(todo_session.clone()), window, cx);
                                                         }))
                                                         .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
                                                             gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })

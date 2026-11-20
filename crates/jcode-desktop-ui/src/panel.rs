@@ -466,6 +466,32 @@ pub struct TodoCardPayload {
     goals: Vec<jcode_base::todo::TodoGoal>,
 }
 
+impl From<jcode_sdk::todo::TodoSnapshot> for TodoCardPayload {
+    fn from(snapshot: jcode_sdk::todo::TodoSnapshot) -> Self {
+        Self {
+            todos: snapshot
+                .todos
+                .into_iter()
+                .map(|todo| TodoCardItem {
+                    content: todo.content,
+                    status: todo.status,
+                    group: todo.group,
+                    stage: todo.stage,
+                    assigned_to: todo.assigned_to,
+                    blocked_by: todo.blocked_by,
+                    confidence: todo.confidence,
+                    completion_confidence: todo.completion_confidence,
+                })
+                .collect(),
+            plan: TodoCardPlan {
+                user_intention: snapshot.plan.user_intention,
+                understands_user_intent: snapshot.plan.understands_user_intent,
+            },
+            goals: snapshot.goals,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct TodoCardPlan {
     #[serde(default)]
@@ -704,9 +730,6 @@ pub struct Panel {
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
     publish_armed_at: Option<Instant>,
-    /// Whether the session's pinned todo card is hidden by its sidebar button.
-    todo_card_hidden: bool,
-    todo_status_view: bool,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -1451,8 +1474,6 @@ impl Panel {
             swarm_scrolls: Default::default(),
             publish_tracker: false,
             publish_armed_at: None,
-            todo_card_hidden: false,
-            todo_status_view: false,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -4348,21 +4369,17 @@ impl Panel {
         cx.notify();
     }
 
-    pub(crate) fn show_or_toggle_todos(&mut self, toggle: bool, cx: &mut Context<Self>) {
-        self.todo_card_hidden = toggle && self.todo_status_view && !self.todo_card_hidden;
-        self.todo_status_view = true;
-        cx.notify();
+    fn latest_todo_card(&self) -> Option<&TodoCardPayload> {
+        self.items.iter().rev().find_map(|item| match item {
+            Item::Todos(payload) => Some(payload),
+            _ => None,
+        })
     }
 
     pub(crate) fn latest_todo_progress(&self) -> Option<(usize, usize)> {
-        self.items
-            .iter()
-            .rev()
-            .find_map(|item| {
-                let Item::Todos(payload) = item else {
-                    return None;
-                };
-                Some((
+        self.latest_todo_card()
+            .map(|payload| {
+                (
                     payload
                         .todos
                         .iter()
@@ -4373,7 +4390,7 @@ impl Panel {
                         .iter()
                         .filter(|todo| todo.status != "cancelled")
                         .count(),
-                ))
+                )
             })
             .filter(|(_, total)| *total > 0)
     }
@@ -5138,7 +5155,6 @@ impl Panel {
             Item::Todos(payload) => render_todo_card_with_style(
                 payload,
                 false,
-                false,
                 &format!("todo-{index}"),
                 &self.transcript_selection,
                 window,
@@ -5536,7 +5552,6 @@ impl Panel {
                             parse_todo_tool_output(output).map(|payload| {
                                 render_todo_card_with_style(
                                     &payload,
-                                    false,
                                     false,
                                     &format!("todo-{index}"),
                                     &self.transcript_selection,
@@ -6304,9 +6319,8 @@ impl Render for Panel {
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
-        let pinned_todo = latest_todo.filter(|payload| {
-            !payload.todos.is_empty() && publish_tracker.is_none() && !self.todo_card_hidden
-        });
+        let pinned_todo = latest_todo
+            .filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
         let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
@@ -6870,7 +6884,6 @@ impl Render for Panel {
                     .child(render_todo_card_with_style(
                         &payload,
                         true,
-                        self.todo_status_view,
                         "pinned-todo",
                         &self.transcript_selection,
                         window,
@@ -7950,7 +7963,6 @@ fn intent_understanding_tone(state: jcode_base::todo::IntentUnderstanding) -> To
 fn render_todo_card_with_style(
     payload: &TodoCardPayload,
     pinned: bool,
-    status_view: bool,
     key: &str,
     selection: &Entity<TextSelection>,
     window: &Window,
@@ -7977,15 +7989,12 @@ fn render_todo_card_with_style(
 
     let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
     for todo in &payload.todos {
-        let group = if status_view {
-            Some(todo.status.as_str())
-        } else {
-            todo.group
-                .as_deref()
-                .map(str::trim)
-                .filter(|g| !g.is_empty())
-        };
-        let stage = if status_view { None } else { todo.stage };
+        let group = todo
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty());
+        let stage = todo.stage;
         if let Some((_, _, items)) = groups
             .iter_mut()
             .find(|(known_stage, known, _)| *known_stage == stage && *known == group)
@@ -7995,17 +8004,7 @@ fn render_todo_card_with_style(
             groups.push((stage, group, vec![todo]));
         }
     }
-    if status_view {
-        groups.sort_by_key(|(_, group, _)| match *group {
-            Some("in_progress") => 0,
-            Some("pending") => 1,
-            Some("completed") => 2,
-            Some("cancelled") => 3,
-            _ => 4,
-        });
-    } else {
-        groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
-    }
+    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -8044,12 +8043,8 @@ fn render_todo_card_with_style(
             }
             let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
-                let status_selector = format!("pinned-todo-status-{}", group.unwrap_or("other"));
                 section = section.child(
                     div()
-                        .when(status_view, |el| {
-                            el.debug_selector(move || status_selector.clone())
-                        })
                         .flex()
                         .items_center()
                         .justify_between()
@@ -8078,11 +8073,10 @@ fn render_todo_card_with_style(
                         ),
                 );
             }
-            if !status_view && let Some(goal) = todo_goal_for_group(&payload.goals, group) {
+            if let Some(goal) = todo_goal_for_group(&payload.goals, group) {
                 section = section.child(render_todo_gate_row(goal));
             }
             for (todo_index, todo) in todos.into_iter().enumerate() {
-                let item_selector = format!("pinned-todo-item-{}", todo.content);
                 section = section.child(
                     div()
                         .debug_selector(|| "todo-row".into())
@@ -8096,13 +8090,7 @@ fn render_todo_card_with_style(
                         ))
                         .child(
                             div()
-                                .debug_selector(move || {
-                                    if status_view {
-                                        item_selector.clone()
-                                    } else {
-                                        "todo-row-content".into()
-                                    }
-                                })
+                                .debug_selector(|| "todo-row-content".into())
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
