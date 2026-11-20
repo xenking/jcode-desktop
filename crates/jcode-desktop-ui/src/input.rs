@@ -1932,10 +1932,7 @@ impl PromptInput {
             && self.content.trim_start().split_whitespace().next() == Some("/mode")
             && !self.content.contains('\n')
         {
-            self.set_content(String::new(), cx);
-            if let Some(on_change) = &self.on_change {
-                on_change(&self.content, cx);
-            }
+            self.set_transient_notice("No matching session mode".into(), cx);
             return;
         }
         self.submit_prompt(false, window, cx);
@@ -1992,6 +1989,15 @@ impl PromptInput {
         if !self.submission_enabled || self.queue_editor {
             return;
         }
+        if self.command_completion
+            && self.picker_prefix.is_none()
+            && self.attachments.is_empty()
+            && let Some(crate::panel::workspace_commands::parse::WorkspaceCommand::Invalid(usage)) =
+                crate::panel::workspace_commands::parse::parse(&self.content)
+        {
+            self.set_transient_notice(usage.into(), cx);
+            return;
+        }
         if self.pending_session
             && self.command_completion
             && self.content.trim_start().starts_with('/')
@@ -2030,6 +2036,7 @@ impl PromptInput {
                 && suggestions.is_empty()
                 && self.accepted_command.as_ref() != Some(&self.content)
             {
+                self.set_transient_notice("No matching models".into(), cx);
                 return;
             }
             if let Some(step) = suggestions
@@ -2148,6 +2155,7 @@ impl PromptInput {
             history_content.replace_range(range, &history);
         }
         self.attachment_notice = None;
+        self.transient_notice = None;
         self.attachment_preview = None;
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = "".into();
@@ -5876,6 +5884,59 @@ mod tests {
                 assert_eq!(input.history.last().map(String::as_str), Some("/help"));
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn registered_slash_commands_submit_or_keep_the_draft_with_feedback(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        for command in crate::commands::REGISTERED_COMMANDS {
+            let model_step_visible = |input: &PromptInput| {
+                command.name == "/model"
+                    && (input.model_stage != model_stage::ModelStage::Models
+                        || !input.expanded_model_groups.is_empty())
+                    && !input.command_suggestions().is_empty()
+            };
+            window
+                .update(cx, |input, _, cx| {
+                    input.history.clear();
+                    input.transient_notice = None;
+                    input.model_stage = Default::default();
+                    input.expanded_model_groups.clear();
+                    input.set_content(command.name.into(), cx);
+                })
+                .unwrap();
+            // Enter may first accept the visible completion and leave it in
+            // the editor. A second Enter must not make it silently disappear.
+            let mut confirmed = command.name.to_owned();
+            for _ in 0..2 {
+                confirmed = window
+                    .update(cx, |input, _, _| input.content.to_string())
+                    .unwrap();
+                cx.simulate_keystrokes(*window, "enter");
+                if window
+                    .update(cx, |input, _, _| {
+                        input.content.is_empty()
+                            || input.transient_notice.is_some()
+                            || model_step_visible(input)
+                    })
+                    .unwrap()
+                {
+                    break;
+                }
+            }
+            window
+                .update(cx, |input, _, _| {
+                    assert!(
+                        input.history.last().is_some_and(|entry| entry == confirmed.trim())
+                            || (!input.content.is_empty() && input.transient_notice.is_some())
+                            || model_step_visible(input),
+                        "{} was neither submitted nor retained with feedback: draft={:?}, history={:?}, notice={:?}, stage={:?}, expanded={:?}",
+                        command.name, input.content, input.history, input.transient_notice,
+                        input.model_stage, input.expanded_model_groups,
+                    );
+                })
+                .unwrap();
+        }
     }
 
     #[gpui::test]

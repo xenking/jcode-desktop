@@ -253,6 +253,11 @@ impl Panel {
             "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),
             "picker": self.picker_search.as_ref().map(|(kind, _)| picker_name(*kind)),
             "composer": self.input.read(cx).snapshot().content,
+            "fixture_side_question": crate::fixture_control_targets::draft_session().then(|| {
+                self.side_question_card_opt().map(|card| serde_json::json!({
+                    "question": card.question, "answer": card.answer, "working": card.is_working(),
+                }))
+            }).flatten(),
             "composer_focus": self.input.read(cx).focus_handle.is_focused(window),
             "picker_trigger_focus": picker_trigger_focus,
             "swarm_trigger_focus": self.swarm_trigger_focus.is_focused(window),

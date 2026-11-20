@@ -381,6 +381,19 @@ impl Panel {
         });
     }
 
+    pub(super) fn render_composer_cards(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Iterator<Item = gpui::AnyElement> {
+        [
+            self.render_side_question_card(cx),
+            self.render_prompt_queue(cx),
+            self.render_voice_pending(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// The ordinary composer, floating over the bottom of the transcript.
     /// History scrolls beneath a translucent veil instead of stopping at a
     /// hard edge. The veil eases from clear to mostly opaque so text behind
@@ -485,9 +498,7 @@ impl Panel {
                                 self.has_visible_queued_prompts() && self.ask_card.is_none(),
                                 |el| el.gap_0(),
                             )
-                            .children(self.render_side_question_card(cx))
-                            .children(self.render_prompt_queue(cx))
-                            .children(self.render_voice_pending())
+                            .children(self.render_composer_cards(cx))
                             .child(self.render_composer(window, cx))
                             .when(self.ask_card.is_none(), |el| {
                                 el.child(startup::input_marker(input_bounds))

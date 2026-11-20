@@ -240,6 +240,29 @@ fn command_unavailable_message(input: &str) -> String {
     }
 }
 
+fn enter_sends_over_queue(content: &str, queued: bool, visible_queue: bool) -> bool {
+    !queued
+        && visible_queue
+        && content.split_whitespace().next().and_then(registered_command).is_none()
+        && jcode_base::skill::SkillRegistry::parse_invocation(content).is_none()
+}
+
+#[cfg(test)]
+#[test]
+fn registered_slash_commands_never_bypass_dispatch_over_a_prompt_queue() {
+    for visible_queue in [false, true] {
+        for command in crate::commands::REGISTERED_COMMANDS {
+            assert!(
+                !enter_sends_over_queue(command.name, false, visible_queue),
+                "{} went to the model with visible_queue={visible_queue}",
+                command.name,
+            );
+        }
+    }
+    assert!(enter_sends_over_queue("new prompt", false, true));
+    assert!(enter_sends_over_queue("", false, true));
+}
+
 /// The transcript items, with a revision that advances on every mutable
 /// access. Rendering derives rows, selectable text and pinned chrome from the
 /// items; the revision lets it reuse them across frames that only move the
@@ -2454,10 +2477,8 @@ impl Panel {
                             }
                             return;
                         }
-                        if !queued
-                            && jcode_base::skill::SkillRegistry::parse_invocation(&content).is_none()
-                            && let Some(panel) = weak.upgrade()
-                            && panel.read(app).has_visible_queued_prompts()
+                        if let Some(panel) = weak.upgrade()
+                            && enter_sends_over_queue(&content, queued, panel.read(app).has_visible_queued_prompts())
                         {
                             panel.update(app, |this, cx| {
                                 this.submit_or_queue(content, images, false, cx)
@@ -3008,7 +3029,8 @@ impl Panel {
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
                 ),
-                _ if jcode_base::skill::SkillRegistry::parse_invocation(trimmed).is_some() => self.items.push(Item::Error(command_unavailable_message(trimmed).to_string())),
+                _ if trimmed.split_whitespace().next().and_then(registered_command).is_some()
+                    || jcode_base::skill::SkillRegistry::parse_invocation(trimmed).is_some() => self.items.push(Item::Error(command_unavailable_message(trimmed))),
                 _ => return false,
             }
         }
@@ -6705,8 +6727,7 @@ impl Render for Panel {
                                 .flex_col()
                                 .gap_2()
                                 .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                .children(self.render_prompt_queue(cx))
-                                .children(self.render_voice_pending())
+                                .children(self.render_composer_cards(cx))
                                 .child(self.render_composer(window, cx))
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
@@ -6886,8 +6907,7 @@ impl Render for Panel {
                                     .flex_col()
                                     .gap_2()
                                     .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                    .children(self.render_prompt_queue(cx))
-                                    .children(self.render_voice_pending())
+                                    .children(self.render_composer_cards(cx))
                                     .child(self.render_composer(window, cx))
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),

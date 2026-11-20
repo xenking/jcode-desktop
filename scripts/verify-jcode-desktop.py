@@ -336,6 +336,8 @@ class Instance:
             return self.transcript_scroll_journey()
         if name == "draft-session":
             return self.draft_session_journey()
+        if name == "side-question":
+            return self.side_question_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -378,6 +380,53 @@ class Instance:
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
         save(self.run / f"{name}-proof.json", report)
         return report
+
+    def side_question_journey(self):
+        if self.manifest["fixture"] != "draft-session":
+            raise RuntimeError("side-question requires --fixture draft-session")
+        source = "session_verifier_draft"
+        question = "What is the retry policy?"
+        self.drive("set_composer", {"text": "Start a background wait"})
+        self.drive("click", {"selector": "composer.send"})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            listing = self.drive("list")
+            if any(p["session"] == source for row in listing["navigation"]["rows"] for p in row["panels"]):
+                self.target["session_id"] = source
+                before = self.drive("state")
+                if before["panel"]["status"] == "running_tools":
+                    break
+            time.sleep(.05)
+        else:
+            raise RuntimeError("the fixture's first prompt did not start running tools")
+        save(self.run / "side-question-before.json", before)
+        self.screenshot("side-question-before.png")
+        self.drive("set_composer", {"text": "/btw"})
+        self.drive("press_key", {"key": "fixture:enter"})
+        if self.drive("state")["panel"]["composer"] != "/btw":
+            raise RuntimeError("bare /btw did not retain the draft")
+        self.screenshot("side-question-usage.png")
+        self.drive("set_composer", {"text": f"/btw {question}"})
+        self.drive("press_key", {"key": "fixture:enter"})
+        expected = {"question": question, "answer": "The retry policy uses a short backoff.", "working": False}
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            after = self.drive("state")
+            if after["panel"]["fixture_side_question"] == expected:
+                break
+            time.sleep(.05)
+        else:
+            raise RuntimeError("the hidden fork's answer did not reach the card")
+        if (after["panel"]["status"] != "running_tools" or after["panel"]["composer"]
+                or after["panel"]["loaded_transcript_items"] != before["panel"]["loaded_transcript_items"]
+                or after["fixture_sidebar_sessions"] != [source]):
+            raise RuntimeError("the side question changed the parent chat or leaked into the sidebar")
+        save(self.run / "side-question-after.json", after)
+        photo = self.screenshot("side-question-after.png")
+        proof = {"passed": True, "scope": "native Enter with an offline side question reply",
+                 "source_status": after["panel"]["status"], "card": expected, "screenshot": photo}
+        save(self.run / "side-question-proof.json", proof)
+        return proof
 
     def draft_session_journey(self):
         if self.manifest["fixture"] != "draft-session":
@@ -790,7 +839,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

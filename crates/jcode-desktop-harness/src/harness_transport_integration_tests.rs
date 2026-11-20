@@ -357,6 +357,12 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
 
 #[test]
 fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
+    for status in ["idle", "running_tools"] {
+        assert_side_question_reaches_hidden_fork(status);
+    }
+}
+
+fn assert_side_question_reaches_hidden_fork(status: &str) {
     let fixture = Fixture::new();
     let (commands, updates, bridge) = bridge_loop(fixture.pool);
     let parent_id = remote::namespace("btw-host", "parent");
@@ -365,7 +371,7 @@ fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
             session_id: parent_id.clone(),
         })
         .unwrap();
-    let (host, parent_index, parent_socket) = fixture
+    let (host, parent_index, mut parent_socket) = fixture
         .connections
         .recv_timeout(Duration::from_secs(3))
         .unwrap();
@@ -374,6 +380,21 @@ fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
         &updates,
         |update| matches!(update, Update::SessionConnected { session_id } if session_id == &parent_id),
     );
+    write_frame(
+        &mut parent_socket,
+        &ServerFrame::event(ApiEvent::SessionStatus {
+            session_id: "parent".into(),
+            status: status.into(),
+            pending_soft_interrupts: None,
+        }),
+    )
+    .unwrap();
+    until(&updates, |update| {
+        matches!(update,
+            Update::Event { session_id, event: ApiEvent::SessionStatus { status: observed, .. }, .. }
+                if session_id == &parent_id && observed == status
+        )
+    });
     commands
         .send(Command::SideQuestion {
             session_id: parent_id.clone(),

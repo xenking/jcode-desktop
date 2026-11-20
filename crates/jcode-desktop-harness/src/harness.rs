@@ -871,8 +871,43 @@ fn spawn_screenshot() -> Bridge {
                         "session_id": "session_verifier_draft", "working_dir": working_dir,
                         "title": "Native draft verification", "status": "idle"
                     })).expect("draft fixture session");
+                    let session_id = session.session_id.clone();
                     let _ = update_tx.send(Update::SessionCreated { session, request_id: request_id.clone() });
+                    let _ = update_tx.send(Update::History { session_id, messages: vec![], images: vec![] });
                     continue;
+                }
+                if draft {
+                    match &command {
+                        Command::Send { session_id, .. } => {
+                            let _ = update_tx.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::SessionStatus {
+                                    session_id: session_id.clone(),
+                                    status: "running_tools".into(),
+                                    pending_soft_interrupts: None,
+                                },
+                            });
+                            continue;
+                        }
+                        Command::SideQuestion { session_id, question } => {
+                            let child = "session_verifier_side_question";
+                            let session = serde_json::from_value(serde_json::json!({
+                                "session_id": child, "status": "idle"
+                            })).expect("side question fixture session");
+                            let _ = update_tx.send(Update::SideQuestionStarted {
+                                parent_session_id: session_id.clone(), session, question: question.clone(),
+                            });
+                            for event in [
+                                ApiEvent::TextDelta { session_id: child.into(), message_id: None,
+                                    text: "The retry policy uses a short backoff.".into() },
+                                ApiEvent::TurnDone { session_id: child.into(), pending_soft_interrupts: None },
+                            ] {
+                                let _ = update_tx.send(Update::Event { session_id: child.into(), event });
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
                 if let Command::ReadTodoSnapshot { session_id, reply } = &command {
                     let _ = reply.try_send(persisted_todo_snapshot(session_id));

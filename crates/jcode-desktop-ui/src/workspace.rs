@@ -2962,6 +2962,16 @@ impl Workspace {
                 }
             }
             Update::CommandFailed { session_id, reason } => {
+                if self.route_side_question_event(
+                    &session_id,
+                    &jcode_sdk::ApiEvent::Error {
+                        code: jcode_sdk::api::ErrorCode::Internal,
+                        message: reason.clone(),
+                    },
+                    cx,
+                ) {
+                    return true;
+                }
                 if session_id == Panel::STARTUP_SESSION_ID {
                     self.remotes.startup_failed = true;
                 }
