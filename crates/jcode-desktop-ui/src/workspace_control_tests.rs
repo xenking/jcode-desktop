@@ -478,6 +478,61 @@ fn state_targets_exact_window_and_session(cx: &mut gpui::TestAppContext) {
 
 #[cfg(unix)]
 #[gpui::test]
+fn desktop_control_pointer_move_can_update_workspace(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w.push_test_panel("session-b", cx);
+        w
+    });
+    vcx.run_until_parked();
+    let position = vcx.debug_bounds("live-session-tab-1-slot").unwrap().center();
+    vcx.update(|window, cx| {
+        let target = DesktopTarget {
+            window_id: format!(
+                "{}:{}",
+                std::process::id(),
+                window.window_handle().window_id().as_u64()
+            ),
+            session_id: "session-b".into(),
+        };
+        let selector = format!(
+            "proof-pointer:{},{}",
+            f32::from(position.x),
+            f32::from(position.y)
+        );
+        let request = |allow_user_window| DesktopRequest {
+            v: DESKTOP_CONTROL_VERSION,
+            action: DesktopAction::Click {
+                target: target.clone(),
+                selector: selector.clone(),
+                allow_user_window,
+            },
+        };
+        assert_ne!(window.mouse_position(), position);
+        for (allow_user_window, fixture_enabled) in [(false, true), (true, false)] {
+            assert!(matches!(
+                control::handle_window_request(
+                    &workspace,
+                    request(allow_user_window),
+                    fixture_enabled,
+                    window,
+                    cx
+                ),
+                DesktopResponse::Error { code, .. } if code == "user_window_protected"
+            ));
+        }
+        assert_ne!(window.mouse_position(), position);
+        assert!(matches!(
+            control::handle_window_request(&workspace, request(true), true, window, cx),
+            DesktopResponse::Ok { result } if result["selector"] == selector
+        ));
+        assert_eq!(window.mouse_position(), position);
+    });
+}
+
+#[cfg(unix)]
+#[gpui::test]
 fn isolated_socket_routes_to_workspace(cx: &mut gpui::TestAppContext) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::Builder::new()
@@ -513,8 +568,8 @@ fn isolated_socket_routes_to_workspace(cx: &mut gpui::TestAppContext) {
         .unwrap()
     });
     let pending = rx.recv_blocking().unwrap();
-    let response = workspace.update_in(vcx, |workspace, window, cx| {
-        workspace.handle_desktop_request(pending.request, window, cx)
+    let response = vcx.update(|window, cx| {
+        control::handle_window_request(&workspace, pending.request, false, window, cx)
     });
     pending.reply.send(response).unwrap();
     let result = client.join().unwrap();

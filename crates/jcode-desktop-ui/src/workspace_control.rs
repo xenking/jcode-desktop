@@ -22,6 +22,56 @@ fn window_id(window: &Window) -> String {
     )
 }
 
+#[cfg(unix)]
+pub(super) fn handle_window_request(
+    workspace: &Entity<Workspace>,
+    request: DesktopRequest,
+    fixture_input_enabled: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> DesktopResponse {
+    if request.v != DESKTOP_CONTROL_VERSION {
+        return error("version", "unsupported Desktop control version");
+    }
+    if let DesktopAction::Click {
+        target,
+        selector,
+        allow_user_window,
+    } = &request.action
+        && crate::fixture_control_targets::is_selector(selector)
+    {
+        if !allow_user_window || !fixture_input_enabled {
+            return error(
+                "user_window_protected",
+                "fixture input requires the isolated control fixture and allow_user_window",
+            );
+        }
+        if let Err(response) = workspace.read(cx).control_target(target, window, cx) {
+            return response;
+        }
+        // Platform input can synchronously call listeners that update the Workspace.
+        // Route every synthetic event here, before taking its update lease.
+        return if crate::fixture_control_targets::dispatch(selector, &target.session_id, window, cx)
+        {
+            ok(json!({"selector": selector}))
+        } else {
+            error(
+                "selector_not_visible",
+                "fixture selector is not uniquely visible",
+            )
+        };
+    }
+    // Hidden windows do not receive compositor frames. Drawing can also
+    // update entities, so refresh before leasing the Workspace for capture.
+    if matches!(&request.action, DesktopAction::Render { .. }) {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.handle_desktop_request(request, window, cx)
+    })
+}
+
 impl Workspace {
     #[cfg(unix)]
     pub(super) fn start_desktop_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -39,51 +89,20 @@ impl Workspace {
                 if Instant::now() >= pending.deadline {
                     continue;
                 }
-                if let DesktopAction::Click { target, selector, allow_user_window } = &pending.request.action
-                    && crate::fixture_control_targets::is_selector(selector)
-                {
-                    let result = if pending.request.v != DESKTOP_CONTROL_VERSION {
-                        error("version", "unsupported Desktop control version")
-                    } else if !allow_user_window || !crate::fixture_control_targets::enabled() {
-                        error("user_window_protected", "fixture input requires the isolated control fixture and allow_user_window")
-                    } else {
-                        let Ok(validated) = this.update_in(cx, |workspace, window, cx| {
-                            workspace.control_target(target, window, cx)
-                        }) else { break };
-                        match validated {
-                            Err(response) => response,
-                            Ok(_) => {
-                                // Dispatch outside the Workspace borrow: its listeners may update it.
-                                let Ok(response) = cx.update(|window, cx| {
-                                    if crate::fixture_control_targets::dispatch(selector, &target.session_id, window, cx) {
-                                        ok(json!({"selector": selector}))
-                                    } else {
-                                        error("selector_not_visible", "fixture selector is not uniquely visible")
-                                    }
-                                }) else { break };
-                                response
-                            }
-                        }
-                    };
-                    let _ = pending.reply.send(result);
-                    continue;
-                }
-                // Hidden windows do not receive compositor frames. Draw outside
-                // the Workspace borrow so capture reflects the latest UI actions.
-                if matches!(&pending.request.action, DesktopAction::Render { .. })
-                    && cx
-                        .update(|window, cx| {
-                            window.refresh();
-                            window.draw(cx).clear(cx);
-                        })
-                        .is_err()
-                {
+                let Some(workspace) = this.upgrade() else {
                     break;
-                }
-                let response = this.update_in(cx, |workspace, window, cx| {
-                    workspace.handle_desktop_request(pending.request, window, cx)
-                });
-                let Ok(response) = response else { break };
+                };
+                let Ok(response) = cx.update(|window, cx| {
+                    handle_window_request(
+                        &workspace,
+                        pending.request,
+                        crate::fixture_control_targets::enabled(),
+                        window,
+                        cx,
+                    )
+                }) else {
+                    break;
+                };
                 let _ = pending.reply.send(response);
             }
         }));

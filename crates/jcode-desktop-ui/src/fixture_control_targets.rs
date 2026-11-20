@@ -68,10 +68,35 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
+        || selector.starts_with("proof-pointer:")
         || matches!(selector, "compaction-divider" | "history:scroll-up")
 }
 
 pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &mut App) -> bool {
+    if let Some(coordinates) = selector.strip_prefix("proof-pointer:") {
+        let Some((x, y)) = coordinates.split_once(',') else {
+            return false;
+        };
+        let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>()) else {
+            return false;
+        };
+        let viewport = window.viewport_size();
+        if !(0.0..f32::from(viewport.width)).contains(&x)
+            || !(0.0..f32::from(viewport.height)).contains(&y)
+        {
+            return false;
+        }
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: point(px(x), px(y)),
+                ..Default::default()
+            }),
+            cx,
+        );
+        return true;
+    }
     let Some(position) = locate(selector, session, window, cx) else {
         return false;
     };
