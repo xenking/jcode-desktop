@@ -35,6 +35,17 @@ fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
     vcx.run_until_parked();
 }
 
+fn hover_selected_tab(vcx: &mut gpui::VisualTestContext) {
+    let tab = vcx.debug_bounds("live-session-tab-0-slot").unwrap();
+    vcx.simulate_mouse_move(tab.center(), None, Default::default());
+    vcx.run_until_parked();
+}
+
+fn click_rename(vcx: &mut gpui::VisualTestContext) {
+    hover_selected_tab(vcx);
+    click(vcx, "rename-session-button");
+}
+
 #[test]
 fn title_validation_trims_preserves_unicode_and_rejects_blank_or_multiline() {
     assert_eq!(
@@ -95,14 +106,14 @@ fn f2_enter_renames_selected_session_without_consuming_composer(cx: &mut gpui::T
 #[gpui::test]
 fn button_cancel_escape_and_blank_save_never_rename(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     click(vcx, "rename-session-cancel");
     assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_none()));
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_none()));
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     vcx.simulate_keystrokes("backspace");
     click(vcx, "rename-session-save");
     assert!(workspace.read_with(vcx, |w, _| {
@@ -114,7 +125,7 @@ fn button_cancel_escape_and_blank_save_never_rename(cx: &mut gpui::TestAppContex
 #[gpui::test]
 fn save_keeps_captured_identity_and_server_event_updates_titles(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     workspace.update(vcx, |w, cx| {
         w.active = 1;
         w.rename_editor
@@ -206,7 +217,7 @@ fn enter_validates_blank_and_preserves_literal_slash_titles(cx: &mut gpui::TestA
 #[gpui::test]
 fn closed_target_does_not_rename_its_neighbor(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     workspace.update(vcx, |w, cx| {
         w.slots[0].closing = true;
         w.save_session_title("Never rename neighbor", cx);
@@ -218,7 +229,7 @@ fn closed_target_does_not_rename_its_neighbor(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn busy_session_retains_title_for_retry_after_turn(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "rename-session-button");
+    click_rename(vcx);
     workspace.update(vcx, |w, cx| {
         w.slots[0]
             .panel
@@ -254,6 +265,7 @@ fn rename_button_stays_clickable_without_squeezing_compact_tabs(cx: &mut gpui::T
     for width in [1440.0, 640.0, 420.0, 360.0] {
         vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.0)));
         vcx.run_until_parked();
+        hover_selected_tab(vcx);
         let button = vcx.debug_bounds("rename-session-button");
         let fps = vcx
             .debug_bounds("fps-counter")

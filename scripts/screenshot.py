@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--rename-interact", action="store_true",
                         help="verify native rename button, F2, validation, dismissal, and preserved composer draft")
     parser.add_argument("--tab-actions-interact", action="store_true",
-                        help="verify hover-only tab actions and shortcut tooltips")
+                        help="verify the tab close button, hover rename action, and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
     parser.add_argument("--collections", nargs="?", const="1", choices=("1", "menu", "form"),
                         help="show user-created collections above project groups (menu: a row's Move menu open, form: the editor)")

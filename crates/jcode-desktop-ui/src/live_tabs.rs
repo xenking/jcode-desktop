@@ -6,6 +6,8 @@ use crate::panel::folder_session_title;
 const TAB_FLOAT_GAP: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
+const TAB_HOVER_LIFT: f32 = 2.0;
+const TAB_RENAME_SIZE: f32 = 20.0;
 pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
 /// Compact windows swap the FPS readout for a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
@@ -68,6 +70,27 @@ struct TabGeometry {
 fn tab_surface(mut color: gpui::Rgba) -> gpui::Rgba {
     color.a = 1.0;
     color
+}
+
+#[derive(Clone, Copy)]
+struct TabCloseColors {
+    background: gpui::Rgba,
+    glyph: gpui::Rgba,
+    hover_background: gpui::Rgba,
+    hover_glyph: gpui::Rgba,
+}
+
+impl TabCloseColors {
+    fn for_tab(ring: Option<crate::panel::TabRing>, workspace_accent: gpui::Rgba) -> Self {
+        let accent = ring.map_or(workspace_accent, |ring| ring.color);
+        let text = Theme::global().TEXT;
+        Self {
+            background: accent.opacity(0.16),
+            glyph: text.blend(accent.opacity(0.75)),
+            hover_background: accent.opacity(0.32),
+            hover_glyph: text.blend(accent.opacity(0.45)),
+        }
+    }
 }
 
 /// A quiet chip uses only existing air to the right of every tab.
@@ -389,80 +412,72 @@ impl Workspace {
             .unwrap_or((self.active_row + 1) % STRIP_COUNT)
     }
 
-    /// Rename and close pills for a hovered tab. They float over the title's
-    /// faded end, so they never take width away from the title.
-    fn render_tab_actions(
+    fn tab_action(id: impl Into<gpui::ElementId>, size: f32) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+            })
+    }
+
+    fn render_tab_rename(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        Self::tab_action("rename-session-button", TAB_RENAME_SIZE)
+            .debug_selector(|| "rename-session-button".into())
+            .hover(|style| style.bg(Theme::global().PANEL_BG))
+            .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.rename_session(&RenameSession, window, cx);
+            }))
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                    .size(px(12.0))
+                    .text_color(Theme::global().TEXT_DIM),
+            )
+    }
+
+    fn render_tab_close(
         &self,
         index: usize,
-        can_rename: bool,
+        diameter: f32,
+        colors: TabCloseColors,
         cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        let pill = |el: gpui::Stateful<gpui::Div>| {
-            el.flex_none()
-                .size(px(20.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .text_color(Theme::global().TEXT_DIM)
-                .cursor_pointer()
-                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                    cx.stop_propagation();
-                    window.prevent_default();
-                })
-        };
-        let mut actions = Vec::new();
-        if can_rename {
-            actions.push(
-                pill(div().id("rename-session-button"))
-                    .debug_selector(|| "rename-session-button".into())
-                    .hover(|style| {
-                        style
-                            .bg(Theme::global().PANEL_BG)
-                            .text_color(Theme::global().TEXT)
+    ) -> gpui::Stateful<gpui::Div> {
+        Self::tab_action(("close-session-button", index), diameter)
+            .debug_selector(move || format!("close-session-button-{index}"))
+            .bg(colors.background)
+            .text_color(colors.glyph)
+            .text_size(px(diameter * 0.58))
+            .hover(move |style| {
+                style
+                    .bg(colors.hover_background)
+                    .text_color(colors.hover_glyph)
+            })
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    TabTooltip(if cfg!(target_os = "macos") {
+                        "Close tab (⌘Q)".into()
+                    } else {
+                        "Close tab (Super+Q)".into()
                     })
-                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.rename_session(&RenameSession, window, cx);
-                    }))
-                    .child(
-                        gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/pencil.svg"))
-                            .size(px(12.0))
-                            .text_color(Theme::global().TEXT_DIM),
-                    )
-                    .into_any_element(),
-            );
-        }
-        actions.push(
-            pill(div().id(("close-session-button", index)))
-                .debug_selector(move || format!("close-session-button-{index}"))
-                .text_size(px(16.0))
-                .hover(|style| {
-                    style
-                        .bg(Theme::global().ERROR_BG)
-                        .text_color(Theme::global().ERROR)
                 })
-                .tooltip(|_, cx| {
-                    cx.new(|_| {
-                        TabTooltip(if cfg!(target_os = "macos") {
-                            "Close tab (⌘Q)".into()
-                        } else {
-                            "Close tab (Super+Q)".into()
-                        })
-                    })
-                    .into()
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.set_active(index, cx);
-                    this.close_panel(&ClosePanel, window, cx);
-                }))
-                .child("×")
-                .into_any_element(),
-        );
-        actions
+                .into()
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.set_active(index, cx);
+                this.close_panel(&ClosePanel, window, cx);
+            }))
+            .child("×")
     }
 
     fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -602,7 +617,7 @@ impl Workspace {
             .live_tabs
             .hovered
             .and_then(|key| keys.iter().position(|k| *k == key))
-            .filter(|&position| position != selected && entries[position].0.is_some());
+            .filter(|&position| entries[position].0.is_some());
         let focused_width = layout.get(selected).map_or(0.0, |tab| tab.width);
         let targets: Vec<_> = keys
             .iter()
@@ -610,7 +625,13 @@ impl Workspace {
             .map(|(position, key)| {
                 let tab = layout[position];
                 let tab = if Some(position) == hovered {
-                    TabLayout::pop_out(tab, focused_width, available)
+                    let mut tab = if position == selected {
+                        tab
+                    } else {
+                        TabLayout::pop_out(tab, focused_width, available)
+                    };
+                    tab.height += TAB_HOVER_LIFT;
+                    tab
                 } else {
                     tab
                 };
@@ -663,8 +684,8 @@ impl Workspace {
         for &position in &paint_order {
             let (index, row, _) = entries[position];
             let focused = position == selected;
-            let popped = Some(position) == hovered;
-            let hot = index.is_some() && self.live_tabs.hovered == Some(keys[position]);
+            let hot = Some(position) == hovered;
+            let popped = hot && !focused;
             let compact = row != self.active_row && !popped;
             let key = keys[position];
             let accent = Theme::global().workspace_accent(row);
@@ -679,12 +700,11 @@ impl Workspace {
             // stay reachable and what you see is what you click. The popped
             // body always covers the resting slot, so it cannot flicker.
             let (rest_left, rest_width) = TabLayout::exposed(&layout, position, selected);
-            let (slot_left, slot_width) = if popped {
+            let (slot_left, slot_width) = if hot {
                 (targets[position].1.left, targets[position].1.width)
             } else {
                 (rest_left, rest_width)
             };
-            let slot_padding = (slot_width / 12.0).min(6.0);
             if let Some(index) = index {
                 let x = rest_left + rest_width / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
@@ -704,27 +724,27 @@ impl Workspace {
                 }
                 None => ("Empty workspace".into(), "📁", None, None),
             };
-            let tab_bg = match ring {
-                Some(ring) => background.blend(ring.tint()),
-                None => background,
+            let base = if hot {
+                background.blend(accent.opacity(0.12))
+            } else {
+                background
             };
-            let hover_bg = Theme::global().PANEL_BG.blend(accent.opacity(0.20));
-            // Fade toward the tab fill instead of an ellipsis, so long titles
-            // use the whole tab and trail off softly at the right edge.
-            let fade = |bg: gpui::Rgba| {
-                gpui::linear_gradient(
-                    90.,
-                    gpui::linear_color_stop(gpui::Rgba { a: 0., ..bg }, 0.),
-                    gpui::linear_color_stop(bg, 1.),
-                )
-            };
-            let show_actions = index.is_some() && row == self.active_row && slot_width >= 88.0;
-            let fill = tab_surface(if hot { hover_bg } else { tab_bg });
+            let fill = tab_surface(ring.map_or(base, |ring| base.blend(ring.tint())));
+            let close_colors = TabCloseColors::for_tab(ring, accent);
+            let right = current.left + current.width;
+            let diameter = current.height;
+            // A stacked tab cannot draw a close cap on top of its neighbour.
+            let close_index = index.filter(|_| {
+                !compact && visible >= diameter + 24.0 && exposed_left + visible >= right - 0.01
+            });
+            let reserve_rename = close_index.is_some() && focused && can_rename && visible >= 88.0;
+            let actions_width = if close_index.is_some() { diameter } else { 0.0 }
+                + if reserve_rename { TAB_RENAME_SIZE } else { 0.0 };
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
                 .flex_none()
-                .w(px((visible - 2.0).max(0.0)))
+                .w(px((visible - 2.0 - actions_width).max(0.0)))
                 .min_w_0()
                 .overflow_hidden()
                 .px(px(padding))
@@ -753,25 +773,10 @@ impl Workspace {
                                 Some(index) => format!("live-session-tab-{index}-title"),
                                 None => "live-session-empty-tab-title".into(),
                             })
-                            .relative()
                             .flex_1()
                             .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(title.clone())
-                            .child(
-                                div()
-                                    .debug_selector(move || match index {
-                                        Some(index) => format!("live-session-tab-{index}-fade"),
-                                        None => "live-session-empty-tab-fade".into(),
-                                    })
-                                    .absolute()
-                                    .top_0()
-                                    .bottom_0()
-                                    .right_0()
-                                    .w(px(20.0))
-                                    .bg(fade(fill)),
-                            ),
+                            .truncate()
+                            .child(title.clone()),
                     )
                 });
             tab_bodies.push(
@@ -842,37 +847,31 @@ impl Workspace {
                     .left(px(slot_left))
                     .bottom(px(TAB_FLOAT_GAP))
                     .w(px(slot_width))
-                    .h(px(TAB_HEIGHT))
+                    .h(px(if hot {
+                        targets[position].1.height
+                    } else {
+                        TAB_HEIGHT
+                    }))
                     .occlude()
                     .cursor_pointer()
-                    // Actions float over the faded end of the title on hover,
-                    // so they never reserve width the title could be using.
-                    // They live in the slot so they are always reachable
-                    // without crossing a neighbour's slot.
-                    .when(show_actions, |el| {
+                    // The hit layer keeps actions reachable while the tab pops
+                    // over its neighbours. Use the painted body's current edge
+                    // and height, not the settled (pointer target) geometry.
+                    .when_some(close_index, |el, index| {
                         el.child(
                             div()
                                 .absolute()
-                                .top(px(2.0))
-                                .bottom(px(2.0))
-                                .right(px(slot_padding + 2.0))
+                                .bottom_0()
+                                .left(px(right - slot_left - actions_width))
+                                .w(px(actions_width))
+                                .h(px(diameter))
                                 .flex()
                                 .items_center()
-                                .opacity(if hot { 1.0 } else { 0.0 })
-                                .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .flex()
-                                        .items_center()
-                                        .rounded_r_full()
-                                        .bg(hover_bg)
-                                        .children(self.render_tab_actions(
-                                            index.unwrap(),
-                                            focused && can_rename,
-                                            cx,
-                                        )),
-                                ),
+                                .justify_end()
+                                .when(hot && reserve_rename, |el| {
+                                    el.child(self.render_tab_rename(cx))
+                                })
+                                .child(self.render_tab_close(index, diameter, close_colors, cx)),
                         )
                     })
                     .when(index.is_some(), |el| {
@@ -1690,10 +1689,7 @@ mod tests {
             let close = vcx
                 .debug_bounds(format!("close-session-button-{i}").leak())
                 .unwrap();
-            assert!(
-                (body.right() - close.right()).abs() <= px(12.0),
-                "close X of tab {i} sits at the popped right edge: {close:?} in {body:?}"
-            );
+            action_tests::assert_close_fits_cap(body, close);
             // Travel to the X: hover stays on this tab the whole way.
             for step in 1..=4 {
                 let t = step as f32 / 4.0;
