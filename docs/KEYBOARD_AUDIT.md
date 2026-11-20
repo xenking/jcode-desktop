@@ -16,7 +16,7 @@ Scope: the fork ledger in `../jcode/docs/FORK_LEDGER.md` and Desktop changes thr
 | Ask tabs, options, comment and footer | Tab switched question / custom keys / selected row | Y/Y/Y | Tab moves between controls, Left/Right moves between question tabs, Up/Down moves between options, Enter/Space activates. Existing direct number selection remains. When the card settles with focus inside it, focus returns to the composer. GPUI and native fixture. |
 | Compaction and memory dividers | N/N/N | Y/Y/Y | Only rows with detail become buttons. UI suite and implementation; virtual off-screen rows are not Tab stops. |
 | Tool/prompt disclosures | N/N/N | Y/Y/Y for shared toggles | Shared disclosure buttons have a keyboard ring. Specialized cards and virtual rows still need individual native verification. |
-| Pending/new session | Mixed | Mixed | Pending editor is reachable and sidebar New Session is a button. Retry, destination and connection controls still need a separate pass. |
+| Pending/new session | Mixed | Y/Y/Y for Retry, Use this computer, Jcode account, New Session | Pending editor is reachable. Retry and local fallback use the same commands as a pointer and retain the unsent draft. GPUI regression. Destination selection still needs a separate pass. |
 | Orchestration | N/N/N | Y/Y/Y | Session cards and All sessions button share pointer/keyboard actions. This is a panel, not a modal. Implementation and UI suite. |
 
 ## Evidence and limits

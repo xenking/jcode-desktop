@@ -288,6 +288,26 @@ impl Workspace {
             panel.read(cx).status.starts_with("Session creation failed")
         };
         let theme = Theme::global();
+        let owner = cx.weak_entity();
+        let recover = |id: &'static str, label, local| {
+            let owner = owner.clone();
+            crate::keyboard::press_button(div().id(id), move |window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+                let _ = owner.update(cx, |this, cx| {
+                    this.retry_pending_session(index, local, cx);
+                    this.set_active(index, cx);
+                    this.focus_active(window, cx);
+                });
+            })
+            .debug_selector(move || id.into())
+            .px_3()
+            .py_1()
+            .rounded_full()
+            .bg(theme.ACCENT_DIM)
+            .cursor_pointer()
+            .child(label)
+        };
         div()
             .size_full()
             .flex()
@@ -351,31 +371,9 @@ impl Workspace {
                             .flex()
                             .flex_wrap()
                             .gap_2()
-                            .when(failed, |el| {
-                                el.child(
-                                    div()
-                                        .id("pending-session-retry")
-                                        .debug_selector(|| "pending-session-retry".into())
-                                        .px_3()
-                                        .py_1()
-                                        .rounded_full()
-                                        .bg(theme.ACCENT_DIM)
-                                        .cursor_pointer()
-                                        .child("Retry connection")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |this, _, window, cx| {
-                                                cx.stop_propagation();
-                                                this.retry_pending_session(index, false, cx);
-                                                this.set_active(index, cx);
-                                                this.focus_active(window, cx);
-                                            }),
-                                        ),
-                                )
-                            })
+                            .when(failed, |el| el.child(recover("pending-session-retry", "Retry connection", false)))
                             .when(cloud && failed, |el| {
-                                el.child(div()
-                                    .id("pending-cloud-account")
+                                el.child(crate::keyboard::button(div().id("pending-cloud-account"))
                                     .debug_selector(|| "pending-cloud-account".into())
                                     .px_3().py_1().rounded_full().bg(theme.ACCENT_DIM)
                                     .cursor_pointer().child("Jcode account")
@@ -384,28 +382,7 @@ impl Workspace {
                                         cx.open_url("https://jcode.sh/account");
                                     }))
                             })
-                            .when(remote, |el| {
-                                el.child(
-                                    div()
-                                        .id("pending-session-local")
-                                        .debug_selector(|| "pending-session-local".into())
-                                        .px_3()
-                                        .py_1()
-                                        .rounded_full()
-                                        .bg(theme.ACCENT_DIM)
-                                        .cursor_pointer()
-                                        .child("Use this computer")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |this, _, window, cx| {
-                                                cx.stop_propagation();
-                                                this.retry_pending_session(index, true, cx);
-                                                this.set_active(index, cx);
-                                                this.focus_active(window, cx);
-                                            }),
-                                        ),
-                                )
-                            }),
+                            .when(remote, |el| el.child(recover("pending-session-local", "Use this computer", true))),
                     ),
             )
             .child(

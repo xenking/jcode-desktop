@@ -823,7 +823,15 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
         commands.try_recv().is_err(),
         "failure must not silently fall back locally"
     );
-    click(vcx, "pending-session-retry");
+    vcx.simulate_keystrokes("shift-tab shift-tab");
+    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, request_id: Some(id), .. })
         if host == "offline-remote" && id == Panel::STARTUP_SESSION_ID)
@@ -832,7 +840,15 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
     // Even while retrying, an explicit target choice is available. Preserve
     // unsent editor text as well as the already submitted waiting prompt.
     vcx.simulate_input("next draft");
-    click(vcx, "pending-session-local");
+    vcx.simulate_keystrokes("shift-tab");
+    let keystroke = gpui::Keystroke::parse("space").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
     let request_id = match commands.try_recv().unwrap() {
         Command::CreateSession {
             request_id: Some(id),
