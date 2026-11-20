@@ -6688,7 +6688,6 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            let dock = self.render_project_dock(&groups, &ordered_sessions, cx);
             list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
@@ -7077,7 +7076,6 @@ impl Workspace {
                 )
                 .size_full(),
             ));
-            list = list.children(dock);
         }
 
         if self.sidebar_session_layout.is_empty() {

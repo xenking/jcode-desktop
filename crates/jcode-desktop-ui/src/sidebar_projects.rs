@@ -3,9 +3,6 @@
 //! only. It never closes, moves, or reorders panels.
 use super::*;
 
-#[path = "sidebar_project_dock.rs"]
-mod dock;
-
 /// Key for sessions without any working directory.
 pub(super) const OTHER: &str = "";
 
@@ -610,6 +607,11 @@ mod tests {
         );
         let alpha = vcx.debug_bounds("sidebar-project-0").unwrap();
         let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        assert!(
+            vcx.debug_bounds("sidebar-project-dock").is_none(),
+            "projects already have clickable headers in the session list"
+        );
+        assert!(vcx.debug_bounds("sidebar-account").is_some());
         assert!(alpha.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
         assert!(vcx.debug_bounds("sidebar-session-2").unwrap().bottom() <= beta.top());
         assert!(
@@ -622,6 +624,13 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-project-1").is_some());
         assert!(vcx.debug_bounds("sidebar-session-title-3").is_none());
+        let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        vcx.simulate_click(beta.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-title-3").is_some());
+        let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        vcx.simulate_click(beta.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(
                 w.slots[w.active].panel.read(cx).session_id,
