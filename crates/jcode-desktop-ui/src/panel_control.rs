@@ -212,7 +212,7 @@ impl Panel {
                 serde_json::json!({
                     "session_id": worker.session_id,
                     "name": worker.name,
-                    "label": worker.label,
+                    "label": worker.row_title(),
                     "state": worker.state.label(),
                     "age_ms": worker.age_ms,
                     "meta": worker.meta,

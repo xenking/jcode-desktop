@@ -165,6 +165,7 @@ pub struct Worker {
     pub session_id: String,
     pub name: String,
     pub label: Option<String>,
+    title: Option<String>,
     pub state: WorkerState,
     /// Since the newest recorded activity, when known.
     pub age_ms: Option<u64>,
@@ -189,6 +190,7 @@ impl Worker {
                 .map(jcode_core::id::session_icon)
                 .filter(|icon| *icon != "💫"),
             label: session.agent_label.clone(),
+            title: session.title.clone(),
             state: resolve_worker_state(session, Some(&meta), now_ms),
             age_ms: last
                 .filter(|ms| *ms > 0)
@@ -197,6 +199,19 @@ impl Worker {
             name,
             meta,
         }
+    }
+
+    pub fn row_title(&self) -> &str {
+        let title = self.title.as_deref().map(str::trim).filter(|title| {
+            // Previous daemons stored this synthetic startup prompt as a title.
+            *title != jcode_base::session_title::AUTO_LANE_START
+        });
+        [title, self.label.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|title| !title.is_empty())
+            .unwrap_or(&self.name)
     }
 
     /// What the worker is doing right now. A finished or paused worker shows
@@ -272,12 +287,9 @@ impl Worker {
     /// Everything the row had to leave out, for the hover tooltip.
     pub fn tooltip(&self) -> String {
         let mut parts = vec![self.name.clone()];
-        if let Some(label) = self
-            .label
-            .as_deref()
-            .filter(|label| !label.trim().is_empty())
-        {
-            parts.push(label.to_owned());
+        let title = self.row_title();
+        if title != self.name {
+            parts.push(title.to_owned());
         }
         parts.push(self.status_text());
         let route = [
@@ -714,6 +726,38 @@ mod tests {
     fn worker(name: &str, status: Option<&str>) -> Worker {
         let id = format!("session_{name}_1_a");
         Worker::from_session(&session(&id, Some("lead"), status), None, 1_000_000)
+    }
+
+    #[test]
+    fn auto_lane_worker_uses_catalog_title_then_live_label_then_name() {
+        let mut session: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "session_puppy_1795159580000_abc",
+            "status": "Active",
+            "parent_session_id": "coordinator",
+            "swarm_status": "running",
+            "title": "btw-enter"
+        }))
+        .unwrap();
+        let meta: WorkerMeta = serde_json::from_value(serde_json::json!({
+            "model": "gpt-6.2-sol", "phase": "thinking",
+            "input_tokens": 2_600_000, "output_tokens": 6_300
+        }))
+        .unwrap();
+        let label = |session: &SessionInfo| {
+            Worker::from_session(session, Some(&meta), 0)
+                .row_title()
+                .to_owned()
+        };
+        assert_eq!(label(&session), "btw-enter");
+        session.agent_label = Some("btw-enter".into());
+        session.title = Some("Open side questions".into());
+        assert_eq!(label(&session), "Open side questions");
+        session.title = Some(" \n ".into());
+        assert_eq!(label(&session), "btw-enter");
+        session.title = Some(jcode_base::session_title::AUTO_LANE_START.into());
+        assert_eq!(label(&session), "btw-enter");
+        session.agent_label = None;
+        assert_eq!(label(&session), "puppy");
     }
 
     fn with_meta(name: &str, status: Option<&str>, meta: WorkerMeta) -> Worker {

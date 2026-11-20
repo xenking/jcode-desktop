@@ -1404,13 +1404,18 @@ impl Workspace {
                 {
                     let mut child = workspace.sessions[0].clone();
                     child.session_id = format!("swarm-fixture-{index}");
+                    child.title = None;
+                    child.agent_label = Some(label.into());
                     if index == 0
                         && let Some(directory) = &worktree_fixture
                     {
                         child.working_dir = Some(directory.clone());
+                        // Older daemons supplied the seeded todo title in the
+                        // catalog but no live agent label for auto-lanes.
+                        child.title = Some("btw-enter".into());
+                        child.agent_label = None;
                     }
                     child.parent_session_id = Some("screenshot-fixture".into());
-                    child.agent_label = Some(label.into());
                     child.swarm_status = Some(status.into());
                     child.edit_stats = Some(jcode_sdk::SessionEditStats {
                         added: 14 + index as u64 * 50,
@@ -2749,6 +2754,9 @@ impl Workspace {
                     // SessionInfo carries the effective display title, so keep
                     // the sidebar's cached copy in sync with the live panel.
                     session.title = Some(display_title.clone());
+                    if session.parent_session_id.is_some() {
+                        self.sync_swarm_strips(cx);
+                    }
                 }
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {

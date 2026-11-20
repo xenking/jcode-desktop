@@ -287,6 +287,7 @@ impl Panel {
         let extra = indicator.workers.len().saturating_sub(MAX_ROWS);
         let owner = cx.weak_entity();
         let focus = self.swarm_list_focus.clone();
+        let key_focus = focus.clone();
         let count = indicator.workers.len().min(MAX_ROWS);
         self.swarm_picker_rows
             .resize_with(count, || cx.focus_handle());
@@ -303,10 +304,8 @@ impl Panel {
                 let expand_key = expandable::key::worker(&worker.session_id);
                 let expanded = self.expanded_regions.contains(&expand_key);
                 let toggle_key = expand_key.clone();
-                let label_truncated = worker
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| expandable::preview(label, expandable::LABEL).is_some());
+                let label = worker.row_title();
+                let label_truncated = expandable::preview(label, expandable::LABEL).is_some();
                 let mark = worker.state.glyph().map(|glyph| {
                     self.swarm_marks.element(
                         &format!("worker:{}", worker.session_id),
@@ -338,6 +337,7 @@ impl Panel {
                 .debug_selector(move || format!("swarm-list-worker-{index}"))
                 .min_h(px(20.0))
                 .when(expanded, |el| el.items_start().flex_wrap())
+                .when(!expanded, |el| el.overflow_hidden())
                 .px_2()
                 .flex()
                 .items_center()
@@ -358,11 +358,10 @@ impl Panel {
                     })
                     .into()
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.swarm_list_open = false;
+                    this.dismiss_composer_popover(&this.swarm_list_focus.clone(), true, window, cx);
                     cx.emit(OpenSwarmWorker(id.clone()));
-                    cx.notify();
                 }))
                 .children(crate::fixture_control_targets::marker(
                     || format!("status-worker:{}", worker.session_id),
@@ -375,14 +374,14 @@ impl Panel {
                         .text_size(px(11.5))
                         .children(worker.icon.map(|icon| icon.to_owned())),
                 )
-                .children(worker.label.clone().map(|label| {
+                .child(
                     div()
-                        .min_w_0()
-                        .when(!expanded, |el| el.truncate())
+                        .debug_selector(move || format!("swarm-list-title-{index}"))
+                        .when(!expanded, |el| el.flex_1().min_w(px(20.0)).truncate())
                         .when(expanded, |el| el.max_w_full())
                         .text_color(theme.TEXT_FAINT)
-                        .child(label)
-                }))
+                        .child(label.to_owned()),
+                )
                 .when(label_truncated, |el| {
                     let key = toggle_key.clone();
                     el.child(expandable::glyph_toggle(
@@ -396,7 +395,7 @@ impl Panel {
                         }),
                     ))
                 })
-                .child(div().flex_1())
+                .when(expanded, |el| el.child(div().flex_1()))
                 .children(model.map(|model| {
                     div()
                         .debug_selector(move || format!("swarm-list-model-{index}"))
@@ -445,7 +444,19 @@ impl Panel {
                 .debug_selector(|| "swarm-list".into())
                 .track_focus(&self.swarm_list_focus)
                 .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                    if let Some(next) = crate::keyboard::arrow_peer(event, &row_focus, window, cx) {
+                    let first_tab = crate::keyboard::tab_direction(event)
+                        .filter(|_| key_focus.is_focused(window))
+                        .and_then(|reverse| {
+                            if reverse {
+                                row_focus.last()
+                            } else {
+                                row_focus.first()
+                            }
+                        })
+                        .cloned();
+                    if let Some(next) = first_tab
+                        .or_else(|| crate::keyboard::arrow_peer(event, &row_focus, window, cx))
+                    {
                         window.focus(&next, cx);
                         cx.stop_propagation();
                     }
@@ -600,6 +611,52 @@ mod tests {
                 vcx.simulate_click(input.center(), gpui::Modifiers::default());
             }
             vcx.run_until_parked();
+            assert!(vcx.debug_bounds("swarm-list").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn auto_lane_row_can_be_opened_with_mouse_enter_or_space(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let id = "session_puppy_1795159580000_abc";
+        let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": id, "status": "Active", "parent_session_id": "activity-bar",
+            "swarm_status": "running", "title": "btw-enter"
+        }))
+        .unwrap();
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        vcx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.subscribe(&panel, move |_, event: &OpenSwarmWorker, _| {
+                opened.borrow_mut().push(event.0.clone());
+            })
+            .detach();
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![Worker::from_session(&session, None, 0)], cx);
+        });
+        vcx.run_until_parked();
+        for key in [None, Some("enter"), Some("space")] {
+            let pill = vcx.debug_bounds("composer-workers").unwrap();
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let label = vcx.debug_bounds("swarm-list-title-0").unwrap();
+            let row = vcx.debug_bounds("swarm-list-worker-0").unwrap();
+            assert!(label.size.width > px(0.0) && inside(label, row));
+            if let Some(key) = key {
+                vcx.simulate_keystrokes("tab");
+                let keystroke = gpui::Keystroke::parse(key).unwrap();
+                vcx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+            } else {
+                vcx.simulate_click(label.center(), gpui::Modifiers::default());
+            }
+            vcx.run_until_parked();
+            assert_eq!(opened.borrow_mut().pop().as_deref(), Some(id), "{key:?}");
             assert!(vcx.debug_bounds("swarm-list").is_none());
         }
     }

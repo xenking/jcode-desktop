@@ -645,8 +645,12 @@ class Instance:
         if name == "swarm-status":
             click("swarm-status")
         before = self.drive("state")
-        if name == "swarm-status" and not before["panel"]["workers_open"]:
-            raise RuntimeError("status pill did not open the worker list")
+        if name == "swarm-status":
+            if not before["panel"]["workers_open"]:
+                raise RuntimeError("status pill did not open the worker list")
+            labels = {row["session_id"]: row["label"] for row in before["panel"]["workers"]}
+            if labels.get(SWARM_WORKER) != "btw-enter":
+                raise RuntimeError("auto-lane worker must show its catalog title without an agent label")
         save(self.run / f"{name}-before.json", before)
         first = self.screenshot(f"{name}-before.png")
 
