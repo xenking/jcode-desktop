@@ -4125,6 +4125,8 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::RequestUsage { session_id, .. }
+        | ApiEvent::KvCacheMiss { session_id, .. }
         | ApiEvent::ContextOccupancy { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
@@ -4186,6 +4188,8 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::RequestUsage { session_id, .. }
+        | ApiEvent::KvCacheMiss { session_id, .. }
         | ApiEvent::ContextOccupancy { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
@@ -5741,6 +5745,42 @@ mod stop_reason_routing_tests {
             reason,
             message: "Provider stopped the response".into(),
             provider_stop_reason: Some("content_filter".into()),
+        }
+    }
+
+    #[test]
+    fn cache_events_route_to_local_or_remote_session() {
+        for ui_id in ["session_one", "ssh://example/session_one"] {
+            let address = remote::SessionAddress::parse(ui_id).unwrap();
+            let events = [
+                ApiEvent::RequestUsage {
+                    session_id: "session_one".into(),
+                    request_id: "stable-request-id".into(),
+                    provider: "anthropic".into(),
+                    model: "claude-opus".into(),
+                    input: Some(10),
+                    output: Some(8),
+                    cache_read_input: Some(100),
+                    cache_creation_input: None,
+                },
+                ApiEvent::KvCacheMiss {
+                    session_id: "session_one".into(),
+                    reason: "expired".into(),
+                    harness_caused: false,
+                    missed_tokens: 50,
+                    read_tokens: 100,
+                    expected_tokens: 150,
+                    documented_cause: None,
+                    message: "cache expired".into(),
+                },
+            ];
+            for event in events {
+                assert_eq!(event_session_id(&event), Some("session_one"));
+                assert_eq!(
+                    event_session_id(&namespace_event(event, &address)),
+                    Some(ui_id)
+                );
+            }
         }
     }
 
