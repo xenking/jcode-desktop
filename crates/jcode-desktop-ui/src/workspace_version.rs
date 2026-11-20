@@ -256,6 +256,7 @@ pub(super) fn render_about_block(
                 )
                 .child(
                     div()
+                        .id("settings-about-status")
                         .debug_selector(|| "settings-about-status".into())
                         .flex_1()
                         .min_w_0()
