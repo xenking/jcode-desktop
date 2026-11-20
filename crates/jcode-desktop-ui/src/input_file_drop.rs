@@ -59,6 +59,33 @@ pub(crate) fn path_text(paths: &[PathBuf]) -> String {
 }
 
 impl PromptInput {
+    /// Name files in the prompt without reading them. The agent opens a path
+    /// with its own tools, so size, type and directories do not matter here.
+    pub(super) fn reference_paths(
+        &mut self,
+        paths: &[PathBuf],
+        announce: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let mut text = path_text(paths);
+        let before = self.content[..self.cursor_offset()].chars().next_back();
+        if before.is_some_and(|c| !c.is_whitespace()) {
+            text.insert(0, ' ');
+        }
+        text.push(' ');
+        self.replace_text_in_range(None, &text, window, cx);
+        if announce {
+            self.attachment_notice = Some(match paths.len() {
+                1 => "file path added".into(),
+                count => format!("{count} file paths added").into(),
+            });
+        }
+    }
+
     /// Handle a platform file drop on the prompt or its panel.
     pub fn drop_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         let plan = plan(paths, |path| std::fs::metadata(path).ok().map(|m| m.len()));
@@ -79,21 +106,7 @@ impl PromptInput {
         }
         // Unreadable images still reach the agent as paths.
         let referenced: Vec<PathBuf> = plan.paths.into_iter().chain(failed).collect();
-        if !referenced.is_empty() {
-            let mut text = path_text(&referenced);
-            let before = self.content[..self.cursor_offset()].chars().next_back();
-            if before.is_some_and(|c| !c.is_whitespace()) {
-                text.insert(0, ' ');
-            }
-            text.push(' ');
-            self.replace_text_in_range(None, &text, window, cx);
-            if plan.images.is_empty() {
-                self.attachment_notice = Some(match referenced.len() {
-                    1 => "file path added".into(),
-                    count => format!("{count} file paths added").into(),
-                });
-            }
-        }
+        self.reference_paths(&referenced, plan.images.is_empty(), window, cx);
         window.focus(&self.focus_handle.clone(), cx);
         cx.notify();
     }

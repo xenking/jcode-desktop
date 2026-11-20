@@ -2302,7 +2302,7 @@ impl PromptInput {
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         match crate::clipboard_image::read_paste() {
             Ok(crate::clipboard_image::ClipboardContent::Files(paths)) => {
-                self.attach_pasted_files(&paths, cx);
+                self.attach_pasted_files(&paths, window, cx);
                 return;
             }
             Ok(crate::clipboard_image::ClipboardContent::Image(image)) => {
@@ -2328,7 +2328,22 @@ impl PromptInput {
         self.dismiss_ghost();
     }
 
-    fn attach_pasted_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+    /// Files copied in the file manager. Only images are read, so the model
+    /// can see them. Any other file, a folder or an oversized image is named
+    /// by path: pasting a file points at it, it does not upload it.
+    fn attach_pasted_files(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (paths, referenced): (Vec<_>, Vec<_>) = paths.iter().cloned().partition(|path| {
+            file_drop::image_media_type(path).is_some()
+                && std::fs::metadata(path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() <= 10 * 1024 * 1024)
+        });
+        self.reference_paths(&referenced, paths.is_empty(), window, cx);
+        let paths = &paths;
         let mut attached_size: u64 = self
             .attachments
             .iter()
@@ -4591,11 +4606,11 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
-        let (input, vcx) = cx.add_window_view(|_, cx| {
+        let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
                 *result.borrow_mut() = Some((text, images))
             });
-            input.attach_pasted_files(std::slice::from_ref(&path), cx);
+            input.attach_pasted_files(std::slice::from_ref(&path), window, cx);
             input
         });
         input.update(vcx, |input, cx| {
@@ -4650,35 +4665,55 @@ mod tests {
         assert_eq!(actual.data, expected.data);
     }
 
+    /// Pasting a file from the file manager points at it. A zip, a folder or
+    /// a 3 GB dump is named by path and never read or uploaded.
     #[gpui::test]
-    fn pasted_file_submission_contains_captured_bytes(cx: &mut TestAppContext) {
+    fn pasted_non_image_files_are_referenced_by_path(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.txt");
-        std::fs::write(&path, b"original").unwrap();
+        let archive = dir.path().join("build output.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        file.set_len(11 * 1024 * 1024).unwrap();
+        let folder = dir.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, b"original").unwrap();
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
-        let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input =
-                PromptInput::new_with_queue_files(cx, "test", move |_, _, files, _, _, _| {
-                    *result.borrow_mut() = Some(files)
-                });
-            input.attach_pasted_files(std::slice::from_ref(&path), cx);
+        let pasted = [archive.clone(), folder.clone(), notes.clone()];
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new_with_queue_files(
+                cx,
+                "test",
+                move |text, images, files, _, _, _| {
+                    *result.borrow_mut() = Some((text, images, files))
+                },
+            );
+            input.attach_pasted_files(&pasted, window, cx);
             input
         });
-        std::fs::write(&path, b"changed!").unwrap();
+        input.read_with(vcx, |input, _| {
+            assert!(input.attachments.is_empty(), "no file may be read");
+            assert_eq!(
+                input.attachment_notice.as_deref(),
+                Some("3 file paths added"),
+                "a size or directory refusal must not appear"
+            );
+        });
         input.update_in(vcx, |input, window, cx| {
             input.dispatch_submission(input.content.to_string(), false, window, cx)
         });
-        let files = sent.borrow();
-        let file = &files.as_ref().unwrap()[0];
-        assert_eq!(file.name, "notes.txt");
-        assert_eq!(file.mime, "text/plain");
+        let sent = sent.borrow();
+        let (text, images, files) = sent.as_ref().unwrap();
         assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(&file.data)
-                .unwrap(),
-            b"original"
+            text.trim(),
+            format!(
+                "\"{}\" {} {}",
+                archive.display(),
+                folder.display(),
+                notes.display()
+            )
         );
+        assert!(images.is_empty() && files.is_empty(), "nothing is uploaded");
     }
 
     #[gpui::test]
@@ -4689,11 +4724,11 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
         let result = sent.clone();
-        let (input, vcx) = cx.add_window_view(|_, cx| {
+        let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
                 *result.borrow_mut() = Some((text, images))
             });
-            input.attach_pasted_files(std::slice::from_ref(&path), cx);
+            input.attach_pasted_files(std::slice::from_ref(&path), window, cx);
             input.attach_image(
                 crate::clipboard_image::from_bytes("image/png".into(), bytes.to_vec()).unwrap(),
                 cx,
