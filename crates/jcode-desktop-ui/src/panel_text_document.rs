@@ -25,7 +25,7 @@ impl TranscriptTextDocument {
         &mut self,
         items: &Transcript,
         rows: &[TranscriptRenderRow],
-        expanded_prompts: &HashSet<(usize, bool)>,
+        expanded_prompts: &HashSet<usize>,
         expanded_regions: &HashSet<String>,
     ) -> Option<Segments> {
         let display = crate::config::display();
@@ -47,7 +47,7 @@ impl TranscriptTextDocument {
                 expanded_regions,
                 item,
                 row.index,
-                expanded_prompts.contains(&(row.index, false)),
+                expanded_prompts.contains(&row.index),
             );
             let flags = open.bits();
             let json_candidate = matches!(item, Item::Tool { name, output, .. } if open.card && !matches!(name.as_str(), "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff") && matches!(output.trim_start().chars().next(), Some('{' | '[')));

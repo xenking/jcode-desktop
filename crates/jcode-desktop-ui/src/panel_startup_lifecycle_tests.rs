@@ -35,9 +35,7 @@ fn focused_startup_panel(
 }
 
 #[gpui::test]
-fn startup_tall_preview_scrolls_inside_prompt_without_moving_transcript(
-    cx: &mut gpui::TestAppContext,
-) {
+fn startup_tall_prompt_scrolls_in_transcript_and_preserves_position(cx: &mut gpui::TestAppContext) {
     for discrete in [false, true] {
         let (panel, vcx) = focused_startup_panel(cx);
         panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
@@ -49,7 +47,8 @@ fn startup_tall_preview_scrolls_inside_prompt_without_moving_transcript(
         vcx.simulate_keystrokes("enter");
         // Long prompts collapse by default. This covers an expanded tall one.
         panel.update(vcx, |panel, cx| {
-            panel.expanded_prompts.insert((0, false));
+            panel.expanded_prompts.insert(0);
+            panel.stick_to_bottom = false;
             cx.notify();
         });
         vcx.run_until_parked();
@@ -60,12 +59,15 @@ fn startup_tall_preview_scrolls_inside_prompt_without_moving_transcript(
                 px(0.)
             );
         });
-        let bounds = vcx.debug_bounds("prompt-scroll-0").unwrap();
-        let scroll = panel.read_with(vcx, |panel, _| {
-            panel.prompt_scrolls.borrow().get(&(0, false)).unwrap().handle.clone()
-        });
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        let transcript_offset = |cx: &gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, _| {
+                let offset = panel.transcript_list.logical_scroll_top();
+                (offset.item_ix, offset.offset_in_item)
+            })
+        };
         vcx.simulate_event(gpui::ScrollWheelEvent {
-            position: bounds.center(),
+            position: viewport.center(),
             delta: if discrete {
                 gpui::ScrollDelta::Lines(gpui::point(0., -2.))
             } else {
@@ -74,14 +76,22 @@ fn startup_tall_preview_scrolls_inside_prompt_without_moving_transcript(
             ..Default::default()
         });
         vcx.run_until_parked();
-        assert!(scroll.offset().y < px(0.), "prompt scrolls (discrete={discrete})");
-        let offset = scroll.offset();
+        super::scroll_momentum_tests::settle(vcx);
+        let offset = transcript_offset(vcx);
+        assert!(
+            offset.1 > px(0.),
+            "prompt scrolls in transcript (discrete={discrete})"
+        );
         panel.update(vcx, |panel, cx| {
             panel.streaming_text = "Answer arrived while reading the beginning".into();
             cx.notify();
         });
         vcx.run_until_parked();
-        assert_eq!(scroll.offset(), offset, "response stole prompt scroll position");
+        assert_eq!(
+            transcript_offset(vcx),
+            offset,
+            "response stole transcript position"
+        );
     }
 }
 

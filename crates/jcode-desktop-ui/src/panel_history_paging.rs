@@ -350,12 +350,7 @@ impl Panel {
             .collect();
         self.expanded_prompts = std::mem::take(&mut self.expanded_prompts)
             .into_iter()
-            .map(|(i, pinned)| (i + prefix_len, pinned))
-            .collect();
-        let prompt_scrolls = self.prompt_scrolls.get_mut();
-        *prompt_scrolls = std::mem::take(prompt_scrolls)
-            .into_iter()
-            .map(|((i, pinned), scroll)| ((i + prefix_len, pinned), scroll))
+            .map(|i| i + prefix_len)
             .collect();
         if let Some(index) = &mut self.image_pane_selected {
             *index += prefix_len;

@@ -307,7 +307,6 @@ fn tool_row_click_and_full_output_scroll(cx: &mut gpui::TestAppContext) {
             .borrow()
             .get("bash-row")
             .unwrap()
-            .handle
             .clone()
     });
     assert!(handle.max_offset().y > px(0.));
@@ -393,9 +392,7 @@ fn document_text(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> St
 }
 
 #[gpui::test]
-fn long_prompt_is_bounded_scrollable_and_collapsible_in_short_window(
-    cx: &mut gpui::TestAppContext,
-) {
+fn long_prompt_expands_to_full_height_and_collapses_in_short_window(cx: &mut gpui::TestAppContext) {
     let prompt: String = (0..100)
         .map(|n| format!("Prompt line {n}: enough text to wrap.\n\n"))
         .collect();
@@ -406,60 +403,14 @@ fn long_prompt_is_bounded_scrollable_and_collapsible_in_short_window(
     let compact = vcx.debug_bounds("user-prompt-0").unwrap();
     click(vcx, "prompt-expand-0");
     let viewport = panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
-    let expanded = vcx.debug_bounds("user-prompt-0").unwrap();
-    let scroll = vcx
-        .debug_bounds("prompt-scroll-0")
-        .expect("expanded prompt scrolls");
-    let control = vcx
-        .debug_bounds("prompt-expand-0")
-        .expect("collapse control paints");
+    let full = vcx.debug_bounds("user-prompt-0").unwrap();
+    let control = vcx.debug_bounds("prompt-expand-0").unwrap();
     assert!(
-        vcx.debug_bounds("prompt-scrollbar").is_some(),
-        "scrollbar is visible immediately"
+        full.size.height > viewport.size.height * 4.,
+        "{full:?} vs {viewport:?}"
     );
-    assert!(
-        expanded.size.height <= viewport.size.height * 0.6,
-        "{expanded:?} vs {viewport:?}"
-    );
-    assert!(scroll.size.height < expanded.size.height);
+    assert!(vcx.debug_bounds("prompt-scrollbar").is_none());
     assert!(control.top() >= viewport.top() && control.bottom() <= viewport.bottom());
-    let handle = panel.read_with(&*vcx, |panel, _| {
-        panel
-            .prompt_scrolls
-            .borrow()
-            .get(&(0, false))
-            .unwrap()
-            .handle
-            .clone()
-    });
-    assert!(handle.max_offset().y > px(0.));
-    vcx.simulate_mouse_move(scroll.center(), None, gpui::Modifiers::default());
-    vcx.run_until_parked();
-    vcx.simulate_event(gpui::ScrollWheelEvent {
-        position: scroll.center(),
-        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
-        ..Default::default()
-    });
-    vcx.run_until_parked();
-    assert!(handle.offset().y < px(0.), "wheel must move the prompt");
-    assert!(
-        vcx.debug_bounds("prompt-scrollbar").is_some(),
-        "overflow has a visible scrollbar"
-    );
-    assert_eq!(
-        vcx.debug_bounds("prompt-expand-0").unwrap().origin,
-        control.origin,
-        "collapse stays fixed"
-    );
-    vcx.simulate_window_resize(window, gpui::size(px(600.), px(300.)));
-    vcx.run_until_parked();
-    let resized_viewport =
-        panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
-    let resized = vcx.debug_bounds("user-prompt-0").unwrap();
-    assert!(
-        resized.size.height <= resized_viewport.size.height * 0.6,
-        "{resized:?} vs {resized_viewport:?}"
-    );
     click(vcx, "prompt-expand-0");
     assert_eq!(
         vcx.debug_bounds("user-prompt-0").unwrap().size.height,
@@ -468,48 +419,134 @@ fn long_prompt_is_bounded_scrollable_and_collapsible_in_short_window(
 }
 
 #[gpui::test]
-fn prompt_wheel_hands_off_to_transcript_at_bottom(cx: &mut gpui::TestAppContext) {
-    let mut items = vec![Item::User("A long prompt paragraph.\n\n".repeat(100))];
+fn tool_wheel_and_momentum_at_edge_do_not_scroll_transcript(cx: &mut gpui::TestAppContext) {
+    let mut items = vec![Item::Tool {
+        call_id: "long-output".into(),
+        name: "bash".into(),
+        input: r#"{"command":"echo test"}"#.into(),
+        output: "output line\n".repeat(200),
+        done: true,
+        error: None,
+    }];
     items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
     let (panel, vcx) = panel_with(cx, items);
-    let window = vcx.window_handle();
-    vcx.simulate_window_resize(window, gpui::size(px(600.), px(400.)));
-    vcx.run_until_parked();
-    click(vcx, "prompt-expand-0");
-    let scroll = vcx.debug_bounds("prompt-scroll-0").unwrap();
-    let handle = panel.read_with(&*vcx, |panel, _| {
-        panel
-            .prompt_scrolls
-            .borrow()
-            .get(&(0, false))
-            .unwrap()
-            .handle
-            .clone()
+    click(vcx, "tool-header");
+    let position = vcx.debug_bounds("tool-detail-0-scroll").unwrap().center();
+    let (handle, viewport) = panel.read_with(&*vcx, |panel, _| {
+        (
+            panel.swarm_scrolls.borrow()["long-output"].clone(),
+            panel.transcript_list.viewport_bounds(),
+        )
     });
-    handle.set_offset(gpui::point(px(0.), -handle.max_offset().y));
-    let before = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
-    vcx.simulate_mouse_move(scroll.center(), None, gpui::Modifiers::default());
-    vcx.simulate_event(gpui::ScrollWheelEvent {
-        position: scroll.center(),
-        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
-        ..Default::default()
-    });
-    vcx.run_until_parked();
-    super::scroll_momentum_tests::settle(vcx);
-    let after = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
-    assert!(
-        before.item_ix != after.item_ix || before.offset_in_item != after.offset_in_item,
-        "wheel at prompt bottom moves the transcript"
+    assert!(handle.max_offset().y > px(0.));
+    let transcript_offset = |cx: &gpui::VisualTestContext| {
+        panel.read_with(cx, |panel, _| {
+            let offset = panel.transcript_list.logical_scroll_top();
+            (offset.item_ix, offset.offset_in_item)
+        })
+    };
+    let before = transcript_offset(vcx);
+    let wheel = |cx: &mut gpui::VisualTestContext, position, delta, touch_phase| {
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta,
+            touch_phase,
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        super::scroll_momentum_tests::settle(cx);
+    };
+    let pixels = gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.)));
+    handle.set_offset(gpui::point(px(0.), px(5.) - handle.max_offset().y));
+    wheel(vcx, position, pixels, gpui::TouchPhase::Started);
+    assert_eq!(handle.offset().y, -handle.max_offset().y);
+    assert_eq!(transcript_offset(vcx), before);
+    wheel(vcx, position, pixels, gpui::TouchPhase::Moved);
+    assert_eq!(
+        transcript_offset(vcx),
+        before,
+        "trackpad must not chain at the edge"
+    );
+    wheel(
+        vcx,
+        position,
+        gpui::ScrollDelta::default(),
+        gpui::TouchPhase::Ended,
+    );
+    // macOS GPUI reports native momentum as Moved after the direct phase ends.
+    wheel(vcx, position, pixels, gpui::TouchPhase::Moved);
+    assert_eq!(
+        transcript_offset(vcx),
+        before,
+        "momentum must not chain at the edge"
+    );
+    wheel(
+        vcx,
+        position,
+        gpui::ScrollDelta::Lines(gpui::point(0., -3.)),
+        gpui::TouchPhase::Moved,
+    );
+    assert_eq!(
+        transcript_offset(vcx),
+        before,
+        "wheel must not chain at the edge"
+    );
+    wheel(
+        vcx,
+        gpui::point(viewport.left() + px(2.), position.y),
+        pixels,
+        gpui::TouchPhase::Started,
+    );
+    assert_ne!(
+        transcript_offset(vcx),
+        before,
+        "outside the tool the transcript scrolls"
     );
 }
 
 #[gpui::test]
-fn pinned_expanded_prompt_scrolls_without_moving_transcript(cx: &mut gpui::TestAppContext) {
+fn a_tool_without_scroll_range_passes_wheel_to_the_transcript(cx: &mut gpui::TestAppContext) {
+    let mut items = vec![Item::Tool {
+        call_id: "short-output".into(),
+        name: "bash".into(),
+        input: r#"{"command":"echo fixture"}"#.into(),
+        output: "fixture".into(),
+        done: true,
+        error: None,
+    }];
+    items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
+    let (panel, vcx) = panel_with(cx, items);
+    click(vcx, "tool-header");
+    let position = vcx.debug_bounds("tool-detail-0-scroll").unwrap().center();
+    let transcript_offset = |cx: &gpui::VisualTestContext| {
+        panel.read_with(cx, |panel, _| {
+            let offset = panel.transcript_list.logical_scroll_top();
+            (offset.item_ix, offset.offset_in_item)
+        })
+    };
+    let before = transcript_offset(vcx);
+    assert_eq!(
+        panel.read_with(&*vcx, |panel, _| {
+            panel.swarm_scrolls.borrow()["short-output"].max_offset().y
+        }),
+        px(0.)
+    );
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., -3.)),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    super::scroll_momentum_tests::settle(vcx);
+    assert_ne!(transcript_offset(vcx), before);
+}
+
+#[gpui::test]
+fn sticky_prompt_disclosure_reveals_full_transcript_row(cx: &mut gpui::TestAppContext) {
     let mut items = vec![Item::User("A long prompt paragraph.\n\n".repeat(100))];
     items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
     let (panel, vcx) = panel_with(cx, items);
-    let window = vcx.window_handle();
-    vcx.simulate_window_resize(window, gpui::size(px(600.), px(500.)));
     panel.update(vcx, |panel, cx| {
         panel.stick_to_bottom = true;
         panel.transcript_list.scroll_to_end();
@@ -518,34 +555,11 @@ fn pinned_expanded_prompt_scrolls_without_moving_transcript(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
     click(vcx, "prompt-expand-0");
-    let bounds = vcx.debug_bounds("prompt-scroll-0").unwrap();
-    let handle = panel.read_with(&*vcx, |panel, _| {
-        panel
-            .prompt_scrolls
-            .borrow()
-            .get(&(0, true))
-            .unwrap()
-            .handle
-            .clone()
-    });
-    let before = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
-    vcx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::default());
-    vcx.simulate_event(gpui::ScrollWheelEvent {
-        position: bounds.center(),
-        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100.))),
-        ..Default::default()
-    });
-    vcx.run_until_parked();
-    assert!(handle.offset().y < px(0.));
-    let after = panel.read_with(&*vcx, |panel, _| panel.transcript_list.logical_scroll_top());
-    assert_eq!(
-        (before.item_ix, before.offset_in_item),
-        (after.item_ix, after.offset_in_item)
-    );
+    let viewport = panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+    assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > 2. * viewport.size.height);
     click(vcx, "prompt-expand-0");
-    panel.read_with(&*vcx, |panel, _| {
-        assert!(!panel.expanded_prompts.contains(&(0, true)))
-    });
+    assert!(!panel.read_with(&*vcx, |panel, _| panel.expanded_prompts.contains(&0)));
 }
 
 #[gpui::test]

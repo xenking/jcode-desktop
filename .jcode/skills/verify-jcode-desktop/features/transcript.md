@@ -27,6 +27,12 @@ least one visible tool and no earlier `tools-*` artifacts.
   `expanded_regions` to change only for that tool and the draft to survive, then captures after. Require
   `tools-proof.json: passed=true` and inspect both PNGs for disclosed/collapsed
   output, not just changed hashes.
+- **Prompt disclosure and scroll containment:** launch a fresh run with
+  `--fixture transcript-scroll`, then drive `--journey transcript-scroll`.
+  The native window dispatches GPUI pointer and wheel events. Require the prompt
+  to grow beyond the viewport, restore its compact height, and keep the outer
+  offset unchanged through tool scrolling and edge momentum. A new wheel gesture
+  outside the tool must move the transcript. Inspect the captured PNGs.
 - **Identity:** `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state`.
   Compare exact session and tool IDs with `tools-before.json`. Other transcript
   content must remain intact. `actions.jsonl` records the exact click.

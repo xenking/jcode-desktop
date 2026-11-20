@@ -915,9 +915,7 @@ impl Panel {
             .flex_col()
             .gap_2()
             .min_w_0()
-            .max_h(px((f32::from(window.viewport_size().height) * 0.4).max(60.)))
-            .overflow_y_scroll()
-            .track_scroll(&card.scroll);
+            .max_h(px((f32::from(window.viewport_size().height) * 0.4).max(60.)));
         for (q, question) in card
             .questions
             .iter()
@@ -1184,7 +1182,7 @@ impl Panel {
         body = body.child(
             div()
                 .relative()
-                .child(questions)
+                .child(crate::transcript_scroll::tracked_vertical(questions, &card.scroll))
                 .when(card.submitting, |el| {
                     el.child(div().absolute().inset_0().occlude())
                 }),

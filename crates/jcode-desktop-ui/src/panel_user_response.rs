@@ -29,14 +29,14 @@ pub(super) fn render(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    div()
+    let card = div()
         .id(("user-response", index))
         .debug_selector(|| "user-response-card".into())
         .w_full()
         .min_w_0()
         .flex_shrink_0()
         .when_some(viewport_height, |el, viewport| {
-            el.max_h(height_cap(viewport)).overflow_y_scroll()
+            el.max_h(height_cap(viewport))
         })
         .rounded_xl()
         .bg(Theme::global().TOOL_BG)
@@ -62,8 +62,12 @@ pub(super) fn render(
             cx,
             false,
             on_preview,
-        ))
-        .into_any_element()
+        ));
+    if viewport_height.is_some() {
+        crate::transcript_scroll::vertical(card).into_any_element()
+    } else {
+        card.into_any_element()
+    }
 }
 
 pub(super) fn fixture_items_for(fixture: &str) -> Vec<super::Item> {

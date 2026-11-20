@@ -53,6 +53,7 @@ mod terminal;
 #[cfg(test)]
 mod test_input;
 mod tool_icon;
+mod transcript_scroll;
 mod ui_actions;
 pub mod update_entry;
 mod update_notes;

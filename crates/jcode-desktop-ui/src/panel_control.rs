@@ -219,7 +219,18 @@ impl Panel {
                 })
             })
             .collect::<Vec<_>>();
+        let scroll_fixture = crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+            let position = self.transcript_list.logical_scroll_top();
+            let tool = self.swarm_scrolls.borrow().get("scroll-fixture").map(|h| (f32::from(h.offset().y), f32::from(h.max_offset().y)));
+            serde_json::json!({
+                "transcript": (position.item_ix, f32::from(position.offset_in_item)),
+                "tool": tool,
+                "prompt_height": self.transcript_list.bounds_for_item(1).map(|b| f32::from(b.size.height)),
+                "viewport_height": f32::from(self.transcript_list.viewport_bounds().size.height),
+            })
+        });
         serde_json::json!({
+            "scroll_fixture": scroll_fixture,
             "session_id": self.session_id,
             "title": self.title.to_string(),
             "status": self.status,

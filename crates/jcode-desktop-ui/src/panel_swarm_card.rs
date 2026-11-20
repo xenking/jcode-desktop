@@ -285,13 +285,12 @@ impl Panel {
                     ),
             )
             .when(expanded, |el| {
-                let region = self
+                let scroll = self
                     .swarm_scrolls
                     .borrow_mut()
                     .entry(call_id.to_owned())
                     .or_default()
                     .clone();
-                let scroll = region.handle.clone();
                 el.child(
                     div()
                         .debug_selector(|| "tool-swarm-result-body".into())
@@ -304,8 +303,6 @@ impl Panel {
                                 .w_full()
                                 .min_w_0()
                                 .max_h(px(height))
-                                .overflow_y_scroll()
-                                .track_scroll(&scroll)
                                 .child(
                                     div()
                                         .flex()
@@ -330,21 +327,9 @@ impl Panel {
                                                 .debug_selector(|| "swarm-body-end".into())
                                                 .child(""),
                                         ),
-                                ),
+                                )
+                                .map(|body| crate::transcript_scroll::tracked_vertical(body, &scroll)),
                         )
-                        .child({
-                            let hitbox = region.hitbox.clone();
-                            gpui::canvas(
-                                |bounds, window, _| {
-                                    window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-                                },
-                                move |_, painted, _, _| *hitbox.borrow_mut() = Some(painted),
-                            )
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                        })
                         .child(crate::scrollbar::vertical_with_track(
                             &scroll,
                             "swarm-scrollbar",

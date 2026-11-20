@@ -724,11 +724,8 @@ pub struct Panel {
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     offscreen_prompt_clip: Option<gpui::Pixels>,
-    /// Inline and pinned prompts expand independently so the reminder stays compact.
-    expanded_prompts: HashSet<(usize, bool)>,
-    prompt_scrolls:
-        std::cell::RefCell<std::collections::HashMap<(usize, bool), prompt::PromptScroll>>,
-    swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, prompt::PromptScroll>>,
+    expanded_prompts: HashSet<usize>,
+    swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, ScrollHandle>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
     /// The Publish button needs a second click within a short window.
@@ -1497,7 +1494,6 @@ impl Panel {
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
-            prompt_scrolls: Default::default(),
             swarm_scrolls: Default::default(),
             publish_tracker: false,
             publish_armed_at: None,
@@ -1509,7 +1505,7 @@ impl Panel {
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
             tail_glide: Default::default(),
-            stick_to_bottom: true,
+            stick_to_bottom: fixture.as_deref() != Some("transcript-scroll"),
             transcript_end_visible: true,
             composer_dock_height: 0.0,
             steady_activity: Default::default(),
@@ -3517,7 +3513,6 @@ impl Panel {
             .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
             .collect();
         self.expanded_prompts.clear();
-        self.prompt_scrolls.borrow_mut().clear();
         self.swarm_scrolls.borrow_mut().clear();
         false
     }
@@ -5338,7 +5333,6 @@ impl Panel {
                                 .p_3()
                                 .rounded_lg()
                                 .max_h(px(expandable::MAX_HEIGHT))
-                                .overflow_y_scroll()
                                 .bg(Theme::global().CODE_BG)
                                 .font_family(Theme::global().FONT_MONO)
                                 .text_size(px(11.5))
@@ -5353,7 +5347,8 @@ impl Panel {
                                     ),
                                     window,
                                     cx,
-                                )),
+                                ))
+                                .map(crate::transcript_scroll::vertical),
                         )
                     })
                     .into_any_element()
@@ -5567,13 +5562,12 @@ impl Panel {
                         running_veil,
                     ))
                     .when_some(detail.filter(|_| has_detail), |el, detail| {
-                        let region = self
+                        let scroll = self
                             .swarm_scrolls
                             .borrow_mut()
                             .entry(call_id.clone())
                             .or_default()
                             .clone();
-                        let scroll = region.handle.clone();
                         let applet_instance = crate::applet_runtime::get(cx)
                             .host
                             .borrow()
@@ -5724,8 +5718,6 @@ impl Panel {
                                         .w_full()
                                         .min_w_0()
                                         .max_h(px(height))
-                                        .overflow_y_scroll()
-                                        .track_scroll(&scroll)
                                         .child(
                                             div()
                                                 .flex()
@@ -5806,24 +5798,12 @@ impl Panel {
                                                         .debug_selector(|| "tool-detail-end".into())
                                                         .child(""),
                                                 ),
-                                        ),
+                                        )
+                                        .map(|body| crate::transcript_scroll::tracked_vertical(body, &scroll)),
                                 )
-                                .child({
-                                    let hitbox = region.hitbox.clone();
-                                    gpui::canvas(
-                                        |bounds, window, _| {
-                                            window
-                                                .insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-                                        },
-                                        move |_, painted, _, _| {
-                                            *hitbox.borrow_mut() = Some(painted)
-                                        },
-                                    )
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .size_full()
-                                })
+                                .children((crate::fixture_control_targets::transcript_scroll_fixture() && call_id == "scroll-fixture").then(|| {
+                                    crate::fixture_control_targets::marker(|| "scroll:tool".into(), || Some(self.session_id.clone())).unwrap()
+                                }))
                                 .child(crate::scrollbar::vertical_with_track(
                                     &scroll,
                                     "tool-detail-scrollbar",
@@ -6336,6 +6316,10 @@ impl Render for Panel {
                 || "history:scroll-up".into(),
                 || Some(self.session_id.clone()),
             ))
+            .children(crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+                crate::fixture_control_targets::marker(|| "scroll:transcript".into(), || Some(self.session_id.clone())).unwrap()
+                    .right_auto().w(px(4.))
+            }))
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -6510,6 +6494,7 @@ impl Render for Panel {
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let wheel_input_bounds = input_bounds.clone();
+        let (wheel_root, wheel_hitbox) = crate::transcript_scroll::capture_root();
         let list_rows = rows.clone();
         let first_visible_row = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_first_visible = first_visible_row.clone();
@@ -6960,22 +6945,32 @@ impl Render for Panel {
                     .min_h_0()
                     .relative()
                     .when(!has_pinned_todo, |body| body.mt_2())
+                    .child(wheel_root)
+                    .child(transcript)
+                    .children(self.render_pinned_prompt(window, cx))
                     // Pace both wheel and touchpad movement on display frames.
                     // Precise deltas use a much shorter smoothing window so
                     // native gesture control stays responsive.
                     .child(
                         gpui::canvas(
-                            move |bounds, window, _| {
-                                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-                            },
-                            move |_, hitbox, window, _| {
+                            |_, _, _| (),
+                            move |_, _, window, _| {
                                 let wheel_panel = wheel_panel.clone();
                                 let input_bounds = wheel_input_bounds.clone();
+                                let hitbox = wheel_hitbox.clone();
                                 window.on_mouse_event(
                                     move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
-                                        if phase != gpui::DispatchPhase::Capture
-                                            || !hitbox.should_handle_scroll(window)
-                                        {
+                                        if phase != gpui::DispatchPhase::Capture {
+                                            return;
+                                        }
+                                        let child_owns_wheel = crate::transcript_scroll::end_capture(cx);
+                                        if !hitbox.get().is_some_and(|hitbox| hitbox.should_handle_scroll(window)) {
+                                            return;
+                                        }
+                                        if child_owns_wheel {
+                                            if wheel_panel.read(cx).transcript_wheel_frame.is_some() {
+                                                wheel_panel.update(cx, |panel, _| panel.cancel_transcript_momentum());
+                                            }
                                             return;
                                         }
                                         let delta = event.delta.pixel_delta(window.line_height());
@@ -7009,74 +7004,6 @@ impl Render for Panel {
                                             cx.stop_propagation();
                                             return;
                                         }
-                                        // The transcript's smooth-wheel handler runs in capture
-                                        // phase, before GPUI's nested div scroll handlers. Give
-                                        // an expanded prompt first refusal, but hand movement at
-                                        // either edge back to the transcript.
-                                        let inner = {
-                                            let scrolls = panel.prompt_scrolls.borrow();
-                                            [true, false].into_iter().find_map(|pinned| {
-                                                panel
-                                                    .expanded_prompts
-                                                    .iter()
-                                                    .filter(|(_, p)| *p == pinned)
-                                                    .find_map(|key| {
-                                                        if pinned
-                                                            && panel.offscreen_prompt != Some(key.0)
-                                                        {
-                                                            return None;
-                                                        }
-                                                        if !pinned
-                                                            && panel.offscreen_prompt == Some(key.0)
-                                                        {
-                                                            return None;
-                                                        }
-                                                        let region = scrolls.get(key)?;
-                                                        if !region
-                                                            .hitbox
-                                                            .borrow()
-                                                            .as_ref()
-                                                            .is_some_and(|hitbox| {
-                                                                hitbox.should_handle_scroll(window)
-                                                            })
-                                                        {
-                                                            return None;
-                                                        }
-                                                        let scroll = &region.handle;
-                                                        let old = scroll.offset();
-                                                        let next = (old.y + delta.y)
-                                                            .clamp(-scroll.max_offset().y, px(0.));
-                                                        (next != old.y)
-                                                            .then(|| (scroll.clone(), old, next))
-                                                    })
-                                            })
-                                        };
-                                        let inner = inner.or_else(|| {
-                                            let scrolls = panel.swarm_scrolls.borrow();
-                                            scrolls.iter().find_map(|(key, region)| {
-                                                let default_open = crate::config::display().show_agentgrep_output
-                                                    && panel.items.iter().any(|item| matches!(item, Item::Tool { call_id, name, .. } if call_id == key && name == "agentgrep"));
-                                                if !(panel.expanded_regions.contains(key) ^ default_open) {
-                                                    return None;
-                                                }
-                                                if !region.hitbox.borrow().as_ref().is_some_and(
-                                                    |hitbox| hitbox.should_handle_scroll(window),
-                                                ) {
-                                                    return None;
-                                                }
-                                                let scroll = &region.handle;
-                                                let old = scroll.offset();
-                                                let next = (old.y + delta.y)
-                                                    .clamp(-scroll.max_offset().y, px(0.));
-                                                (next != old.y).then(|| (scroll.clone(), old, next))
-                                            })
-                                        });
-                                        if let Some((scroll, old, next)) = inner {
-                                            scroll.set_offset(gpui::point(old.x, next));
-                                            cx.notify(wheel_panel.entity_id());
-                                            cx.stop_propagation();
-                                            return;
-                                        }
                                         if panel.diff_review.is_some() {
                                             return;
                                         }
@@ -7103,10 +7030,10 @@ impl Render for Panel {
                             },
                         )
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full(),
                     )
-                    .child(transcript)
-                    .children(self.render_pinned_prompt(window, cx))
                     .when(docked_composer, |el| {
                         el.child(self.render_composer_dock(input_bounds.clone(), window, cx))
                     })
@@ -8077,7 +8004,7 @@ fn render_todo_card_with_style(
         .flex_col()
         .w_full()
         .gap_0p5()
-        .when(!pinned, |body| body.max_h(px(132.0)).overflow_y_scroll());
+        .when(!pinned, |body| body.max_h(px(132.0)));
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -8204,6 +8131,11 @@ fn render_todo_card_with_style(
         }
     }
 
+    let body = if pinned {
+        body.into_any_element()
+    } else {
+        crate::transcript_scroll::vertical(body).into_any_element()
+    };
     if pinned {
         return div()
             .debug_selector(|| "pinned-todo-details-paper".into())
@@ -12135,6 +12067,21 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             error: (index == 11).then(|| "Example error".into()),
         })
         .collect();
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("transcript-scroll") {
+        let mut items = vec![
+            Item::Tool {
+                call_id: "scroll-fixture".into(),
+                name: "bash".into(),
+                input: r#"{"command":"echo fixture"}"#.into(),
+                output: (0..150).map(|n| format!("Fixture output {n}\n")).collect(),
+                done: true,
+                error: None,
+            },
+            Item::User((0..100).map(|n| format!("Prompt paragraph {n}\n\n")).collect()),
+        ];
+        items.extend((0..30).map(|n| Item::Assistant(format!("Response {n}"))));
+        return items;
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("expandable") {
         // Every truncated class in one transcript: a cut title, a cut error and

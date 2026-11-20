@@ -329,6 +329,8 @@ class Instance:
             return self.tab_status_journey()
         if name == "mode-picker":
             return self.mode_picker_journey()
+        if name == "transcript-scroll":
+            return self.transcript_scroll_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -402,6 +404,52 @@ class Instance:
                   "scope": "native menu and chips with seeded runtime response; no backend mutations"}
         save(self.run / f"{name}-proof.json", report)
         return report
+
+    def transcript_scroll_journey(self):
+        if self.manifest["fixture"] != "transcript-scroll":
+            raise RuntimeError("journey requires the transcript-scroll fixture")
+
+        def state():
+            return self.drive("state")["panel"]["scroll_fixture"]
+
+        def click(selector, expected, failure, frame=None):
+            self.drive("click", {"selector": selector})
+            # The private window is hidden and can lack a presentation tick.
+            # Rendering forces layout before reading the measured geometry.
+            shot = self.screenshot(frame or f"transcript-scroll-{selector.replace(':', '-')}-frame.png")
+            deadline = time.monotonic() + 3
+            while True:
+                measured = state()
+                if expected(measured):
+                    return measured, shot
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"{failure}: {measured}")
+                time.sleep(.05)
+
+        self.drive("set_composer", {"text": "Verification fixture draft"})
+        first = self.screenshot("transcript-scroll-before.png")
+        compact = state()
+        full, expanded = click("prompt:toggle", lambda s: (s["prompt_height"] or 0) > 2 * s["viewport_height"],
+                     "expanded prompt did not grow past the transcript viewport", "transcript-scroll-expanded.png")
+        click("prompt:toggle", lambda s: s["prompt_height"] == compact["prompt_height"],
+              "collapsing did not restore the compact prompt height", "transcript-scroll-collapsed.png")
+        opened, _ = click("tool:scroll-fixture", lambda s: s["tool"] and s["tool"][1] > 0,
+                       "expanded tool has no scroll range")
+        at_edge, _ = click("scroll:tool", lambda s: s["tool"][0] == -s["tool"][1],
+                        "tool did not scroll to its edge")
+        offset, maximum = at_edge["tool"]
+        if maximum <= 0 or offset != -maximum or at_edge["transcript"] != opened["transcript"]:
+            raise RuntimeError("the first gesture did not scroll only the nested tool to its edge")
+        self.drive("click", {"selector": "scroll:momentum"})
+        last = self.screenshot("transcript-scroll-after.png")
+        if state() != at_edge:
+            raise RuntimeError("momentum at the tool edge changed scroll positions")
+        outside, _ = click("scroll:transcript", lambda s: s["transcript"] != at_edge["transcript"],
+                        "a new gesture outside the tool did not scroll the transcript")
+        proof = {"passed": True, "before": first, "expanded": expanded, "after": last,
+                 "compact": compact, "full": full, "at_edge": at_edge, "outside": outside}
+        save(self.run / "transcript-scroll-proof.json", proof)
+        return proof
 
     def tab_status_journey(self):
         if self.manifest["fixture"] != "tab-statuses":
@@ -682,7 +730,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -690,7 +738,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

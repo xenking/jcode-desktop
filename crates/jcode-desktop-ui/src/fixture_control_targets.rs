@@ -12,6 +12,12 @@ pub(crate) fn enabled() -> bool {
     })
 }
 
+pub(crate) fn transcript_scroll_fixture() -> bool {
+    enabled()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
+            == Ok("transcript-scroll")
+}
+
 struct Capture {
     selector: String,
     session: String,
@@ -70,6 +76,11 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("status-worker:")
         || selector.starts_with("proof-pointer:")
         || matches!(selector, "compaction-divider" | "history:scroll-up")
+        || (transcript_scroll_fixture()
+            && matches!(
+                selector,
+                "prompt:toggle" | "scroll:tool" | "scroll:momentum" | "scroll:transcript"
+            ))
 }
 
 pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &mut App) -> bool {
@@ -97,16 +108,28 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         );
         return true;
     }
-    let Some(position) = locate(selector, session, window, cx) else {
+    let marker = if selector == "scroll:momentum" {
+        "scroll:tool"
+    } else {
+        selector
+    };
+    let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
-    if selector == "history:scroll-up" {
+    let wheel = match selector {
+        "history:scroll-up" => Some((12_000., gpui::TouchPhase::Moved)),
+        "scroll:tool" => Some((-12_000., gpui::TouchPhase::Started)),
+        "scroll:momentum" => Some((-120., gpui::TouchPhase::Moved)),
+        "scroll:transcript" => Some((-120., gpui::TouchPhase::Started)),
+        _ => None,
+    };
+    if let Some((dy, touch_phase)) = wheel {
         window.dispatch_event(
             PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
                 position,
-                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(12_000.))),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Default::default(),
-                touch_phase: gpui::TouchPhase::Moved,
+                touch_phase,
             }),
             cx,
         );

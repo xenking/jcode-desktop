@@ -7,13 +7,6 @@ pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
 const COLLAPSED_PROMPT_LINES: usize = 6;
 const COLLAPSED_PROMPT_MAX_HEIGHT: f32 = 140.;
 
-#[derive(Clone, Default)]
-pub(super) struct PromptScroll {
-    pub(super) handle: ScrollHandle,
-    pub(super) hitbox: Rc<std::cell::RefCell<Option<gpui::Hitbox>>>,
-    overflow_visible: Rc<Cell<bool>>,
-}
-
 /// Bound both long pasted paragraphs and newline-heavy snippets. Return a
 /// source prefix, never alter the actual prompt sent to the harness or stored.
 pub(super) fn compact_prompt(text: &str) -> Option<&str> {
@@ -218,27 +211,8 @@ impl Panel {
         let (visible, labels) = crate::image_chip::numbered_text(&visible, 0);
         let text = visible.as_ref();
         let preview = compact_prompt(text);
-        let expanded = self.expanded_prompts.contains(&(index, pinned));
+        let expanded = !pinned && self.expanded_prompts.contains(&index);
         let collapsed = preview.is_some() && !expanded;
-        let region = if expanded {
-            self.prompt_scrolls
-                .borrow_mut()
-                .entry((index, pinned))
-                .or_default()
-                .clone()
-        } else {
-            PromptScroll::default()
-        };
-        let scroll = region.handle.clone();
-        let viewport_height = self.expandable_viewport_height;
-        let viewport_height = if viewport_height > px(0.) {
-            viewport_height
-        } else {
-            window.viewport_size().height
-        };
-        // Reserve room inside the cap for the disclosure header and card padding.
-        let body_height = (f32::from(viewport_height) * 0.6 - if transcribed { 56. } else { 32. })
-            .clamp(1., super::expandable::MAX_HEIGHT);
         // Markers are part of the message even when its image payload has not
         // arrived (or is absent from an older history). Never gate rendering
         // the chip on the presence of a corresponding image item.
@@ -266,6 +240,16 @@ impl Panel {
                 }
             }),
         };
+        let fixture_toggle = || {
+            (index == 1 && !pinned && crate::fixture_control_targets::transcript_scroll_fixture())
+                .then(|| {
+                    crate::fixture_control_targets::marker(
+                        || "prompt:toggle".into(),
+                        || Some(self.session_id.clone()),
+                    )
+                    .unwrap()
+                })
+        };
         let card = div()
             .relative()
             .debug_selector(move || format!("user-prompt-{index}"))
@@ -285,28 +269,17 @@ impl Panel {
                     "▾ Collapse prompt",
                     cx.listener(move |panel, _, _, cx| {
                         cx.stop_propagation();
-                        panel.expanded_prompts.remove(&(index, pinned));
-                        panel.prompt_scrolls.borrow_mut().remove(&(index, pinned));
+                        panel.expanded_prompts.remove(&index);
                         panel.transcript_measurements.dirty = true;
                         cx.notify();
                     }),
-                ))
+                ).relative().children(fixture_toggle()))
             })
             .child(
                 div()
                     .relative()
                     .min_w_0()
-                    .child(
-                        div()
-                            .id((
-                                if pinned {
-                                    "pinned-prompt-scroll"
-                                } else {
-                                    "prompt-scroll"
-                                },
-                                index,
-                            ))
-                            .debug_selector(move || format!("prompt-content-{index}"))
+                    .debug_selector(move || format!("prompt-content-{index}"))
                             // Also bound rendered markdown (headings, tables, images)
                             // and wrapping in narrow chat panes, not just source length.
                             // Clamp wrapped text to whole visual lines with an
@@ -327,13 +300,6 @@ impl Panel {
                                     .max_h(px(COLLAPSED_PROMPT_MAX_HEIGHT + 8.))
                                     .overflow_hidden()
                             })
-                            .when(expanded, |content| {
-                                content
-                                    .debug_selector(move || format!("prompt-scroll-{index}"))
-                                    .max_h(px(body_height))
-                                    .overflow_y_scroll()
-                                    .track_scroll(&scroll)
-                            })
                             .child(markdown::with_prompt_images(prompt_images, || {
                                 markdown::render_prompt_with_prefix(
                                     if collapsed { preview.unwrap() } else { text },
@@ -350,41 +316,6 @@ impl Panel {
                                     background,
                                 )
                             })),
-                    )
-                    .when(expanded, |wrapper| {
-                        let hitbox = region.hitbox.clone();
-                        let overflow_visible = region.overflow_visible.clone();
-                        let measured_scroll = scroll.clone();
-                        let panel = cx.entity().downgrade();
-                        wrapper
-                            .child(
-                                gpui::canvas(
-                                    |bounds, window, _| {
-                                        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-                                    },
-                                    move |_, painted_hitbox, window, cx| {
-                                        *hitbox.borrow_mut() = Some(painted_hitbox);
-                                        let overflow = measured_scroll.max_offset().y > px(0.5);
-                                        if overflow_visible.replace(overflow) != overflow {
-                                            let panel = panel.clone();
-                                            window.defer(cx, move |_, cx| {
-                                                if let Some(panel) = panel.upgrade() {
-                                                    cx.notify(panel.entity_id());
-                                                }
-                                            });
-                                        }
-                                    },
-                                )
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full(),
-                            )
-                            .child(crate::scrollbar::vertical_with_track(
-                                &scroll,
-                                "prompt-scrollbar",
-                            ))
-                    }),
             )
             .when(transcribed, |card| {
                 let theme = Theme::global();
@@ -423,23 +354,30 @@ impl Panel {
                         "▾ Collapse prompt",
                         cx.listener(move |panel, _, _, cx| {
                             cx.stop_propagation();
-                            if !panel.expanded_prompts.remove(&(index, pinned)) {
-                                panel.expanded_prompts.insert((index, pinned));
-                                if !pinned {
-                                    let position = panel.transcript_render_rows().iter().position(|row| {
-                                        matches!(&row.source, TranscriptRowSource::Settled(item_index) if *item_index == index)
+                            panel.expanded_prompts.insert(index);
+                            let position = panel.transcript_render_rows().iter().position(|row| {
+                                matches!(&row.source, TranscriptRowSource::Settled(item_index) if *item_index == index)
+                            });
+                            if let Some(position) = position {
+                                panel.stick_to_bottom = false;
+                                panel.cancel_transcript_momentum();
+                                if pinned {
+                                    // A sticky reminder cannot grow to the full prompt height.
+                                    // Open the real transcript row instead of scrolling the overlay.
+                                    panel.offscreen_prompt = None;
+                                    panel.offscreen_prompt_clip = None;
+                                    panel.transcript_list.scroll_to(gpui::ListOffset {
+                                        item_ix: position,
+                                        offset_in_item: px(0.),
                                     });
-                                    if let Some(position) = position {
-                                        panel.stick_to_bottom = false;
-                                        panel.cancel_transcript_momentum();
-                                        panel.transcript_list.scroll_to_reveal_item(position);
-                                    }
+                                } else {
+                                    panel.transcript_list.scroll_to_reveal_item(position);
                                 }
                             }
                             panel.transcript_measurements.dirty = true;
                             cx.notify();
                         }),
-                    )),
+                    ).relative().children(fixture_toggle())),
                 )
             })
             .into_any_element();
@@ -453,9 +391,10 @@ impl Panel {
             .items_start()
             .relative()
             .left(px(offset))
-            .when(!pinned && self.offscreen_prompt == Some(index), |row| {
-                row.invisible()
-            })
+            .when(
+                !pinned && !expanded && self.offscreen_prompt == Some(index),
+                |row| row.invisible(),
+            )
             .when_some(number, |row, number| {
                 row.gap(px(6.)).child(
                     div()
@@ -532,10 +471,7 @@ impl Panel {
                     // stationary text. Keep a visible gap between both cards.
                     overlay.flex().flex_col().justify_end().overflow_hidden()
                 })
-                .when(self.offscreen_prompt_clip.is_none(), |overlay| {
-                    overlay.overflow_y_scroll()
-                })
-                .occlude()
+                .block_mouse_except_scroll()
                 .px_3()
                 .text_size(px(13.5))
                 .child(self.render_user_prompt(index, text, true, window, cx))
@@ -548,6 +484,11 @@ impl Panel {
                         6.
                     } else {
                         18.
+                    };
+                    let prompt = if self.offscreen_prompt_clip.is_some() {
+                        prompt.into_any_element()
+                    } else {
+                        crate::transcript_scroll::vertical(prompt).into_any_element()
                     };
                     div()
                         .absolute()
@@ -594,6 +535,12 @@ impl Panel {
                 let at_live_end =
                     following_tail || visible.is_some_and(|rows| rows.last + 1 == row_count);
                 let offscreen = prompt_for_viewport(&prompt_rows, visible, at_live_end);
+                let first_prompt = visible.and_then(|rows| {
+                    let ix = prompt_rows
+                        .binary_search_by_key(&rows.first, |(row, _)| *row)
+                        .ok()?;
+                    Some(prompt_rows[ix].1)
+                });
                 // The next card pushes the old reminder above the viewport.
                 // Constrain only the overlay, never either card's layout.
                 let clip = offscreen.and_then(|_| visible?.next_prompt_top.map(|(_, top)| top));
@@ -603,6 +550,11 @@ impl Panel {
                         return;
                     };
                     let current = entity.read(cx);
+                    // Do not cover a partially visible expanded prompt with its own reminder.
+                    let offscreen = offscreen.filter(|index| {
+                        first_prompt != Some(*index) || !current.expanded_prompts.contains(index)
+                    });
+                    let clip = offscreen.and(clip);
                     if current.offscreen_prompt == offscreen
                         && current.offscreen_prompt_clip == clip
                     {
@@ -647,7 +599,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn long_prompts_expand_inline_and_pinned_independently(cx: &mut gpui::TestAppContext) {
+    fn long_prompts_expand_inline_and_from_sticky_reminder(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
                 "long-prompts".into(),
@@ -679,7 +631,7 @@ mod tests {
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
             panel.read_with(vcx, |panel, _| {
-                assert!(panel.expanded_prompts.contains(&(0, false)));
+                assert!(panel.expanded_prompts.contains(&0));
                 assert!(matches!(&panel.items[0], Item::User(original) if original == &text));
             });
             let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
@@ -690,7 +642,7 @@ mod tests {
                 compact.size
             );
             panel.update(vcx, |panel, cx| {
-                panel.expanded_prompts.insert((0, false));
+                panel.expanded_prompts.insert(0);
                 panel
                     .items
                     .extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
@@ -707,9 +659,7 @@ mod tests {
             vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
-            panel.read_with(vcx, |panel, _| {
-                assert!(panel.expanded_prompts.contains(&(0, true)))
-            });
+            panel.read_with(vcx, |panel, _| assert!(panel.expanded_prompts.contains(&0)));
             let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
             vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
             vcx.run_until_parked();

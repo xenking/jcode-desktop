@@ -242,16 +242,17 @@ pub(crate) fn scrolled(
     id: SharedString,
     max_height: f32,
     body: gpui::AnyElement,
-) -> gpui::Stateful<gpui::Div> {
+) -> impl gpui::IntoElement {
     let selector = id.clone();
-    div()
-        .id(id)
-        .debug_selector(move || selector.to_string())
-        .w_full()
-        .min_w_0()
-        .max_h(px(max_height))
-        .overflow_y_scroll()
-        .child(body)
+    crate::transcript_scroll::vertical(
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .w_full()
+            .min_w_0()
+            .max_h(px(max_height))
+            .child(body),
+    )
 }
 
 #[cfg(test)]
