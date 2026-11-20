@@ -74,6 +74,11 @@ impl super::Panel {
         let selector = kind.selector();
         let label = row.label().to_string();
         let mut line = div()
+            .relative()
+            .children(crate::fixture_control_targets::marker(
+                || selector.into(),
+                || Some(self.session_id.clone()),
+            ))
             .debug_selector(move || selector.into())
             .flex()
             .items_center()

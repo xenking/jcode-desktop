@@ -817,7 +817,10 @@ pub fn spawn() -> Bridge {
     }
 }
 
-/// A bridge that answers search from fixtures, so the screenshot harness can
+#[path = "screenshot_history.rs"]
+mod screenshot_history;
+
+/// A bridge that answers from fixtures, so the screenshot harness can
 /// render the results screen without a daemon, an index, or a network.
 fn spawn_screenshot() -> Bridge {
     let (update_tx, update_rx) = update_channel();
@@ -825,7 +828,15 @@ fn spawn_screenshot() -> Bridge {
     std::thread::Builder::new()
         .name("jcode-bridge-screenshot".into())
         .spawn(move || {
+            let history = screenshot_history::enabled().then(screenshot_history::session);
             while let Ok(command) = command_rx.recv() {
+                if let Some(update) = history
+                    .as_ref()
+                    .and_then(|session| screenshot_history::reply(session, &command))
+                {
+                    let _ = update_tx.send(update);
+                    continue;
+                }
                 let Command::SearchSessions { query, generation } = command else {
                     continue;
                 };

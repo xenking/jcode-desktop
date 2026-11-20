@@ -6212,6 +6212,10 @@ impl Render for Panel {
             // retain their entities when an unrelated streamed reply starts or
             // ends. Only the debug selector reflects streaming state.
             .id("transcript")
+            .children(crate::fixture_control_targets::marker(
+                || "history:scroll-up".into(),
+                || Some(self.session_id.clone()),
+            ))
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -12040,7 +12044,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-streaming") {
         return tool_streaming::fixture_items();
     }
-    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("empty") {
+    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("empty" | "compaction")) {
         return Vec::new();
     }
     if !crate::harness::screenshot_mode()

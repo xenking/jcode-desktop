@@ -67,12 +67,25 @@ pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("status-worker:")
+        || matches!(selector, "compaction-divider" | "history:scroll-up")
 }
 
-pub(crate) fn click(selector: &str, session: &str, window: &mut Window, cx: &mut App) -> bool {
+pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &mut App) -> bool {
     let Some(position) = locate(selector, session, window, cx) else {
         return false;
     };
+    if selector == "history:scroll-up" {
+        window.dispatch_event(
+            PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(12_000.))),
+                modifiers: Default::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+            cx,
+        );
+        return true;
+    }
     window.dispatch_event(
         PlatformInput::MouseDown(MouseDownEvent {
             button: MouseButton::Left,

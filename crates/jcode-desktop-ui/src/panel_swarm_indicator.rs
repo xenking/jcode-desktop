@@ -253,7 +253,7 @@ impl Panel {
                     this.swarm_list_open = !this.swarm_list_open;
                     cx.notify();
                 }))
-                .children(crate::swarm_control_targets::marker(
+                .children(crate::fixture_control_targets::marker(
                     || "swarm-status".into(),
                     || Some(self.session_id.clone()),
                 ))
@@ -343,7 +343,7 @@ impl Panel {
                         cx.emit(OpenSwarmWorker(id.clone()));
                         cx.notify();
                     }))
-                    .children(crate::swarm_control_targets::marker(
+                    .children(crate::fixture_control_targets::marker(
                         || format!("status-worker:{}", worker.session_id),
                         || Some(self.session_id.clone()),
                     ))

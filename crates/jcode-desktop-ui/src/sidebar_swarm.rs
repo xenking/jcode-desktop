@@ -291,7 +291,7 @@ pub(super) fn render_workers(
                     this.open_swarm_worker(&id, cx);
                     this.focus_active(window, cx);
                 }))
-                .children(crate::swarm_control_targets::marker(
+                .children(crate::fixture_control_targets::marker(
                     || format!("sidebar-worker:{}", worker.session_id),
                     || None,
                 ))

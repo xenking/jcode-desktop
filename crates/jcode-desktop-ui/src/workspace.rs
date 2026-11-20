@@ -1322,7 +1322,7 @@ impl Workspace {
                 cx,
             );
         } else if harness::screenshot_mode() {
-            let worktree_fixture = crate::swarm_control_targets::enabled()
+            let worktree_fixture = crate::fixture_control_targets::enabled()
                 .then(|| std::env::var("JCODE_DESKTOP_CONTROL_SWARM_WORKTREE").ok())
                 .flatten();
             let session = jcode_sdk::SessionInfo {

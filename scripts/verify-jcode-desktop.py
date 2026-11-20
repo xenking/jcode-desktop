@@ -194,7 +194,7 @@ class Instance:
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         if self.manifest.get("queue_edit"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT"] = "1"
-        save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline transcript/session fixtures; no daemon, bridge, provider, model inference or OS input injection"})
+        save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline fixtures and bridge; no daemon, provider, model inference or OS input injection"})
         with (self.run / "desktop.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
         self.manifest["desktop_pid"] = self.process.pid
@@ -214,6 +214,12 @@ class Instance:
                 if panels:
                     self.target = {"window_id": window, "session_id": panels[0]["session"]}
                     state = self.native({"action": "state", "target": self.target})
+                    if (self.manifest["fixture"] == "compaction"
+                            and state["panel"].get("loaded_transcript_items")
+                            and not state["panel"].get("visible_transcript_items")):
+                        # The async bridge can update after the hidden window's first frame.
+                        self.screenshot("compaction-initial.png")
+                        state = self.native({"action": "state", "target": self.target})
                     if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] == "empty":
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
@@ -293,6 +299,8 @@ class Instance:
         self.doctor()
         if name in SWARM_JOURNEYS:
             return self.swarm_journey(name)
+        if name == "compaction":
+            return self.compaction_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -335,6 +343,50 @@ class Instance:
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
         save(self.run / f"{name}-proof.json", report)
         return report
+
+    def compaction_journey(self):
+        if self.manifest["fixture"] != "compaction":
+            raise RuntimeError("journey requires the compaction fixture")
+        before = self.drive("state")
+        initial = before["panel"]["loaded_transcript_items"]
+        oldest = {"User": "Before compaction 000"}
+        after_compaction = {"User": "After compaction"}
+        divider = next(row["Compaction"] for row in initial if "Compaction" in row)
+        if oldest in initial or {"User": "Before compaction 099"} not in initial:
+            raise RuntimeError("the initial transcript must show only a tail of the archived messages")
+        if divider["state"] != "Collapsed":
+            raise RuntimeError("the compaction divider did not start collapsed")
+        self.screenshot("compaction-collapsed.png")
+        self.drive("click", {"selector": "compaction-divider"})
+        self.screenshot("compaction-expanded.png")
+        expanded = self.drive("state")["panel"]["loaded_transcript_items"]
+        divider = next(row["Compaction"] for row in expanded if "Compaction" in row)
+        label, _, detail = divider["content"].partition("\n\n")
+        if (divider["state"] != "Expanded" or label != "compacted · snapcompact · 524k→100k"
+                or "Scroll up to read earlier messages." not in detail
+                or any(text in detail for text in ("Resume prior conversation", "Archived transcript scopes", "HISTORY"))):
+            raise RuntimeError(f"unexpected expanded divider: {divider}")
+
+        deadline = time.monotonic() + 5
+        while True:
+            self.drive("click", {"selector": "history:scroll-up"})
+            time.sleep(.1)
+            after = self.drive("state")
+            items = after["panel"]["loaded_transcript_items"]
+            if oldest in items:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("scrolling up did not trigger a compacted history page")
+        if items.count(oldest) != 1 or items[items.index(oldest) + 1:] != [
+            *({"User": f"Before compaction {i:03}"} for i in range(1, 100)),
+            {"Compaction": divider}, after_compaction,
+        ]:
+            raise RuntimeError("the older page duplicated, reordered, or replaced transcript rows")
+        save(self.run / "compaction-before.json", before)
+        save(self.run / "compaction-after.json", after)
+        proof = {"older_rows_added": len(items) - len(initial), "expanded_divider": divider}
+        save(self.run / "compaction-proof.json", proof)
+        return proof
 
     def swarm_journey(self, name):
         def open_panels(state):
@@ -546,7 +598,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -554,7 +606,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

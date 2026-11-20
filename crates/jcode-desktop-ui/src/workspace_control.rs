@@ -40,12 +40,12 @@ impl Workspace {
                     continue;
                 }
                 if let DesktopAction::Click { target, selector, allow_user_window } = &pending.request.action
-                    && crate::swarm_control_targets::is_selector(selector)
+                    && crate::fixture_control_targets::is_selector(selector)
                 {
                     let result = if pending.request.v != DESKTOP_CONTROL_VERSION {
                         error("version", "unsupported Desktop control version")
-                    } else if !allow_user_window || !crate::swarm_control_targets::enabled() {
-                        error("user_window_protected", "swarm clicks require the isolated control fixture and allow_user_window")
+                    } else if !allow_user_window || !crate::fixture_control_targets::enabled() {
+                        error("user_window_protected", "fixture input requires the isolated control fixture and allow_user_window")
                     } else {
                         let Ok(validated) = this.update_in(cx, |workspace, window, cx| {
                             workspace.control_target(target, window, cx)
@@ -55,10 +55,10 @@ impl Workspace {
                             Ok(_) => {
                                 // Dispatch outside the Workspace borrow: its listeners may update it.
                                 let Ok(response) = cx.update(|window, cx| {
-                                    if crate::swarm_control_targets::click(selector, &target.session_id, window, cx) {
+                                    if crate::fixture_control_targets::dispatch(selector, &target.session_id, window, cx) {
                                         ok(json!({"selector": selector}))
                                     } else {
-                                        error("selector_not_visible", "swarm selector is not uniquely visible")
+                                        error("selector_not_visible", "fixture selector is not uniquely visible")
                                     }
                                 }) else { break };
                                 response
