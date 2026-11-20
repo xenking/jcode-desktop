@@ -6199,12 +6199,7 @@ impl Workspace {
         self.daemon_running.get(session_id).cloned()
     }
 
-    fn render_sidebar(
-        &mut self,
-        fullscreen: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         // Release checks and the packaged automatic-update loop start here, on
         // the first frame of the window, not from the avatar's update badge: a
         // fresh packaged launch has no release state yet, so there is nothing
@@ -7188,7 +7183,7 @@ impl Workspace {
             // Folder mode leaves this transparent: the native path owns its tab.
             .child({
                 let navigation = if folders {
-                    self.render_sidebar_roller(fullscreen, window, cx)
+                    self.render_sidebar_roller(fullscreen, cx)
                 } else {
                     div()
                         .h(px(TITLEBAR_HEIGHT))
@@ -9288,7 +9283,7 @@ impl Render for SidebarChrome {
         let _render_scope = crate::render_stats::scope("SidebarChrome");
         let fullscreen = window.is_fullscreen();
         self.workspace
-            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, window, cx))
+            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
@@ -9752,9 +9747,7 @@ impl Render for Workspace {
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
                 |root| {
-                    root.child(self.render_compact_sidebar_overlay(
-                        fullscreen, drawer_progress, window, cx,
-                    ))
+                    root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
                 },
             )
             .when_some(performance, |root, performance| root.child(performance))

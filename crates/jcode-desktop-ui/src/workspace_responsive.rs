@@ -170,7 +170,6 @@ impl Workspace {
         &mut self,
         fullscreen: bool,
         progress: f32,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let offset = -SIDEBAR_WIDTH * (1.0 - progress);
@@ -210,7 +209,7 @@ impl Workspace {
                     .border_r_1()
                     .border_color(Theme::global().PANEL_BORDER)
                     .occlude()
-                    .child(self.render_sidebar(fullscreen, window, cx)),
+                    .child(self.render_sidebar(fullscreen, cx)),
             )
             .child(
                 div()

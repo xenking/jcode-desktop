@@ -143,7 +143,6 @@ impl Workspace {
     pub(super) fn render_sidebar_roller(
         &mut self,
         fullscreen: bool,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let trigger_focus = self
@@ -151,22 +150,11 @@ impl Workspace {
             .trigger_focus
             .get_or_insert_with(|| cx.focus_handle())
             .clone();
-        let menu_focus = self
-            .sidebar_roller
+        self.sidebar_roller
             .menu_focus
-            .get_or_insert_with(|| cx.focus_handle())
-            .clone();
+            .get_or_insert_with(|| cx.focus_handle());
         if self.sidebar_roller.rows.is_empty() {
             self.sidebar_roller.rows = (0..COUNT).map(|_| cx.focus_handle()).collect();
-        }
-        if self.sidebar_roller.blur.is_none() {
-            self.sidebar_roller.blur =
-                Some(cx.on_focus_out(&menu_focus, window, |this, _, _, cx| {
-                    if this.sidebar_roller.expanded {
-                        this.sidebar_roller.expanded = false;
-                        cx.notify();
-                    }
-                }));
         }
         // Restore from the existing sidebar view, including after a hot reload.
         // Scrolling previews pages live, but never launches an action.
@@ -186,66 +174,73 @@ impl Workspace {
             .copied()
             .find(|tab| tab.2 == Some(self.sidebar_view))
             .unwrap_or(TABS[0]);
-        let trigger = crate::keyboard::tracked_button(
-            div().id("sidebar-section-trigger"),
-            &trigger_focus,
-        )
-        .debug_selector(|| "sidebar-section-trigger".into())
-        .flex_none()
-        .size(px(28.0))
-        .rounded_full()
-        .when(self.sidebar_roller.expanded, |el| {
-            el.bg(Theme::global().TOOL_BG)
-        })
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        // Only this button owns section hover and wheel navigation.
-        .occlude()
-        .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
-        .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
-        .hover(|el| el.bg(Theme::global().TOOL_BG))
-        .tooltip(move |_, cx| {
-            cx.new(|_| {
-                remotes::HeaderTooltip(
+        let trigger =
+            crate::keyboard::tracked_button(div().id("sidebar-section-trigger"), &trigger_focus)
+                .debug_selector(|| "sidebar-section-trigger".into())
+                .flex_none()
+                .size(px(28.0))
+                .rounded_full()
+                .when(self.sidebar_roller.expanded, |el| {
+                    el.bg(Theme::global().TOOL_BG)
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                // Only this button owns section hover and wheel navigation.
+                .occlude()
+                .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
+                .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
+                .hover(|el| el.bg(Theme::global().TOOL_BG))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| {
+                        remotes::HeaderTooltip(
                     format!(
                         "Sidebar sections · {label}. Click to open or scroll to switch sections."
                     )
                     .into(),
                 )
-            })
-            .into()
-        })
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(|this, _, window, cx| {
-                window.prevent_default();
-                cx.stop_propagation();
-                this.sidebar_roller.expanded = true;
-                cx.notify();
-            }),
-        )
-        .on_click(cx.listener(|this, event, window, cx| {
-            if matches!(event, gpui::ClickEvent::Keyboard(_)) {
-                this.sidebar_roller.expanded = true;
-                let index = TABS
-                    .iter()
-                    .position(|tab| tab.2 == Some(this.sidebar_view))
-                    .unwrap_or(0);
-                window.focus(&this.sidebar_roller.rows[index], cx);
-                cx.stop_propagation();
-                cx.notify();
-            }
-        }))
-        .child(
-            div().debug_selector(move || id.into()).child(
-                gpui::svg()
-                    .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
-                    .size(px(16.0))
-                    .text_color(Theme::global().TEXT_DIM),
-            ),
-        );
+                    })
+                    .into()
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.sidebar_roller.expanded = true;
+                        cx.notify();
+                    }),
+                )
+                .on_click(cx.listener(|this, event, window, cx| {
+                    if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                        this.sidebar_roller.expanded = true;
+                        let scope = this.sidebar_roller.menu_focus.as_ref().unwrap();
+                        this.sidebar_roller.blur =
+                            Some(cx.on_focus_out(scope, window, |this, _, _, cx| {
+                                this.sidebar_roller.blur = None;
+                                if this.sidebar_roller.expanded {
+                                    this.sidebar_roller.expanded = false;
+                                    cx.notify();
+                                }
+                            }));
+                        let index = TABS
+                            .iter()
+                            .position(|tab| tab.2 == Some(this.sidebar_view))
+                            .unwrap_or(0);
+                        window.focus(&this.sidebar_roller.rows[index], cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div().debug_selector(move || id.into()).child(
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
+                            .size(px(16.0))
+                            .text_color(Theme::global().TEXT_DIM),
+                    ),
+                );
         let owner = cx.weak_entity();
         let toggle = crate::keyboard::press_button(
             div().id("workspace-sidebar-toggle"),
