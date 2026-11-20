@@ -96,6 +96,7 @@ pub(crate) struct AskCard {
     pub cursor_question: usize,
     pub cursor_option: usize,
     comment_open: Vec<Vec<bool>>,
+    pub(super) focus_scope: Option<gpui::FocusHandle>,
     tab_focus: Vec<gpui::FocusHandle>,
     option_focus: Vec<Vec<gpui::FocusHandle>>,
     confirming_decline: bool,
@@ -124,6 +125,7 @@ impl AskCard {
             other: vec![None; n],
             other_inputs: Vec::new(),
             comment_inputs: Vec::new(),
+            focus_scope: None,
             tab_focus: Vec::new(),
             option_focus: Vec::new(),
             cursor_question: 0,
@@ -763,6 +765,7 @@ impl Panel {
         if let Some(card) = self.ask_card.as_mut() {
             card.other_inputs = other_inputs;
             card.comment_inputs = comment_inputs;
+            card.focus_scope = Some(cx.focus_handle());
             card.tab_focus = (0..card.tab_count()).map(|_| cx.focus_handle()).collect();
             card.option_focus = card
                 .questions
@@ -808,6 +811,7 @@ impl Panel {
             card.submit_error = Some(error);
         } else {
             self.answered_asks.insert(request_id.to_owned());
+            self.ask_focus_return = card.focus_scope.take();
             self.ask_card = None;
             self.pending_ask_draft = None;
             self.schedule_ask_recovery(cx);
@@ -824,6 +828,7 @@ impl Panel {
         let theme = Theme::global();
         let mut body = div()
             .id("ask-card")
+            .when_some(card.focus_scope.as_ref(), |el, scope| el.track_focus(scope))
             .debug_selector(|| "ask-card".into())
             .occlude()
             .on_scroll_wheel(
@@ -2599,6 +2604,46 @@ mod tests {
             vcx.debug_bounds("ask-card").is_none(),
             "neither replay nor the unfinished transcript row may reopen an acknowledged ask"
         );
+    }
+
+    #[gpui::test]
+    fn acknowledged_ask_returns_keyboard_focus_to_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0)).unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&serde_json::from_str(REAL_ASK_REQUEST).unwrap(), cx);
+        });
+        vcx.run_until_parked();
+        let choice = vcx.update(|window, cx| {
+            let handle = panel.read(cx).ask_card.as_ref().unwrap().option_focus[0][0].clone();
+            window.focus(&handle, cx);
+            handle
+        });
+        vcx.run_until_parked();
+        assert!(vcx.update(|window, _| choice.is_focused(window)));
+        panel.update(vcx, |panel, cx| {
+            let request = panel.ask_card.as_ref().unwrap().request_id.clone();
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled(&request, None, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.update(|window, cx| {
+            panel
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+        }));
     }
 
     #[gpui::test]

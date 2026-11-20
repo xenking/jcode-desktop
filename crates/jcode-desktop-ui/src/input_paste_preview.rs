@@ -28,6 +28,12 @@ pub(super) fn bounds_marker(bounds: MeasuredBounds) -> gpui::AnyElement {
 }
 
 impl PromptInput {
+    pub(super) fn close_attachment_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.attachment_preview = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
     pub(crate) fn paste_preview_panel_marker(&self) -> gpui::AnyElement {
         bounds_marker(self.preview_panel_bounds.clone())
     }
@@ -72,10 +78,16 @@ impl PromptInput {
             .occlude()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    this.attachment_preview = None;
-                    window.focus(&this.focus_handle, cx);
+                    this.close_attachment_preview(window, cx);
                     cx.stop_propagation();
-                    cx.notify();
+                } else if crate::keyboard::tab_direction(event).is_some() {
+                    let next = if this.preview_close_focus.is_focused(window) {
+                        &this.preview_remove_focus
+                    } else {
+                        &this.preview_close_focus
+                    };
+                    window.focus(next, cx);
+                    cx.stop_propagation();
                 }
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -89,34 +101,40 @@ impl PromptInput {
                     .text_color(Theme::global().TEXT_DIM)
                     .child("Image preview")
                     .child(
-                        crate::keyboard::button(div().id("paste-image-preview-remove"))
-                            .debug_selector(|| "paste-image-preview-remove".into())
-                            .px_3()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(Theme::global().QUOTE_BG))
-                            .child("Remove")
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        crate::keyboard::tracked_button(
+                            div().id("paste-image-preview-remove"),
+                            &self.preview_remove_focus,
+                        )
+                        .debug_selector(|| "paste-image-preview-remove".into())
+                        .px_3()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(Theme::global().QUOTE_BG))
+                        .child("Remove")
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.remove_attachment(index, cx);
                                 window.focus(&this.focus_handle, cx);
                                 cx.stop_propagation();
-                            })),
+                            },
+                        )),
                     )
                     .child(
-                        crate::keyboard::button(div().id("paste-image-preview-close"))
-                            .debug_selector(|| "paste-image-preview-close".into())
-                            .rounded_full()
-                            .px_3()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(Theme::global().QUOTE_BG))
-                            .child("Close ×")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.attachment_preview = None;
-                                window.focus(&this.focus_handle, cx);
-                                cx.stop_propagation();
-                                cx.notify();
-                            })),
+                        crate::keyboard::tracked_button(
+                            div().id("paste-image-preview-close"),
+                            &self.preview_close_focus,
+                        )
+                        .debug_selector(|| "paste-image-preview-close".into())
+                        .rounded_full()
+                        .px_3()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(Theme::global().QUOTE_BG))
+                        .child("Close ×")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_attachment_preview(window, cx);
+                            cx.stop_propagation();
+                        })),
                     ),
             )
             .child(
@@ -138,10 +156,9 @@ impl PromptInput {
             .bg(gpui::black().opacity(0.6))
             .occlude()
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.attachment_preview = None;
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_attachment_preview(window, cx);
                 cx.stop_propagation();
-                cx.notify();
             }))
             .child(dialog);
         Some(

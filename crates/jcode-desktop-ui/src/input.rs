@@ -209,6 +209,8 @@ pub struct PromptInput {
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
+    preview_close_focus: FocusHandle,
+    preview_remove_focus: FocusHandle,
     preview_panel_bounds: paste_preview::MeasuredBounds,
     file_attachments_enabled: bool,
     queue_editor: bool,
@@ -1047,6 +1049,8 @@ impl PromptInput {
             transient_notice: None,
             transient_notice_generation: 0,
             attachment_preview: None,
+            preview_close_focus: cx.focus_handle(),
+            preview_remove_focus: cx.focus_handle(),
             preview_panel_bounds: Default::default(),
             file_attachments_enabled: true,
             queue_editor: false,
@@ -2623,9 +2627,9 @@ impl PromptInput {
         }
     }
 
-    fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
-        if self.attachment_preview.take().is_some() {
-            cx.notify();
+    fn clear(&mut self, _: &Clear, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_preview.is_some() {
+            self.close_attachment_preview(window, cx);
             return;
         }
         if self.ghost_text().is_some() {
@@ -3175,21 +3179,7 @@ impl PromptInput {
             })
         {
             self.is_selecting = false;
-            if let Some(Attachment {
-                payload: AttachmentPayload::Text(text),
-                ..
-            }) = self.attachments.get(index)
-            {
-                let text = text.clone();
-                if let Some(range) = self.chip_range(&self.attachments[index]) {
-                    self.selected_range = range;
-                    self.marked_range = None;
-                    self.replace_text_in_range(None, &text, window, cx);
-                }
-            } else {
-                self.attachment_preview = Some(paste_preview::Preview::new(index));
-            }
-            cx.notify();
+            self.activate_attachment(index, window, cx);
             return;
         }
         if event.modifiers.shift {
@@ -3201,6 +3191,29 @@ impl PromptInput {
         } else {
             self.move_to(offset, cx)
         }
+    }
+
+    fn activate_attachment(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(attachment) = self.attachments.get(index) else {
+            return;
+        };
+        match &attachment.payload {
+            AttachmentPayload::Text(text) => {
+                if let Some(range) = self.chip_range(attachment) {
+                    let text = text.clone();
+                    window.focus(&self.focus_handle, cx);
+                    self.selected_range = range;
+                    self.marked_range = None;
+                    self.replace_text_in_range(None, &text, window, cx);
+                }
+            }
+            AttachmentPayload::Image { .. } | AttachmentPayload::File { image: Some(_), .. } => {
+                self.attachment_preview = Some(paste_preview::Preview::new(index));
+                window.focus(&self.preview_close_focus, cx);
+            }
+            _ => return,
+        }
+        cx.notify();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -4430,42 +4443,63 @@ impl Render for PromptInput {
                                     .children(self.chip_positions.iter().filter_map(
                                         |(index, bounds)| {
                                             let attachment = self.attachments.get(*index)?;
-                                            Some(
-                                                crate::image_chip::chip_with_label(
-                                                    match &attachment.payload {
-                                                        AttachmentPayload::Image {
-                                                            preview,
-                                                            ..
-                                                        } => Some(preview.clone()),
-                                                        AttachmentPayload::Text(_) => None,
-                                                        AttachmentPayload::File {
-                                                            image, ..
-                                                        }
-                                                        | AttachmentPayload::Queued {
-                                                            preview: image,
-                                                            ..
-                                                        } => image
-                                                            .as_ref()
-                                                            .map(|image| image.preview.clone()),
-                                                    },
-                                                    image_chip_numbers[*index].map_or_else(
-                                                        || {
-                                                            crate::image_chip::label(
-                                                                &attachment.label,
-                                                            )
-                                                        },
-                                                        crate::image_chip::numbered_label,
-                                                    ),
-                                                    "composer-image-chip",
-                                                    "composer-image-thumbnail",
-                                                    "composer-image-label",
-                                                )
-                                                .absolute()
-                                                .left(bounds.origin.x)
-                                                .top(bounds.origin.y)
-                                                .w(bounds.size.width)
-                                                .h(bounds.size.height),
+                                            let index = *index;
+                                            let chip = crate::image_chip::chip_with_label(
+                                                match &attachment.payload {
+                                                    AttachmentPayload::Image {
+                                                        preview, ..
+                                                    } => Some(preview.clone()),
+                                                    AttachmentPayload::Text(_) => None,
+                                                    AttachmentPayload::File { image, .. }
+                                                    | AttachmentPayload::Queued {
+                                                        preview: image,
+                                                        ..
+                                                    } => image
+                                                        .as_ref()
+                                                        .map(|image| image.preview.clone()),
+                                                },
+                                                image_chip_numbers[index].map_or_else(
+                                                    || crate::image_chip::label(&attachment.label),
+                                                    crate::image_chip::numbered_label,
+                                                ),
+                                                "composer-image-chip",
+                                                "composer-image-thumbnail",
+                                                "composer-image-label",
                                             )
+                                            .absolute()
+                                            .left(bounds.origin.x)
+                                            .top(bounds.origin.y)
+                                            .w(bounds.size.width)
+                                            .h(bounds.size.height);
+                                            let chip = if matches!(
+                                                attachment.payload,
+                                                AttachmentPayload::Image { .. }
+                                                    | AttachmentPayload::File {
+                                                        image: Some(_),
+                                                        ..
+                                                    }
+                                                    | AttachmentPayload::Text(_)
+                                            ) {
+                                                crate::keyboard::button(
+                                                    chip.id(("composer-attachment", index)),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |this, event, window, cx| {
+                                                        if matches!(
+                                                            event,
+                                                            gpui::ClickEvent::Keyboard(_)
+                                                        ) {
+                                                            this.activate_attachment(
+                                                                index, window, cx,
+                                                            );
+                                                        }
+                                                    },
+                                                ))
+                                                .into_any_element()
+                                            } else {
+                                                chip.into_any_element()
+                                            };
+                                            Some(chip)
                                         },
                                     )),
                             ),
@@ -4786,6 +4820,47 @@ mod tests {
         );
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn image_chip_opens_from_tab_and_escape_returns_to_editor(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus_next(cx));
+        vcx.run_until_parked();
+        assert!(!vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+        assert!(vcx.update(|window, cx| input.read(cx).preview_close_focus.is_focused(window)));
+        vcx.simulate_keystrokes("tab");
+        assert!(vcx.update(|window, cx| input.read(cx).preview_remove_focus.is_focused(window)));
+        vcx.simulate_keystrokes("shift-tab");
+        assert!(vcx.update(|window, cx| input.read(cx).preview_close_focus.is_focused(window)));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_none());
+        assert!(vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
     }
 
     #[gpui::test]

@@ -833,6 +833,7 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    ask_focus_return: Option<FocusHandle>,
     ask_recovery: Option<gpui::Task<()>>,
     answered_asks: HashSet<String>,
     /// Scroll state of the queue card's rows, so an inline queue editor can
@@ -1630,6 +1631,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            ask_focus_return: None,
             ask_recovery: None,
             answered_asks: HashSet::new(),
             queue_items_scroll: queue_items_scroll.clone(),
@@ -4081,6 +4083,7 @@ impl Panel {
                 let ask_input = if completed_ask {
                     self.cancel_ask_voice(cx);
                     let card = self.ask_card.take().expect("checked above");
+                    self.ask_focus_return = card.focus_scope.clone();
                     let was_reload = output.contains("reload")
                         || error
                             .as_deref()
@@ -6184,6 +6187,11 @@ impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Panel");
         self.watch_composer_popover_focus(window, cx);
+        if let Some(scope) = self.ask_focus_return.take()
+            && (scope.contains_focused(window, cx) || self.focus_handle.is_focused(window))
+        {
+            self.focus_input(window, cx);
+        }
         self.expandable_viewport_height = self.transcript_list.viewport_bounds().size.height;
         if std::mem::take(&mut self.focus_pending) {
             if self.composer_popover_focus(cx).is_none()

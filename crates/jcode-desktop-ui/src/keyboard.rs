@@ -84,7 +84,7 @@ pub(crate) fn arrow_peer(
     Some(rows[next].clone())
 }
 
-fn tab_direction(event: &gpui::KeyDownEvent) -> Option<bool> {
+pub(crate) fn tab_direction(event: &gpui::KeyDownEvent) -> Option<bool> {
     let key = &event.keystroke;
     let mods = key.modifiers;
     (key.key == "tab" && !(mods.control || mods.alt || mods.platform || mods.function))
