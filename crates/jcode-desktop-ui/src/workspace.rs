@@ -7006,46 +7006,39 @@ impl Workspace {
                                     .when(details.is_some() || todo_progress.is_some(), |row| {
                                         row.child(
                                             div()
-                                                .pl(px(20.0))
+                                                .when(todo_progress.is_none(), |line| line.pl(px(20.0)))
                                                 .flex()
                                                 .items_center()
-                                                .gap_2()
+                                                .gap(px(3.0))
                                                 .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
                                                 .text_size(px(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
-                                                .child(
+                                                .when_some(todo_progress, |line, (done, total)| line.child(
                                                     div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .flex()
-                                                        .overflow_hidden()
-                                                        .whitespace_nowrap()
-                                                        .when_some(todo_progress, |line, (done, total)| line.child(
-                                                            div()
-                                                                .id(("sidebar-todos", sidebar_index))
-                                                                .flex_none().flex().items_center().gap(px(4.0)).text_size(px(11.0))
-                                                                .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
-                                                                .when(details.is_some(), |el| el.mr_1())
-                                                                .when(done == total, |el| el.text_color(Theme::global().OK))
-                                                                .rounded_full().px_1().cursor_pointer()
-                                                                .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                                .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
-                                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                                    window.prevent_default();
-                                                                    cx.stop_propagation();
-                                                                    this.sidebar_gesture = None;
-                                                                    this.activate_session(todo_session.clone(), window, cx);
-                                                                    this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
-                                                                }))
-                                                                .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
-                                                                    gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(14.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
-                                                                ))
-                                                                .child(format!("{done}/{total}")),
+                                                        .id(("sidebar-todos", sidebar_index))
+                                                        .min_w_0().flex().items_center().gap(px(2.0))
+                                                        .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
+                                                        .when(done == total, |el| el.text_color(Theme::global().OK))
+                                                        .rounded_full().pr(px(2.0)).cursor_pointer()
+                                                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                        .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                            window.prevent_default();
+                                                            cx.stop_propagation();
+                                                            this.sidebar_gesture = None;
+                                                            this.activate_session(todo_session.clone(), window, cx);
+                                                            this.slots[this.active].panel.update(cx, |panel, cx| panel.show_or_toggle_todos(selected, cx));
+                                                        }))
+                                                        .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
+                                                            gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
                                                         ))
-                                                        .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
-                                                            line.child(div().min_w_0().truncate().child(details))
-                                                        }),
-                                                ),
+                                                        .child(div().min_w_0().truncate().child(format!("{done}/{total}"))),
+                                                ))
+                                                .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
+                                                    line.child(div().min_w_0().flex_1().truncate().child(details))
+                                                }),
                                         )
                                     }),
                             );
@@ -11288,11 +11281,11 @@ mod tests {
             vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
                 .is_some()
         );
-        assert!(
-            vcx.debug_bounds(format!("sidebar-todos-icon-{row}").leak())
-                .is_some(),
-            "todo icon is drawn separately from its count"
-        );
+        let todo_icon = vcx
+            .debug_bounds(format!("sidebar-todos-icon-{row}").leak())
+            .unwrap();
+        assert_eq!(todo_icon.size.width, px(9.0));
+        assert!(todo_icon.left() + px(16.0) <= title.left());
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
                 .is_none()

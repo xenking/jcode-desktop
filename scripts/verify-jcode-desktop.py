@@ -187,6 +187,10 @@ class Instance:
         modes = ["--single-panel"]
         if self.manifest["fixture"] == "orb-todos":
             modes = []
+        if self.manifest["fixture"] == "sidebar-todos":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="orb-todos",
+                       JCODE_DESKTOP_SCREENSHOT_COLLECTIONS="1")
+            modes = []
         if self.manifest["fixture"] == "tab-statuses":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES="1",
@@ -634,7 +638,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
