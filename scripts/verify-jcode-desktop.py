@@ -185,6 +185,9 @@ class Instance:
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         modes = ["--single-panel"]
+        if self.manifest["fixture"] == "draft-session":
+            (self.profile / "00-sample-project").mkdir()
+            modes = []
         if self.manifest["fixture"] == "orb-todos":
             modes = []
         if self.manifest["fixture"] == "sidebar-todos":
@@ -244,7 +247,7 @@ class Instance:
                         # The async bridge can update after the hidden window's first frame.
                         self.screenshot("compaction-initial.png")
                         state = self.native({"action": "state", "target": self.target})
-                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker"):
+                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker", "draft-session"):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
                         save(self.run / "run.json", self.manifest)
@@ -331,6 +334,8 @@ class Instance:
             return self.mode_picker_journey()
         if name == "transcript-scroll":
             return self.transcript_scroll_journey()
+        if name == "draft-session":
+            return self.draft_session_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -372,6 +377,53 @@ class Instance:
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
         save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def draft_session_journey(self):
+        if self.manifest["fixture"] != "draft-session":
+            raise RuntimeError("draft-session journey requires --fixture draft-session")
+        project = self.profile / "00-sample-project"
+        before = self.drive("state")
+        if (before["panel"]["model"] != "gpt-5.6-terra"
+                or before["fixture_sidebar_sessions"]):
+            raise RuntimeError("fresh draft did not expose the default model or leaked into the sidebar")
+        save(self.run / "draft-session-before.json", before)
+        self.screenshot("draft-session-before.png")
+        for selector in ("composer-location", "folder-picker-entry-0", "folder-picker-open",
+                         "panel-model", "draft-model-row:gpt-5.6-sol", "panel-model-effort",
+                         "draft-effort-high"):
+            self.drive("click", {"selector": selector})
+        configured = self.drive("state")
+        if (configured["panel_id"] != before["panel_id"]
+                or configured["panel"]["working_dir"] != str(project)
+                or configured["panel"]["model"].split(":")[-1] != "gpt-5.6-sol"
+                or configured["panel"]["reasoning_effort"] != "high"
+                or configured["fixture_sidebar_sessions"]):
+            raise RuntimeError(f"configuring the empty draft changed its panel, leaked it, or lost settings: {configured}")
+        save(self.run / "draft-session-configured.json", configured)
+        self.screenshot("draft-session-configured.png")
+        self.drive("set_composer", {"text": "First native draft prompt"})
+        self.drive("click", {"selector": "composer.send"})
+        sid = "session_verifier_draft"
+        deadline = time.monotonic() + 5
+        while True:
+            listing = self.drive("list")
+            if any(p["session"] == sid for row in listing["navigation"]["rows"] for p in row["panels"]):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("first prompt did not promote the draft")
+            time.sleep(.05)
+        self.target["session_id"] = sid
+        photo = self.screenshot("draft-session-after.png")
+        after = self.drive("state")
+        if (after["panel_id"] != before["panel_id"] or after["fixture_sidebar_sessions"] != [sid]
+                or after["panel"]["working_dir"] != str(project)):
+            raise RuntimeError(f"promoted draft not in the expected panel and sidebar: {after}")
+        save(self.run / "draft-session-after.json", after)
+        report = {"passed": True, "scope": "native UI with offline catalog and create reply",
+                  "working_dir": str(project), "model": configured["panel"]["model"],
+                  "effort": configured["panel"]["reasoning_effort"], "sidebar": [sid], "screenshot": photo}
+        save(self.run / "draft-session-proof.json", report)
         return report
 
     def mode_picker_journey(self):
@@ -730,7 +782,7 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -738,7 +790,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

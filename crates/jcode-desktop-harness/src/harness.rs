@@ -852,7 +852,28 @@ fn spawn_screenshot() -> Bridge {
         .name("jcode-bridge-screenshot".into())
         .spawn(move || {
             let history = screenshot_history::enabled().then(screenshot_history::session);
+            let draft = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session");
+            if draft {
+                let routes = ["gpt-5.6-terra", "gpt-5.6-sol"].into_iter().map(|model| jcode_sdk::ModelRouteInfo {
+                    model: model.into(),
+                    provider: "openai".into(),
+                    api_method: "openai-api".into(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                }).collect();
+                let _ = update_tx.send(Update::DraftModels { current: Some("gpt-5.6-terra".into()), routes });
+            }
             while let Ok(command) = command_rx.recv() {
+                if draft && let Command::CreateSession { working_dir, request_id } = &command {
+                    let session: SessionInfo = serde_json::from_value(serde_json::json!({
+                        "session_id": "session_verifier_draft", "working_dir": working_dir,
+                        "title": "Native draft verification", "status": "idle"
+                    })).expect("draft fixture session");
+                    let _ = update_tx.send(Update::SessionCreated { session, request_id: request_id.clone() });
+                    continue;
+                }
                 if let Command::ReadTodoSnapshot { session_id, reply } = &command {
                     let _ = reply.try_send(persisted_todo_snapshot(session_id));
                     continue;

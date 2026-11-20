@@ -345,6 +345,12 @@ impl PromptInput {
         };
         let model = suggestion.value.strip_prefix("/model ");
         let mode = suggestion.value.strip_prefix("/mode ");
+        let draft_target = crate::fixture_control_targets::draft_session().then(|| {
+            model
+                .map(|spec| self.model_details.get(spec).map_or(spec, |route| route.model.as_str()))
+                .map(|model| format!("draft-model-row:{model}"))
+                .or_else(|| (suggestion.value == "/effort high").then(|| "draft-effort-high".to_owned()))
+        }).flatten();
         let active_mode =
             mode.is_some_and(|name| self.current_modes.iter().any(|active| active == name));
         let mode_icon = mode
@@ -462,6 +468,8 @@ impl PromptInput {
             .child(
                 div()
                     .id(("slash-command", index))
+                    .relative()
+                    .children(draft_target.and_then(|id| crate::fixture_control_targets::marker(|| id, || None)))
                     .debug_selector(move || {
                         if is_toggle {
                             format!("model-picker-toggle-{index}")

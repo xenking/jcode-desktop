@@ -1321,6 +1321,9 @@ impl Workspace {
                 true,
                 cx,
             );
+        } else if crate::fixture_control_targets::draft_session() {
+            workspace.connected = true;
+            workspace.open_local_draft(workspace.default_working_dir(), cx);
         } else if harness::screenshot_mode() {
             let worktree_fixture = crate::fixture_control_targets::enabled()
                 .then(|| std::env::var("JCODE_DESKTOP_CONTROL_SWARM_WORKTREE").ok())
@@ -8983,6 +8986,8 @@ impl Workspace {
             list = list.child(
                 div()
                     .id(("folder-picker-entry", index))
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(|| format!("folder-picker-entry-{index}"), || None))
                     .debug_selector(move || format!("folder-picker-entry-{index}"))
                     .px_4()
                     .py_2()
@@ -9198,6 +9203,8 @@ impl Workspace {
                         div().p_3().flex().justify_end().child(
                             div()
                                 .id("folder-picker-open")
+                                .relative()
+                                .children(crate::fixture_control_targets::marker(|| "folder-picker-open".into(), || None))
                                 .debug_selector(|| "folder-picker-open".into())
                                 .px_4()
                                 .py_2()

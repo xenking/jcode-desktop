@@ -70,7 +70,8 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let screenshot_mode = crate::config::display().screenshot_mode;
+        let screenshot_mode = crate::config::display().screenshot_mode
+            && !crate::fixture_control_targets::draft_session();
         let (mut model_label, effort) = self.composer_identity();
         if self.session_deferred() && self.model.is_none() {
             model_label = "Models".into();
@@ -186,6 +187,8 @@ impl Panel {
                     .overflow_hidden()
                     .child(
                         composer_pill("panel-model")
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
                             .flex_shrink_1()
                             .min_w(px(56.))
                             .child(
@@ -214,6 +217,8 @@ impl Panel {
                             })
                         });
                         composer_pill("panel-model-effort")
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
                             .px_1p5()
                             .children(mark)
@@ -279,6 +284,8 @@ impl Panel {
                     .children(location.map(|(name, full_path)| {
                         div()
                             .id("composer-location")
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "composer-location".into(), || Some(self.session_id.clone())))
                             .debug_selector(|| "composer-location".into())
                             .flex_shrink_1()
                             .min_w_0()

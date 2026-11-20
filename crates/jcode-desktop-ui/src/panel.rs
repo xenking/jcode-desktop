@@ -3147,7 +3147,11 @@ impl Panel {
                     panel.update(app, |panel, cx| {
                         if kind == PickerKind::Mode {
                             if content.starts_with("/mode toggle ") || content == "/mode off" {
-                                panel.handle_runtime_command(&content, cx);
+                                if panel.session_deferred() {
+                                    panel.handle_slash_command(&content, cx);
+                                } else {
+                                    panel.handle_runtime_command(&content, cx);
+                                }
                             }
                             return;
                         }
@@ -12198,7 +12202,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && matches!(
             fixture.as_deref(),
-            Some("empty" | "compaction" | "mode-picker")
+            Some("empty" | "compaction" | "mode-picker" | "draft-session")
         )
     {
         return Vec::new();

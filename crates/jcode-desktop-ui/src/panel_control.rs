@@ -237,6 +237,7 @@ impl Panel {
             "tab_activity": self.tab_ring().map(|ring| ring.mode.label()),
             "connection_phase": self.connection_phase,
             "model": self.model,
+            "working_dir": self.working_dir,
             "provider": self.provider,
             "reasoning_effort": self.reasoning_effort,
             "active_modes": self.mode_names(),

@@ -195,7 +195,7 @@ impl Workspace {
                 };
                 let panel = self.slots[index].panel.read(cx);
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx)}),
+                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": crate::fixture_control_targets::draft_session().then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
                 )
             }
             DesktopAction::Search {

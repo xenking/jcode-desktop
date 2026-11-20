@@ -18,6 +18,10 @@ pub(crate) fn transcript_scroll_fixture() -> bool {
             == Ok("transcript-scroll")
 }
 
+pub(crate) fn draft_session() -> bool {
+    enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
+}
+
 struct Capture {
     selector: String,
     session: String,
@@ -74,6 +78,8 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
+        || (draft_session() && (selector.starts_with("draft-model-row:")
+            || matches!(selector, "composer-location" | "folder-picker-entry-0" | "folder-picker-open" | "panel-model" | "panel-model-effort" | "draft-effort-high")))
         || selector.starts_with("proof-pointer:")
         || matches!(selector, "compaction-divider" | "history:scroll-up")
         || (transcript_scroll_fixture()
