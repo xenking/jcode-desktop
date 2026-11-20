@@ -8,8 +8,8 @@ impl Panel {
             data: serde_json::json!({"pinned_skills": ["selfdev", "swarm", "poteto-mode"], "skills": [
                 {"name": "selfdev", "description": "Work on Jcode"},
                 {"name": "swarm", "description": "Coordinate agents"},
-                {"name": "poteto-mode", "description": "Concise development style"},
-                {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "☾"},
+                {"name": "poteto-mode", "description": "Concise development style", "icon": "crown"},
+                {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "moon"},
                 {"name": "verify-jcode", "description": "Run a native verification"},
                 {"name": "write-guide", "description": "Write product documentation"}
             ]}), message: String::new(),
@@ -137,26 +137,6 @@ impl Panel {
         }
     }
 
-    pub(super) fn mode_label(&self) -> Option<String> {
-        let names = self.mode_names();
-        if names.is_empty() {
-            return None;
-        }
-        Some(
-            names
-                .iter()
-                .map(|name| {
-                    let icon = crate::mode_catalog::icon(name, self.mode_catalog.get(name));
-                    if names.len() == 1 {
-                        format!("{icon} {}", name.strip_suffix("-mode").unwrap_or(name))
-                    } else {
-                        icon.to_owned()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("  "),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -237,13 +217,29 @@ mod tests {
                 .input
                 .update(cx, |input, cx| input.set_skills(skills, cx));
             panel.active_skill = Some("poteto-mode".into());
+            panel.mode_catalog.insert(
+                "poteto-mode".into(),
+                crate::mode_catalog::ModeMetadata {
+                    icon: Some("crown".into()),
+                    mode: Some(true),
+                },
+            );
             panel.sync_mode_menu(cx);
             cx.notify();
         });
         vcx.run_until_parked();
         let pill = vcx.debug_bounds("panel-mode").expect("mode pill");
+        assert!(vcx.debug_bounds("panel-mode-icon-crown-0").is_some());
         vcx.simulate_click(pill.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        let poteto = vcx
+            .debug_bounds("mode-picker-icon-crown-0")
+            .expect("poteto has a rendered crown icon, not the frontmatter text");
+        for selector in ["mode-picker-icon-selfdev-1", "mode-picker-icon-trash-2"] {
+            let icon = vcx.debug_bounds(selector).expect("rendered row icon");
+            assert_eq!(icon.origin.x, poteto.origin.x);
+            assert_eq!(icon.size, poteto.size);
+        }
         panel.read_with(vcx, |panel, cx| {
             let (kind, search) = panel.picker_search.as_ref().expect("menu open");
             assert_eq!(*kind, PickerKind::Mode);

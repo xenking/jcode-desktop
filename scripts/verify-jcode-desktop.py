@@ -180,7 +180,9 @@ class Instance:
         for name in ("home", "runtime", "config", "cache", "data", "logs", "jcode", "tmp"):
             (self.profile / name).mkdir(parents=True, mode=0o700)
         reduce_motion = "false" if self.manifest["fixture"] == "orb-todos" else "true"
-        (self.profile / "desktop.toml").write_text(f'[appearance]\nreduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
+        theme = self.manifest.get("theme")
+        theme_line = f'theme = "{theme}"\n' if theme else ""
+        (self.profile / "desktop.toml").write_text(f'[appearance]\n{theme_line}reduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
@@ -494,7 +496,7 @@ class Instance:
                 raise RuntimeError(f"mode-picker rows mismatch at {stage}")
             if stage == "after" and ([row["name"] for row in rows if row["active"]] != expected
                                      or [row["section"] for row in rows if row["section"]] != ["Active", "Modes", "Skills", "Actions"]
-                                     or rows[3]["icon"] != "☾" or not all(row["icon"] for row in rows)):
+                                     or [row["icon"] for row in rows] != ["selfdev", "swarm", "crown", "moon", "todo", "pencil", "trash"]):
                 raise RuntimeError("mode-picker active marks, sections or icons mismatch")
             save(self.run / f"{name}-{stage}.json", state)
             frames[stage] = self.screenshot(f"{name}-{stage}.png")
@@ -798,7 +800,7 @@ def launch(args):
     manifest = {"schema": SCHEMA, "phase": "starting", "evidence": str(run), "scratch": str(scratch),
                 "supervisor_socket": str(scratch / "supervisor.sock"), "token": secrets.token_hex(32),
                 "binary": str(binary), "binary_sha256": digest(binary), "version": version,
-                "sources": sources, "build": command, "fixture": args.fixture,
+                "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
                 "lifetime_seconds": args.lifetime}
@@ -835,6 +837,8 @@ def main():
         child = sub.add_parser(command)
         child.add_argument("--run", type=Path, required=True, help="new evidence directory for launch, same directory for later commands")
         if command == "launch":
+            child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
+                               help="override the theme in this private profile")
             child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session"), default="expandable")
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")

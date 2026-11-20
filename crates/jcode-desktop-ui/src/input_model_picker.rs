@@ -353,8 +353,7 @@ impl PromptInput {
         }).flatten();
         let active_mode =
             mode.is_some_and(|name| self.current_modes.iter().any(|active| active == name));
-        let mode_icon = mode
-            .map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)).to_owned());
+        let mode_icon = mode.map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)));
         let mode_target = mode.map(str::to_owned);
         let logo_svg = |provider: &str, fallback: &str, size: f32, color: gpui::Rgba| {
             match crate::accounts::logo(provider) {
@@ -514,7 +513,14 @@ impl PromptInput {
                             .children(effort_mark)
                             .children(
                                 mode_icon.map(|icon| {
-                                    div().w(px(18.0)).flex_none().truncate().child(icon)
+                                    div()
+                                        .debug_selector(move || format!("mode-picker-icon-{}-{index}", icon.name()))
+                                        .size(px(18.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon.render(16.0, ink))
                                 }),
                             )
                             .font_family(if model.is_some() || stage_row {
@@ -555,7 +561,8 @@ impl PromptInput {
                         div()
                             .max_w(relative(0.4))
                             .min_w_0()
-                            .truncate()
+                            .when(mode.is_none(), |help| help.truncate())
+                            .when(mode.is_some(), |help| help.whitespace_nowrap().overflow_hidden())
                             .text_color(if selected {
                                 ink
                             } else {
@@ -576,7 +583,7 @@ impl PromptInput {
                             .when(active_mode, |marker| {
                                 marker
                                     .debug_selector(move || format!("mode-picker-active-{index}"))
-                                    .child("✓")
+                                    .child(crate::mode_catalog::ModeIcon::Check.render(12.0, ink))
                             })
                             .when(mode.is_none() && selected, |marker| {
                                 marker

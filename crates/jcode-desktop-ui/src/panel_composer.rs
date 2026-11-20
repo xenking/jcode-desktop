@@ -231,17 +231,33 @@ impl Panel {
                                 cx.stop_propagation();
                             }))
                     }))
-                    .children(self.mode_label().or_else(|| self.session_deferred().then(|| "Mode".into())).map(|mode| {
-                        let hover = if self.mode_names().is_empty() {
+                    .children((!self.mode_names().is_empty() || self.session_deferred()).then(|| {
+                        let names = self.mode_names();
+                        let hover = if names.is_empty() {
                             "Choose session modes".to_owned()
                         } else {
-                            format!("Active modes: {}", self.mode_names().join(", "))
+                            format!("Active modes: {}", names.join(", "))
                         };
+                        let label = match names {
+                            [] => Some("Mode".to_owned()),
+                            [name] => Some(name.strip_suffix("-mode").unwrap_or(name).to_owned()),
+                            _ => None,
+                        };
+                        let icons = names.iter().enumerate().map(|(index, name)| {
+                            let icon = crate::mode_catalog::icon(name, self.mode_catalog.get(name));
+                            div()
+                                .debug_selector(move || format!("panel-mode-icon-{}-{index}", icon.name()))
+                                .flex_none()
+                                .flex()
+                                .child(icon.render(BAR_ICON, theme.TEXT_DIM))
+                        });
                         crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
                             .flex_shrink(3.)
                             .min_w_0()
                             .max_w(relative(0.4))
-                            .child(div().min_w_0().truncate().child(mode))
+                            .overflow_hidden()
+                            .children(icons)
+                            .children(label.map(|mode| div().min_w_0().truncate().child(mode)))
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_mode_picker(window, cx);

@@ -3152,7 +3152,7 @@ impl PromptInput {
                 Some(serde_json::json!({
                     "name": name, "section": row.header,
                     "active": self.current_modes.iter().any(|active| active == name),
-                    "icon": crate::mode_catalog::icon(name, self.mode_catalog.get(name)),
+                    "icon": crate::mode_catalog::icon(name, self.mode_catalog.get(name)).name(),
                 }))
             })
             .collect()
