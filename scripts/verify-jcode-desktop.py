@@ -167,6 +167,7 @@ class Instance:
         self.profile = Path(manifest["scratch"]) / "profile"
         self.control = Path(manifest["scratch"]) / "control"
         self.process = None
+        self.runtime_processes = []
         self.endpoint = None
         self.target = None
         self.sequence = 0
@@ -219,11 +220,16 @@ class Instance:
                        JCODE_DESKTOP_CONTROL_SWARM_WORKTREE=str(worker),
                        JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
             modes = []
+        if self.manifest["fixture"] == "background-jobs":
+            self.start_background_runtime(env)
+            modes = []
         if self.manifest.get("queued"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         if self.manifest.get("queue_edit"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT"] = "1"
-        save(self.run / "isolation.json", {"environment": env, "scope": "real hidden GPUI window with offline fixtures and bridge; no daemon, provider, model inference or OS input injection"})
+        scope = ("real hidden GPUI window with private daemon, bridge, and loopback provider"
+                 if self.runtime_processes else "real hidden GPUI window with offline fixtures; no daemon or provider")
+        save(self.run / "isolation.json", {"environment": env, "scope": scope})
         with (self.run / "desktop.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
         self.manifest["desktop_pid"] = self.process.pid
@@ -249,7 +255,7 @@ class Instance:
                         # The async bridge can update after the hidden window's first frame.
                         self.screenshot("compaction-initial.png")
                         state = self.native({"action": "state", "target": self.target})
-                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker", "draft-session"):
+                    if state["panel"].get("visible_transcript_items") or self.manifest["fixture"] in ("empty", "mode-picker", "draft-session", "background-jobs"):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
                         save(self.run / "run.json", self.manifest)
@@ -284,7 +290,9 @@ class Instance:
             raise RuntimeError("Desktop session identity changed")
         report = {"healthy": True, "desktop_pid": self.process.pid, "target": self.target,
                   "binary_sha256": self.manifest["binary_sha256"], "version": self.manifest["version"],
-                  "build": self.manifest["build"], "scope": "hidden native UI, offline fixtures; provider/auth not exercised"}
+                  "build": self.manifest["build"],
+                  "scope": ("hidden native UI, private daemon and bridge, loopback provider"
+                            if self.runtime_processes else "hidden native UI, offline fixtures; provider/auth not exercised")}
         save(self.run / "doctor.json", report)
         return report
 
@@ -323,6 +331,8 @@ class Instance:
         return {"path": str(path), "sha256": digest(path), "bytes": len(data)}
 
     def journey(self, name):
+        if name == "background-jobs":
+            return self.background_jobs_journey()
         if any((self.run / f"{name}-{suffix}").exists() for suffix in ("before.json", "before.png", "after.json", "after.png", "proof.json")):
             raise RuntimeError("journey evidence already exists; launch a fresh run")
         self.doctor()
@@ -632,6 +642,105 @@ class Instance:
         save(self.run / "compaction-proof.json", proof)
         return proof
 
+    def start_background_runtime(self, env):
+        self.runtime_env = {**env, "JCODE_TEST_SESSION": "1"}
+        runtime = self.runtime_env
+        self.legacy_socket = self.profile / "jcode/legacy.sock"
+        self.api_socket = self.profile / "jcode/api.sock"
+        runtime.update(JCODE_PROVIDER="openai-compatible", JCODE_MODEL="fake-model",
+                       OPENAI_COMPAT_API_KEY="fixture-only", JCODE_OPENAI_COMPAT_DEFAULT_MODEL="fake-model",
+                       FAKE_LOG=str(self.run / "fake-requests.jsonl"),
+                       FAKE_CONTROL_DIR=str(self.profile), FAKE_PORT_FILE=str(self.profile / "fake-port"),
+                       JCODE_SOCKET=str(self.legacy_socket), JCODE_API_SOCKET=str(self.api_socket))
+        (self.profile / "jcode/config.toml").write_text("[server]\nmobile_push = false\n")
+        self.runtime_cli = [self.manifest["jcode_bin"], "--no-update", "--no-selfdev"]
+        provider = REPO.parent / "jcode/scripts/fake_openai_server.py"
+        self.runtime_spawn("fake-provider", [sys.executable, str(provider), "0"])
+        port_file = Path(runtime["FAKE_PORT_FILE"])
+        self.runtime_wait(port_file.is_file, "loopback provider")
+        runtime["JCODE_OPENAI_COMPAT_API_BASE"] = f"http://127.0.0.1:{port_file.read_text().strip()}/v1"
+        self.start_background_daemon()
+        session_id = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET=str(self.api_socket),
+                   JCODE_DESKTOP_CONTROL_RUNTIME_SESSION=session_id)
+
+    def runtime_debug(self, *args):
+        result = subprocess.run([*self.runtime_cli, "debug", *args, "--socket", str(self.legacy_socket)],
+                                env=self.runtime_env, cwd=self.profile / "home", capture_output=True,
+                                text=True, check=True, timeout=20)
+        return result.stdout
+
+    def runtime_spawn(self, name, command):
+        with (self.run / f"{name}.log").open("a") as log:
+            process = subprocess.Popen(command, env=self.runtime_env, cwd=self.profile / "home", stdout=log, stderr=log)
+        self.runtime_processes.append(process)
+        return process
+
+    @staticmethod
+    def runtime_stop(process):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+    def runtime_wait(self, predicate, label):
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            result = predicate()
+            if result:
+                return result
+            time.sleep(.15)
+        raise RuntimeError(f"timed out waiting for {label}")
+
+    def start_background_daemon(self):
+        self.daemon = self.runtime_spawn("private-daemon", [*self.runtime_cli, "serve", "--socket", str(self.legacy_socket)])
+        self.runtime_wait(self.legacy_socket.exists, "private daemon socket")
+        self.api_bridge = self.runtime_spawn("private-bridge", [self.manifest["bridge_bin"], str(self.api_socket), str(self.legacy_socket)])
+        self.runtime_wait(self.api_socket.exists, "private bridge socket")
+
+    def background_jobs_journey(self):
+        if self.manifest["fixture"] != "background-jobs":
+            raise RuntimeError("journey requires the background-jobs fixture")
+        session = self.target["session_id"]
+        def jobs():
+            return self.drive("state")["panel"]["background_jobs"]
+        self.runtime_debug("message", "[e2e:reload-bg:desktop] verify-no-bg-wake verify-bg-success", "--session", session, "--wait")
+        running = self.runtime_wait(lambda: next((job for job in jobs()["tasks"] if job["status"] == "running"), None), "running task in Desktop")
+        task_id = running["task_id"]
+        self.drive("click", {"selector": "swarm-status"})
+        self.drive("click", {"selector": f"background-job:{task_id}"})
+        if jobs()["selected"] != task_id:
+            raise RuntimeError("native click did not open task output")
+        self.screenshot("background-jobs-running.png")
+        # After reconnect, progress and output must still reach the same open detail.
+        self.runtime_stop(self.api_bridge)
+        self.runtime_stop(self.daemon)
+        self.api_socket.unlink(missing_ok=True)
+        self.legacy_socket.unlink(missing_ok=True)
+        self.start_background_daemon()
+        (self.profile / "desktop.progress").touch()
+        def saw_progress():
+            state = jobs()
+            return (state["selected"] == task_id and any(
+                job["task_id"] == task_id and (job.get("progress") or {}).get("percent") == 50
+                for job in state["tasks"]))
+        self.runtime_wait(saw_progress, "task progress after daemon and bridge restart")
+        (self.profile / "desktop.release").touch()
+        def completed():
+            state = jobs()
+            return (state if any(job["task_id"] == task_id and job["status"] == "completed"
+                                 for job in state["tasks"])
+                    and "completed by original shell" in (state["output"] or {}).get("tail", "") else None)
+        result = self.runtime_wait(completed, "completed status and latest log in open detail")
+        frame = self.screenshot("background-jobs-completed.png")
+        report = {"journey": "background-jobs", "passed": True, "start": running,
+                  "after_restart": result, "screenshot": frame}
+        save(self.run / "background-jobs-proof.json", report)
+        return report
+
     def swarm_journey(self, name):
         def open_panels(state):
             return [panel for row in state["navigation"]["rows"]
@@ -692,6 +801,11 @@ class Instance:
                     self.process.kill()
                     self.process.wait(timeout=5)
             save(self.run / "process-exit.json", {"pid": self.process.pid, "returncode": self.process.returncode})
+        if self.runtime_processes:
+            (self.profile / "desktop.progress").touch()
+            (self.profile / "desktop.release").touch()
+            for process in reversed(self.runtime_processes):
+                self.runtime_stop(process)
         if (self.profile / "logs").exists():
             shutil.copytree(self.profile / "logs", self.run / "runtime-logs", dirs_exist_ok=True)
         state = self.profile / "state"
@@ -775,6 +889,10 @@ def supervise(run):
 
 def launch(args):
     require_safe_host()
+    if args.fixture == "background-jobs" and not all(
+        path and path.is_file() and os.access(path, os.X_OK) for path in (args.jcode_bin, args.bridge_bin)
+    ):
+        raise RuntimeError("background-jobs requires --jcode-bin and --bridge-bin from the sibling checkout")
     run = args.run.resolve()
     run.mkdir(parents=True, mode=0o700, exist_ok=False)
     build_dir = REPO / "target/verify-build"
@@ -812,7 +930,9 @@ def launch(args):
                 "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
-                "lifetime_seconds": args.lifetime}
+                "lifetime_seconds": args.lifetime,
+                "jcode_bin": str(args.jcode_bin.resolve()) if args.jcode_bin else None,
+                "bridge_bin": str(args.bridge_bin.resolve()) if args.bridge_bin else None}
     owner = scratch / ".owner"
     owner.write_text(manifest["token"])
     owner.chmod(0o600)
@@ -848,7 +968,9 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs"), default="expandable")
+            child.add_argument("--jcode-bin", type=Path)
+            child.add_argument("--bridge-bin", type=Path)
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",
                                help="seed N queued prompts above the composer")
             child.add_argument("--queue-edit", action="store_true",
@@ -856,7 +978,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

@@ -105,6 +105,8 @@ use scroll_motion::WheelGlide;
 mod ask;
 #[path = "panel_ask_images.rs"]
 mod ask_images;
+#[path = "panel_background_jobs.rs"]
+mod background_jobs;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -243,7 +245,11 @@ fn command_unavailable_message(input: &str) -> String {
 fn enter_sends_over_queue(content: &str, queued: bool, visible_queue: bool) -> bool {
     !queued
         && visible_queue
-        && content.split_whitespace().next().and_then(registered_command).is_none()
+        && content
+            .split_whitespace()
+            .next()
+            .and_then(registered_command)
+            .is_none()
         && jcode_base::skill::SkillRegistry::parse_invocation(content).is_none()
 }
 
@@ -710,6 +716,7 @@ pub struct Panel {
     pub input: Entity<PromptInput>,
     /// Coordinator-only: its swarm workers, for the composer indicator.
     swarm_workers: Vec<crate::swarm_view::Worker>,
+    background_jobs: background_jobs::BackgroundJobs,
     /// Coordinator-only: background swarm awaits still in flight. The daemon
     /// persists them, so a reload no longer makes the coordinator look idle.
     pending_awaits: Vec<jcode_sdk::PendingAwait>,
@@ -1548,6 +1555,7 @@ impl Panel {
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             swarm_workers: Vec::new(),
+            background_jobs: Default::default(),
             pending_awaits: Vec::new(),
             tab_dependency_waiting: false,
             worker_record: None,
@@ -3172,6 +3180,7 @@ impl Panel {
 
     pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
         self.swarm_list_open = false;
+        self.select_background_job(None, cx);
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
         let submit = cx.weak_entity();
@@ -3265,6 +3274,7 @@ impl Panel {
             self.model_picker_open = false;
         } else {
             self.swarm_list_open = false;
+            self.select_background_job(None, cx);
         }
         self.composer_popover_trigger = None;
         if restore {
@@ -4203,6 +4213,10 @@ impl Panel {
                         self.context_tokens = Some(*post_tokens);
                     }
                 }
+            }
+            ApiEvent::BackgroundTasks { snapshot, .. } => {
+                self.apply_background_tasks(snapshot, cx);
+                return;
             }
             ApiEvent::BackgroundProgress {
                 task_id,
@@ -6506,10 +6520,17 @@ impl Render for Panel {
                 || "history:scroll-up".into(),
                 || Some(self.session_id.clone()),
             ))
-            .children(crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
-                crate::fixture_control_targets::marker(|| "scroll:transcript".into(), || Some(self.session_id.clone())).unwrap()
-                    .right_auto().w(px(4.))
-            }))
+            .children(
+                crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+                    crate::fixture_control_targets::marker(
+                        || "scroll:transcript".into(),
+                        || Some(self.session_id.clone()),
+                    )
+                    .unwrap()
+                    .right_auto()
+                    .w(px(4.))
+                }),
+            )
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -7159,13 +7180,19 @@ impl Render for Panel {
                                         if phase != gpui::DispatchPhase::Capture {
                                             return;
                                         }
-                                        let child_owns_wheel = crate::transcript_scroll::end_capture(cx);
-                                        if !hitbox.get().is_some_and(|hitbox| hitbox.should_handle_scroll(window)) {
+                                        let child_owns_wheel =
+                                            crate::transcript_scroll::end_capture(cx);
+                                        if !hitbox.get().is_some_and(|hitbox| {
+                                            hitbox.should_handle_scroll(window)
+                                        }) {
                                             return;
                                         }
                                         if child_owns_wheel {
-                                            if wheel_panel.read(cx).transcript_wheel_frame.is_some() {
-                                                wheel_panel.update(cx, |panel, _| panel.cancel_transcript_momentum());
+                                            if wheel_panel.read(cx).transcript_wheel_frame.is_some()
+                                            {
+                                                wheel_panel.update(cx, |panel, _| {
+                                                    panel.cancel_transcript_momentum()
+                                                });
                                             }
                                             return;
                                         }
@@ -12282,7 +12309,11 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 done: true,
                 error: None,
             },
-            Item::User((0..100).map(|n| format!("Prompt paragraph {n}\n\n")).collect()),
+            Item::User(
+                (0..100)
+                    .map(|n| format!("Prompt paragraph {n}\n\n"))
+                    .collect(),
+            ),
         ];
         items.extend((0..30).map(|n| Item::Assistant(format!("Response {n}"))));
         return items;

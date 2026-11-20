@@ -746,7 +746,7 @@ fn background_task_row_expands_to_its_whole_summary(cx: &mut gpui::TestAppContex
 }
 
 #[gpui::test]
-fn composer_worker_row_expands_to_the_whole_label(cx: &mut gpui::TestAppContext) {
+fn composer_worker_row_stays_one_line_at_narrow_width(cx: &mut gpui::TestAppContext) {
     let label = format!(
         "{} worker",
         "rewire the sidebar swarm rows and keep every label readable ".repeat(3)
@@ -779,31 +779,14 @@ fn composer_worker_row_expands_to_the_whole_label(cx: &mut gpui::TestAppContext)
         .debug_bounds("swarm-list-worker-0")
         .expect("worker row paints")
         .size;
-    click(vcx, "swarm-list-worker-expand-0");
-    panel.read_with(&*vcx, |panel, _| {
-        assert!(
-            panel
-                .expanded_regions
-                .contains(&expandable::key::worker("session_rose_1_a")),
-            "the same worker key the sidebar uses"
-        );
-    });
-    let expanded = vcx
+    vcx.simulate_window_resize(vcx.window_handle(), gpui::size(px(300.), px(360.)));
+    vcx.run_until_parked();
+    let narrow = vcx
         .debug_bounds("swarm-list-worker-0")
-        .expect("worker row paints")
+        .expect("worker row paints in the narrow window")
         .size;
-    assert!(
-        expanded.height > compact.height,
-        "the label wraps: {compact:?} -> {expanded:?}"
-    );
-    click(vcx, "swarm-list-worker-expand-0");
-    panel.read_with(&*vcx, |panel, _| {
-        assert!(
-            !panel
-                .expanded_regions
-                .contains(&expandable::key::worker("session_rose_1_a"))
-        );
-    });
+    assert_eq!(narrow.height, compact.height, "long names must not wrap");
+    assert!(narrow.width <= px(300.));
 }
 
 #[gpui::test]

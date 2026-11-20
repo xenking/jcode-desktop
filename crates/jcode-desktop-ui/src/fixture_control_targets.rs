@@ -83,6 +83,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
+        || selector.starts_with("background-job:")
         || (draft_session() && (selector.starts_with("draft-model-row:")
             || matches!(selector, "composer-location" | "folder-picker-entry-0" | "folder-picker-open" | "panel-model" | "panel-model-effort" | "draft-effort-high")))
         || selector.starts_with("proof-pointer:")

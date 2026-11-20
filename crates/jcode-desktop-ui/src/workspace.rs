@@ -1321,6 +1321,16 @@ impl Workspace {
                 true,
                 cx,
             );
+        } else if harness::controlled_runtime_socket().is_some() {
+            if let Ok(session_id) = std::env::var("JCODE_DESKTOP_CONTROL_RUNTIME_SESSION")
+                && let Ok(session) = serde_json::from_value::<jcode_sdk::SessionInfo>(serde_json::json!({
+                    "session_id": session_id,
+                    "status": "idle",
+                }))
+            {
+                workspace.sessions = vec![session.clone()];
+                workspace.active = workspace.open_session(session, cx);
+            }
         } else if crate::fixture_control_targets::draft_session() {
             workspace.connected = true;
             workspace.open_local_draft(workspace.default_working_dir(), cx);
@@ -2062,7 +2072,7 @@ impl Workspace {
                 panel.update(cx, |panel, _| panel.input = input.clone());
                 self.remotes.input = Some(input);
             } else if !panel.read(cx).is_default_directory() {
-                Panel::connect_input(&panel, cx);
+                Self::wire_session_panel(&panel, cx);
             }
             panel.update(cx, |panel, cx| {
                 panel.restore_snapshot(panel_state, cx);
@@ -3049,8 +3059,18 @@ impl Workspace {
         true
     }
 
-    /// Open `session` as a panel immediately to the right of the focused panel,
-    /// mirroring niri's "new column opens right of the focused column".
+    fn wire_session_panel(panel: &Entity<Panel>, cx: &mut Context<Self>) {
+        Panel::connect_input(panel, cx);
+        cx.subscribe(
+            panel,
+            |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
+                this.open_swarm_worker(&event.0, cx);
+            },
+        )
+        .detach();
+    }
+
+    /// Open `session` as a panel immediately to the right of the focused panel.
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
         let width_fraction = spawned_panel_width(
@@ -3069,14 +3089,7 @@ impl Workspace {
                 cx,
             )
         });
-        Panel::connect_input(&panel, cx);
-        cx.subscribe(
-            &panel,
-            |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
-                this.open_swarm_worker(&event.0, cx);
-            },
-        )
-        .detach();
+        Self::wire_session_panel(&panel, cx);
         if !Panel::is_pending_session_id(&session_id) {
             panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
@@ -9035,7 +9048,10 @@ impl Workspace {
                 div()
                     .id(("folder-picker-entry", index))
                     .relative()
-                    .children(crate::fixture_control_targets::marker(|| format!("folder-picker-entry-{index}"), || None))
+                    .children(crate::fixture_control_targets::marker(
+                        || format!("folder-picker-entry-{index}"),
+                        || None,
+                    ))
                     .debug_selector(move || format!("folder-picker-entry-{index}"))
                     .px_4()
                     .py_2()
@@ -9252,7 +9268,10 @@ impl Workspace {
                             div()
                                 .id("folder-picker-open")
                                 .relative()
-                                .children(crate::fixture_control_targets::marker(|| "folder-picker-open".into(), || None))
+                                .children(crate::fixture_control_targets::marker(
+                                    || "folder-picker-open".into(),
+                                    || None,
+                                ))
                                 .debug_selector(|| "folder-picker-open".into())
                                 .px_4()
                                 .py_2()
@@ -11265,6 +11284,25 @@ mod tests {
                 "canonical metadata must replace the restored placeholder"
             );
             assert!(workspace.sessions[0].saved);
+            let mut worker = session_info("session_puppy_1234567890000_abcdef", Some("Worker"));
+            worker.parent_session_id = Some("session_fox_1234567890000_deadbeef".into());
+            worker.swarm_status = Some("running".into());
+            workspace.sessions.push(worker);
+            workspace.sync_swarm_strips(cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").expect("workers pill");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("swarm-list-title-0").expect("worker row");
+        vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "session_puppy_1234567890000_abcdef",
+                "clicking in a restored panel must activate the worker's chat"
+            );
         });
     }
 

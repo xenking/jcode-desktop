@@ -34,7 +34,7 @@ impl Panel {
     pub(crate) fn set_swarm_workers(&mut self, workers: Vec<Worker>, cx: &mut Context<Self>) {
         if self.swarm_workers != workers {
             self.swarm_workers = workers;
-            if self.swarm_indicator().is_none() {
+            if self.swarm_indicator().is_none() && self.background_jobs.tasks.is_empty() {
                 self.swarm_list_open = false;
             }
             cx.notify();
@@ -176,7 +176,9 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let tally = crate::swarm_view::SwarmTally::of(&self.swarm_workers);
         let awaiting = self.awaiting_ids();
-        if tally.total() == 0 && awaiting.is_empty() {
+        let jobs = self.background_jobs.active();
+        let job_total = self.background_jobs.tasks.len();
+        if tally.total() == 0 && awaiting.is_empty() && job_total == 0 {
             return None;
         }
         let theme = Theme::global();
@@ -191,14 +193,20 @@ impl Panel {
         if let Some(indicator) = self.swarm_indicator() {
             tooltip.push(indicator.tooltip());
         }
+        if job_total > 0 {
+            tooltip.push(format!(
+                "Background tasks: {jobs} active, {} finished",
+                job_total - jobs
+            ));
+        }
         let tooltip = tooltip.join("\n");
         let open = self.swarm_list_open;
-        let live = tally.running + tally.waiting;
+        let live = tally.running + tally.waiting + jobs;
         let waiting_on_workers = self.agent_activity() == Activity::WaitingOnWorkers;
         // Running breathes, the way the activity mark does while thinking;
         // a swarm parked on dependencies is warm and still; a finished one
         // is faint, there only to carry the hover.
-        let (color, motion) = if tally.running > 0 {
+        let (color, motion) = if tally.running + jobs > 0 {
             (theme.ACCENT, Motion::Pulse(Duration::from_millis(1600)))
         } else if live > 0 {
             (theme.WARN, Motion::Still)
@@ -246,7 +254,12 @@ impl Panel {
             })
             .tooltip(move |_, cx| {
                 cx.new(|_| super::usage::RowsTooltip {
-                    title: "Workers".into(),
+                    title: (if job_total > 0 {
+                        "Active work"
+                    } else {
+                        "Workers"
+                    })
+                    .into(),
                     rows: tooltip.lines().map(str::to_owned).collect(),
                 })
                 .into()
@@ -277,35 +290,45 @@ impl Panel {
         )
     }
 
-    /// The list opened by the count: one row per live worker, click to open.
+    /// The list opened by the count: worker chats and session background tasks.
     pub(super) fn render_swarm_list(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if !self.swarm_list_open {
             return None;
         }
-        let indicator = self.swarm_indicator()?;
+        let workers = self
+            .swarm_indicator()
+            .map_or_else(Vec::new, |indicator| indicator.workers);
+        if workers.is_empty() && self.background_jobs.tasks.is_empty() {
+            return None;
+        }
         let theme = Theme::global();
-        let extra = indicator.workers.len().saturating_sub(MAX_ROWS);
+        let job_total = self.background_jobs.tasks.len();
+        let worker_count = workers.len().min(MAX_ROWS - job_total.min(MAX_ROWS / 2));
+        let jobs = self
+            .background_jobs
+            .tasks
+            .iter()
+            .take(MAX_ROWS - worker_count)
+            .cloned()
+            .collect::<Vec<_>>();
+        let extra = workers.len() - worker_count + job_total - jobs.len();
         let owner = cx.weak_entity();
         let focus = self.swarm_list_focus.clone();
         let key_focus = focus.clone();
-        let count = indicator.workers.len().min(MAX_ROWS);
         self.swarm_picker_rows
-            .resize_with(count, || cx.focus_handle());
-        let row_focus = self.swarm_picker_rows.clone();
-        let rows = indicator
-            .workers
+            .resize_with(worker_count, || cx.focus_handle());
+        let mut row_focus = self.swarm_picker_rows.clone();
+        let mut rows = workers
             .iter()
-            .take(MAX_ROWS)
+            .take(worker_count)
             .enumerate()
             .map(|(index, worker)| {
                 let id = worker.session_id.clone();
-                // A worker's task name can be a whole sentence. Keep one line
-                // while collapsed and wrap it in place from the chevron.
-                let expand_key = expandable::key::worker(&worker.session_id);
-                let expanded = self.expanded_regions.contains(&expand_key);
-                let toggle_key = expand_key.clone();
-                let label = worker.row_title();
-                let label_truncated = expandable::preview(label, expandable::LABEL).is_some();
+                let label = worker
+                    .row_title()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let mark = worker.state.glyph().map(|glyph| {
                     self.swarm_marks.element(
                         &format!("worker:{}", worker.session_id),
@@ -336,8 +359,10 @@ impl Panel {
                 )
                 .debug_selector(move || format!("swarm-list-worker-{index}"))
                 .min_h(px(20.0))
-                .when(expanded, |el| el.items_start().flex_wrap())
-                .when(!expanded, |el| el.overflow_hidden())
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
                 .px_2()
                 .flex()
                 .items_center()
@@ -377,25 +402,12 @@ impl Panel {
                 .child(
                     div()
                         .debug_selector(move || format!("swarm-list-title-{index}"))
-                        .when(!expanded, |el| el.flex_1().min_w(px(20.0)).truncate())
-                        .when(expanded, |el| el.max_w_full())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_color(theme.TEXT_FAINT)
-                        .child(label.to_owned()),
+                        .child(label),
                 )
-                .when(label_truncated, |el| {
-                    let key = toggle_key.clone();
-                    el.child(expandable::glyph_toggle(
-                        format!("swarm-list-worker-expand-{index}").into(),
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            expandable::flip(&mut this.expanded_regions, &key);
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                    ))
-                })
-                .when(expanded, |el| el.child(div().flex_1()))
                 .children(model.map(|model| {
                     div()
                         .debug_selector(move || format!("swarm-list-model-{index}"))
@@ -437,8 +449,19 @@ impl Panel {
                         .text_color(theme.TEXT_FAINT)
                         .child(worker.status_text()),
                 )
+                .into_any_element()
             })
             .collect::<Vec<_>>();
+        for (index, job) in jobs.iter().enumerate() {
+            let focus = self
+                .background_jobs
+                .row_focus
+                .entry(job.task_id.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            rows.push(self.render_background_job_row(index, job, &focus, cx));
+            row_focus.push(focus);
+        }
         Some(
             div()
                 .debug_selector(|| "swarm-list".into())
@@ -489,6 +512,7 @@ impl Panel {
                     .inset_0(),
                 )
                 .children(rows)
+                .children(self.render_background_job_detail(cx))
                 .when(extra > 0, |el| {
                     el.child(
                         div()
@@ -658,6 +682,59 @@ mod tests {
             vcx.run_until_parked();
             assert_eq!(opened.borrow_mut().pop().as_deref(), Some(id), "{key:?}");
             assert!(vcx.debug_bounds("swarm-list").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn background_job_row_opens_live_output(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let snapshot = |status: &str, tail: Option<&str>| {
+            let frame = serde_json::json!({
+                "ev": "background_tasks", "session_id": "activity-bar",
+                "snapshot": {"tasks": [{"task_id":"job123","label":"Compile","status":status,
+                    "started_at":"2026-11-20T13:00:00Z","stalled":false,"can_cancel": status == "running"}],
+                "output": tail.map(|tail| serde_json::json!({"task_id":"job123","tail":tail,"truncated":false}))},
+            });
+            serde_json::from_value::<jcode_sdk::ApiEvent>(frame).unwrap()
+        };
+        panel.update(vcx, |panel, cx| panel.apply(&snapshot("running", None), cx));
+        vcx.run_until_parked();
+        for key in [None, Some("enter"), Some("space")] {
+            let pill = vcx.debug_bounds("composer-workers").expect("tasks pill");
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("swarm-list").is_some(), "opened list: {key:?}");
+            let row = vcx
+                .debug_bounds("background-job-row-0")
+                .unwrap_or_else(|| panic!("background job row: {key:?}"));
+            if let Some(key) = key {
+                vcx.simulate_keystrokes("tab");
+                let keystroke = gpui::Keystroke::parse(key).unwrap();
+                vcx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+            } else {
+                vcx.simulate_click(row.center(), gpui::Modifiers::default());
+            }
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("background-job-detail").is_some(),
+                "{key:?}"
+            );
+            panel.update(vcx, |panel, cx| {
+                panel.apply(&snapshot("completed", Some("last line")), cx)
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("background-job-log").is_some());
+            assert!(vcx.debug_bounds("background-job-cancel").is_none());
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("swarm-list").is_none(), "dismissed list: {key:?}");
+            panel.update(vcx, |panel, cx| panel.apply(&snapshot("running", None), cx));
+            vcx.run_until_parked();
         }
     }
 

@@ -391,6 +391,14 @@ pub enum Command {
     BackgroundTool {
         session_id: String,
     },
+    WatchBackgroundTaskOutput {
+        session_id: String,
+        task_id: Option<String>,
+    },
+    CancelBackgroundTask {
+        session_id: String,
+        task_id: String,
+    },
     /// Answer an `ask` tool request. `AskResponse::default()` declines.
     AskResponse {
         session_id: String,
@@ -540,6 +548,8 @@ enum SessionCommand {
     Cancel,
     ForceStopTurn,
     BackgroundTool,
+    WatchBackgroundTaskOutput(Option<String>),
+    CancelBackgroundTask(String),
     AskResponse {
         request_id: String,
         response: jcode_sdk::AskResponse,
@@ -819,7 +829,7 @@ impl Drop for UpdateReceiver {
 
 /// Spawn the bridge. Returns immediately; connection happens on the thread.
 pub fn spawn() -> Bridge {
-    if screenshot_mode() {
+    if screenshot_mode() && controlled_runtime_socket().is_none() {
         return spawn_screenshot();
     }
     let (update_tx, update_rx) = update_channel();
@@ -853,27 +863,47 @@ fn spawn_screenshot() -> Bridge {
         .spawn(move || {
             let history = screenshot_history::enabled().then(screenshot_history::session);
             let draft = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session");
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
+                    == Ok("draft-session");
             if draft {
-                let routes = ["gpt-5.6-terra", "gpt-5.6-sol"].into_iter().map(|model| jcode_sdk::ModelRouteInfo {
-                    model: model.into(),
-                    provider: "openai".into(),
-                    api_method: "openai-api".into(),
-                    available: true,
-                    detail: String::new(),
-                    usage: None,
-                }).collect();
-                let _ = update_tx.send(Update::DraftModels { current: Some("gpt-5.6-terra".into()), routes });
+                let routes = ["gpt-5.6-terra", "gpt-5.6-sol"]
+                    .into_iter()
+                    .map(|model| jcode_sdk::ModelRouteInfo {
+                        model: model.into(),
+                        provider: "openai".into(),
+                        api_method: "openai-api".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    })
+                    .collect();
+                let _ = update_tx.send(Update::DraftModels {
+                    current: Some("gpt-5.6-terra".into()),
+                    routes,
+                });
             }
             while let Ok(command) = command_rx.recv() {
-                if draft && let Command::CreateSession { working_dir, request_id } = &command {
+                if draft
+                    && let Command::CreateSession {
+                        working_dir,
+                        request_id,
+                    } = &command
+                {
                     let session: SessionInfo = serde_json::from_value(serde_json::json!({
                         "session_id": "session_verifier_draft", "working_dir": working_dir,
                         "title": "Native draft verification", "status": "idle"
-                    })).expect("draft fixture session");
+                    }))
+                    .expect("draft fixture session");
                     let session_id = session.session_id.clone();
-                    let _ = update_tx.send(Update::SessionCreated { session, request_id: request_id.clone() });
-                    let _ = update_tx.send(Update::History { session_id, messages: vec![], images: vec![] });
+                    let _ = update_tx.send(Update::SessionCreated {
+                        session,
+                        request_id: request_id.clone(),
+                    });
+                    let _ = update_tx.send(Update::History {
+                        session_id,
+                        messages: vec![],
+                        images: vec![],
+                    });
                     continue;
                 }
                 if draft {
@@ -889,20 +919,35 @@ fn spawn_screenshot() -> Bridge {
                             });
                             continue;
                         }
-                        Command::SideQuestion { session_id, question } => {
+                        Command::SideQuestion {
+                            session_id,
+                            question,
+                        } => {
                             let child = "session_verifier_side_question";
                             let session = serde_json::from_value(serde_json::json!({
                                 "session_id": child, "status": "idle"
-                            })).expect("side question fixture session");
+                            }))
+                            .expect("side question fixture session");
                             let _ = update_tx.send(Update::SideQuestionStarted {
-                                parent_session_id: session_id.clone(), session, question: question.clone(),
+                                parent_session_id: session_id.clone(),
+                                session,
+                                question: question.clone(),
                             });
                             for event in [
-                                ApiEvent::TextDelta { session_id: child.into(), message_id: None,
-                                    text: "The retry policy uses a short backoff.".into() },
-                                ApiEvent::TurnDone { session_id: child.into(), pending_soft_interrupts: None },
+                                ApiEvent::TextDelta {
+                                    session_id: child.into(),
+                                    message_id: None,
+                                    text: "The retry policy uses a short backoff.".into(),
+                                },
+                                ApiEvent::TurnDone {
+                                    session_id: child.into(),
+                                    pending_soft_interrupts: None,
+                                },
                             ] {
-                                let _ = update_tx.send(Update::Event { session_id: child.into(), event });
+                                let _ = update_tx.send(Update::Event {
+                                    session_id: child.into(),
+                                    event,
+                                });
                             }
                             continue;
                         }
@@ -1049,7 +1094,28 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
     )
 }
 
+pub fn controlled_runtime_socket() -> Option<std::path::PathBuf> {
+    if !screenshot_mode()
+        || std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() != Ok("1")
+        || std::env::var("JCODE_TEST_SESSION").as_deref() != Ok("1")
+    {
+        return None;
+    }
+    let socket = std::path::PathBuf::from(std::env::var_os("JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET")?);
+    let home = jcode_home()?;
+    (socket.parent() == Some(home.as_path()) && socket.is_absolute()).then_some(socket)
+}
+
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
+    if let Some(socket) = controlled_runtime_socket() {
+        return JcodeClient::connect(ConnectOptions {
+            socket_path: Some(socket),
+            client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
+            ensure_runtime: false,
+            supports_user_response: false,
+            ..Default::default()
+        });
+    }
     let attempt = || -> jcode_sdk::Result<JcodeClient> {
         let client = JcodeClient::connect(ConnectOptions {
             socket_path: Some(crate::runtime_generation::local_bridge_socket()?),
@@ -1180,6 +1246,13 @@ fn start_local_runtime(updates: UpdateSender) {
             .is_err()
         {
             return;
+        }
+        if controlled_runtime_socket().is_some() {
+            if connect("control-runtime").is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
         }
         let started = crate::runtime_generation::launch_options().and_then(|options| {
             let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
@@ -1626,6 +1699,22 @@ fn run_with_transports(
             Command::BackgroundTool { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
                     let _ = worker.send(SessionCommand::BackgroundTool);
+                }
+            }
+            Command::WatchBackgroundTaskOutput {
+                session_id,
+                task_id,
+            } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::WatchBackgroundTaskOutput(task_id));
+                }
+            }
+            Command::CancelBackgroundTask {
+                session_id,
+                task_id,
+            } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::CancelBackgroundTask(task_id));
                 }
             }
             Command::AskResponse {
@@ -2823,6 +2912,7 @@ fn session_worker_with_connector(
     // Survives reconnects: a retry scheduled before a dropped connection
     // fires once the replacement transport is attached.
     let mut turn_retry = jcode_sdk::TurnRetry::new(turn_retry_policy());
+    let mut background_output = None;
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
@@ -2934,6 +3024,27 @@ fn session_worker_with_connector(
             session_id: session_id.clone(),
         });
 
+        if client.supports(jcode_sdk::api::BACKGROUND_TASKS_CAPABILITY) {
+            watch_background_tasks(
+                &client,
+                &address,
+                &session_id,
+                background_output.clone(),
+                &updates,
+            );
+        } else {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::BackgroundTasks {
+                    session_id: session_id.clone(),
+                    snapshot: jcode_sdk::api::BackgroundTasksSnapshot {
+                        tasks: Vec::new(),
+                        output: None,
+                    },
+                },
+            });
+        }
+
         let mut skills_loaded = !client.supports("skill_message_v1")
             || load_skill_catalog(&client, real_id, &session_id, &updates);
         let mut history = history::HistoryRecovery::default();
@@ -2982,6 +3093,40 @@ fn session_worker_with_connector(
                     WorkerCommand::Disconnected => return,
                 };
                 match command {
+                    SessionCommand::WatchBackgroundTaskOutput(task_id) => {
+                        if background_output != task_id {
+                            background_output = task_id;
+                            if client.supports(jcode_sdk::api::BACKGROUND_TASKS_CAPABILITY) {
+                                watch_background_tasks(
+                                    &client,
+                                    &address,
+                                    &session_id,
+                                    background_output.clone(),
+                                    &updates,
+                                );
+                            }
+                        }
+                    }
+                    SessionCommand::CancelBackgroundTask(task_id) => {
+                        let error =
+                            match client.request(jcode_sdk::api::ApiRequest::CancelBackgroundTask {
+                                session_id: real_id.into(),
+                                task_id,
+                            }) {
+                                Ok(frame) => match frame.event {
+                                    ApiEvent::Ok => None,
+                                    ApiEvent::Error { message, .. } => Some(message),
+                                    _ => Some("Unexpected cancellation response".into()),
+                                },
+                                Err(error) => Some(error.to_string()),
+                            };
+                        if let Some(reason) = error {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                        }
+                    }
                     SessionCommand::GetCompactedHistory(visible_messages) => {
                         let result = client
                             .get_compacted_history(real_id, visible_messages)
@@ -3076,7 +3221,8 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::QueuePrompt(prompt) => {
-                        if let Some(reason) = unsupported_attachments(&client, &prompt.attachments) {
+                        if let Some(reason) = unsupported_attachments(&client, &prompt.attachments)
+                        {
                             let _ = updates.send(Update::QueuePromptFailed {
                                 session_id: session_id.clone(),
                                 client_id: prompt.client_id,
@@ -3136,22 +3282,23 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments) => {
-                        let result = if let Some(reason) = unsupported_attachments(&client, &attachments) {
-                            Err(reason)
-                        } else if client.supports("queued_prompt_editing") {
-                            client
-                                .edit_queued_prompt_with_attachments(
-                                    real_id,
-                                    "jcode-desktop",
-                                    &prompt_id,
-                                    content,
-                                    images,
-                                    attachments,
-                                )
-                                .map_err(|error| error.to_string())
-                        } else {
-                            Err("Queue editing is not supported by this runtime".into())
-                        };
+                        let result =
+                            if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                                Err(reason)
+                            } else if client.supports("queued_prompt_editing") {
+                                client
+                                    .edit_queued_prompt_with_attachments(
+                                        real_id,
+                                        "jcode-desktop",
+                                        &prompt_id,
+                                        content,
+                                        images,
+                                        attachments,
+                                    )
+                                    .map_err(|error| error.to_string())
+                            } else {
+                                Err("Queue editing is not supported by this runtime".into())
+                            };
                         let _ = updates.send(Update::QueuedPromptEdited {
                             session_id: session_id.clone(),
                             prompt_id,
@@ -3235,7 +3382,10 @@ fn session_worker_with_connector(
                         skill,
                     } => {
                         if let Some(reason) = unsupported_attachments(&client, &attachments) {
-                            let _ = updates.send(Update::SendFailed { session_id: session_id.clone(), reason });
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
                             continue;
                         }
                         if !client.supports("skill_message_v1") {
@@ -3288,7 +3438,10 @@ fn session_worker_with_connector(
                         attachments,
                     } => {
                         if let Some(reason) = unsupported_attachments(&client, &attachments) {
-                            let _ = updates.send(Update::SendFailed { session_id: session_id.clone(), reason });
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
                             continue;
                         }
                         recovery.supersede();
@@ -3919,6 +4072,30 @@ fn retry_countdown_phase(retry: &jcode_sdk::TurnRetry, now: std::time::Instant) 
     ))
 }
 
+fn watch_background_tasks(
+    client: &JcodeClient,
+    address: &remote::SessionAddress,
+    session_id: &str,
+    task_id: Option<String>,
+    updates: &UpdateSender,
+) {
+    let reply = client.request(jcode_sdk::api::ApiRequest::WatchBackgroundTasks {
+        session_id: address.session_id.clone(),
+        task_id,
+    });
+    // The bridge retries transient census errors on the subscription. Do not
+    // turn a failed activity refresh into a failed agent turn.
+    if let Ok(frame) = reply
+        && matches!(&frame.event, ApiEvent::BackgroundTasks { .. })
+        && event_session_id(&frame.event) == Some(address.session_id.as_str())
+    {
+        let _ = updates.send(Update::Event {
+            session_id: session_id.into(),
+            event: namespace_event(frame.event, address),
+        });
+    }
+}
+
 /// Surface automatic retry progress in the panel status line. An empty phase
 /// clears it.
 fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
@@ -3953,6 +4130,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
@@ -4013,6 +4191,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
@@ -4098,8 +4277,9 @@ fn unsupported_attachments(
     client: &JcodeClient,
     attachments: &[jcode_sdk::api::Attachment],
 ) -> Option<String> {
-    (!attachments.is_empty() && !client.supports(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY))
-        .then(|| "This runtime cannot receive file attachments. Update the runtime and reconnect.".into())
+    (!attachments.is_empty() && !client.supports(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY)).then(
+        || "This runtime cannot receive file attachments. Update the runtime and reconnect.".into(),
+    )
 }
 
 fn queue_wrong_session_retry(
