@@ -217,8 +217,17 @@ pub struct PromptInput {
     file_attachments_enabled: bool,
     queue_editor: bool,
     #[allow(clippy::type_complexity)]
-    on_submit:
-        Box<dyn Fn(String, Vec<(String, String)>, Vec<SubmittedFile>, bool, &mut Window, &mut App)>,
+    on_submit: Box<
+        dyn Fn(
+            SubmissionKind,
+            String,
+            Vec<(String, String)>,
+            Vec<SubmittedFile>,
+            bool,
+            &mut Window,
+            &mut App,
+        ),
+    >,
     #[allow(clippy::type_complexity)]
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     #[allow(clippy::type_complexity)]
@@ -229,7 +238,8 @@ pub struct PromptInput {
     /// A standalone picker owns plain query text rather than a slash command.
     picker_prefix: Option<&'static str>,
     command_completion: bool,
-    accepted_command: Option<SharedString>,
+    command_menu_closed: Option<(SharedString, CommandMenuClose)>,
+    command_selection_explicit: Option<String>,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
@@ -505,6 +515,18 @@ fn accepted_command_submission(
     // Matching includes descriptions, not only command-name prefixes. Enter
     // must select the highlighted result for either kind of search.
     (suggestion.toggle.is_none() && suggestion.action.is_none()).then(|| suggestion.value.clone())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmissionKind {
+    Message,
+    Command,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandMenuClose {
+    Completed,
+    Literal,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -1010,7 +1032,9 @@ impl PromptInput {
         let mut input = Self::new_with_queue_files(
             cx,
             placeholder,
-            move |text, images, _, queued, window, cx| on_submit(text, images, queued, window, cx),
+            move |_, text, images, _, queued, window, cx| {
+                on_submit(text, images, queued, window, cx)
+            },
         );
         input.file_attachments_enabled = false;
         input
@@ -1020,6 +1044,7 @@ impl PromptInput {
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
         on_submit: impl Fn(
+            SubmissionKind,
             String,
             Vec<(String, String)>,
             Vec<SubmittedFile>,
@@ -1074,7 +1099,8 @@ impl PromptInput {
             command_skills: Vec::new(),
             picker_prefix: None,
             command_completion: true,
-            accepted_command: None,
+            command_menu_closed: None,
+            command_selection_explicit: None,
             command_selection: 0,
             model_details: HashMap::new(),
             applied_model_routes: None,
@@ -1118,7 +1144,7 @@ impl PromptInput {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut input =
-            Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _| {});
+            Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _, _| {});
         input.queue_editor = true;
         input.command_completion = false;
         let mut text = content;
@@ -1435,7 +1461,6 @@ impl PromptInput {
         cx: &mut Context<Self>,
     ) {
         if self.attachments.is_empty()
-            && self.accepted_command.as_ref() != Some(&self.content)
             && let Some(name) = self.selected_mode_name()
         {
             self.toggle_mode_row(&name, window, cx);
@@ -1477,14 +1502,11 @@ impl PromptInput {
         {
             return false;
         }
-        let (value, cursor) = self.draft_with_command(&row.value);
+        let value = row.value.clone();
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.set_content(value, cx);
-        if let Some(cursor) = cursor {
-            self.selected_range = cursor..cursor;
-        }
-        self.accepted_command = Some(self.content.clone());
+        self.close_command_menu(CommandMenuClose::Completed);
         cx.notify();
         true
     }
@@ -1797,40 +1819,67 @@ impl PromptInput {
         if !self.command_completion {
             return Vec::new();
         }
+        let command_content = self.command_content();
+        if !command_content.starts_with('/') || command_content.contains(['\n', '\r']) {
+            return Vec::new();
+        }
         let now = model_menu::now_unix_secs();
         let current = model_menu::current_spec(
             self.current_model.as_deref(),
             &self.command_models,
             &self.model_details,
         );
-        let embedded = self.embedded_command_span();
-        let command_content = embedded.map_or_else(
-            || self.command_content(),
-            |(start, cursor, _)| self.content[start..cursor].to_string(),
-        );
-        let trimmed = command_content.trim_start();
-        if !trimmed.contains('\n') && (trimmed == "/mode" || trimmed.starts_with("/mode ")) {
-            return mode_suggestions(
+        let trimmed = command_content.trim_end();
+        let first = trimmed.split_whitespace().next().unwrap_or_default();
+        if first == "/mode" {
+            let modes = mode_suggestions(
                 trimmed,
                 &self.command_skills,
                 &self.current_modes,
                 &self.mode_catalog,
             );
+            if !modes.is_empty() || self.picker_prefix.is_some() {
+                return modes;
+            }
         }
-        let mut suggestions =
-            if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
-                let query = trimmed.strip_prefix("/model").unwrap_or_default();
-                self.model_stage_rows(query)
-            } else {
-                command_suggestions_with_efforts(
-                    &command_content,
-                    &self.command_models,
-                    EffortMenu {
-                        ladder: Some(&self.effort_ladder),
-                        current: self.current_effort.as_deref(),
-                    },
-                )
-            };
+        let mut suggestions = if first == "/model" {
+            let query = trimmed.strip_prefix("/model").unwrap_or_default();
+            self.model_stage_rows(query)
+        } else {
+            command_suggestions_with_efforts(
+                &command_content,
+                &self.command_models,
+                EffortMenu {
+                    ladder: Some(&self.effort_ladder),
+                    current: self.current_effort.as_deref(),
+                },
+            )
+        };
+        if self.picker_prefix.is_none()
+            && first.len() > 1
+            && first != "/model"
+            && (first != "/effort" || suggestions.is_empty())
+            && (first != trimmed || suggestions.is_empty())
+            && let Some(help) = crate::commands::registered_command(first)
+                .map(|command| command.help.to_owned())
+                .or_else(|| {
+                    self.command_skills.iter().find_map(|(name, help)| {
+                        (first.strip_prefix('/') == Some(name)).then(|| help.clone())
+                    })
+                })
+        {
+            suggestions.insert(
+                0,
+                CommandSuggestion {
+                    value: trimmed.to_owned(),
+                    help,
+                    detail: None,
+                    header: None,
+                    toggle: None,
+                    action: None,
+                },
+            );
+        }
         if self.picker_prefix.is_none()
             && trimmed.starts_with('/')
             && !trimmed.contains(char::is_whitespace)
@@ -1882,39 +1931,6 @@ impl PromptInput {
             .collect()
     }
 
-    /// The draft after accepting command `value`, and where the caret lands.
-    /// A command typed mid-sentence replaces only its own token, so the text
-    /// around it survives and the caret sits right after the command.
-    pub(super) fn draft_with_command(&self, value: &str) -> (String, Option<usize>) {
-        match self.embedded_command_span() {
-            Some((start, _, end)) => {
-                let draft = format!(
-                    "{}{}{}",
-                    &self.content[..start],
-                    value,
-                    &self.content[end..]
-                );
-                (draft, Some(start + value.len()))
-            }
-            None => (value.to_string(), None),
-        }
-    }
-
-    fn embedded_command_span(&self) -> Option<(usize, usize, usize)> {
-        if self.picker_prefix.is_some() {
-            return None;
-        }
-        let (start, cursor) =
-            jcode_slash_command::active_token_before_cursor(&self.content, self.cursor_offset())?;
-        if start == 0 && cursor == self.content.len() {
-            return None;
-        }
-        let end = self.content[cursor..]
-            .find(char::is_whitespace)
-            .map_or(self.content.len(), |offset| cursor + offset);
-        Some((start, cursor, end))
-    }
-
     fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
         if !self.expanded_model_groups.remove(&key) {
             self.expanded_model_groups.insert(key.clone());
@@ -1937,14 +1953,6 @@ impl PromptInput {
             if let Some(close) = &self.on_overlay_cancel {
                 close(cx);
             }
-            return;
-        }
-        if self.accepted_command.as_ref() != Some(&self.content)
-            && self.attachments.is_empty()
-            && self.content.trim_start().split_whitespace().next() == Some("/mode")
-            && !self.content.contains('\n')
-        {
-            self.set_transient_notice("No matching session mode".into(), cx);
             return;
         }
         self.submit_prompt(false, window, cx);
@@ -1987,13 +1995,16 @@ impl PromptInput {
     }
 
     pub(crate) fn control_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.submission_enabled
-            || self.content.trim().is_empty()
-            || self.content.trim_start().starts_with('/')
-        {
+        if !self.submission_enabled || self.queue_editor || self.content.trim().is_empty() {
             return false;
         }
-        self.submit_prompt(false, window, cx);
+        self.dispatch_submission(
+            SubmissionKind::Message,
+            Self::literal_submission(&self.content),
+            false,
+            window,
+            cx,
+        );
         self.content.is_empty()
     }
 
@@ -2001,82 +2012,105 @@ impl PromptInput {
         if !self.submission_enabled || self.queue_editor {
             return;
         }
-        if self.command_completion
-            && self.picker_prefix.is_none()
-            && self.attachments.is_empty()
-            && let Some(crate::panel::workspace_commands::parse::WorkspaceCommand::Invalid(usage)) =
-                crate::panel::workspace_commands::parse::parse(&self.content)
+        let raw_content = self.command_content();
+        let content = raw_content.trim().to_string();
+        if content.is_empty() && self.attachments.is_empty() {
+            if self.empty_submit && !queued {
+                (self.on_submit)(
+                    SubmissionKind::Message,
+                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    window,
+                    cx,
+                );
+            }
+            return;
+        }
+        if self.command_completion && self.attachments.is_empty() {
+            if self.current_command_menu_close() == Some(CommandMenuClose::Completed) {
+                self.submit_command(content, queued, window, cx);
+                return;
+            }
+            let suggestions = self.command_suggestions();
+            let picker_command = raw_content.starts_with('/')
+                && !raw_content.contains(['\n', '\r'])
+                && matches!(
+                    content.split_whitespace().next(),
+                    Some("/model" | "/mode" | "/effort")
+                );
+            if let Some(row) = suggestions.get(self.command_selection)
+                && (self.picker_prefix.is_some()
+                    || self.command_selection_explicit.as_ref() == Some(&row.value)
+                    || row.value == content
+                    || picker_command)
+            {
+                if let Some(key) = row.toggle.clone() {
+                    self.toggle_model_group(key, cx);
+                } else if let Some(step) = row.action.clone() {
+                    self.run_stage_step(step, queued, window, cx);
+                } else if let Some(command) =
+                    accepted_command_submission(&suggestions, self.command_selection)
+                {
+                    self.submit_command(command, queued, window, cx);
+                }
+                return;
+            }
+            if picker_command
+                && content.split_whitespace().next() == Some("/model")
+                && self.current_command_menu_close().is_none()
+            {
+                self.set_transient_notice("No matching models".into(), cx);
+                return;
+            }
+        }
+        if self.picker_prefix.is_none() {
+            self.dispatch_submission(
+                SubmissionKind::Message,
+                Self::literal_submission(&raw_content),
+                queued,
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn literal_submission(text: &str) -> String {
+        if text.contains('/') {
+            text.to_owned()
+        } else {
+            text.trim().to_owned()
+        }
+    }
+
+    fn submit_command(
+        &mut self,
+        command: String,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.submission_enabled || self.queue_editor {
+            return;
+        }
+        if let Some(crate::panel::workspace_commands::parse::WorkspaceCommand::Invalid(usage)) =
+            crate::panel::workspace_commands::parse::parse(&command)
         {
             self.set_transient_notice(usage.into(), cx);
             return;
         }
         if self.pending_session
-            && self.command_completion
-            && self.content.trim_start().starts_with('/')
-            && !(self.attachments.is_empty()
-                && (crate::commands::is_resume_command(&self.content)
-                    || crate::commands::is_accounts_command(&self.content)
-                    || crate::commands::reset_command(&self.content).is_some()
-                    || crate::panel::is_draft_config_command(&self.content)))
+            && !(crate::commands::is_resume_command(&command)
+                || crate::commands::is_accounts_command(&command)
+                || crate::commands::reset_command(&command).is_some()
+                || crate::panel::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();
             return;
         }
-        let raw_content = self.command_content();
-        let mut content = raw_content.trim().to_string();
-        if content.is_empty() && self.attachments.is_empty() {
-            if self.empty_submit && !queued {
-                (self.on_submit)(String::new(), Vec::new(), Vec::new(), false, window, cx);
-            }
-            return;
-        }
-        if self.command_completion && self.attachments.is_empty() {
-            let suggestions = self.command_suggestions();
-            if self.picker_prefix.is_some() && suggestions.is_empty() {
-                return;
-            }
-            if let Some(key) = suggestions
-                .get(self.command_selection)
-                .and_then(|row| row.toggle.clone())
-            {
-                self.toggle_model_group(key, cx);
-                return;
-            }
-            if (raw_content.trim_start() == "/model"
-                || raw_content.trim_start().starts_with("/model "))
-                && suggestions.is_empty()
-                && self.accepted_command.as_ref() != Some(&self.content)
-            {
-                self.set_transient_notice("No matching models".into(), cx);
-                return;
-            }
-            if let Some(step) = suggestions
-                .get(self.command_selection)
-                .and_then(|row| row.action.clone())
-            {
-                self.run_stage_step(step, queued, window, cx);
-                return;
-            }
-            if let Some(accepted) =
-                accepted_command_submission(&suggestions, self.command_selection)
-            {
-                if self.picker_prefix.is_none() {
-                    let (accepted, cursor) = self.draft_with_command(&accepted);
-                    self.undo.push(self.edit_snapshot());
-                    self.redo.clear();
-                    self.set_content(accepted, cx);
-                    if let Some(cursor) = cursor {
-                        self.selected_range = cursor..cursor;
-                    }
-                    self.accepted_command = Some(self.content.clone());
-                    cx.notify();
-                    return;
-                }
-                content = accepted;
-            }
-        }
-        self.dispatch_submission(content, queued, window, cx);
+        self.dispatch_submission(SubmissionKind::Command, command, queued, window, cx);
     }
 
     /// Run what Enter or a click on a picker row means.
@@ -2091,7 +2125,7 @@ impl PromptInput {
             model_stage::StageStep::Goto(stage) => self.go_to_model_stage(stage, cx),
             model_stage::StageStep::ToggleHidden(spec) => self.toggle_model_hidden(&spec, cx),
             model_stage::StageStep::Submit(command) => {
-                self.dispatch_submission(command, queued, window, cx)
+                self.submit_command(command, queued, window, cx)
             }
         }
     }
@@ -2099,6 +2133,7 @@ impl PromptInput {
     /// Clear the composer and hand `content` to the host.
     fn dispatch_submission(
         &mut self,
+        kind: SubmissionKind,
         content: String,
         queued: bool,
         window: &mut Window,
@@ -2171,6 +2206,8 @@ impl PromptInput {
         self.attachment_preview = None;
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = "".into();
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
         self.expanded_model_groups.clear();
         self.model_stage = Default::default();
         self.picker_effort = None;
@@ -2186,7 +2223,7 @@ impl PromptInput {
         self.history_index = None;
         self.live_draft.clear();
         self.command_selection = 0;
-        (self.on_submit)(content, images, files, queued, window, cx);
+        (self.on_submit)(kind, content, images, files, queued, window, cx);
         if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
             self.set_content(text, cx);
             self.selected_range = selection;
@@ -2335,7 +2372,10 @@ impl PromptInput {
         if is_large_paste(text) {
             self.attach_pasted_text(text, cx);
         } else {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            self.replace_text_in_range(None, text, window, cx);
+        }
+        if self.picker_prefix.is_none() && self.content.starts_with('/') {
+            self.close_command_menu(CommandMenuClose::Literal);
         }
         self.dismiss_ghost();
     }
@@ -2613,7 +2653,12 @@ impl PromptInput {
     fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
-            self.command_selection = self.command_selection.saturating_sub(1);
+            self.command_selection = self
+                .command_selection
+                .saturating_sub(1)
+                .min(suggestions.len() - 1);
+            self.command_selection_explicit =
+                Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);
             cx.notify();
             return;
@@ -2642,6 +2687,8 @@ impl PromptInput {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
+            self.command_selection_explicit =
+                Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);
             cx.notify();
             return;
@@ -2678,16 +2725,17 @@ impl PromptInput {
         // Inside the picker, Esc steps back before it closes.
         let in_model_menu = self.picker_prefix == Some("/model")
             || self.content.trim() == "/model"
-            || self.content.trim_start().starts_with("/model ");
+            || self.content.starts_with("/model ");
         if in_model_menu && self.model_stage_back(cx) {
             return;
         }
-        // An open slash menu is the nearest overlay. Esc hides it and keeps
-        // the draft; it must never fall through to stopping the agent. The
-        // model menu keeps its own close path, which restores a stashed draft.
-        if self.picker_prefix.is_none() && !in_model_menu && !self.command_suggestions().is_empty()
+        if self.picker_prefix.is_none()
+            && self.current_command_menu_close() != Some(CommandMenuClose::Literal)
+            && (in_model_menu
+                || self.current_command_menu_close() == Some(CommandMenuClose::Completed)
+                || !self.command_suggestions().is_empty())
         {
-            self.accepted_command = Some(self.content.clone());
+            self.close_command_menu(CommandMenuClose::Literal);
             cx.notify();
             return;
         }
@@ -3100,7 +3148,8 @@ impl PromptInput {
 
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.dismiss_ghost();
-        self.accepted_command = None;
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         self.reset_model_groups_after_exit();
@@ -3157,9 +3206,6 @@ impl PromptInput {
     }
 
     pub(crate) fn mode_rows_for_control(&self) -> Vec<serde_json::Value> {
-        if self.accepted_command.as_ref() == Some(&self.content) {
-            return Vec::new();
-        }
         self.command_suggestions()
             .iter()
             .filter_map(|row| {
@@ -3187,7 +3233,27 @@ impl PromptInput {
         } else {
             format!("/mode toggle {name}")
         };
-        (self.on_submit)(command, Vec::new(), Vec::new(), false, window, cx);
+        (self.on_submit)(
+            SubmissionKind::Command,
+            command,
+            Vec::new(),
+            Vec::new(),
+            false,
+            window,
+            cx,
+        );
+    }
+
+    fn current_command_menu_close(&self) -> Option<CommandMenuClose> {
+        self.command_menu_closed
+            .as_ref()
+            .filter(|(draft, _)| draft == &self.content)
+            .map(|(_, close)| *close)
+    }
+
+    fn close_command_menu(&mut self, close: CommandMenuClose) {
+        self.command_menu_closed = Some((self.content.clone(), close));
+        self.command_selection_explicit = None;
     }
 
     fn on_mouse_down(
@@ -3611,7 +3677,8 @@ impl EntityInputHandler for PromptInput {
         self.redo.clear();
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
-        self.accepted_command = None;
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -3645,7 +3712,8 @@ impl EntityInputHandler for PromptInput {
         let range = self.expanded_chip_range(range);
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
-        self.accepted_command = None;
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -4269,7 +4337,7 @@ impl Render for PromptInput {
             self.command_selection = 0;
         }
         let command_visible = self.command_completion
-            && self.accepted_command.as_ref() != Some(&self.content)
+            && self.current_command_menu_close().is_none()
             && (!suggestions.is_empty()
                 || self.picker_prefix.is_some()
                 || self.content.trim_start().starts_with("/model "));
@@ -4681,7 +4749,13 @@ mod tests {
             assert_eq!(input.content.as_ref(), "[Pasted text, 13 lines]");
         });
         input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(input.content.to_string(), false, window, cx)
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
         });
         assert_eq!(sent.borrow().as_deref(), Some(text.as_str()));
     }
@@ -4727,7 +4801,13 @@ mod tests {
             input.restore(snapshot, cx);
         });
         input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(input.content.to_string(), false, window, cx)
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
         });
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
@@ -4754,7 +4834,7 @@ mod tests {
         let expected = file.clone();
         let (input, vcx) = cx.add_window_view(|_, cx| {
             let mut input =
-                PromptInput::new_with_queue_files(cx, "test", move |text, _, files, _, _, _| {
+                PromptInput::new_with_queue_files(cx, "test", move |_, text, _, files, _, _, _| {
                     *result.borrow_mut() = Some((text, files))
                 });
             input.recall_prompt("/tmp/notes.txt", Vec::new(), cx);
@@ -4762,7 +4842,13 @@ mod tests {
             input
         });
         input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(input.content.to_string(), false, window, cx)
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
         });
         let files = sent.borrow();
         let (text, files) = files.as_ref().unwrap();
@@ -4791,7 +4877,7 @@ mod tests {
             let mut input = PromptInput::new_with_queue_files(
                 cx,
                 "test",
-                move |text, images, files, _, _, _| {
+                move |_, text, images, files, _, _, _| {
                     *result.borrow_mut() = Some((text, images, files))
                 },
             );
@@ -4807,7 +4893,13 @@ mod tests {
             );
         });
         input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(input.content.to_string(), false, window, cx)
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
         });
         let sent = sent.borrow();
         let (text, images, files) = sent.as_ref().unwrap();
@@ -4843,7 +4935,13 @@ mod tests {
             input
         });
         input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(input.content.to_string(), false, window, cx)
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
         });
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
@@ -6003,45 +6101,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn embedded_slash_opens_completion_and_preserves_prefix(cx: &mut TestAppContext) {
-        let window = input_window(cx);
-        cx.simulate_input(*window, "fix this /eff");
-        window
-            .update(cx, |input, _, _| {
-                let rows = input.command_suggestions();
-                assert!(rows.iter().any(|row| row.value == "/effort"));
-                // A row names the command only. Echoing the surrounding draft
-                // made every row read as the user's own sentence.
-                assert!(rows.iter().all(|row| !row.value.contains("fix this")));
-            })
-            .unwrap();
-        cx.simulate_keystrokes(*window, "tab");
-        window
-            .update(cx, |input, _, _| {
-                assert_eq!(input.content.as_ref(), "fix this /effort");
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn embedded_completion_replaces_token_at_cursor_and_keeps_suffix(cx: &mut TestAppContext) {
-        let window = input_window(cx);
-        window
-            .update(cx, |input, _, cx| {
-                input.set_content("fix /effort please".into(), cx);
-                input.selected_range = 8..8;
-            })
-            .unwrap();
-        cx.simulate_keystrokes(*window, "tab");
-        window
-            .update(cx, |input, _, _| {
-                assert_eq!(input.content.as_ref(), "fix /effort please");
-                assert_eq!(input.selected_range, 11..11);
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
     fn tab_completes_the_selected_slash_command(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "/eff");
@@ -6141,32 +6200,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_accepts_a_visible_exact_command_without_sending(cx: &mut TestAppContext) {
-        let window = input_window(cx);
-        cx.simulate_input(*window, "/help");
-        window
-            .update(cx, |input, _, _| {
-                assert!(!input.command_suggestions().is_empty())
-            })
-            .unwrap();
-        cx.simulate_keystrokes(*window, "enter");
-        window
-            .update(cx, |input, _, _| {
-                assert_eq!(input.content.as_ref(), "/help");
-                assert!(input.history.is_empty());
-                assert!(input.command_suggestions().is_empty());
-            })
-            .unwrap();
-        cx.simulate_keystrokes(*window, "enter");
-        window
-            .update(cx, |input, _, _| {
-                assert!(input.content.is_empty());
-                assert_eq!(input.history.last().map(String::as_str), Some("/help"));
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
     fn registered_slash_commands_submit_or_keep_the_draft_with_feedback(cx: &mut TestAppContext) {
         let window = input_window(cx);
         for command in crate::commands::REGISTERED_COMMANDS {
@@ -6207,7 +6240,7 @@ mod tests {
             window
                 .update(cx, |input, _, _| {
                     assert!(
-                        input.history.last().is_some_and(|entry| entry == confirmed.trim())
+                        input.history.last().is_some_and(|entry| entry == confirmed.trim() || entry.strip_prefix(confirmed.trim()).is_some_and(|argument| argument.starts_with(' ')))
                             || (!input.content.is_empty() && input.transient_notice.is_some())
                             || model_step_visible(input),
                         "{} was neither submitted nor retained with feedback: draft={:?}, history={:?}, notice={:?}, stage={:?}, expanded={:?}",
@@ -6217,30 +6250,6 @@ mod tests {
                 })
                 .unwrap();
         }
-    }
-
-    #[gpui::test]
-    fn enter_on_partial_slash_command_completes_instead_of_sending(cx: &mut TestAppContext) {
-        let window = input_window(cx);
-        cx.simulate_input(*window, "/eff");
-        cx.simulate_keystrokes(*window, "enter");
-        window
-            .update(cx, |input, _, _| {
-                assert_eq!(input.content.as_ref(), "/effort");
-                assert!(input.history.is_empty());
-            })
-            .unwrap();
-        window
-            .update(cx, |input, _, cx| input.set_content("/models".into(), cx))
-            .unwrap();
-        cx.simulate_keystrokes(*window, "enter");
-        cx.simulate_keystrokes(*window, "enter");
-        window
-            .update(cx, |input, _, _| {
-                assert_eq!(input.history.last().map(String::as_str), Some("/models"));
-                assert!(input.content.is_empty());
-            })
-            .unwrap();
     }
 
     #[gpui::test]

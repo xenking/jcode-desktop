@@ -451,10 +451,7 @@ impl Workspace {
                 }
                 let submitted = input.update(cx, |input, cx| input.control_submit(window, cx));
                 if !submitted {
-                    return error(
-                        "not_submitted",
-                        "composer is empty, disabled, or contains a slash command",
-                    );
+                    return error("not_submitted", "composer is empty or disabled");
                 }
                 self.control_drafts.remove(&panel_id);
                 ok(json!({"submitted":true}))

@@ -47,6 +47,10 @@ mod desktop_commands;
 mod command_workflow_tests;
 
 #[cfg(test)]
+#[path = "panel_slash_send_tests.rs"]
+mod slash_send_tests;
+
+#[cfg(test)]
 #[path = "panel_display_tests.rs"]
 mod display_tests;
 
@@ -242,33 +246,6 @@ fn command_unavailable_message(input: &str) -> String {
         ),
         None => format!("Unknown command: `{name}`. Type `/help` for available commands."),
     }
-}
-
-fn enter_sends_over_queue(content: &str, queued: bool, visible_queue: bool) -> bool {
-    !queued
-        && visible_queue
-        && content
-            .split_whitespace()
-            .next()
-            .and_then(registered_command)
-            .is_none()
-        && jcode_base::skill::SkillRegistry::parse_invocation(content).is_none()
-}
-
-#[cfg(test)]
-#[test]
-fn registered_slash_commands_never_bypass_dispatch_over_a_prompt_queue() {
-    for visible_queue in [false, true] {
-        for command in crate::commands::REGISTERED_COMMANDS {
-            assert!(
-                !enter_sends_over_queue(command.name, false, visible_queue),
-                "{} went to the model with visible_queue={visible_queue}",
-                command.name,
-            );
-        }
-    }
-    assert!(enter_sends_over_queue("new prompt", false, true));
-    assert!(enter_sends_over_queue("", false, true));
 }
 
 /// The transcript items, with a revision that advances on every mutable
@@ -2467,184 +2444,26 @@ impl Panel {
                 PromptInput::new_with_queue_files(
                     cx,
                     "Type something…",
-                    move |content, images, files, queued, _window, app| {
-                        if !files.is_empty() {
-                            if let Some(panel) = weak.upgrade() {
-                                panel.update(app, |this, cx| {
-                                    this.submit_or_queue_with_files(content, images, files, queued, cx);
-                                });
-                            }
-                            return;
-                        }
-                        if images.is_empty()
-                            && let Some(panel) = weak.upgrade()
-                            && !panel.read(app).is_pending_session()
-                            && panel.read(app).preview_state.is_none()
-                            && !(panel.read(app).prompt_queue.waiting_for_connection
-                                && !panel.read(app).history_loaded)
-                            && let Some(sequence) = panel.read(app).embedded_command_sequence(&content)
-                        {
-                            for command in sequence {
-                                if !Panel::dispatch_workspace_command(&panel, &command, _window, app) {
-                                    panel.update(app, |this, cx| this.handle_slash_command(&command, cx));
-                                }
-                            }
-                            return;
-                        }
-                        if let Some(panel) = weak.upgrade()
-                            && enter_sends_over_queue(&content, queued, panel.read(app).has_visible_queued_prompts())
-                        {
-                            panel.update(app, |this, cx| {
-                                this.submit_or_queue(content, images, false, cx)
-                            });
-                            return;
-                        }
-                        if content.trim().is_empty() && images.is_empty() {
-                            return;
-                        }
-                        if images.is_empty()
-                            && let Some(panel) = weak.upgrade()
-                            && Panel::dispatch_workspace_command(&panel, &content, _window, app)
-                        {
-                            return;
-                        }
-                        if images.is_empty() && crate::commands::is_resume_command(&content) {
-                            _window.dispatch_action(Box::new(crate::ui_actions::OpenResume), app);
-                            return;
-                        }
-                        // First-run launch is local, including before a session connects.
-                        if images.is_empty() && content.trim() == "/applets" {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenAppletShowcase),
-                                app,
-                            );
-                            return;
-                        }
-                        if images.is_empty()
-                            && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::ToggleOnboardingSimulator),
-                                app,
-                            );
-                            return;
-                        }
-                        if images.is_empty()
-                            && (crate::commands::is_accounts_command(&content)
-                                || content.trim() == "/subscribe")
-                            && let Some(panel) = weak.upgrade()
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenAccounts {
-                                    source: panel.entity_id(),
-                                    login_command: None,
-                                }),
-                                app,
-                            );
-                            return;
-                        }
-                        // Usage resets open Desktop's review dialog. The daemon
-                        // never sees the command, and nothing is spent until the
-                        // dialog's confirm button.
-                        if images.is_empty()
-                            && let Some(command) = crate::commands::reset_command(&content)
-                        {
-                            let provider = match command {
-                                crate::commands::ResetCommand::OpenAi => {
-                                    crate::accounts::ResetProvider::OpenAi
-                                }
-                                crate::commands::ResetCommand::Claude => {
-                                    crate::accounts::ResetProvider::Claude
-                                }
-                                crate::commands::ResetCommand::Current => weak
-                                    .upgrade()
-                                    .map(|panel| reset_provider_for(panel.read(app)))
-                                    .unwrap_or(crate::accounts::ResetProvider::OpenAi),
-                            };
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenUsageReset { provider }),
-                                app,
-                            );
-                            return;
-                        }
-                        // A model or effort picked on a draft stays local
-                        // until the first prompt creates its session.
-                        if images.is_empty()
-                            && is_draft_config_command(&content)
-                            && let Some(panel) = weak.upgrade()
-                            && panel.read(app).is_pending_session()
-                        {
-                            panel.update(app, |this, cx| {
-                                this.handle_slash_command(&content, cx);
-                            });
-                            return;
-                        }
-                        // A draft has no runtime identity yet. The editor
-                        // retains slash commands while ordinary prompts queue.
-                        if let Some(panel) = weak.upgrade()
-                            && (panel.read(app).is_pending_session()
-                                || (panel.read(app).prompt_queue.waiting_for_connection
-                                    && !panel.read(app).history_loaded))
-                        {
-                            panel.update(app, |this, cx| {
-                                this.submit_or_queue(content, images, queued, cx);
-                            });
-                            return;
-                        }
-                        if images.is_empty() && content.trim() == "/changelog" {
-                            _window
-                                .dispatch_action(Box::new(crate::ui_actions::OpenChangelog), app);
-                            return;
-                        }
-                        if images.is_empty()
-                            && content.trim() == "/publish"
-                            && let Some(panel) = weak.upgrade()
-                            && panel.read(app).publish_checkout().is_some()
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::PublishDesktop {
-                                    source: panel.entity_id(),
-                                }),
-                                app,
-                            );
-                        }
-                        if let Some(panel) = weak.upgrade() {
-                            // Login owns a separate, transient panel just like the
-                            // Accounts footer. Never cover the source conversation.
-                            if images.is_empty()
-                                && content.split_whitespace().next() == Some("/login")
-                            {
-                                _window.dispatch_action(
-                                    Box::new(crate::ui_actions::OpenAccounts {
-                                        source: panel.entity_id(),
-                                        login_command: Some(content),
-                                    }),
-                                    app,
-                                );
-                                return;
-                            }
+                    move |kind, content, images, files, queued, _window, app| {
+                        let Some(panel) = weak.upgrade() else { return };
+                        if kind == crate::input::SubmissionKind::Message {
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
-                                    this.handle_preview_command(&content, cx);
                                     return;
                                 }
-                                if !images.is_empty() && this.handle_skill_invocation_with_images(&content, images.clone(), queued, cx) {
-                                    return;
-                                }
-                                if !images.is_empty()
-                                    && jcode_base::skill::SkillRegistry::parse_invocation(&content).is_some()
+                                if !content.trim().is_empty()
+                                    || !images.is_empty()
+                                    || !files.is_empty()
+                                    || (!queued && this.has_visible_queued_prompts())
                                 {
-                                    this.items.push(Item::Error("Slash commands cannot be submitted with attachments. Submit the command first, then send the attachment.".into()));
-                                    this.input.update(cx, |input, cx| input.recall_prompt(&content, images, cx));
-                                    cx.notify();
-                                    return;
+                                    this.submit_or_queue_with_files(
+                                        content, images, files, queued, cx,
+                                    );
                                 }
-                                if images.is_empty() && this.handle_slash_command(&content, cx) {
-                                    return;
-                                }
-                                this.submit_or_queue(content, images, queued, cx);
                             });
+                            return;
                         }
+                        Panel::dispatch_composer_command(&panel, content, _window, app);
                     },
                 )
                 .with_empty_submit()
@@ -2664,8 +2483,7 @@ impl Panel {
                                 this.seed_draft_models(cx);
                             }
                             if (content == "/model" || content.starts_with("/model "))
-                                && (!this.is_pending_session()
-                                    || !this.available_models.is_empty())
+                                && (!this.is_pending_session() || !this.available_models.is_empty())
                             {
                                 this.model_picker_open = true;
                                 cx.notify();
@@ -2767,6 +2585,69 @@ impl Panel {
                     .update(cx, |input, cx| input.set_pending_session(true, cx));
             }
         });
+    }
+
+    fn dispatch_composer_command(
+        panel: &Entity<Self>,
+        command: String,
+        window: &mut Window,
+        app: &mut App,
+    ) {
+        use crate::{commands, ui_actions};
+
+        if Self::dispatch_workspace_command(panel, &command, window, app) {
+            return;
+        }
+        if commands::is_resume_command(&command) {
+            window.dispatch_action(Box::new(ui_actions::OpenResume), app);
+            return;
+        }
+        if commands::is_accounts_command(&command) || command == "/subscribe" {
+            window.dispatch_action(
+                Box::new(ui_actions::OpenAccounts {
+                    source: panel.entity_id(),
+                    login_command: None,
+                }),
+                app,
+            );
+            return;
+        }
+        if let Some(command) = commands::reset_command(&command) {
+            let provider = match command {
+                commands::ResetCommand::OpenAi => crate::accounts::ResetProvider::OpenAi,
+                commands::ResetCommand::Claude => crate::accounts::ResetProvider::Claude,
+                commands::ResetCommand::Current => reset_provider_for(panel.read(app)),
+            };
+            window.dispatch_action(Box::new(ui_actions::OpenUsageReset { provider }), app);
+            return;
+        }
+        match command.as_str() {
+            "/applets" => window.dispatch_action(Box::new(ui_actions::OpenAppletShowcase), app),
+            "/onboarding-sim" | "/onboarding-preview" => {
+                window.dispatch_action(Box::new(ui_actions::ToggleOnboardingSimulator), app);
+            }
+            "/changelog" => window.dispatch_action(Box::new(ui_actions::OpenChangelog), app),
+            "/publish" if panel.read(app).publish_checkout().is_some() => {
+                window.dispatch_action(
+                    Box::new(ui_actions::PublishDesktop {
+                        source: panel.entity_id(),
+                    }),
+                    app,
+                );
+            }
+            _ if command.split_whitespace().next() == Some("/login") => {
+                window.dispatch_action(
+                    Box::new(ui_actions::OpenAccounts {
+                        source: panel.entity_id(),
+                        login_command: Some(command),
+                    }),
+                    app,
+                );
+            }
+            _ => panel.update(app, |this, cx| {
+                this.handle_slash_command(&command, cx);
+            }),
+        }
     }
 
     #[cfg(test)]
@@ -3100,22 +2981,6 @@ impl Panel {
         }
         cx.notify();
         true
-    }
-
-    fn embedded_command_sequence(&self, content: &str) -> Option<Vec<String>> {
-        let mut names: Vec<String> = crate::commands::REGISTERED_COMMANDS
-            .iter()
-            .map(|command| command.name.to_string())
-            .collect();
-        names.extend(self.skills.iter().map(|(name, _)| format!("/{name}")));
-        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        let matches = jcode_slash_command::find_known_commands(content, &refs);
-        if matches.is_empty() || (matches.len() == 1 && matches[0].start == 0) {
-            return None;
-        }
-        Some(jcode_slash_command::split_command_sequence(
-            content, &matches,
-        ))
     }
 
     /// Compose cards a later Gmail call replaced, recomputed only when the
@@ -11666,7 +11531,6 @@ mod tests {
 
         vcx.simulate_input("/effort x");
         vcx.simulate_keystrokes("enter");
-        vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
             Ok(Command::SessionOperation {
@@ -11676,7 +11540,6 @@ mod tests {
         ));
 
         vcx.simulate_input("/clear");
-        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
@@ -11822,6 +11685,8 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.update(|_, cx| assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model "));
+        vcx.simulate_keystrokes("cmd-a backspace");
 
         vcx.simulate_input("/model");
         vcx.run_until_parked();
@@ -11890,18 +11755,15 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.simulate_keystrokes("ctrl-a");
         vcx.simulate_input("/models");
-        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_some());
-        vcx.simulate_keystrokes("down up");
         let row = vcx
             .debug_bounds("slash-command-row-0")
             .expect("model suggestion is clickable");
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(
             matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-oauth:gpt-5.6-sol")

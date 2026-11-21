@@ -4255,7 +4255,6 @@ dependencies = [
  "jcode-render-core",
  "jcode-sdk",
  "jcode-selfdev-types",
- "jcode-slash-command",
  "jcode-voice",
  "libc",
  "memchr",
@@ -4622,10 +4621,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "jcode-slash-command"
-version = "0.1.0"
 
 [[package]]
 name = "jcode-storage"

@@ -145,7 +145,7 @@ fn composer_bare_selfdev_activates_for_next_prompt(cx: &mut gpui::TestAppContext
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/selfdev");
-    vcx.simulate_keystrokes("enter enter");
+    vcx.simulate_keystrokes("enter");
     assert!(commands.try_recv().is_err());
     panel.read_with(vcx, |panel, _| {
         assert_eq!(panel.active_skill.as_deref(), Some("selfdev"))
@@ -159,32 +159,7 @@ fn composer_bare_selfdev_activates_for_next_prompt(cx: &mut gpui::TestAppContext
 }
 
 #[gpui::test]
-fn embedded_skill_uses_surrounding_text_and_ignores_paths(cx: &mut gpui::TestAppContext) {
-    let (bridge, commands) = crate::harness::spawn_recording();
-    let panel = cx.new(|cx| Panel::new("skill-session".into(), None, None, bridge, cx));
-    panel.update(cx, |panel, cx| {
-        panel.load_history(vec![], vec![], cx);
-        panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
-        assert!(
-            panel
-                .embedded_command_sequence("visit https://a/b and /usr/bin")
-                .is_none()
-        );
-        let commands = panel
-            .embedded_command_sequence("fix this /poteto-mode please")
-            .unwrap();
-        for command in commands {
-            panel.handle_slash_command(&command, cx);
-        }
-    });
-    assert!(
-        matches!(commands.try_recv(), Ok(Command::SendSkill { content, skill, .. })
-        if content == "fix this please" && skill == "poteto-mode")
-    );
-}
-
-#[gpui::test]
-fn composer_sends_embedded_skill_prompt(cx: &mut gpui::TestAppContext) {
+fn composer_sends_selected_skill_prompt(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -198,12 +173,15 @@ fn composer_sends_embedded_skill_prompt(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| {
         panel.load_history(vec![], vec![], cx);
         panel.skills = vec![("poteto-mode".into(), "Test skill".into())];
+        panel
+            .input
+            .update(cx, |input, cx| input.set_skills(panel.skills.clone(), cx));
     });
     vcx.update(|window, cx| {
         let handle = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
     });
-    vcx.simulate_input("fix this /poteto-mode please");
+    vcx.simulate_input("/poteto-mode fix this please");
     vcx.simulate_keystrokes("enter");
     assert!(
         matches!(commands.try_recv(), Ok(Command::SendSkill { content, skill, .. })
@@ -229,7 +207,7 @@ fn composer_runs_compact_as_a_session_operation(cx: &mut gpui::TestAppContext) {
         window.focus(&handle, cx);
     });
     vcx.simulate_input("/compact");
-    vcx.simulate_keystrokes("enter enter");
+    vcx.simulate_keystrokes("enter");
     match commands.try_recv() {
         Ok(Command::SessionOperation {
             session_id,
@@ -242,7 +220,7 @@ fn composer_runs_compact_as_a_session_operation(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn composer_dispatches_embedded_command_even_when_prompts_are_queued(
+fn composer_dispatches_selected_command_even_when_prompts_are_queued(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(crate::input::bind_keys);
@@ -263,7 +241,7 @@ fn composer_dispatches_embedded_command_even_when_prompts_are_queued(
         let handle = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
     });
-    vcx.simulate_input("please /skills now");
+    vcx.simulate_input("/skills please now");
     vcx.simulate_keystrokes("enter");
     assert!(matches!(
         commands.try_recv(),
@@ -276,42 +254,7 @@ fn composer_dispatches_embedded_command_even_when_prompts_are_queued(
 }
 
 #[gpui::test]
-fn composer_dispatches_multiple_commands_in_order(cx: &mut gpui::TestAppContext) {
-    cx.update(crate::input::bind_keys);
-    let (bridge, commands) = crate::harness::spawn_recording();
-    let (workspace, vcx) = cx.add_window_view(|_, cx| {
-        let mut workspace =
-            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-        workspace.set_test_bridge(bridge);
-        workspace.push_test_panel("command-sequence", cx);
-        workspace
-    });
-    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
-    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
-    vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
-        window.focus(&handle, cx);
-    });
-    vcx.simulate_input("/skills /info");
-    vcx.simulate_keystrokes("enter enter");
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::RuntimeCommand {
-            command: jcode_sdk::api::RuntimeCommand::Skills,
-            ..
-        })
-    ));
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::RuntimeCommand {
-            command: jcode_sdk::api::RuntimeCommand::Info,
-            ..
-        })
-    ));
-}
-
-#[gpui::test]
-fn composer_routes_embedded_workspace_command(cx: &mut gpui::TestAppContext) {
+fn composer_routes_selected_workspace_command(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -327,34 +270,11 @@ fn composer_routes_embedded_workspace_command(cx: &mut gpui::TestAppContext) {
         let handle = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
     });
-    vcx.simulate_input("ask /btw please");
+    vcx.simulate_input("/btw ask please");
     vcx.simulate_keystrokes("enter");
     assert!(
         matches!(commands.try_recv(), Ok(Command::SideQuestion { question, .. }) if question == "ask please")
     );
-}
-
-#[gpui::test]
-fn composer_unknown_slash_is_an_inline_error(cx: &mut gpui::TestAppContext) {
-    cx.update(crate::input::bind_keys);
-    let (bridge, commands) = crate::harness::spawn_recording();
-    let (workspace, vcx) = cx.add_window_view(|_, cx| {
-        let mut workspace =
-            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-        workspace.set_test_bridge(bridge);
-        workspace.push_test_panel("unknown-composer", cx);
-        workspace
-    });
-    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
-    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
-    vcx.update(|window, cx| {
-        let handle = panel.read(cx).input.read(cx).focus_handle.clone();
-        window.focus(&handle, cx);
-    });
-    vcx.simulate_input("/foo");
-    vcx.simulate_keystrokes("enter");
-    panel.read_with(vcx, |panel, _| assert!(matches!(panel.items.last(), Some(Item::Error(message)) if message.contains("Unknown command"))));
-    assert!(commands.try_recv().is_err());
 }
 
 #[gpui::test]

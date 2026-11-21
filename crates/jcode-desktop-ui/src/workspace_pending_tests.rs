@@ -880,11 +880,9 @@ fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::T
     // overrides it, as the user does.
     vcx.simulate_input("/model gpt-5.6-sol");
     vcx.simulate_keystrokes("enter");
-    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     vcx.simulate_keystrokes("cmd-a backspace");
     vcx.simulate_input("/effort high");
-    vcx.simulate_keystrokes("enter");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));

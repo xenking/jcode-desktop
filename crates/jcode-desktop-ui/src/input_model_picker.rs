@@ -282,15 +282,7 @@ impl PromptInput {
     /// Hover changes selection, not the catalog. Retain rows across repaints and
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {
-        if self.accepted_command.as_ref() == Some(&self.content)
-            || (self.picker_prefix.is_none()
-                && self.cursor_offset() == self.content.len()
-                && self
-                    .content
-                    .trim()
-                    .strip_prefix("/effort ")
-                    .is_some_and(|level| self.effort_ladder.contains(&level.trim())))
-        {
+        if self.current_command_menu_close().is_some() {
             return Arc::new(Vec::new());
         }
         let minute = model_menu::now_unix_secs() / 60;
@@ -616,22 +608,7 @@ impl PromptInput {
                                     on_change(&this.content, cx);
                                 }
                             } else {
-                                let (draft, cursor) = this.draft_with_command(&suggestion.value);
-                                this.set_content(draft, cx);
-                                if let Some(cursor) = cursor {
-                                    this.selected_range = cursor..cursor;
-                                    // The popup has done its job: the click
-                                    // sends the whole sentence, not a menu.
-                                    this.accepted_command = Some(this.content.clone());
-                                }
-                                // Search may also match a longer model name. Click must
-                                // submit this exact route, not the first substring match.
-                                this.command_selection = this
-                                    .command_suggestions()
-                                    .iter()
-                                    .position(|row| row.value == suggestion.value)
-                                    .unwrap_or(0);
-                                this.submit(&Submit, window, cx);
+                                this.submit_command(suggestion.value.clone(), false, window, cx);
                             }
                         }),
                     ),
