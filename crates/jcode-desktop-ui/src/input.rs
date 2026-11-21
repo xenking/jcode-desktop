@@ -5224,6 +5224,74 @@ mod tests {
     }
 
     #[gpui::test]
+    fn arrow_history_waits_for_the_edge_of_a_soft_wrapped_prompt(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let draft = "界 👩‍💻 Привет Jcode ".repeat(80);
+        window
+            .update(cx, |input, _, cx| {
+                input.history.push("older prompt".into());
+                input.set_content(draft.clone(), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(*window, "up");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str());
+                assert!(input.cursor_offset() < draft.len());
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "down");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str());
+                assert_eq!(input.cursor_offset(), draft.len());
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "home up");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "older prompt")
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(*window, "down");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str())
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_keeps_its_column_across_short_and_empty_lines(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let draft = "abcdef\n\nx\nabcdef";
+        window
+            .update(cx, |input, _, cx| input.set_content(draft.into(), cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        for (key, expected) in [
+            ("up", 9),
+            ("up", 7),
+            ("up", 6),
+            ("down", 7),
+            ("down", 9),
+            ("down", 15),
+        ] {
+            cx.simulate_keystrokes(*window, key);
+            window
+                .update(cx, |input, _, _| {
+                    assert_eq!(input.cursor_offset(), expected, "{key}")
+                })
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
     fn composer_double_click_selects_a_word_and_preserves_shift_extension(cx: &mut TestAppContext) {
         let handle = input_window(cx);
         handle
