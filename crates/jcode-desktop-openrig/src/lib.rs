@@ -1,9 +1,11 @@
+pub mod build;
 pub mod connections;
 pub mod cost;
 pub mod inbox;
 pub mod sections;
 pub mod usage;
 pub mod util;
+pub mod work;
 
 use serde_json::{Value, json};
 use std::{
@@ -106,7 +108,8 @@ pub mod fleet;
 pub enum SectionKind {
     Fleet,
     Inbox,
-    Specs,
+    Work,
+    Build,
     Scopes,
     Terminals,
     Needs,
@@ -497,7 +500,6 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         "/healthz",
         "/api/hosts",
         "/api/rigs/summary",
-        "/api/specs/library",
         "/api/scopes?detail=1",
         "/api/terminal/views",
         "/api/review/fleet",
@@ -548,30 +550,29 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
     inbox.include_seat_attention(&fleet);
     let mut sections = vec![make_section(SectionKind::Fleet, "Fleet", Vec::new())];
     for (kind, title, index, keys) in [
-        (SectionKind::Specs, "Specs", 3, vec![]),
-        (SectionKind::Scopes, "Scopes", 4, vec!["missions"]),
-        (SectionKind::Needs, "Needs attention", 6, vec![]),
-        (SectionKind::System, "System", 7, vec!["records"]),
-        (SectionKind::Config, "Config", 8, vec!["entries"]),
-        (SectionKind::Connections, "Connections", 9, vec!["humans"]),
-        (SectionKind::Usage, "Usage", 10, vec!["usage"]),
-        (SectionKind::UsageHosts, "Usage hosts", 11, vec!["hosts"]),
-        (SectionKind::Cost, "Cost", 12, vec!["seats"]),
+        (SectionKind::Scopes, "Scopes", 3, vec!["missions"]),
+        (SectionKind::Needs, "Needs attention", 5, vec![]),
+        (SectionKind::System, "System", 6, vec!["records"]),
+        (SectionKind::Config, "Config", 7, vec!["entries"]),
+        (SectionKind::Connections, "Connections", 8, vec!["humans"]),
+        (SectionKind::Usage, "Usage", 9, vec!["usage"]),
+        (SectionKind::UsageHosts, "Usage hosts", 10, vec!["hosts"]),
+        (SectionKind::Cost, "Cost", 11, vec!["seats"]),
     ] {
         let mut rows = Vec::new();
         if kind == SectionKind::Usage {
-            let setting = match &results[10] {
+            let setting = match &results[index] {
                 Ok(model) if model["usage"].is_array() => usage::SwitchSetting::Absent,
-                _ => usage::switch_setting(val(8)),
+                _ => usage::switch_setting(val(7)),
             };
-            rows = usage::usage_rows(&results[10], &setting);
+            rows = usage::usage_rows(&results[index], &setting);
         } else if kind == SectionKind::UsageHosts {
-            rows = usage::usage_hosts_rows(&results[11]);
+            rows = usage::usage_hosts_rows(&results[index]);
         } else if kind == SectionKind::Cost {
-            rows = cost::cost_rows(&results[12]);
+            rows = cost::cost_rows(&results[index]);
         } else if kind == SectionKind::Connections {
             rows = connections::connections_rows(
-                results[9].as_ref().map_err(|f| f.error.as_str()),
+                results[index].as_ref().map_err(|f| f.error.as_str()),
                 val(0),
                 &daemon_target(base_url),
             );
@@ -595,8 +596,6 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                     .collect();
             } else if kind == SectionKind::Scopes {
                 rows = sections::scopes_rows(v);
-            } else if kind == SectionKind::Specs {
-                rows = sections::specs_rows(v);
             } else if kind == SectionKind::System {
                 rows = sections::health_rows(v);
             } else {
@@ -606,7 +605,7 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         sections.push(make_section(kind, title, rows));
     }
     let mut terminals = Vec::new();
-    if let Some(v) = val(5) {
+    if let Some(v) = val(4) {
         for saved in array(v, "saved") {
             let mut r = row(saved, 0, "saved view");
             r.id = format!("saved:{}", r.id);
@@ -624,6 +623,8 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         make_section(SectionKind::Terminals, "Terminals", terminals),
     );
     sections.insert(1, make_section(SectionKind::Inbox, "Inbox", Vec::new()));
+    sections.insert(2, make_section(SectionKind::Work, "Work", Vec::new()));
+    sections.insert(3, make_section(SectionKind::Build, "Build", Vec::new()));
     Snapshot {
         fleet,
         inbox: Some(inbox),
@@ -658,7 +659,8 @@ impl Snapshot {
         let kinds = [
             (SectionKind::Fleet, "Fleet"),
             (SectionKind::Inbox, "Inbox"),
-            (SectionKind::Specs, "Specs"),
+            (SectionKind::Work, "Work"),
+            (SectionKind::Build, "Build"),
             (SectionKind::Scopes, "Scopes"),
             (SectionKind::Terminals, "Terminals"),
             (SectionKind::Needs, "Needs attention"),
@@ -676,7 +678,13 @@ impl Snapshot {
                 .into_iter()
                 .map(|(kind, title)| {
                     let rows =
-                        if matches!(kind, SectionKind::Fleet | SectionKind::Inbox) {
+                        if matches!(
+                            kind,
+                            SectionKind::Fleet
+                                | SectionKind::Inbox
+                                | SectionKind::Work
+                                | SectionKind::Build
+                        ) {
                             Vec::new()
                         } else {
                             demo_rows(kind).unwrap_or_else(|| vec![row(&json!({
@@ -704,7 +712,16 @@ mod tests {
     #[test]
     fn fixture_has_all_sections_and_fleet() {
         let s = Snapshot::fixture();
-        assert_eq!(s.sections.len(), 12);
+        assert!(
+            s.sections
+                .iter()
+                .any(|section| section.kind == SectionKind::Work)
+        );
+        assert!(
+            s.sections
+                .iter()
+                .any(|section| section.kind == SectionKind::Build)
+        );
         assert_eq!(s.sections[0].kind, SectionKind::Fleet);
         assert_eq!(s.fleet.hosts.len(), 2);
     }
@@ -716,7 +733,16 @@ mod tests {
     fn failed_reads_are_not_success() {
         let s = fetch_snapshot("http://127.0.0.1:1");
         assert!(s.error.is_some());
-        assert_eq!(s.sections.len(), 12);
+        assert!(
+            s.sections
+                .iter()
+                .any(|section| section.kind == SectionKind::Work)
+        );
+        assert!(
+            s.sections
+                .iter()
+                .any(|section| section.kind == SectionKind::Build)
+        );
         assert!(!s.inbox.unwrap().issues.is_empty());
     }
 

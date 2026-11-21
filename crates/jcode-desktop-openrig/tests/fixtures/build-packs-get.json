@@ -1,0 +1,35 @@
+[
+  {
+    "id": "context-pack:skills/process/agent-browser",
+    "name": "agent-browser",
+    "version": "0.7.20-xk.1",
+    "purpose": "Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task. Triggers include requests to \"open a website\", \"fill out a form\", \"click a button\", \"take a screenshot\", \"scrape data from a page\", \"test this web app\", \"login to a site\", \"automate browser actions\", or any task requiring programmatic web interaction.",
+    "sourceType": "builtin",
+    "files": [
+      {
+        "path": "SKILL.md"
+      },
+      {
+        "path": "LICENSE.txt"
+      },
+      {
+        "path": "LOCAL-INSIGHTS.md"
+      },
+      {
+        "path": "OPENRIG.md"
+      }
+    ]
+  },
+  {
+    "id": "context-pack:skills/agent-operated-software",
+    "name": "agent-operated-software",
+    "version": "0.7.20-xk.1",
+    "purpose": "Use when designing, building, operating, or diagnosing an ongoing application whose live backend or control loop includes OpenRig agents, including applications with a Markdown, YAML, or JSON agent control plane or a thin surface over specialist agent roles.",
+    "sourceType": "builtin",
+    "files": [
+      {
+        "path": "SKILL.md"
+      }
+    ]
+  }
+]

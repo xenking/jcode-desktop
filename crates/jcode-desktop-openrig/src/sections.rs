@@ -8,6 +8,155 @@ use crate::{
 use serde::Deserialize;
 use serde_json::Value;
 
+const SECTION_HOST_LIMIT: usize = 16;
+pub(crate) const SECTION_LIST_LIMIT: usize = 100;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadWindow<T> {
+    pub items: Vec<T>,
+    pub truncated: bool,
+}
+
+impl<T> From<Vec<T>> for ReadWindow<T> {
+    fn from(mut items: Vec<T>) -> Self {
+        let truncated = items.len() > SECTION_LIST_LIMIT;
+        items.truncate(SECTION_LIST_LIMIT);
+        Self { items, truncated }
+    }
+}
+
+#[derive(Deserialize)]
+struct HostCatalog {
+    hosts: Vec<HostIdentity>,
+}
+
+#[derive(Deserialize)]
+struct HostIdentity {
+    id: String,
+}
+
+pub(crate) fn read_hosts<T: Send>(
+    base: &str,
+    read: impl Fn(&str) -> T + Sync,
+) -> (Vec<T>, Option<String>) {
+    let mut ids = vec!["local".to_owned()];
+    let issue = match section_get::<HostCatalog>(base, "local", "/api/hosts") {
+        Ok(catalog) => {
+            for entry in catalog.hosts {
+                if !entry.id.trim().is_empty() && !ids.contains(&entry.id) {
+                    ids.push(entry.id);
+                    if ids.len() > SECTION_HOST_LIMIT {
+                        break;
+                    }
+                }
+            }
+            (ids.len() > SECTION_HOST_LIMIT).then(|| {
+                ids.truncate(SECTION_HOST_LIMIT);
+                format!("Host list truncated to {SECTION_HOST_LIMIT} hosts")
+            })
+        }
+        Err(error) => Some(format!("Other hosts unavailable: {error}")),
+    };
+    let results = std::thread::scope(|scope| {
+        let read = &read;
+        ids.iter()
+            .map(|id| scope.spawn(move || read(id)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|task| task.join().expect("section reader panicked"))
+            .collect()
+    });
+    (results, issue)
+}
+
+pub(crate) fn section_get<T: serde::de::DeserializeOwned>(
+    base: &str,
+    host: &str,
+    route: &str,
+) -> Result<T, String> {
+    use std::io::Read;
+    use std::time::Duration;
+
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+    let route = if host == "local" {
+        route.to_owned()
+    } else {
+        let separator = if route.contains('?') { '&' } else { '?' };
+        format!("{route}{separator}host={}", crate::encode(host))
+    };
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(8))
+        .redirects(0)
+        .build();
+    let mut req = agent.get(&format!("{}{route}", base.trim_end_matches('/')));
+    if let Some(token) = crate::token(false) {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    let response = req.call().map_err(|error| match error {
+        ureq::Error::Status(code, _) => format!("HTTP {code}"),
+        ureq::Error::Transport(_) => "Connection failed or timed out".into(),
+    })?;
+    if response.status() != 200 {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read response".to_owned())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("Response exceeds the 8 MiB limit".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Unexpected response format".into())
+}
+
+#[cfg(test)]
+pub(crate) fn serve_fixture(
+    count: usize,
+    response: impl Fn(&str) -> (u16, &'static str) + Send + 'static,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for _ in 0..count {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing fixture request");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut parts = line.split_whitespace();
+            assert_eq!(parts.next(), Some("GET"));
+            let (code, body) = response(parts.next().unwrap());
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            write!(stream, "HTTP/1.1 {code} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    (base, handle)
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ContextUsage {

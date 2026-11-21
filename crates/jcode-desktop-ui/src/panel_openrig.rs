@@ -11,12 +11,29 @@ use std::{
     time::Duration,
 };
 
+#[path = "panel_openrig_build.rs"]
+mod build;
 #[path = "panel_openrig_fleet.rs"]
 mod fleet;
 #[path = "panel_openrig_inbox.rs"]
 mod inbox;
+#[path = "panel_openrig_work.rs"]
+mod work;
 
 pub(crate) const SESSION_ID: &str = "openrig://mission-control";
+
+fn live_verification() -> bool {
+    crate::fixture_control_targets::enabled()
+        && std::env::var("JCODE_DESKTOP_CONTROL_OPENRIG_LIVE").as_deref() == Ok("1")
+}
+
+fn destination_base_url() -> String {
+    if live_verification() {
+        "http://127.0.0.1:7433".into()
+    } else {
+        default_base_url()
+    }
+}
 
 fn tone_color(theme: &Theme, tone: Tone) -> gpui::Rgba {
     match tone {
@@ -81,6 +98,9 @@ pub(super) struct State {
     snapshot: Snapshot,
     fleet: fleet::FleetView,
     inbox: inbox::InboxView,
+    work: work::WorkView,
+    build: build::BuildView,
+    destination_fixture: bool,
     compact: bool,
     show_sections: bool,
     section: usize,
@@ -99,12 +119,20 @@ pub(super) struct State {
 impl State {
     pub(super) fn fixture() -> Self {
         let snapshot = Snapshot::fixture();
+        let mut work = work::WorkView::default();
+        let destination_fixture = !live_verification();
+        work.data = destination_fixture.then(jcode_desktop_openrig::work::Work::fixture);
+        let mut build = build::BuildView::default();
+        build.data = destination_fixture.then(jcode_desktop_openrig::build::Build::fixture);
         Self {
             snapshot,
             fleet: fleet::FleetView::fixture(
                 std::env::var_os("JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR").is_some(),
             ),
             inbox: inbox::InboxView::default(),
+            work,
+            build,
+            destination_fixture,
             compact: false,
             show_sections: false,
             section: 0,
@@ -137,6 +165,31 @@ impl State {
             .sections
             .get(self.section)
             .is_some_and(|section| section.kind == SectionKind::Inbox)
+    }
+    fn kind(&self) -> Option<SectionKind> {
+        self.snapshot
+            .sections
+            .get(self.section)
+            .map(|section| section.kind)
+    }
+
+    fn select(&mut self, index: usize) {
+        self.section = index;
+        self.selected = 0;
+        self.filter.clear();
+        self.show_sections = false;
+        self.explorer = true;
+    }
+
+    fn select_kind(&mut self, kind: SectionKind) {
+        if let Some(index) = self
+            .snapshot
+            .sections
+            .iter()
+            .position(|section| section.kind == kind)
+        {
+            self.select(index);
+        }
     }
     fn is_open(&self, row: &jcode_desktop_openrig::Row) -> bool {
         row.default_open != self.toggled.contains(&row.id)
@@ -185,11 +238,11 @@ impl State {
                         let name = name.to_lowercase().replace('-', " ");
                         if let Some(index) = self.snapshot.sections.iter().position(|s| {
                             let title = s.title.to_lowercase().replace('-', " ");
-                            title == name || (name == "needs" && title.starts_with("needs"))
+                            title == name
+                                || (name == "needs" && title.starts_with("needs"))
+                                || (name == "specs" && s.kind == SectionKind::Build)
                         }) {
-                            self.section = index;
-                            self.selected = 0;
-                            self.filter.clear();
+                            self.select(index);
                         }
                     }
                 }
@@ -255,6 +308,58 @@ impl State {
     }
 }
 impl Panel {
+    fn load_openrig_destination(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        let Some(state) = self.openrig.as_mut() else {
+            return;
+        };
+        if state.destination_fixture {
+            return;
+        }
+        match state.kind() {
+            Some(SectionKind::Work)
+                if state.work.load.is_none() && (refresh || state.work.data.is_none()) =>
+            {
+                state.work.load = Some(cx.spawn(async |panel, cx| {
+                    let work = cx
+                        .background_executor()
+                        .spawn(async {
+                            jcode_desktop_openrig::work::fetch_work(&destination_base_url())
+                        })
+                        .await;
+                    let _ = panel.update(cx, |panel, cx| {
+                        if let Some(state) = panel.openrig.as_mut() {
+                            state.work.data = Some(work);
+                            state.work.load = None;
+                            cx.notify();
+                        }
+                    });
+                }));
+                cx.notify();
+            }
+            Some(SectionKind::Build)
+                if state.build.load.is_none() && (refresh || state.build.data.is_none()) =>
+            {
+                state.build.load = Some(cx.spawn(async |panel, cx| {
+                    let build = cx
+                        .background_executor()
+                        .spawn(async {
+                            jcode_desktop_openrig::build::fetch_build(&destination_base_url())
+                        })
+                        .await;
+                    let _ = panel.update(cx, |panel, cx| {
+                        if let Some(state) = panel.openrig.as_mut() {
+                            state.build.data = Some(build);
+                            state.build.load = None;
+                            cx.notify();
+                        }
+                    });
+                }));
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn openrig_width_changed(&self, width: gpui::Pixels) -> bool {
         self.openrig
             .as_ref()
@@ -274,6 +379,9 @@ impl Panel {
         let fixture = crate::harness::screenshot_mode() || cfg!(test);
         let mut state = State::fixture();
         if !fixture {
+            state.destination_fixture = false;
+            state.work.data = None;
+            state.build.data = None;
             state.events.clear();
             let (tx, rx) = std::sync::mpsc::sync_channel(128);
             let lifetime = std::sync::Arc::downgrade(&state.event_lifetime);
@@ -374,6 +482,8 @@ impl Panel {
         let theme = Theme::global();
         let is_fleet = state.is_fleet();
         let is_inbox = state.is_inbox();
+        let is_work = state.kind() == Some(SectionKind::Work);
+        let is_build = state.kind() == Some(SectionKind::Build);
         let compact = state.compact;
         let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
         explorer = if compact {
@@ -387,6 +497,11 @@ impl Panel {
                 div()
                     .id(("openrig-section", index))
                     .debug_selector(|| format!("openrig-section:{}", section.title))
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || format!("openrig-section:{}", section.title),
+                        || Some(self.session_id.clone()),
+                    ))
                     .rounded_full()
                     .px_3()
                     .py_1()
@@ -402,12 +517,9 @@ impl Panel {
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             if let Some(state) = this.openrig.as_mut() {
-                                state.section = index;
-                                state.selected = 0;
-                                state.explorer = true;
-                                state.filter.clear();
-                                state.show_sections = false;
+                                state.select(index);
                             }
+                            this.load_openrig_destination(false, cx);
                             window.focus(&this.focus_handle, cx);
                             cx.stop_propagation();
                             cx.notify();
@@ -543,12 +655,14 @@ impl Panel {
                 }
             }
         }
-        let status = (!is_inbox)
+        let status = (!is_inbox && !is_work && !is_build)
             .then_some(state.snapshot.error.as_ref())
             .flatten()
             .cloned()
             .unwrap_or_else(|| {
-                if crate::harness::screenshot_mode() {
+                if (is_work || is_build) && !state.destination_fixture {
+                    "Read-only · Refresh to check for changes".into()
+                } else if crate::harness::screenshot_mode() {
                     "Fixture data".into()
                 } else {
                     "Live · polling every 2s".into()
@@ -602,6 +716,29 @@ impl Panel {
                         cx.stop_propagation();
                         return;
                     }
+                    if !state.explorer && state.command.is_none() {
+                        if state.kind() == Some(SectionKind::Work)
+                            && state.work.key(&state.filter, key)
+                        {
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if state.kind() == Some(SectionKind::Build) && this.build_key(key, cx) {
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
+                }
+                if let Some(state) = this.openrig.as_mut() {
+                    let key = event.keystroke.key.as_str();
+                    let text = event.keystroke.key_char.as_deref();
+                    let key = if state.command.is_none() {
+                        text.filter(|t| *t == ":" || *t == "/").unwrap_or(key)
+                    } else {
+                        key
+                    };
                     if state.is_fleet()
                         && state.command.is_none()
                         && state.fleet.properties
@@ -618,6 +755,7 @@ impl Panel {
                     {
                         state.scroll.scroll_to_item(state.selected);
                     }
+                    this.load_openrig_destination(false, cx);
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -635,6 +773,11 @@ impl Panel {
                             div()
                                 .id("openrig-section-menu")
                                 .debug_selector(|| "openrig-section-menu".into())
+                                .relative()
+                                .children(crate::fixture_control_targets::marker(
+                                    || "openrig-section-menu".into(),
+                                    || Some(self.session_id.clone()),
+                                ))
                                 .rounded_full()
                                 .bg(theme.HEADER_BG)
                                 .px_3()
@@ -673,7 +816,11 @@ impl Panel {
                     .children(side_sections)
                     .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
                     .when(is_inbox, |el| el.child(self.render_inbox(state, cx)))
-                    .when(!is_fleet && !is_inbox, |el| el.child(list).child(detail)),
+                    .when(is_work, |el| el.child(self.render_work(state, cx)))
+                    .when(is_build, |el| el.child(self.render_build(state, cx)))
+                    .when(!is_fleet && !is_inbox && !is_work && !is_build, |el| {
+                        el.child(list).child(detail)
+                    }),
             )
             .child(
                 div()

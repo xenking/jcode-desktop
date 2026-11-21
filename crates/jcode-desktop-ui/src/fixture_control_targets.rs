@@ -112,6 +112,10 @@ pub(crate) fn marker(
 
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
+        || selector == "openrig-section-menu"
+        || selector.starts_with("openrig-section:")
+        || selector.starts_with("work-row:")
+        || selector.starts_with("build-row:")
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
         || selector.starts_with("sidebar-worker:")

@@ -219,6 +219,120 @@ mod tests {
     }
 
     #[gpui::test]
+    fn work_filters_switches_to_workflows_and_opens_the_owner_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("current-chat", cx);
+            workspace
+        });
+        workspace.update_in(vcx, |workspace, window, cx| {
+            workspace.open_openrig(&OpenOpenrig, window, cx)
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Work");
+        click(vcx, "work-filter:Owner");
+        click(vcx, "work-option:operator@kernel");
+        assert!(
+            vcx.debug_bounds("work-row:local:qitem-example-done")
+                .is_none()
+        );
+        assert!(
+            vcx.debug_bounds("work-row:local:qitem-example-held")
+                .is_some()
+        );
+        click(vcx, "work-filter:State");
+        click(vcx, "work-option:in-progress");
+        assert!(
+            vcx.debug_bounds("work-row:local:qitem-example-held")
+                .is_none()
+        );
+        click(vcx, "work-row:local:qitem-example-open");
+        assert!(vcx.debug_bounds("work-inspector").is_some());
+        click(vcx, "work-back");
+        assert!(vcx.debug_bounds("work-inspector").is_none());
+        click(vcx, "work-tab:Workflows");
+        click(vcx, "work-row:local:workflow-example");
+        assert!(vcx.debug_bounds("work-inspector").is_some());
+        click(vcx, "work-open-session");
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "session_fox_1700000000000_0123456789abcdef"
+            );
+        });
+        assert!(
+            !commands
+                .try_iter()
+                .any(|command| matches!(command, Command::CreateSession { .. }))
+        );
+    }
+
+    #[gpui::test]
+    fn build_category_filter_and_preview_are_usable_at_split_width(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("current-chat", cx);
+            workspace
+        });
+        workspace.update_in(vcx, |workspace, window, cx| {
+            workspace.open_openrig(&OpenOpenrig, window, cx)
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Build");
+        assert!(
+            vcx.debug_bounds("build-row:local:0a25241dadbcaf2d")
+                .is_some()
+        );
+        click(vcx, "build-category:Workflow specs");
+        assert!(
+            vcx.debug_bounds("build-row:local:0a25241dadbcaf2d")
+                .is_none()
+        );
+        click(vcx, "build-row:local:workflow:basic-loop:1");
+        assert!(vcx.debug_bounds("build-inspector").is_some());
+        click(vcx, "build-back");
+        assert!(vcx.debug_bounds("build-inspector").is_none());
+        assert!(
+            vcx.debug_bounds("build-row:local:workflow:basic-loop:1")
+                .is_some()
+        );
+        assert!(!commands.try_iter().any(|command| matches!(
+            command,
+            Command::CreateSession { .. } | Command::Watch { .. }
+        )));
+    }
+
+    #[gpui::test]
     fn fleet_row_inspects_then_opens_local_and_remote_panels_without_creating_a_session(
         cx: &mut gpui::TestAppContext,
     ) {

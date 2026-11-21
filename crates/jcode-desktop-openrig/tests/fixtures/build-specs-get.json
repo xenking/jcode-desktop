@@ -1,0 +1,38 @@
+[
+  {
+    "id": "33d11aa6749be7f8",
+    "kind": "agent",
+    "name": "conveyor-lead",
+    "version": "1.0",
+    "summary": "Conveyor intake lead - receives work, keeps station handoffs clear, and closes packets",
+    "sourceType": "builtin",
+    "hasServices": null
+  },
+  {
+    "id": "0a25241dadbcaf2d",
+    "kind": "rig",
+    "name": "code-review",
+    "version": "0.2",
+    "summary": "Dual independent reviewers with an orchestrator. Each reviewer analyzes the code independently, then the orchestrator synthesizes their findings. Disagreements surface real issues.\n",
+    "sourceType": "builtin",
+    "hasServices": null
+  },
+  {
+    "id": "1ea39648cac2fd42",
+    "kind": "rig",
+    "name": "secrets-manager",
+    "version": "0.2",
+    "summary": "HashiCorp Vault in dev mode with a dedicated Vault specialist agent. Vault boots before the specialist launches, health is gated, and the env receipt is captured. The specialist can read, write, list, and delete secrets via the Vault HTTP API.\n",
+    "sourceType": "builtin",
+    "hasServices": true
+  },
+  {
+    "id": "workflow:basic-loop:1",
+    "kind": "workflow",
+    "name": "basic-loop",
+    "version": "1",
+    "summary": "Walk one work packet through the conveyor rig slowly enough for a new user to inspect each handoff.\n",
+    "sourceType": "builtin",
+    "hasServices": null
+  }
+]

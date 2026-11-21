@@ -183,13 +183,23 @@ class Instance:
         reduce_motion = "false" if self.manifest["fixture"] == "orb-todos" else "true"
         theme = self.manifest.get("theme")
         theme_line = f'theme = "{theme}"\n' if theme else ""
-        (self.profile / "desktop.toml").write_text(f'[appearance]\n{theme_line}reduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
+        layout_line = 'layout_mode = "normal"\n' if self.manifest["fixture"] == "openrig-live-split" else ""
+        (self.profile / "desktop.toml").write_text(f'[appearance]\n{theme_line}{layout_line}reduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         if self.manifest.get("window_width"):
             env["JCODE_DESKTOP_CONTROL_WINDOW_WIDTH"] = str(self.manifest["window_width"])
         modes = ["--single-panel"]
+        if self.manifest["fixture"] in ("openrig", "openrig-live", "openrig-live-split"):
+            env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "openrig"
+            modes = []
+        if self.manifest["fixture"] in ("openrig-live", "openrig-live-split"):
+            env["JCODE_DESKTOP_CONTROL_OPENRIG_LIVE"] = "1"
+        if self.manifest["fixture"] == "openrig-live-split":
+            env.update(JCODE_DESKTOP_SCREENSHOT_PANELS="2",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS="openrig,expandable",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES="OpenRig,Verification transcript")
         if self.manifest["fixture"] == "cache-card":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_BAR="high",
@@ -255,6 +265,8 @@ class Instance:
             env["JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT"] = "1"
         scope = ("real hidden GPUI window with private daemon, bridge, and loopback provider"
                  if self.runtime_processes else "real hidden GPUI window with offline fixtures; no daemon or provider")
+        if env.get("JCODE_DESKTOP_CONTROL_OPENRIG_LIVE") == "1":
+            scope = "real hidden GPUI window; Work and Build GETs to OpenRig on loopback only"
         save(self.run / "isolation.json", {"environment": env, "scope": scope})
         with (self.run / "desktop.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
@@ -284,6 +296,8 @@ class Instance:
                     fixture = self.manifest["fixture"]
                     if (state["panel"].get("visible_transcript_items")
                             or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "swarm-dm", "voice-rt")
+                            or (fixture in ("openrig", "openrig-live", "openrig-live-split")
+                                and len(panels) == (2 if fixture == "openrig-live-split" else 1))
                             or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
@@ -322,6 +336,8 @@ class Instance:
                   "build": self.manifest["build"],
                   "scope": ("hidden native UI, private daemon and bridge, loopback provider"
                             if self.runtime_processes else "hidden native UI, offline fixtures; provider/auth not exercised")}
+        if self.manifest["fixture"] in ("openrig-live", "openrig-live-split"):
+            report["scope"] = "hidden native UI, Work and Build GETs to loopback OpenRig; provider/auth not exercised"
         save(self.run / "doctor.json", report)
         return report
 
@@ -1331,7 +1347,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",

@@ -62,6 +62,7 @@ impl Runtime {
 pub struct Seat {
     pub id: String,
     pub logical_id: String,
+    pub canonical_session_name: Option<String>,
     pub runtime: Option<Runtime>,
     pub status: Option<String>,
     pub jcode_session_id: Option<String>,
@@ -97,6 +98,7 @@ struct HostEntry {
 struct Node {
     node_id: String,
     logical_id: String,
+    canonical_session_name: Option<String>,
     pod_id: Option<String>,
     pod_namespace: Option<String>,
     runtime: Option<String>,
@@ -218,6 +220,7 @@ impl From<Node> for Seat {
         Self {
             id: node.node_id,
             logical_id: node.logical_id,
+            canonical_session_name: node.canonical_session_name,
             runtime,
             status: node.lifecycle_state.or(node.session_status),
             jcode_session_id,
@@ -380,6 +383,7 @@ impl Fleet {
             .filter(|seat| seat.logical_id == "operator.agent")
         {
             seat.jcode_session_id = Some("session_fox_1700000000000_0123456789abcdef".into());
+            seat.canonical_session_name = Some("operator@kernel".into());
             seat.context_percent = Some(41.);
             seat.current_work_count = Some(1);
         }

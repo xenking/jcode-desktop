@@ -1,0 +1,7 @@
+{
+  "error": "read_through_path_not_allowed",
+  "boundary": "MH-3",
+  "hostId": "ai-core",
+  "path": "/api/workflow/list",
+  "message": "acting on a remote host is the MH-3 routing lane; the MH-2 read-through forwards allowlisted GET reads only"
+}
