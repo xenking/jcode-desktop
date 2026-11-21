@@ -224,7 +224,7 @@ class Instance:
                            "Tool output,Workspace settings,Regression tests,Follow-up"))
             if self.manifest.get("fullscreen_layout"):
                 env["JCODE_DESKTOP_SCREENSHOT_FULLSCREEN"] = "1"
-            modes = []
+            modes = ["--no-sidebar"] if self.manifest.get("no_sidebar") else []
         if self.manifest["fixture"] == "tab-statuses":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES="1",
@@ -1034,6 +1034,8 @@ def launch(args):
     require_safe_host()
     if args.fullscreen_layout and args.fixture != "tabbar":
         raise RuntimeError("--fullscreen-layout requires --fixture tabbar")
+    if args.no_sidebar and args.fixture != "tabbar":
+        raise RuntimeError("--no-sidebar requires --fixture tabbar")
     if args.fixture == "background-jobs" and not all(
         path and path.is_file() and os.access(path, os.X_OK) for path in (args.jcode_bin, args.bridge_bin)
     ):
@@ -1074,6 +1076,7 @@ def launch(args):
                 "binary": str(binary), "binary_sha256": digest(binary), "version": version,
                 "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
                 "fullscreen_layout": args.fullscreen_layout,
+                "no_sidebar": args.no_sidebar,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
                 "lifetime_seconds": args.lifetime,
@@ -1117,6 +1120,8 @@ def main():
             child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card", "resume-preview"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
+            child.add_argument("--no-sidebar", action="store_true",
+                               help="render the tabbar fixture with the sidebar closed")
             child.add_argument("--jcode-bin", type=Path)
             child.add_argument("--bridge-bin", type=Path)
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",

@@ -1,6 +1,29 @@
 use super::*;
 
 #[gpui::test]
+#[cfg(target_os = "macos")]
+fn macos_titlebar_tabs_and_workspace_badge_share_the_traffic_light_center(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("first", cx);
+        workspace.push_test_panel("second", cx);
+        workspace
+    });
+    vcx.run_until_parked();
+    let badge = vcx.debug_bounds("workspace-tab-group-label-0").unwrap();
+    for selector in ["live-session-tab-0", "live-session-tab-1"] {
+        assert_eq!(
+            vcx.debug_bounds(selector).unwrap().center().y,
+            badge.center().y
+        );
+    }
+    assert_eq!(badge.center().y, px(20.0));
+    assert_eq!(badge.left(), px(84.0));
+}
+
+#[gpui::test]
 fn tab_row_starts_after_window_controls_and_reclaims_fps_space(cx: &mut gpui::TestAppContext) {
     let (_, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);

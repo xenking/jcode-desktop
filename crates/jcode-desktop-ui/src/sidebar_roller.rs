@@ -572,6 +572,9 @@ mod tests {
         assert!(!workspace.read_with(vcx, |w, _| w.show_sidebar));
         assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
         let reopen = vcx.debug_bounds("compact-sidebar-toggle").unwrap();
+        let workspace_one = vcx.debug_bounds("workspace-tab-group-label-0").unwrap();
+        assert!(reopen.right() <= workspace_one.left());
+        assert_eq!(reopen.center().y, workspace_one.center().y);
         vcx.simulate_click(reopen.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("workspace-sidebar-toggle").is_some());

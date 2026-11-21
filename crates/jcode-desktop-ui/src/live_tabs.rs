@@ -1485,6 +1485,12 @@ mod tests {
     }
 
     #[test]
+    fn crowded_workspace_tabs_keep_the_original_overlap() {
+        let tabs = TabLayout::grouped(892.0, &[0; 12], 0);
+        assert_eq!(tabs[1].left + tabs[1].width - tabs[2].left, 136.0);
+    }
+
+    #[test]
     fn workspace_tab_groups_keep_crowded_sessions_exposed_and_resize_in_bounds() {
         assert!(TabLayout::grouped(0.0, &[], 0).is_empty());
         for counts in [
