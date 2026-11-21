@@ -112,7 +112,7 @@ pub(super) fn handle(workspace: &Entity<Workspace>, pending: Pending, cx: &mut A
                     "Computer use",
                     Some(&detail),
                     &[
-                        PromptButton::new("Not now"),
+                        PromptButton::cancel("Not now"),
                         PromptButton::new("Allow for this session"),
                         PromptButton::new("Deny"),
                     ],
