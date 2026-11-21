@@ -116,6 +116,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("openrig-section:")
         || selector.starts_with("work-row:")
         || selector.starts_with("build-row:")
+        || (selector.starts_with("openrig-chat:") && selector.ends_with(":open"))
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
         || selector.starts_with("sidebar-worker:")

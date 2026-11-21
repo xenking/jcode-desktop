@@ -69,6 +69,8 @@ pub struct Seat {
     pub canonical_session_name: Option<String>,
     pub runtime: Option<Runtime>,
     pub status: Option<String>,
+    pub session_status: Option<String>,
+    pub(crate) last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
     pub jcode_session_id: Option<String>,
     pub context_percent: Option<f64>,
     pub current_work_count: Option<u64>,
@@ -102,6 +104,7 @@ struct Node {
     arbitrated_needs_input: Option<bool>,
     activity_state: Option<ActivityState>,
     agent_activity: Option<AgentActivity>,
+    last_activity_at: Option<String>,
     needs_attention: Option<bool>,
     held_reason: Option<String>,
     startup_status: Option<String>,
@@ -299,7 +302,17 @@ impl From<Node> for Seat {
             id: node.node_id,
             logical_id: node.logical_id,
             runtime,
-            status: node.lifecycle_state.or(node.session_status),
+            status: node.lifecycle_state.or_else(|| node.session_status.clone()),
+            session_status: node.session_status,
+            last_activity_at: [
+                node.last_activity_at.as_deref(),
+                node.agent_activity
+                    .as_ref()
+                    .and_then(|activity| activity.event_at.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(inbox::timestamp)
+            .max(),
             jcode_session_id,
             context_percent: node
                 .context_usage

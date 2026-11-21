@@ -15,6 +15,8 @@ use std::{
 mod attention;
 #[path = "panel_openrig_build.rs"]
 mod build;
+#[path = "panel_openrig_chat.rs"]
+mod chat;
 #[path = "panel_openrig_fleet.rs"]
 mod fleet;
 #[path = "panel_openrig_inbox.rs"]
@@ -102,6 +104,7 @@ pub(super) struct State {
     inbox: inbox::InboxView,
     work: work::WorkView,
     build: build::BuildView,
+    chat: chat::ChatView,
     destination_fixture: bool,
     attention: inbox::InboxView,
     attention_action: attention::ActionState,
@@ -124,6 +127,7 @@ impl State {
     pub(super) fn screenshot_fixture() -> Self {
         let mut state = Self::fixture();
         state.configure_attention_capture();
+        state.configure_chat_capture();
         state
     }
 
@@ -142,6 +146,7 @@ impl State {
             inbox: inbox::InboxView::default(),
             work,
             build,
+            chat: chat::ChatView::default(),
             destination_fixture,
             attention: inbox::InboxView::default(),
             attention_action: attention::ActionState::default(),
@@ -524,6 +529,7 @@ impl Panel {
         let is_fleet = state.is_fleet();
         let is_work = state.kind() == Some(SectionKind::Work);
         let is_build = state.kind() == Some(SectionKind::Build);
+        let is_chat = state.kind() == Some(SectionKind::Chat);
         let attention_page = state.attention_page();
         let compact = state.compact;
         let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
@@ -697,7 +703,7 @@ impl Panel {
                 }
             }
         }
-        let status = (attention_page.is_none() && !is_work && !is_build)
+        let status = (attention_page.is_none() && !is_work && !is_build && !is_chat)
             .then_some(state.snapshot.error.as_ref())
             .flatten()
             .cloned()
@@ -705,8 +711,9 @@ impl Panel {
                 if (is_work || is_build) && !state.destination_fixture {
                     "Read-only · Refresh to check for changes".into()
                 } else if crate::harness::screenshot_mode() {
-                    if std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION").as_deref()
-                        == Ok("live")
+                    if is_chat && live_verification()
+                        || std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION").as_deref()
+                            == Ok("live")
                     {
                         "Live OpenRig · read-only capture".into()
                     } else {
@@ -732,6 +739,11 @@ impl Panel {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if let Some(state) = this.openrig.as_mut() {
+                    if state.kind() == Some(SectionKind::Chat)
+                        && state.chat.composer_focused(window, cx)
+                    {
+                        return;
+                    }
                     let key = event.keystroke.key.as_str();
                     let text = event.keystroke.key_char.as_deref();
                     let key = if state.command.is_none() {
@@ -774,14 +786,18 @@ impl Panel {
                         }
                     }
                     if !state.explorer && state.command.is_none() {
-                        if state.kind() == Some(SectionKind::Work)
-                            && state.work.key(&state.filter, key)
-                        {
+                        let kind = state.kind();
+                        if kind == Some(SectionKind::Work) && state.work.key(&state.filter, key) {
                             cx.notify();
                             cx.stop_propagation();
                             return;
                         }
-                        if state.kind() == Some(SectionKind::Build) && this.build_key(key, cx) {
+                        if kind == Some(SectionKind::Build) && this.build_key(key, cx) {
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if kind == Some(SectionKind::Chat) && this.chat_key(key, window, cx) {
                             cx.notify();
                             cx.stop_propagation();
                             return;
@@ -874,11 +890,12 @@ impl Panel {
                     .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
                     .when(is_work, |el| el.child(self.render_work(state, cx)))
                     .when(is_build, |el| el.child(self.render_build(state, cx)))
+                    .when(is_chat, |el| el.child(self.render_chat(state, cx)))
                     .when_some(attention_page, |el, page| {
                         el.child(self.render_inbox(state, page, cx))
                     })
                     .when(
-                        !is_fleet && attention_page.is_none() && !is_work && !is_build,
+                        !is_fleet && attention_page.is_none() && !is_work && !is_build && !is_chat,
                         |el| el.child(list).child(detail),
                     ),
             )

@@ -1,5 +1,6 @@
 pub mod attention;
 pub mod build;
+pub mod chat;
 pub mod connections;
 pub mod cost;
 mod host;
@@ -113,6 +114,7 @@ pub enum SectionKind {
     Inbox,
     Work,
     Build,
+    Chat,
     Scopes,
     Terminals,
     Needs,
@@ -615,6 +617,7 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
     sections.insert(1, make_section(SectionKind::Inbox, "Inbox", Vec::new()));
     sections.insert(2, make_section(SectionKind::Work, "Work", Vec::new()));
     sections.insert(3, make_section(SectionKind::Build, "Build", Vec::new()));
+    sections.insert(4, make_section(SectionKind::Chat, "Chat", Vec::new()));
     Snapshot {
         fleet,
         inbox: Some(inbox),
@@ -673,6 +676,7 @@ impl Snapshot {
             (SectionKind::Inbox, "Inbox"),
             (SectionKind::Work, "Work"),
             (SectionKind::Build, "Build"),
+            (SectionKind::Chat, "Chat"),
             (SectionKind::Scopes, "Scopes"),
             (SectionKind::Terminals, "Terminals"),
             (SectionKind::Needs, "Needs attention"),
@@ -696,6 +700,7 @@ impl Snapshot {
                                 | SectionKind::Inbox
                                 | SectionKind::Work
                                 | SectionKind::Build
+                                | SectionKind::Chat
                         ) {
                             Vec::new()
                         } else {

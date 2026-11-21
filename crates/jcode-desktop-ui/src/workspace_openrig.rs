@@ -58,6 +58,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.downgrade());
         if !cfg!(test) && !action.target.is_local_machine() {
             let target = action.target.clone();
             let native_id = action.native_id.clone();
@@ -79,6 +83,8 @@ impl Workspace {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.activate_fleet_address(address, window, cx)
                     });
+                } else if let Some(origin) = origin {
+                    let _ = origin.update(cx, |panel, cx| panel.show_chat_open_error(cx));
                 }
             })
             .detach();
@@ -86,6 +92,8 @@ impl Workspace {
             session_address(&action.target, &action.native_id, &self.remotes.hosts)
         {
             self.activate_fleet_address(address, window, cx);
+        } else if let Some(origin) = origin {
+            let _ = origin.update(cx, |panel, cx| panel.show_chat_open_error(cx));
         }
     }
 
@@ -127,6 +135,78 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn chat_lists_each_host_and_opens_or_focuses_the_exact_seat_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("current-chat", cx);
+            workspace
+        });
+        let click = |vcx: &mut gpui::VisualTestContext, selector| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        let open_chat = |vcx: &mut gpui::VisualTestContext| {
+            workspace.update_in(vcx, |workspace, window, cx| {
+                workspace.open_openrig(&OpenOpenrig, window, cx)
+            });
+            vcx.executor().advance_clock(Duration::from_secs(2));
+            vcx.run_until_parked();
+            if vcx.debug_bounds("openrig-section:Chat").is_none() {
+                click(vcx, "openrig-section-menu");
+            }
+            click(vcx, "openrig-section:Chat");
+        };
+        open_chat(vcx);
+        for selector in [
+            "openrig-chat:host-fixture-local:Advisor",
+            "openrig-chat:host-fixture-local:Operator",
+            "openrig-chat:worker-east:Advisor",
+            "openrig-chat:worker-east:Operator",
+        ] {
+            assert!(vcx.debug_bounds(selector).is_some(), "missing {selector}");
+        }
+        let native = "session_fox_1700000000000_0123456789abcdef";
+        let local_button = "openrig-chat:host-fixture-local:Operator:open";
+        click(vcx, local_button);
+        let panel = workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, native);
+            w.slots[w.active].panel.entity_id()
+        });
+        open_chat(vcx);
+        click(vcx, local_button);
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.len(), 3);
+            assert_eq!(w.slots[w.active].panel.entity_id(), panel);
+        });
+        open_chat(vcx);
+        click(vcx, "openrig-chat:worker-east:Operator:open");
+        let remote = format!("ssh://worker-east.example.test/{native}");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 4);
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, remote);
+        });
+        let commands: Vec<_> = commands.try_iter().collect();
+        for session in [native, &remote] {
+            assert!(commands.iter().any(
+                |command| matches!(command, Command::Watch { session_id } if session_id == session)
+            ));
+        }
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, Command::CreateSession { .. }))
+        );
+    }
 
     #[test]
     fn host_mapping_preserves_the_machine_and_prefers_configured_ssh_targets() {
