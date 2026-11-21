@@ -349,6 +349,14 @@ fn question_without_header<'a>(question: &'a str, header: Option<&str>) -> &'a s
     }
 }
 
+/// A question that arrived while another card was on screen.
+#[derive(Clone, Debug)]
+pub(super) struct QueuedAsk {
+    request_id: String,
+    tool_call_id: String,
+    questions: Vec<AskQuestion>,
+}
+
 #[derive(Deserialize)]
 struct AskToolInput {
     questions: Vec<AskQuestion>,
@@ -375,11 +383,41 @@ impl Panel {
             }
             return;
         }
+        // Several questions can wait at once, such as an `ask` and a
+        // computer-use consent prompt, and a reconnect replays all of them.
+        // Queue the others behind the card on screen instead of replacing it,
+        // or the replaced question can never be answered.
+        if let Some(card) = self.ask_card.as_ref()
+            && card.request_id != request_id
+            && (tool_call_id.is_empty() || card.tool_call_id != tool_call_id)
+        {
+            let queued = QueuedAsk {
+                request_id: request_id.to_owned(),
+                tool_call_id: tool_call_id.to_owned(),
+                questions: questions.to_vec(),
+            };
+            match self
+                .queued_asks
+                .iter_mut()
+                .find(|ask| ask.request_id == request_id)
+            {
+                Some(existing) => *existing = queued,
+                None => self.queued_asks.push_back(queued),
+            }
+            cx.notify();
+            return;
+        }
         let mut card = AskCard::new(request_id.to_owned(), questions.to_vec());
         tool_call_id.clone_into(&mut card.tool_call_id);
         self.ask_card = Some(card);
         self.prepare_ask_inputs(cx);
-        if let (Some(draft), Some(card)) = (self.pending_ask_draft.take(), self.ask_card.as_mut()) {
+        if self
+            .pending_ask_draft
+            .as_ref()
+            .is_some_and(|draft| draft.matches_questions(questions))
+            && let (Some(draft), Some(card)) =
+                (self.pending_ask_draft.take(), self.ask_card.as_mut())
+        {
             card.restore_draft(draft, cx);
         }
         self.stick_to_bottom = true;
@@ -814,9 +852,27 @@ impl Panel {
             self.ask_focus_return = card.focus_scope.take();
             self.ask_card = None;
             self.pending_ask_draft = None;
+            self.show_next_queued_ask(cx);
             self.schedule_ask_recovery(cx);
         }
         cx.notify();
+    }
+
+    /// Retire a queued question whose tool finished without it being shown.
+    pub(super) fn forget_queued_ask(&mut self, call_id: &str) {
+        self.queued_asks.retain(|ask| {
+            ask.tool_call_id != call_id && ask.request_id.strip_prefix("ask-") != Some(call_id)
+        });
+    }
+
+    /// Show the oldest question still waiting once the card is free.
+    pub(super) fn show_next_queued_ask(&mut self, cx: &mut Context<Self>) {
+        while self.ask_card.is_none() {
+            let Some(next) = self.queued_asks.pop_front() else {
+                return;
+            };
+            self.show_ask(&next.request_id, &next.tool_call_id, &next.questions, cx);
+        }
     }
 
     pub(super) fn render_ask_card(
@@ -2604,6 +2660,117 @@ mod tests {
             vcx.debug_bounds("ask-card").is_none(),
             "neither replay nor the unfinished transcript row may reopen an acknowledged ask"
         );
+    }
+
+    #[gpui::test]
+    fn every_replayed_ask_stays_answerable_in_order(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0)).unwrap();
+        let ask = |request_id: &str, call_id: &str, header: &str| -> ApiEvent {
+            serde_json::from_value(serde_json::json!({
+                "ev": "ask_request", "session_id": "session-a",
+                "request_id": request_id, "tool_call_id": call_id,
+                "questions": [{"header": header, "question": format!("{header}?"),
+                    "options": [{"label": "A"}, {"label": "B"}]}]
+            }))
+            .unwrap()
+        };
+        // A reconnect replays every pending question: an earlier `ask` and a
+        // computer-use consent prompt that were both waiting on the owner.
+        let team = ask("ask-team", "team", "Teams");
+        let consent = ask("ask-computer-consent", "consent", "Computer use");
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&team, cx);
+            panel.apply(&consent, cx);
+            panel.apply(&team, cx);
+            assert_eq!(
+                panel.ask_card.as_ref().unwrap().request_id,
+                "ask-team",
+                "the first question stays on screen"
+            );
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled("ask-team", None, cx);
+            assert_eq!(
+                panel.ask_card.as_ref().map(|card| card.request_id.as_str()),
+                Some("ask-computer-consent"),
+                "a second pending question must not be lost behind the first"
+            );
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled("ask-computer-consent", None, cx);
+            assert!(panel.ask_card.is_none());
+        });
+        let answered: Vec<_> = commands
+            .try_iter()
+            .filter_map(|command| match command {
+                crate::harness::Command::AskResponse { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answered, ["ask-team", "ask-computer-consent"]);
+
+        // A finished tool retires its queued question without showing it.
+        let first = ask("ask-one", "one", "One");
+        let second = ask("ask-two", "two", "Two");
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&first, cx);
+            panel.apply(&second, cx);
+            panel.apply(
+                &serde_json::from_value(serde_json::json!({
+                    "ev": "tool_done", "session_id": "session-a", "call_id": "two",
+                    "name": "ask", "output": "User declined"
+                }))
+                .unwrap(),
+                cx,
+            );
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled("ask-one", None, cx);
+            assert!(
+                panel.ask_card.is_none(),
+                "a finished ask is not shown again"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn rejected_answer_stays_on_the_card_with_the_reason(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0)).unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&serde_json::from_str(REAL_ASK_REQUEST).unwrap(), cx);
+            let request = panel.ask_card.as_ref().unwrap().request_id.clone();
+            panel.answer_ask(AskResponse::declined(), cx);
+            panel.ask_response_settled(
+                &request,
+                Some("Could not send your answer: your answer was not accepted".into()),
+                cx,
+            );
+            let card = panel
+                .ask_card
+                .as_ref()
+                .expect("a rejected answer keeps the card");
+            assert!(!card.submitting);
+            assert!(
+                card.submit_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("not accepted")
+            );
+        });
     }
 
     #[gpui::test]

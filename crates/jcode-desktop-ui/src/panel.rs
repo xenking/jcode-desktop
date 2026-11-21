@@ -869,6 +869,8 @@ pub struct Panel {
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    /// Questions waiting behind `ask_card`, oldest first.
+    queued_asks: VecDeque<ask::QueuedAsk>,
     ask_focus_return: Option<FocusHandle>,
     ask_recovery: Option<gpui::Task<()>>,
     answered_asks: HashSet<String>,
@@ -1741,6 +1743,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            queued_asks: VecDeque::new(),
             ask_focus_return: None,
             ask_recovery: None,
             answered_asks: HashSet::new(),
@@ -4174,7 +4177,11 @@ impl Panel {
                         error: error.clone(),
                     });
                 }
+                // Any finished tool retires the questions it was waiting on,
+                // including computer-use consent prompts.
+                self.forget_queued_ask(call_id);
                 if name == "ask" {
+                    self.show_next_queued_ask(cx);
                     self.schedule_ask_recovery(cx);
                 }
             }
