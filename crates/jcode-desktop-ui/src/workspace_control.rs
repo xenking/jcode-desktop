@@ -91,6 +91,7 @@ pub(super) fn handle_window_request(
                 | "ctrl-s"
                 | "home"
                 | "backspace"
+                | "pageup"
         ) {
             return error("unsupported_key", "unknown fixture key");
         }
@@ -113,7 +114,11 @@ pub(super) fn handle_window_request(
     }
     // Hidden windows do not receive compositor frames. Drawing can also
     // update entities, so refresh before leasing the Workspace for capture.
-    if matches!(&request.action, DesktopAction::Render { .. }) {
+    if matches!(&request.action, DesktopAction::Render { .. })
+        || (fixture_input_enabled
+            && crate::fixture_control_targets::resume_preview()
+            && matches!(&request.action, DesktopAction::State { .. }))
+    {
         window.refresh();
         window.draw(cx).clear(cx);
     }
@@ -245,7 +250,7 @@ impl Workspace {
                 };
                 let panel = self.slots[index].panel.read(cx);
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": crate::fixture_control_targets::draft_session().then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
+                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(window, cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": crate::fixture_control_targets::draft_session().then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
                 )
             }
             DesktopAction::Search {

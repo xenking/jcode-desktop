@@ -42,6 +42,8 @@ pub(super) struct State {
     selected: Option<String>,
     filter: Filter,
     scroll: ScrollHandle,
+    focus: FocusHandle,
+    preview_focus: FocusHandle,
     pub(super) start_on_close: bool,
     preview_id: Option<String>,
     /// The real chat panel in transcript-only mode, hydrated through the same
@@ -268,6 +270,7 @@ impl Workspace {
 
     pub(super) fn resume_sessions(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
         let mut sessions = self.sessions.clone();
+        append_resume_fixture(&mut sessions);
         // Keep local drafts and already-open chats reachable when switching the
         // standalone window's primary conversation. Never discard their editors.
         for slot in &self.slots {
@@ -456,39 +459,44 @@ impl Workspace {
             Err(error) => state.daemon.apply_error(generation, error),
         };
         if applied {
-            // New hits reshape the list; the best match is the natural start.
-            state.selected = None;
-            state.selected_hit = None;
+            // A delayed search reply must not undo a selection made while it ran.
             state.preview_revealed = None;
-            state.scroll.scroll_to_item(0);
             cx.notify();
         }
     }
 
     /// Mark the query in a transcript panel and scroll it to `row`'s message.
-    fn reveal_in_preview(&mut self, panel: &Entity<Panel>, cx: &mut Context<Self>) {
+    fn reveal_in_preview(
+        &mut self,
+        panel: &Entity<Panel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = self.resume.as_ref() else {
             return;
         };
         let terms = global_search::query_terms(&state.query);
         let row = self.resume_selected_row();
         let needle = row.as_ref().and_then(|row| state.daemon.reveal_for(row));
-        let already = state.preview_revealed == row;
+        let exact_hit = row.as_ref().is_some_and(|row| row.hit().is_some());
+        let reveal = state.preview_revealed != row && !terms.is_empty();
         panel.update(cx, |panel, cx| {
             if panel.search_terms != terms {
-                panel.search_terms = terms;
+                panel.search_terms.clone_from(&terms);
                 cx.notify();
             }
         });
-        if already {
-            return;
+        if reveal {
+            let panel = panel.clone();
+            window.defer(cx, move |_, cx| {
+                panel.update(cx, |panel, cx| {
+                    if panel.search_terms == terms {
+                        panel.reveal_transcript_match(needle.as_deref(), exact_hit, cx);
+                    }
+                });
+            });
         }
-        let revealed = match needle {
-            Some(needle) => panel.update(cx, |panel, cx| panel.reveal_transcript_text(&needle, cx)),
-            // A session without message hits previews from its newest message.
-            None => true,
-        };
-        if revealed && let Some(state) = self.resume.as_mut() {
+        if let Some(state) = self.resume.as_mut() {
             state.preview_revealed = row;
         }
     }
@@ -496,7 +504,13 @@ impl Workspace {
     /// Poll the opened transcript until the searched message appears, then
     /// scroll to it. Opened sessions load history asynchronously, so the
     /// first frames have nothing to scroll to.
-    fn reveal_after_load(&mut self, needle: String, cx: &mut Context<Self>) {
+    fn reveal_after_load(
+        &mut self,
+        needle: Option<String>,
+        exact_hit: bool,
+        terms: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(panel) = self
             .slots
             .get(self.active)
@@ -505,12 +519,22 @@ impl Workspace {
         else {
             return;
         };
+        panel.update(cx, |panel, cx| {
+            panel.search_terms.clone_from(&terms);
+            cx.notify();
+        });
+        if terms.is_empty() {
+            return;
+        }
         cx.spawn(async move |_, cx| {
             let deadline = Instant::now() + REVEAL_WINDOW;
             loop {
-                let revealed =
-                    panel.update(cx, |panel, cx| panel.reveal_transcript_text(&needle, cx));
-                if revealed || Instant::now() >= deadline {
+                let done = panel.update(cx, |panel, cx| {
+                    panel.search_terms != terms
+                        || (panel.history_loaded()
+                            && panel.reveal_transcript_match(needle.as_deref(), exact_hit, cx))
+                });
+                if done || Instant::now() >= deadline {
                     return;
                 }
                 cx.background_executor().timer(REVEAL_INTERVAL).await;
@@ -590,6 +614,8 @@ impl Workspace {
             selected: None,
             filter: Filter::All,
             scroll: ScrollHandle::new(),
+            focus: cx.focus_handle(),
+            preview_focus: cx.focus_handle(),
             start_on_close: false,
             preview_id: None,
             preview: None,
@@ -645,11 +671,22 @@ impl Workspace {
         self.resume.is_some()
     }
 
-    pub(super) fn control_search_state(&self, cx: &App) -> Option<serde_json::Value> {
+    pub(super) fn control_search_state(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<serde_json::Value> {
         self.resume.as_ref().map(|state| {
+            let preview = crate::fixture_control_targets::resume_preview()
+                .then(|| state.preview.as_ref()?.as_ref().ok())
+                .flatten()
+                .map(|panel| panel.read(cx).control_state(window, cx));
             serde_json::json!({
                 "query": state.search.read(cx).snapshot().content,
                 "status": state.daemon.status_line(),
+                "selected": state.selected,
+                "preview_focus": state.preview_focus.contains_focused(window, cx),
+                "fixture_preview": preview.map(|state| state["visible_transcript_items"].clone()),
             })
         })
     }
@@ -707,17 +744,7 @@ impl Workspace {
             .map(|state| global_search::query_terms(&state.query))
             .unwrap_or_default();
         self.resume_session(session, window, cx);
-        // The searched words stay marked in the opened session until the user
-        // sends the next prompt, and the matching message is scrolled to.
-        if let Some(needle) = reveal {
-            if let Some(slot) = self.slots.get(self.active) {
-                slot.panel.update(cx, |panel, cx| {
-                    panel.search_terms = terms;
-                    cx.notify();
-                });
-            }
-            self.reveal_after_load(needle, cx);
-        }
+        self.reveal_after_load(reveal, row.hit().is_some(), terms, cx);
     }
 
     /// Open a session named on the command line. The catalog has not loaded
@@ -760,7 +787,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let fixture_history = (crate::fixture_control_targets::resume_preview()
+            && session.session_id.starts_with("resume-fixture-"))
+        .then(|| load_preview_history(&session.session_id).ok())
+        .flatten();
         self.activate_session(session, window, cx);
+        if let Some((messages, images)) = fixture_history {
+            self.slots[self.active].panel.update(cx, |panel, cx| {
+                if !panel.history_loaded() {
+                    panel.load_history(messages, images, cx);
+                }
+            });
+        }
         if self.slots[self.active].panel.read(cx).is_startup_draft()
             && (self.connected || self.remotes.default_host.is_some())
         {
@@ -779,6 +817,21 @@ impl Workspace {
         cx.notify();
     }
 
+    fn click_resume_row(
+        &mut self,
+        row: &PickRow,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_resume_selection(Some(row.clone()));
+        if open {
+            self.resume_selected(window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn resume_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -786,9 +839,22 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        let Some(state) = self.resume.as_ref() else {
+            return;
+        };
+        let query_focused = state.search.focus_handle(cx).is_focused(window);
+        if state.preview_focus.contains_focused(window, cx)
+            && matches!(key, "up" | "down" | "pageup" | "pagedown" | "home" | "end")
+        {
+            if let Some(Ok(panel)) = &state.preview {
+                panel.update(cx, |panel, cx| panel.scroll_search_preview(key, cx));
+            }
+            cx.stop_propagation();
+            return;
+        }
         match key {
             "escape" => self.close_resume(window, cx),
-            "enter" => self.resume_selected(window, cx),
+            "enter" if query_focused => self.resume_selected(window, cx),
             "1" | "2" | "3" | "4" if event.keystroke.modifiers.control => {
                 self.set_resume_filter(
                     match key {
@@ -800,7 +866,10 @@ impl Workspace {
                     cx,
                 );
             }
-            "up" | "down" | "pageup" | "pagedown" => self.move_resume_selection(key, cx),
+            "up" | "down" | "pageup" | "pagedown" => {
+                window.focus(&state.search.focus_handle(cx), cx);
+                self.move_resume_selection(key, cx);
+            }
             _ => return,
         }
         cx.stop_propagation();
@@ -849,6 +918,7 @@ impl Workspace {
         // cannot be seen must not hold focus, or every keystroke is lost.
         if let Some(state) = &self.resume
             && !state.search.focus_handle(cx).is_focused(window)
+            && (!state.focus.contains_focused(window, cx) || state.focus.is_focused(window))
         {
             window.focus(&state.search.focus_handle(cx), cx);
         }
@@ -901,6 +971,8 @@ impl Workspace {
         let selected_hit = state.selected_hit;
         let search = state.search.clone();
         let scroll = state.scroll.clone();
+        let focus = state.focus.clone();
+        let preview_focus = state.preview_focus.clone();
         let filter = state.filter;
         let hits: Vec<Option<global_search::SearchHit>> = list_rows
             .iter()
@@ -908,7 +980,7 @@ impl Workspace {
             .collect();
         self.load_resume_preview(selected.as_deref(), cx);
         if let Some(Some(Ok(panel))) = self.resume.as_ref().map(|state| state.preview.clone()) {
-            self.reveal_in_preview(&panel, cx);
+            self.reveal_in_preview(&panel, window, cx);
         }
         let theme = Theme::global();
         let mut rows = div()
@@ -943,10 +1015,11 @@ impl Workspace {
                         .rounded_full()
                         .when(is_selected, |el| el.bg(theme.TOOL_BG))
                         .hover(|el| el.bg(theme.TOOL_BG))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_resume_selection(Some(click.clone()));
-                            this.resume_selected(window, cx);
-                        }))
+                        .on_click(
+                            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                                this.click_resume_row(&click, event.click_count() >= 2, window, cx);
+                            }),
+                        )
                         .child(hit_badge(&data, theme))
                         .child(
                             div()
@@ -995,49 +1068,95 @@ impl Workspace {
                 status,
                 sidebar_session_meta(session).unwrap_or_else(|| "Session history".into())
             );
-            let badge =
-                resume_liveness_badge(live, open_spinners.get(&session.session_id).cloned(), index);
+            let is_open = open_activity.contains_key(&id);
+            let badge = resume_liveness_badge(live, open_spinners.get(&id).cloned(), index);
             let title = highlighted_text(format!("{icon} {title}"), &terms, theme);
+            let directory = session
+                .working_dir
+                .as_deref()
+                .map(compact_working_dir)
+                .unwrap_or_else(|| "No working directory".into());
+            let action_row = row.clone();
+            let row = row.clone();
+            let action = crate::keyboard::button(
+                div()
+                    .id(("resume-row-action", index))
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || format!("resume-action:{id}"),
+                        || None,
+                    ))
+                    .debug_selector(move || {
+                        format!(
+                            "resume-row-{index}-action-{}",
+                            if is_open { "go-to" } else { "open" }
+                        )
+                    })
+                    .flex_none()
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .text_size(px(12.0))
+                    .whitespace_nowrap()
+                    .bg(theme.INPUT_BG)
+                    .hover(|el| el.bg(theme.PANEL_BG))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.click_resume_row(&action_row, true, window, cx);
+                    }))
+                    .child(if is_open { "Go to" } else { "Open" }),
+            )
+            .tab_index(1);
             rows = rows.child(
                 div()
                     .id(("resume-row", index))
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || format!("resume-row:{id}"),
+                        || None,
+                    ))
                     .debug_selector(move || format!("resume-row-{index}"))
                     .px_3()
                     .py_2()
                     .cursor_pointer()
-                    .rounded_md()
+                    .rounded_full()
                     .when(is_selected, |el| el.bg(theme.TOOL_BG))
                     .hover(|el| el.bg(theme.TOOL_BG))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_resume_selection(Some(PickRow::Session(id.clone())));
-                        this.resume_selected(window, cx);
-                    }))
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            this.click_resume_row(&row, event.click_count() >= 2, window, cx);
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
                             .child(div().flex_1().min_w_0().text_ellipsis().child(title))
-                            .children(badge),
+                            .child(action),
                     )
                     .child(
                         div()
                             .text_size(px(12.0))
                             .text_color(theme.TEXT_DIM)
                             .text_ellipsis()
-                            .child(
-                                session
-                                    .working_dir
-                                    .as_deref()
-                                    .map(compact_working_dir)
-                                    .unwrap_or_else(|| "No working directory".into()),
-                            ),
+                            .child(highlighted_text(directory, &terms, theme)),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(metadata),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.TEXT_FAINT)
+                                    .child(highlighted_text(metadata, &terms, theme)),
+                            )
+                            .children(badge),
                     ),
             );
         }
@@ -1052,19 +1171,29 @@ impl Workspace {
                 },
             ));
         }
-        let mut preview = div()
-            .id("resume-preview")
-            .min_h_0()
-            .overflow_hidden()
-            .debug_selector(|| "resume-preview".into())
-            .flex_1()
-            .min_w_0()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .bg(theme.TOOL_BG)
-            .rounded_lg();
+        let mut preview = crate::keyboard::tracked_button(
+            div()
+                .id("resume-preview")
+                .min_h_0()
+                .overflow_hidden()
+                .debug_selector(|| "resume-preview".into())
+                .flex_1()
+                .min_w_0()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .bg(theme.TOOL_BG)
+                .rounded_lg(),
+            &preview_focus,
+        )
+        .on_mouse_down(gpui::MouseButton::Left, {
+            let preview_focus = preview_focus.clone();
+            move |_, window, cx| {
+                window.focus(&preview_focus, cx);
+                cx.stop_propagation();
+            }
+        });
         if let Some(session) = matches
             .iter()
             .find(|s| Some(&s.session_id) == selected.as_ref())
@@ -1124,6 +1253,11 @@ impl Workspace {
             preview = preview.child(
                 div()
                     .debug_selector(|| "resume-preview-transcript".into())
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || "resume-preview:wheel".into(),
+                        || None,
+                    ))
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
@@ -1146,7 +1280,7 @@ impl Workspace {
                 .collect::<Vec<_>>()
                 .join(" · ")
         };
-        div()
+        crate::keyboard::tab_navigation(div()
             .debug_selector(|| "resume-panel".into())
             .size_full()
             .px_4()
@@ -1162,7 +1296,7 @@ impl Workspace {
             .text_color(theme.TEXT)
             .font_family(theme.FONT_UI)
             .text_size(px(14.0))
-            .track_focus(&self.focus_handle)
+            .track_focus(&focus)
             // Clicking the chrome (padding, counts, list background) must keep
             // typing alive instead of handing focus to the workspace.
             .on_mouse_down(
@@ -1225,6 +1359,7 @@ impl Workspace {
             .child(
                 div()
                     .flex()
+                    .min_w_0()
                     .gap_2()
                     .children(
                         [
@@ -1252,6 +1387,8 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(|| "resume-status".into())
+                            .min_w_0()
+                            .text_ellipsis()
                             .text_color(theme.TEXT_DIM)
                             .child(status),
                     ),
@@ -1273,10 +1410,10 @@ impl Workspace {
                     .child(preview),
             )
             .child(
-                div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(
-                    "↑ ↓ Sessions and matches   Enter Open   Esc Back   Ctrl+1/2/3/4 Filters",
+                div().text_size(px(11.0)).text_color(theme.TEXT_DIM).text_ellipsis().child(
+                    "↑ ↓ Select   Enter Open   Tab Preview   Esc Back   Ctrl+1/2/3/4 Filters",
                 ),
-            )
+            ))
     }
 
     fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {
@@ -1314,27 +1451,33 @@ impl Workspace {
             });
         }));
     }
+}
 
-    pub(super) fn init_resume_fixture(&mut self, cx: &App) {
-        if !harness::screenshot_mode()
-            || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_none()
-        {
-            return;
-        }
-        let Some(base) = self.resume_sessions(cx).first().cloned() else {
-            return;
-        };
-        for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
-            let mut session = base.clone();
-            session.session_id = format!("resume-fixture-{name}");
-            session.title = Some(format!("Resume acceptance {name}"));
-            session.working_dir = Some(format!("/workspace/resume-{name}"));
-            session.saved = index == 0;
-            session.status = if index == 1 { "running" } else { "idle" }.into();
-            session.transcript_bytes = Some(16_800);
-            session.updated_at_ms = Some(100 - index as i64);
-            self.sessions.push(session);
-        }
+fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
+    if !harness::screenshot_mode()
+        || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_none()
+    {
+        return;
+    }
+    for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
+        sessions.push(jcode_sdk::SessionInfo {
+            session_id: format!("resume-fixture-{name}"),
+            title: Some(format!("Resume acceptance {name}")),
+            working_dir: Some(format!("/workspace/resume-{name}")),
+            saved: index == 0,
+            status: if index == 1 { "running" } else { "idle" }.into(),
+            transcript_bytes: Some(16_800),
+            updated_at_ms: Some(100 - index as i64),
+            user_connected: false,
+            last_active_at_ms: None,
+            archived: false,
+            archived_at_ms: None,
+            save_label: None,
+            parent_session_id: None,
+            agent_label: None,
+            swarm_status: None,
+            edit_stats: None,
+        });
     }
 }
 
@@ -1464,7 +1607,7 @@ fn resume_liveness_badge(
     let (label, ink, fill) = match live {
         Liveness::Inactive => return None,
         Liveness::Working => ("Working", theme.OK, Some(gpui::Rgba { a: 0.2, ..theme.OK })),
-        Liveness::Open => ("Open", theme.TEXT_DIM, None),
+        Liveness::Open => ("Already open", theme.TEXT_DIM, None),
         Liveness::Crashed => (
             "Crashed",
             theme.ERROR,
@@ -1476,7 +1619,16 @@ fn resume_liveness_badge(
     };
     Some(
         div()
-            .debug_selector(move || format!("resume-row-{index}-{}", label.to_lowercase()))
+            .debug_selector(move || {
+                format!(
+                    "resume-row-{index}-{}",
+                    if live == Liveness::Open {
+                        "open".to_string()
+                    } else {
+                        label.to_lowercase()
+                    }
+                )
+            })
             .flex_none()
             .flex()
             .items_center()
@@ -1485,6 +1637,7 @@ fn resume_liveness_badge(
             .py(px(1.0))
             .rounded_full()
             .text_size(px(12.0))
+            .whitespace_nowrap()
             .text_color(ink)
             .when_some(fill, |el, fill| el.bg(fill))
             .when(live == Liveness::Working, |el| match spinner {
@@ -1547,6 +1700,20 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
         } else {
             "Beta"
         };
+        if crate::fixture_control_targets::resume_preview() {
+            let messages = (0..80)
+                .map(|index| {
+                    let role = if index % 2 == 0 { "user" } else { "assistant" };
+                    let text = if index == 31 {
+                        format!("{name} search anchor in the middle of the conversation")
+                    } else {
+                        format!("History entry {index:02}")
+                    };
+                    message(role, text)
+                })
+                .collect();
+            return Ok((messages, Vec::new()));
+        }
         return Ok((
             vec![
                 message("user", "Please recover the standalone conversation.".into()),
@@ -1573,6 +1740,229 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
 mod tests {
     use super::*;
     use crate::workspace::tests::session_info;
+
+    fn picker(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("origin", cx);
+            let mut alpha = session_info("alpha", Some("Alpha"));
+            alpha.updated_at_ms = Some(30);
+            let mut beta = session_info("beta", Some("Beta"));
+            beta.updated_at_ms = Some(20);
+            w.sessions = vec![alpha, beta];
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        vcx.run_until_parked();
+        (workspace, vcx)
+    }
+
+    fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
+        let position = vcx.debug_bounds(selector).expect(selector).center();
+        vcx.simulate_click(position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+    }
+
+    fn messages() -> Vec<jcode_sdk::HistoryMessage> {
+        (0..80)
+            .map(|i| jcode_sdk::HistoryMessage {
+                attachments: Vec::new(),
+                response_stats: None,
+                timestamp_ms: None,
+                tool: None,
+                role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: if i == 21 {
+                    "Beta search anchor".into()
+                } else {
+                    format!("History row {i:02}")
+                },
+            })
+            .collect()
+    }
+
+    fn seed_preview(
+        workspace: &Entity<Workspace>,
+        vcx: &mut gpui::VisualTestContext,
+    ) -> Entity<Panel> {
+        let preview = workspace.update(vcx, |w, cx| {
+            let state = w.resume.as_mut().unwrap();
+            let id = state.preview_id.clone().unwrap();
+            let panel = preview_panel(id, messages(), Vec::new(), cx);
+            state.preview_task = None;
+            state.preview = Some(Ok(panel.clone()));
+            cx.notify();
+            panel
+        });
+        vcx.run_until_parked();
+        preview
+    }
+
+    fn visible_rows(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> serde_json::Value {
+        panel.update_in(vcx, |panel, window, cx| {
+            panel.control_state(window, cx)["visible_transcript_items"].clone()
+        })
+    }
+
+    #[gpui::test]
+    fn resume_click_selects_without_opening_and_keyboard_opens(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = picker(cx);
+        click(vcx, "resume-row-1");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.resume
+                    .as_ref()
+                    .expect("single click keeps browser open")
+                    .preview_id
+                    .as_deref(),
+                Some("beta")
+            );
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "origin");
+        });
+        for (key, target) in [("up", "alpha"), ("down", "beta")] {
+            vcx.simulate_keystrokes(key);
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |w, _| {
+                assert_eq!(
+                    w.resume.as_ref().unwrap().preview_id.as_deref(),
+                    Some(target)
+                )
+            });
+        }
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert!(!w.resume_open());
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "beta");
+        });
+    }
+
+    #[gpui::test]
+    fn resume_opens_by_button_and_double_click_and_reuses_open_panel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = picker(cx);
+        click(vcx, "resume-row-1-action-open");
+        let beta = workspace.read_with(vcx, |w, cx| {
+            assert!(!w.resume_open());
+            let panel = w.slots[w.active].panel.clone();
+            assert_eq!(panel.read(cx).session_id, "beta");
+            panel
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        vcx.run_until_parked();
+        let position = vcx.debug_bounds("resume-row-0").unwrap().center();
+        for click_count in [1, 2] {
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                click_count,
+                ..Default::default()
+            });
+            vcx.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                click_count,
+                ..Default::default()
+            });
+        }
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert!(!w.resume_open());
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "alpha");
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("resume-row-1-open").is_some());
+        click(vcx, "resume-row-1-action-go-to");
+        workspace.read_with(vcx, |w, cx| {
+            assert!(!w.resume_open());
+            assert_eq!(w.slots[w.active].panel, beta);
+            assert_eq!(
+                w.slots
+                    .iter()
+                    .filter(|slot| slot.panel.read(cx).session_id == "beta")
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn resume_preview_scrolls_with_tab_keys_and_wheel_without_changing_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = picker(cx);
+        let preview = seed_preview(&workspace, vcx);
+        let initial = visible_rows(&preview, vcx);
+        assert!(!initial.as_array().unwrap().is_empty());
+        vcx.simulate_keystrokes("tab pageup");
+        vcx.run_until_parked();
+        let scrolled = visible_rows(&preview, vcx);
+        assert_ne!(scrolled, initial, "Tab then PageUp scrolls the preview");
+        let position = vcx.debug_bounds("transcript").unwrap().center();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(250.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        for _ in 0..16 {
+            vcx.executor().advance_clock(Duration::from_millis(16));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        assert_ne!(
+            visible_rows(&preview, vcx),
+            scrolled,
+            "wheel also scrolls preview"
+        );
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(
+                w.resume.as_ref().unwrap().selected.as_deref(),
+                Some("alpha")
+            )
+        });
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(!workspace.read_with(vcx, |w, _| w.resume_open()));
+    }
+
+    #[gpui::test]
+    fn resume_metadata_query_reveals_first_transcript_match_in_preview_and_panel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = picker(cx);
+        workspace.update(vcx, |w, cx| {
+            w.push_test_panel("beta", cx);
+            w.slots.last().unwrap().panel.update(cx, |panel, cx| {
+                panel.load_history(messages(), Vec::new(), cx)
+            });
+        });
+        vcx.simulate_input("Beta");
+        vcx.run_until_parked();
+        let preview = seed_preview(&workspace, vcx);
+        let marks = preview.read_with(vcx, |panel, _| panel.search_terms.clone());
+        assert_eq!(marks, ["beta"]);
+        assert!(
+            visible_rows(&preview, vcx)
+                .to_string()
+                .contains("Beta search anchor")
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        let panel = workspace.read_with(vcx, |w, cx| {
+            assert!(!w.resume_open());
+            let panel = w.slots[w.active].panel.clone();
+            assert_eq!(panel.read(cx).session_id, "beta");
+            assert_eq!(panel.read(cx).search_terms, marks);
+            panel
+        });
+        assert!(
+            visible_rows(&panel, vcx)
+                .to_string()
+                .contains("Beta search anchor")
+        );
+    }
 
     fn roles_and_text(history: &PreviewHistory) -> Vec<(String, String)> {
         history

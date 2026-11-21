@@ -192,6 +192,9 @@ class Instance:
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
                        JCODE_DESKTOP_SCREENSHOT_BAR="high",
                        JCODE_DESKTOP_SCREENSHOT_CACHE_CARD="1")
+        if self.manifest["fixture"] == "resume-preview":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
+                       JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE="1")
         if self.manifest["fixture"] == "draft-session":
             (self.profile / "00-sample-project").mkdir()
             modes = []
@@ -369,6 +372,8 @@ class Instance:
             return self.side_question_journey()
         if name == "composer-arrows":
             return self.composer_arrows_journey()
+        if name == "resume-preview":
+            return self.resume_preview_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -460,6 +465,84 @@ class Instance:
                   "stashed": stashed, "after": after,
                   "scope": "native GPUI key dispatch, no macOS HID injection or provider"}
         save(self.run / "composer-arrows-proof.json", report)
+        return report
+
+    def resume_preview_journey(self):
+        if self.manifest["fixture"] != "resume-preview":
+            raise RuntimeError("relaunch with --fixture resume-preview")
+        beta = "resume-fixture-beta"
+        alpha = "resume-fixture-alpha"
+
+        def key(value):
+            self.drive("press_key", {"key": f"fixture:{value}"})
+
+        def click(selector):
+            self.drive("click", {"selector": selector})
+
+        def expect(stage, predicate, session=None):
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                state = self.drive("state", session=session)
+                if predicate(state):
+                    save(self.run / f"resume-preview-{stage}.json", state)
+                    return state
+                time.sleep(.05)
+            raise RuntimeError(f"resume-preview did not reach {stage}")
+
+        def view(state):
+            return (state.get("search") or {}).get("fixture_preview")
+
+        def selected(state, sid):
+            return (state.get("search") or {}).get("selected") == sid and bool(view(state))
+
+        def open_panels(state):
+            return [p for row in state["navigation"]["rows"] for p in row["panels"] if not p.get("closing")]
+
+        def opened(state, sid):
+            return not state["search_open"] and any(
+                p["focused"] and p["session"] == sid for p in open_panels(state)
+            )
+
+        def anchor(rows):
+            return "Beta search anchor" in json.dumps(rows)
+
+        self.drive("search", {"query": "Resume acceptance"})
+        expect("before", lambda s: selected(s, alpha))
+        before = self.screenshot("resume-preview-before.png")
+        click(f"resume-row:{beta}")
+        row = expect("selected", lambda s: selected(s, beta))
+        picked = self.screenshot("resume-preview-selected.png")
+        key("tab")
+        expect("focused", lambda s: selected(s, beta) and s["search"]["preview_focus"])
+        key("pageup")
+        scrolled = expect("keyboard", lambda s: selected(s, beta) and view(s) != view(row))
+        click("resume-preview:wheel")
+        expect("wheel", lambda s: selected(s, beta) and view(s) != view(scrolled))
+        key("escape")
+        expect("cancelled", lambda s: opened(s, self.target["session_id"]))
+
+        self.drive("search", {"query": "Beta"})
+        expect("match", lambda s: selected(s, beta) and anchor(view(s)))
+        match = self.screenshot("resume-preview-match.png")
+        click(f"resume-action:{beta}")
+        opened_beta = expect("opened", lambda s: opened(s, beta) and anchor(s["panel"]["visible_transcript_items"]), beta)
+        after = self.screenshot("resume-preview-after.png")
+
+        self.drive("search", {"query": "Alpha"}, session=beta)
+        key("enter")
+        expect("alpha", lambda s: opened(s, alpha))
+        self.drive("search", {"query": "Beta"}, session=alpha)
+        click(f"resume-action:{beta}")
+        focused = expect("go-to", lambda s: opened(s, beta), beta)
+        if focused["panel_id"] != opened_beta["panel_id"] or sum(
+            p["session"] == beta for p in open_panels(focused)
+        ) != 1:
+            raise RuntimeError("Go to duplicated the existing Beta panel")
+        if len({shot["sha256"] for shot in (before, picked, match, after)}) != 4:
+            raise RuntimeError("resume-preview did not render distinct interaction stages")
+        report = {"passed": True, "scope": "native GPUI pointer, wheel and keyboard dispatch with offline history",
+                  "screenshots": [before, picked, match, after]}
+        save(self.run / "resume-preview-proof.json", report)
         return report
 
     def side_question_journey(self):
@@ -1031,7 +1114,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card", "resume-preview"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--jcode-bin", type=Path)
@@ -1043,7 +1126,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

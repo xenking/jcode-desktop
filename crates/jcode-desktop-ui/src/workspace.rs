@@ -1601,7 +1601,6 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
-        workspace.init_resume_fixture(cx);
         // Restore the picker after slots, but before a default remote can start.
         let fresh_launch = resume_snapshot.is_none();
         workspace.restore_resume(resume_snapshot, resume_requested, window, cx);
