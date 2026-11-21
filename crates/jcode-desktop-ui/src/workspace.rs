@@ -6339,7 +6339,7 @@ impl Workspace {
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
             let panel = &sidebar_panels[&slot.panel.entity_id()];
             if (panel.supports_voice() || harness::is_remote_session(&panel.session_id))
-                && slot.panel.read(cx).listable_conversation(cx)
+                && panel.listable
                 && known.insert(panel.session_id.clone())
             {
                 catalog.push(jcode_sdk::SessionInfo {

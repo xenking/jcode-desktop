@@ -7,27 +7,30 @@ pub(super) struct SidebarPanelMetadata {
     pub session_id: String,
     pub title: gpui::SharedString,
     pub working_dir: Option<String>,
+    pub listable: bool,
     voice: bool,
     activity: Option<gpui::AnyView>,
     todos: Option<(usize, usize)>,
 }
 
 impl SidebarPanelMetadata {
-    fn from_panel(panel: &Panel) -> Self {
+    fn from_panel(panel: &Panel, cx: &App) -> Self {
         Self {
             session_id: panel.session_id.clone(),
             title: panel.title.clone(),
             working_dir: panel.working_dir.clone(),
+            listable: panel.listable_conversation(cx),
             voice: panel.supports_voice(),
             activity: panel.sidebar_activity(),
             todos: panel.latest_todo_progress(),
         }
     }
 
-    fn matches(&self, panel: &Panel) -> bool {
+    fn matches(&self, panel: &Panel, cx: &App) -> bool {
         self.session_id == panel.session_id
             && self.title == panel.title
             && self.working_dir == panel.working_dir
+            && self.listable == panel.listable_conversation(cx)
             && self.voice == panel.supports_voice()
             && self.activity == panel.sidebar_activity()
             && self.todos == panel.latest_todo_progress()
@@ -60,7 +63,7 @@ impl Workspace {
                     && self.slots.iter().all(|slot| {
                         metadata
                             .get(&slot.panel.entity_id())
-                            .is_some_and(|old| old.matches(slot.panel.read(cx)))
+                            .is_some_and(|old| old.matches(slot.panel.read(cx), cx))
                     })
             });
         if unchanged {
@@ -72,7 +75,7 @@ impl Workspace {
             .map(|slot| {
                 (
                     slot.panel.entity_id(),
-                    SidebarPanelMetadata::from_panel(slot.panel.read(cx)),
+                    SidebarPanelMetadata::from_panel(slot.panel.read(cx), cx),
                 )
             })
             .collect();
