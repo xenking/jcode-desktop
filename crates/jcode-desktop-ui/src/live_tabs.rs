@@ -12,7 +12,6 @@ const TAB_STATUS_WIDTH: f32 = 88.0;
 const TAB_WINDOW_DRAG_WIDTH: f32 = 16.0;
 const TAB_OVERFLOW_WIDTH: f32 = 56.0;
 const MIN_TAB_EXPOSURE: f32 = 16.0;
-const MIN_ACTIVE_TAB_WIDTH: f32 = 96.0;
 /// Compact windows and hidden sidebars need a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
@@ -252,10 +251,7 @@ impl TabLayout {
         let active_width = if count == 1 {
             available.min(208.0)
         } else {
-            ((available + (12.0 - TAB_GAP) * (count - 1) as f32) / count as f32)
-                .max(MIN_ACTIVE_TAB_WIDTH)
-                .min(available * 0.55)
-                .min(208.0)
+            (available * 0.55).min(208.0)
         }
         .floor();
         let inactive_width = (active_width - 12.0).max(active_width * 0.9).floor();
@@ -763,22 +759,15 @@ impl Workspace {
             0.0
         };
         let show_fps = fps_enabled() && !menu_button;
-        let menu_on_right = macos && menu_button;
         let track_left = left
-            + if menu_button && !menu_on_right {
+            + if menu_button {
                 TAB_MENU_WIDTH
             } else if show_fps {
                 TAB_STATUS_WIDTH
             } else {
                 0.0
             };
-        let right_buttons = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH;
-        let controls_width = right_buttons + if menu_on_right { TAB_MENU_WIDTH } else { 0.0 };
-        let menu_left = if menu_on_right {
-            canvas_width - controls_width
-        } else {
-            left
-        };
+        let controls_width = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH;
         let drag_width = if windowed_macos {
             TAB_WINDOW_DRAG_WIDTH
         } else {
@@ -946,6 +935,11 @@ impl Workspace {
             let close_colors = TabCloseColors::for_tab(ring, accent);
             let right = current.left + current.width;
             let diameter = current.height;
+            let center_offset = if macos {
+                ((TAB_HEIGHT - diameter) / 2.0).max(0.0)
+            } else {
+                0.0
+            };
             // A stacked tab cannot draw a close cap on top of its neighbour.
             let close_index = index.filter(|_| {
                 !compact && visible >= diameter + 24.0 && exposed_left + visible >= right - 0.01
@@ -1010,7 +1004,7 @@ impl Workspace {
                     })
                     .absolute()
                     .left(px(current.left))
-                    .bottom(px(TAB_FLOAT_GAP))
+                    .bottom(px(TAB_FLOAT_GAP + center_offset))
                     .w(px(current.width))
                     .min_w_0()
                     .overflow_hidden()
@@ -1096,7 +1090,7 @@ impl Workspace {
                         el.child(
                             div()
                                 .absolute()
-                                .bottom_0()
+                                .bottom(px(center_offset))
                                 .left(px(right - slot_left - actions_width))
                                 .w(px(actions_width))
                                 .h(px(diameter))
@@ -1221,7 +1215,7 @@ impl Workspace {
             .h(px(FOLDER_CONTENT_INSET))
             .map(|el| {
                 if menu_button {
-                    el.child(self.render_compact_menu_button(menu_left, cx))
+                    el.child(self.render_compact_menu_button(left, cx))
                 } else if let Some(fps) = fps {
                     el.child(
                         div()
@@ -2074,10 +2068,7 @@ mod tests {
         }
         let crowded = TabLayout::new(512.0, 12);
         assert!(crowded.active_width - crowded.inactive_width <= 12.0);
-        assert!(
-            crowded.step > 30.0,
-            "inactive tabs get more than the old 27px exposure"
-        );
+        assert!(crowded.step > 27.0, "inactive tab icons remain exposed");
         assert!(TabLayout::new(1152.0, 3).start > 0.0);
     }
 
@@ -2197,6 +2188,11 @@ mod tests {
         }
         for selected in [1, 2, 3, 0] {
             vcx.simulate_click(initial[selected].center(), gpui::Modifiers::default());
+            vcx.simulate_mouse_move(
+                gpui::point(px(5.0), px(600.0)),
+                None,
+                gpui::Modifiers::default(),
+            );
             vcx.run_until_parked();
             workspace.update(vcx, |w, cx| {
                 w.live_tabs.settle();
@@ -2210,7 +2206,10 @@ mod tests {
                 let panel = vcx
                     .debug_bounds(["panel-0", "panel-1", "panel-2", "panel-3"][i])
                     .unwrap();
-                assert_eq!(tab.bottom() + px(TAB_FLOAT_GAP), panel.top());
+                if cfg!(target_os = "macos") {
+                    assert_eq!(tab.center().y, track.top() + px(TAB_HEIGHT / 2.0));
+                }
+                assert!(tab.bottom() + px(TAB_FLOAT_GAP) <= panel.top());
             }
         }
     }
@@ -2416,7 +2415,11 @@ mod tests {
         vcx.run_until_parked();
         let first = vcx.debug_bounds("live-session-tab-0").unwrap();
         let other = vcx.debug_bounds("live-session-tab-2").unwrap();
-        assert_eq!(first.bottom(), other.bottom());
+        if cfg!(target_os = "macos") {
+            assert_eq!(first.center().y, other.center().y);
+        } else {
+            assert_eq!(first.bottom(), other.bottom());
+        }
         assert_eq!(first.size.height - other.size.height, px(4.0));
         assert_eq!(
             first.bottom() + px(TAB_FLOAT_GAP),

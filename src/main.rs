@@ -226,7 +226,8 @@ fn titlebar_options() -> TitlebarOptions {
         appears_transparent: true,
         traffic_light_position: Some(Point {
             x: px(16.0),
-            y: px(16.0),
+            // AppKit's 14pt buttons center at 20pt, like the workspace row.
+            y: px(13.0),
         }),
     }
 }

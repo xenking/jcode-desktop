@@ -370,10 +370,8 @@ const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
 const TITLEBAR_HEIGHT: f32 = 40.0;
-/// Horizontal space occupied by the macOS close, minimize, and zoom controls.
-/// Keep sidebar navigation out of this region while retaining Linux's current
-/// left alignment.
-const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 76.0;
+/// The macOS traffic lights end at 76 points. Leave 8 points before app chrome.
+const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 84.0;
 
 fn content_top_inset(show_sidebar: bool, fullscreen: bool) -> f32 {
     // Fullscreen macOS windows have no titlebar and the traffic lights are

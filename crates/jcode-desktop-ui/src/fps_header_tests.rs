@@ -53,7 +53,7 @@ fn tab_row_starts_after_window_controls_and_reclaims_fps_space(cx: &mut gpui::Te
             })
             .count();
         let inset = if cfg!(target_os = "macos") && !fullscreen {
-            76.0
+            84.0
         } else {
             0.0
         };
@@ -64,9 +64,7 @@ fn tab_row_starts_after_window_controls_and_reclaims_fps_space(cx: &mut gpui::Te
         let track = vcx.debug_bounds("live-session-tabs").unwrap();
         assert_eq!(workspace_one.left(), track.left());
         if cfg!(target_os = "macos") && !fullscreen {
-            let next = vcx
-                .debug_bounds("compact-sidebar-toggle")
-                .unwrap_or_else(|| vcx.debug_bounds("tab-next-workspace-slot").unwrap());
+            let next = vcx.debug_bounds("tab-next-workspace-slot").unwrap();
             let caption = vcx.debug_bounds("macos-caption-drag").unwrap();
             assert!(next.left() - track.right() >= px(16.0));
             assert!(caption.contains(&gpui::point(track.right() + px(8.0), track.center().y)));
@@ -126,11 +124,7 @@ fn workspace_controls_share_one_row_without_fps_or_footer_metadata(cx: &mut gpui
                     assert_eq!(row.top(), canvas.top() + px(STRIP_PADDING_TOP));
                     assert_eq!(row.size.height, px(FOLDER_CONTENT_INSET));
                     if let Some(menu) = menu {
-                        if cfg!(target_os = "macos") {
-                            assert!(menu.left() >= tabs.right() && menu.right() <= plus.left());
-                        } else {
-                            assert!(menu.left() >= row.left() && menu.right() <= tabs.left());
-                        }
+                        assert!(menu.left() >= row.left() && menu.right() <= tabs.left());
                         assert!(menu.top() >= row.top() && menu.bottom() <= row.bottom());
                         assert!((menu.center().y - plus.center().y).abs() < px(1.0));
                     }
