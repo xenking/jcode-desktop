@@ -3114,22 +3114,29 @@ impl Workspace {
     /// Open `session` as a panel immediately to the right of the focused panel.
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
+        self.open_session_with_identity(
+            session.session_id,
+            session.title,
+            session.working_dir,
+            cx,
+        )
+    }
+
+    fn open_session_with_identity(
+        &mut self,
+        session_id: String,
+        title: Option<String>,
+        working_dir: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> usize {
         let width_fraction = spawned_panel_width(
             self.row_indices(self.active_row)
                 .filter(|&index| !self.slots[index].closing)
                 .count(),
         );
         let bridge = self.bridge.clone();
-        let session_id = session.session_id.clone();
-        let panel = cx.new(|cx| {
-            Panel::new(
-                session.session_id.clone(),
-                session.title.clone(),
-                session.working_dir.clone(),
-                bridge,
-                cx,
-            )
-        });
+        let is_startup = session_id == Panel::STARTUP_SESSION_ID;
+        let panel = cx.new(|cx| Panel::new(session_id.clone(), title, working_dir, bridge, cx));
         Self::wire_session_panel(&panel, cx);
         if !Panel::is_pending_session_id(&session_id) {
             panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
@@ -3189,7 +3196,7 @@ impl Workspace {
         if self.active >= insert_at {
             self.active += 1;
         }
-        if session.session_id != Panel::STARTUP_SESSION_ID {
+        if !is_startup {
             crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
         insert_at
@@ -3321,22 +3328,26 @@ impl Workspace {
         self.sync_swarm_strips(cx);
     }
 
-    /// Focus a worker's panel, opening it if needed (strip / sidebar click).
+    /// Focus a worker's panel, opening it if needed (strip, sidebar, or DM).
     fn open_swarm_worker(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        let Some(session) = self
-            .sessions
-            .iter()
-            .find(|s| s.session_id == session_id)
-            .cloned()
-        else {
-            return;
-        };
         self.sidebar_closed_sessions.remove(session_id);
         let index = self
             .slots
             .iter()
             .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
-            .unwrap_or_else(|| self.open_session(session, cx));
+            .unwrap_or_else(|| {
+                let session = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == session_id)
+                    .cloned();
+                if let Some(session) = session {
+                    self.open_session(session, cx)
+                } else {
+                    // A signed DM may arrive ahead of the next catalog refresh.
+                    self.open_session_with_identity(session_id.to_owned(), None, None, cx)
+                }
+            });
         self.set_active(index, cx);
         self.sync_swarm_strips(cx);
     }

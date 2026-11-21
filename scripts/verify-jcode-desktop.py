@@ -1059,9 +1059,29 @@ class Instance:
         save(self.run / "swarm-dm-recollapsed.json", collapsed_state)
         if collapsed["sha256"] == expanded["sha256"]:
             raise RuntimeError("DM screenshots did not change after disclosure")
+
+        hidden_text = "the regression test caught the missing disclosure"
+        self.drive("reveal", {"row": {"kind": "text", "text": hidden_text}})
+        highlighted_state = self.drive("state")
+        panel = highlighted_state["panel"]
+        if key not in panel["expanded_regions"] or panel["highlighted_transcript_items"] != [index, index]:
+            raise RuntimeError("revealing hidden text did not expand and highlight the DM")
+        highlighted = self.screenshot("swarm-dm-highlighted.png", selector)
+        save(self.run / "swarm-dm-highlighted.json", highlighted_state)
+
+        self.drive("click", {"selector": f"agent-message:sender:{index}"})
+        sender_state = self.drive("state")
+        sender_panels = [panel for row in sender_state["navigation"]["rows"] for panel in row["panels"]
+                         if panel["session"] == sender and not panel["closing"]]
+        if (len(sender_panels) != 1 or not sender_panels[0]["focused"]
+                or sender_state["panel"]["composer"] != draft):
+            raise RuntimeError("sender click did not open and focus its session or keep the draft")
+        save(self.run / "swarm-dm-sender.json", sender_state)
+
         report = {"journey": "swarm-dm", "passed": True, "from_session": sender,
                   "from_name": name, "recipient": recipient, "draft_preserved": True,
-                  "collapsed": collapsed, "expanded": expanded}
+                  "sender_opened": True, "collapsed": collapsed, "expanded": expanded,
+                  "highlighted": highlighted}
         save(self.run / "swarm-dm-proof.json", report)
         return report
 

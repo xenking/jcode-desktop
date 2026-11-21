@@ -28,7 +28,9 @@ not inject operating system mouse events or start a Jcode daemon or a worker.
 Use `launch --fixture swarm-dm --window-width 420 --jcode-bin "$JCODE" --bridge-bin "$BRIDGE"`
 with binaries from the sibling checkout, then `drive --journey swarm-dm` and
 `cleanup` on the same run. The journey sends a signed multiline DM through its
-private daemon, clicks the summary twice and verifies that the draft survives.
-Inspect `swarm-dm-collapsed.png` for a single elided line and
-`swarm-dm-expanded.png` for the full Markdown. Repeat at a wider window width
-with a fresh run. The notify delivery path does not write daemon history.
+private daemon, clicks the summary twice, reveals matching text in the body,
+and opens the sender's session without changing the recipient's draft.
+Inspect `swarm-dm-collapsed.png` for a single elided line,
+`swarm-dm-expanded.png` for the Markdown, and `swarm-dm-highlighted.png` for
+the matching text. Repeat at a wider width with a fresh run. The notify
+delivery path does not write daemon history.
