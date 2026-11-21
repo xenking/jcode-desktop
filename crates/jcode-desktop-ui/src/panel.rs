@@ -725,6 +725,8 @@ pub struct Panel {
     swarm_row_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
     voice: voice::VoiceState,
     image_pane_open: bool,
+    session_image_gallery: image_pane::Gallery,
+    draft_has_images: bool,
     image_pane_selected: Option<usize>,
     image_pane_scroll: ScrollHandle,
     image_pane_stacked: bool,
@@ -1395,6 +1397,7 @@ impl Panel {
         // Local echo is appended by the workspace when submit fires; simplest
         // is to observe our own input entity... but the closure above has no
         // panel access. Instead the workspace routes sends through the panel.
+        Self::observe_draft_images(&input, cx);
         let display_title = title
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
@@ -1575,6 +1578,8 @@ impl Panel {
             input,
             voice: voice::VoiceState::default(),
             image_pane_open: false,
+            session_image_gallery: Default::default(),
+            draft_has_images: false,
             image_pane_selected: None,
             image_pane_scroll: ScrollHandle::new(),
             image_pane_stacked: false,
@@ -2445,6 +2450,23 @@ impl Panel {
         self.schedule_ask_recovery(cx);
     }
 
+    fn observe_draft_images(input: &Entity<PromptInput>, cx: &mut Context<Self>) {
+        let owner = cx.weak_entity();
+        gpui::App::observe(cx, input, move |input, cx| {
+            let has_images = input.read(cx).has_draft_images();
+            if owner
+                .read_with(cx, |panel, _| panel.draft_has_images != has_images)
+                .unwrap_or(false)
+            {
+                let _ = owner.update(cx, |panel, cx| {
+                    panel.draft_has_images = has_images;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Wire the input's submit to also echo locally. Called once after
     /// creation, when we have the panel entity.
     pub fn connect_input(panel: &Entity<Panel>, cx: &mut App) {
@@ -2537,6 +2559,7 @@ impl Panel {
                     handled
                 })
             });
+            Self::observe_draft_images(&this.input, cx);
             if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
             {
@@ -7116,7 +7139,18 @@ impl Render for Panel {
                                         }) {
                                             return;
                                         }
-                                        if child_owns_wheel {
+                                        let in_composer = input_bounds.get().is_some_and(
+                                            |bounds: gpui::Bounds<gpui::Pixels>| {
+                                                bounds.contains(&event.position)
+                                            },
+                                        );
+                                        let (over_editor, editor_gesture) = wheel_panel.read(cx)
+                                            .input.read(cx).editor_wheel_ownership(event, in_composer);
+                                        if editor_gesture && !over_editor {
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        if child_owns_wheel || over_editor {
                                             if wheel_panel.read(cx).transcript_wheel_frame.is_some()
                                             {
                                                 wheel_panel.update(cx, |panel, _| {
@@ -7125,28 +7159,10 @@ impl Render for Panel {
                                             }
                                             return;
                                         }
-                                        let delta = event.delta.pixel_delta(window.line_height());
-                                        // Give the editor first refusal while it can scroll. At
-                                        // its edge, route the wheel to the transcript. Other
-                                        // composer controls keep their own wheel handling.
-                                        let mut editor_fallback = false;
-                                        if input_bounds.get().is_some_and(
-                                            |bounds: gpui::Bounds<gpui::Pixels>| {
-                                                bounds.contains(&event.position)
-                                            },
-                                        ) {
-                                            let panel = wheel_panel.read(cx);
-                                            let input = panel.input.read(cx);
-                                            if !input.editor_contains_position(event.position)
-                                                || input.editor_can_scroll_wheel(
-                                                    event.position,
-                                                    delta.y,
-                                                )
-                                            {
-                                                return;
-                                            }
-                                            editor_fallback = true;
+                                        if in_composer {
+                                            return;
                                         }
+                                        let delta = event.delta.pixel_delta(window.line_height());
                                         let y = f32::from(delta.y);
                                         if y == 0.0 {
                                             return;
@@ -7160,7 +7176,6 @@ impl Render for Panel {
                                             return;
                                         }
                                         if panel.startup_layout.is_some()
-                                            && !editor_fallback
                                             && !panel
                                                 .transcript_list
                                                 .viewport_bounds()

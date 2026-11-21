@@ -116,7 +116,15 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || (transcript_scroll_fixture()
             && matches!(
                 selector,
-                "prompt:toggle" | "scroll:tool" | "scroll:momentum" | "scroll:transcript"
+                "prompt:toggle"
+                    | "scroll:tool"
+                    | "scroll:momentum"
+                    | "scroll:transcript"
+                    | "composer:images"
+                    | "composer:resize-drag"
+                    | "composer:resize-reset"
+                    | "composer:wheel-up"
+                    | "composer:wheel-down"
             ))
 }
 
@@ -147,6 +155,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     }
     let marker = if selector == "scroll:momentum" {
         "scroll:tool"
+    } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
+        "composer:resize"
     } else {
         selector
     };
@@ -185,20 +195,39 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         );
         return true;
     }
+    let click_count = if selector == "composer:resize-reset" {
+        2
+    } else {
+        1
+    };
     window.dispatch_event(
         PlatformInput::MouseDown(MouseDownEvent {
             button: MouseButton::Left,
             position,
-            click_count: 1,
+            click_count,
             ..Default::default()
         }),
         cx,
     );
+    let release_position = if selector == "composer:resize-drag" {
+        let position = position - point(px(0.), px(50.));
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                ..Default::default()
+            }),
+            cx,
+        );
+        position
+    } else {
+        position
+    };
     window.dispatch_event(
         PlatformInput::MouseUp(MouseUpEvent {
             button: MouseButton::Left,
-            position,
-            click_count: 1,
+            position: release_position,
+            click_count,
             ..Default::default()
         }),
         cx,

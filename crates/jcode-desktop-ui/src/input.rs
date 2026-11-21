@@ -43,6 +43,8 @@ mod model_stage;
 pub(crate) use model_stage::parse_model_pick;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
+#[path = "input_resize.rs"]
+mod resize;
 
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
@@ -77,6 +79,8 @@ actions!(
         Redo,
         HistoryPrev,
         HistoryNext,
+        GrowEditor,
+        ShrinkEditor,
         Clear,
         Stash,
         Submit,
@@ -151,6 +155,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-]", HistoryNext, Some("PromptInput")),
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
+        KeyBinding::new("alt-shift-up", GrowEditor, Some("PromptInput")),
+        KeyBinding::new("alt-shift-down", ShrinkEditor, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
         KeyBinding::new("ctrl-s", Stash, Some("PromptInput")),
         // Falls through (propagates) unless ghost text is showing.
@@ -203,7 +209,7 @@ pub struct PromptInput {
     redo: Vec<EditSnapshot>,
     history: Vec<String>,
     history_index: Option<usize>,
-    live_draft: String,
+    live_draft: Option<HistoryDraft>,
     attachments: Vec<Attachment>,
     stashed_prompt: Option<(String, Range<usize>, Vec<Attachment>)>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
@@ -269,6 +275,8 @@ pub struct PromptInput {
     command_layout_key: Option<(SharedString, usize, gpui::Size<Pixels>)>,
     command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
+    editor_wheel_gesture: std::cell::Cell<bool>,
+    editor_resize: resize::EditorResize,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>, bool)>,
     submission_enabled: bool,
     empty_submit: bool,
@@ -665,6 +673,13 @@ struct EditSnapshot {
     attachments: Vec<Attachment>,
 }
 
+struct HistoryDraft {
+    content: String,
+    selection: Range<usize>,
+    selection_reversed: bool,
+    attachments: Vec<Attachment>,
+}
+
 struct VerticalCaret {
     offset: usize,
     revision: u64,
@@ -688,10 +703,20 @@ pub struct PromptInputSnapshot {
     pub selection_reversed: bool,
     pub history: Vec<String>,
     pub history_index: Option<usize>,
+    #[serde(default)]
     pub live_draft: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_draft: Option<HistoryDraftSnapshot>,
     pub attachments: Vec<AttachmentSnapshot>,
     #[serde(default)]
     pub stashed_prompt: Option<StashedPromptSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct HistoryDraftSnapshot {
+    #[serde(flatten)]
+    draft: StashedPromptSnapshot,
+    selection_reversed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -810,17 +835,56 @@ pub(crate) struct PickerSettings {
 }
 
 impl PromptInput {
-    pub(crate) fn editor_contains_position(&self, position: Point<Pixels>) -> bool {
-        self.editor_scroll.bounds().contains(&position)
+    pub(crate) fn composer_proof_state(&self) -> serde_json::Value {
+        let bounds = self.editor_scroll.bounds();
+        serde_json::json!({
+            "command_menu": !self.command_suggestions().is_empty(),
+            "attachments": self.attachments.len(),
+            "editor_height": f32::from(bounds.size.height),
+            "editor_y": f32::from(self.editor_scroll.offset().y),
+        })
     }
 
-    pub(crate) fn editor_can_scroll_wheel(&self, position: Point<Pixels>, delta: Pixels) -> bool {
-        if !self.editor_contains_position(position) {
-            return false;
-        }
-        let offset = self.editor_scroll.offset().y;
-        let max = self.editor_scroll.max_offset().y;
-        (delta < px(0.) && offset > -max) || (delta > px(0.) && offset < px(0.))
+    pub(crate) fn composer_wheel_position(&self) -> Point<Pixels> {
+        self.editor_scroll.bounds().center()
+    }
+
+    pub(crate) fn has_draft_images(&self) -> bool {
+        self.attachments
+            .iter()
+            .chain(self.live_draft.iter().flat_map(|draft| &draft.attachments))
+            .chain(
+                self.stashed_prompt
+                    .iter()
+                    .flat_map(|(_, _, attachments)| attachments),
+            )
+            .any(|attachment| {
+                matches!(
+                    attachment.payload,
+                    AttachmentPayload::Image { .. }
+                        | AttachmentPayload::File { image: Some(_), .. }
+                )
+            })
+    }
+
+    pub(crate) fn editor_wheel_ownership(
+        &self,
+        event: &gpui::ScrollWheelEvent,
+        in_composer: bool,
+    ) -> (bool, bool) {
+        let over_editor = in_composer && self.editor_scroll.bounds().contains(&event.position);
+        let owned_gesture = event.delta.precise()
+            && match event.touch_phase {
+                gpui::TouchPhase::Started => {
+                    self.editor_wheel_gesture.set(over_editor);
+                    over_editor
+                }
+                gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {
+                    self.editor_wheel_gesture.replace(false)
+                }
+                gpui::TouchPhase::Moved => self.editor_wheel_gesture.get(),
+            };
+        (over_editor, owned_gesture)
     }
 
     #[cfg(test)]
@@ -877,7 +941,16 @@ impl PromptInput {
             selection_reversed: self.selection_reversed,
             history: self.history.clone(),
             history_index: self.history_index,
-            live_draft: self.live_draft.clone(),
+            live_draft: String::new(),
+            history_draft: self.live_draft.as_ref().map(|draft| HistoryDraftSnapshot {
+                draft: StashedPromptSnapshot {
+                    content: draft.content.clone(),
+                    selection_start: draft.selection.start,
+                    selection_end: draft.selection.end,
+                    attachments: draft.attachments.iter().map(Attachment::snapshot).collect(),
+                },
+                selection_reversed: draft.selection_reversed,
+            }),
             attachments: attachments.iter().map(Attachment::snapshot).collect(),
             stashed_prompt: self.stashed_prompt.as_ref().map(
                 |(content, selection, attachments)| StashedPromptSnapshot {
@@ -917,7 +990,36 @@ impl PromptInput {
         self.history_index = snapshot
             .history_index
             .filter(|index| *index < self.history.len());
-        self.live_draft = snapshot.live_draft;
+        self.live_draft = snapshot
+            .history_draft
+            .map(|snapshot| {
+                let mut content = snapshot.draft.content;
+                let mut attachments = restore_attachments(snapshot.draft.attachments);
+                ensure_visible_chips(&mut content, &mut attachments);
+                let boundary = |offset| content.floor_char_boundary(offset);
+                let start = boundary(snapshot.draft.selection_start);
+                let end = boundary(snapshot.draft.selection_end);
+                HistoryDraft {
+                    content,
+                    selection: start.min(end)..start.max(end),
+                    selection_reversed: snapshot.selection_reversed,
+                    attachments,
+                }
+            })
+            .or_else(|| {
+                self.history_index.map(|_| {
+                    let len = snapshot.live_draft.len();
+                    HistoryDraft {
+                        content: snapshot.live_draft,
+                        selection: len..len,
+                        selection_reversed: false,
+                        attachments: Vec::new(),
+                    }
+                })
+            });
+        if self.history_index.is_some() {
+            self.close_command_menu(CommandMenuClose::Literal);
+        }
         self.attachment_preview = None;
         self.attachment_notice = None;
         self.marked_range = None;
@@ -1085,7 +1187,7 @@ impl PromptInput {
             redo: Vec::new(),
             history: Vec::new(),
             history_index: None,
-            live_draft: String::new(),
+            live_draft: None,
             attachments: Vec::new(),
             stashed_prompt: None,
             model_menu_draft: None,
@@ -1126,6 +1228,8 @@ impl PromptInput {
             command_layout_key: None,
             command_entrance: jcode_desktop_motion::MenuEntrance::default(),
             editor_scroll: gpui::ScrollHandle::new(),
+            editor_wheel_gesture: Default::default(),
+            editor_resize: Default::default(),
             revealed_caret: None,
             submission_enabled: true,
             empty_submit: false,
@@ -1508,10 +1612,20 @@ impl PromptInput {
             return false;
         }
         let value = row.value.clone();
+        let embedded = self.embedded_command_token();
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
-        self.set_content(value, cx);
-        self.close_command_menu(CommandMenuClose::Completed);
+        if let Some((range, _)) = embedded {
+            let caret = range.start + value.len();
+            let mut draft = self.content.to_string();
+            draft.replace_range(range, &value);
+            self.set_content(draft, cx);
+            self.selected_range = caret..caret;
+            self.close_command_menu(CommandMenuClose::Literal);
+        } else {
+            self.set_content(value, cx);
+            self.close_command_menu(CommandMenuClose::Completed);
+        }
         cx.notify();
         true
     }
@@ -1824,7 +1938,10 @@ impl PromptInput {
         if !self.command_completion {
             return Vec::new();
         }
-        let command_content = self.command_content();
+        let command_content = self.embedded_command_token().map_or_else(
+            || self.command_content(),
+            |(range, cursor)| self.content[range.start..cursor].to_owned(),
+        );
         if !command_content.starts_with('/') || command_content.contains(['\n', '\r']) {
             return Vec::new();
         }
@@ -1936,6 +2053,21 @@ impl PromptInput {
             .collect()
     }
 
+    fn embedded_command_token(&self) -> Option<(Range<usize>, usize)> {
+        if self.picker_prefix.is_some() || self.content.starts_with('/') {
+            return None;
+        }
+        let (start, cursor) =
+            jcode_slash_command::active_token_before_cursor(&self.content, self.cursor_offset())?;
+        if self.content[..start].trim().is_empty() {
+            return None;
+        }
+        let end = self.content[cursor..]
+            .find(char::is_whitespace)
+            .map_or(self.content.len(), |offset| cursor + offset);
+        Some((start..end, cursor))
+    }
+
     fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
         if !self.expanded_model_groups.remove(&key) {
             self.expanded_model_groups.insert(key.clone());
@@ -2045,6 +2177,7 @@ impl PromptInput {
                 return;
             }
             let suggestions = self.command_suggestions();
+            let embedded = self.embedded_command_token();
             let picker_command = raw_content.starts_with('/')
                 && !raw_content.contains(['\n', '\r'])
                 && matches!(
@@ -2053,7 +2186,8 @@ impl PromptInput {
                 );
             if let Some(row) = suggestions.get(self.command_selection)
                 && (self.picker_prefix.is_some()
-                    || self.command_selection_explicit.as_ref() == Some(&row.value)
+                    || ((!queued || embedded.is_none())
+                        && self.command_selection_explicit.as_ref() == Some(&row.value))
                     || row.value == content
                     || picker_command)
             {
@@ -2155,7 +2289,20 @@ impl PromptInput {
         } else {
             content
         };
-        let mut attachments = std::mem::take(&mut self.attachments);
+        let remaining_draft = (kind == SubmissionKind::Command)
+            .then(|| self.embedded_command_token())
+            .flatten()
+            .map(|(token, _)| {
+                let mut draft = self.content.to_string();
+                let caret = token.start;
+                draft.replace_range(token, "");
+                (draft, caret)
+            });
+        let mut attachments = if remaining_draft.is_none() {
+            std::mem::take(&mut self.attachments)
+        } else {
+            Vec::new()
+        };
         attachments.sort_by_key(|a| content.find(a.label.as_ref()).unwrap_or(usize::MAX));
         let normalize_images = attachments.iter().any(|attachment| {
             matches!(
@@ -2231,11 +2378,17 @@ impl PromptInput {
         if !history_content.trim().is_empty() {
             self.history.push(history_content);
         }
-        self.history_index = None;
-        self.live_draft.clear();
+        if remaining_draft.is_none() {
+            self.history_index = None;
+        }
         self.command_selection = 0;
         (self.on_submit)(kind, content, images, files, queued, window, cx);
-        if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
+        if let Some((text, caret)) = remaining_draft {
+            self.set_content(text, cx);
+            self.selected_range = caret..caret;
+        } else if let Some(draft) = self.live_draft.take() {
+            self.restore_history_draft(draft, cx);
+        } else if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
             self.set_content(text, cx);
             self.selected_range = selection;
             self.attachments = attachments;
@@ -2680,21 +2833,26 @@ impl PromptInput {
         if self.move_visual_row(-1, cx) || self.history.is_empty() {
             return;
         }
-        // History stores text only. Switching while attachments are present
-        // would hide the chips while keeping their payload in the next send.
-        if !self.attachments.is_empty() {
+        if self.history_index.is_some() && !self.attachments.is_empty() {
             self.set_transient_notice("Remove or send images before browsing history".into(), cx);
             return;
         }
         let index = match self.history_index {
             Some(index) => index.saturating_sub(1),
             None => {
-                self.live_draft = self.draft_without_live_dictation().0.into_owned();
+                let (content, selection) = self.draft_without_live_dictation();
+                self.live_draft = Some(HistoryDraft {
+                    content: content.into_owned(),
+                    selection,
+                    selection_reversed: self.selection_reversed,
+                    attachments: std::mem::take(&mut self.attachments),
+                });
+                self.attachment_preview = None;
+                self.attachment_notice = None;
                 self.history.len() - 1
             }
         };
-        self.history_index = Some(index);
-        self.set_content(self.history[index].clone(), cx);
+        self.show_history_entry(index, cx);
     }
 
     fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
@@ -2718,12 +2876,27 @@ impl PromptInput {
             return;
         }
         if index + 1 < self.history.len() {
-            self.history_index = Some(index + 1);
-            self.set_content(self.history[index + 1].clone(), cx);
+            self.show_history_entry(index + 1, cx);
         } else {
             self.history_index = None;
-            self.set_content(self.live_draft.clone(), cx);
+            if let Some(draft) = self.live_draft.take() {
+                self.restore_history_draft(draft, cx);
+            }
         }
+    }
+
+    fn show_history_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.history_index = Some(index);
+        self.marked_range = None;
+        self.set_content(self.history[index].clone(), cx);
+        self.close_command_menu(CommandMenuClose::Literal);
+    }
+
+    fn restore_history_draft(&mut self, draft: HistoryDraft, cx: &mut Context<Self>) {
+        self.attachments = draft.attachments;
+        self.set_content(draft.content, cx);
+        self.selected_range = draft.selection;
+        self.selection_reversed = draft.selection_reversed;
     }
 
     fn clear(&mut self, _: &Clear, window: &mut Window, cx: &mut Context<Self>) {
@@ -2849,7 +3022,9 @@ impl PromptInput {
         self.rebase_live_dictation_after_edit(&range, insert.len());
         self.content = edited.into();
         self.marked_range = None;
-        self.history_index = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
         self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.reset_model_groups_after_exit();
@@ -2884,7 +3059,9 @@ impl PromptInput {
         }
         draft.push_str(text);
         self.marked_range = None;
-        self.history_index = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
         self.set_content(draft, cx);
         // Dictation completes inside a parent Panel update. Run its callback
         // after that lease ends, just as a later native edit would.
@@ -2910,7 +3087,9 @@ impl PromptInput {
         self.undo.push(self.edit_snapshot());
         self.redo.clear();
         self.marked_range = None;
-        self.history_index = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
         let mut content = text.to_owned();
         ensure_visible_chips(&mut content, &mut self.attachments);
         self.set_content(content, cx);
@@ -4343,12 +4522,8 @@ impl Render for PromptInput {
             });
             self.ime_log_focus_subscriptions = Some(vec![focus, blur]);
         }
-        // A queued-message editor shows the whole message before it scrolls.
-        let editor_height = if self.queue_editor {
-            (f32::from(window.viewport_size().height) * 0.4).clamp(28., 280.)
-        } else {
-            (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.)
-        };
+        let editor_height = self.editor_height(window);
+        let show_resize = self.can_resize_editor(window);
         let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
@@ -4558,6 +4733,8 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
+            .on_action(cx.listener(Self::grow_editor))
+            .on_action(cx.listener(Self::shrink_editor))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
@@ -4633,20 +4810,21 @@ impl Render for PromptInput {
                             .debug_selector(|| "prompt-editor".into())
                             .flex_1()
                             .min_w_0()
-                            .max_h(px(editor_height))
+                            .max_h(editor_height)
                             .overflow_y_scroll()
                             .track_scroll(&self.editor_scroll)
                             .on_scroll_wheel(cx.listener(
                                 |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                                    let delta = event.delta.pixel_delta(window.line_height()).y;
-                                    // GPUI's scroll listener runs first in the bubble phase.
-                                    // Reconstruct the offset before this event, since GPUI
-                                    // clamps overscroll during the next layout.
-                                    let before = this.editor_scroll.offset().y - delta;
-                                    let max = this.editor_scroll.max_offset().y;
-                                    if (delta < px(0.) && before > -max)
-                                        || (delta > px(0.) && before < px(0.))
-                                    {
+                                    if this.compact_padding {
+                                        let delta = event.delta.pixel_delta(window.line_height()).y;
+                                        let before = this.editor_scroll.offset().y - delta;
+                                        let max = this.editor_scroll.max_offset().y;
+                                        if (delta < px(0.) && before > -max)
+                                            || (delta > px(0.) && before < px(0.))
+                                        {
+                                            cx.stop_propagation();
+                                        }
+                                    } else {
                                         cx.stop_propagation();
                                     }
                                 },
@@ -4721,6 +4899,7 @@ impl Render for PromptInput {
                             ),
                     ),
             )
+            .when(show_resize, |el| el.child(self.render_editor_resize(cx)))
     }
 }
 
@@ -5260,7 +5439,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn image_draft_is_not_hidden_by_history_navigation(cx: &mut TestAppContext) {
+    fn image_draft_round_trips_through_history_navigation(cx: &mut TestAppContext) {
         cx.update(bind_keys);
         let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
@@ -5277,10 +5456,21 @@ mod tests {
             input.focus_handle.focus(window, cx);
             input
         });
+        let draft = input.read_with(vcx, |input, _| input.snapshot());
         vcx.simulate_keystrokes("up");
         input.read_with(vcx, |input, _| {
-            assert_eq!(input.content.as_ref(), "[#image 1]");
-            assert_eq!(input.attachments.len(), 1);
+            assert_eq!(input.content.as_ref(), "old prompt");
+            assert!(input.attachments.is_empty());
+        });
+        let persisted = input.read_with(vcx, |input, _| input.snapshot());
+        input.update(vcx, |input, cx| input.restore(persisted, cx));
+        vcx.simulate_keystrokes("down");
+        input.read_with(vcx, |input, _| {
+            let restored = input.snapshot();
+            assert_eq!(restored.content, draft.content);
+            assert_eq!(restored.attachments, draft.attachments);
+            assert_eq!(restored.selection_start, draft.selection_start);
+            assert_eq!(restored.selection_end, draft.selection_end);
         });
     }
 

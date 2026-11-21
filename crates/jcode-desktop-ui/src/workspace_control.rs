@@ -46,8 +46,37 @@ pub(super) fn handle_window_request(
                 "fixture input requires the isolated control fixture and allow_user_window",
             );
         }
-        if let Err(response) = workspace.read(cx).control_target(target, window, cx) {
-            return response;
+        let index = match workspace.read(cx).control_target(target, window, cx) {
+            Ok(index) => index,
+            Err(response) => return response,
+        };
+        if matches!(
+            selector.as_str(),
+            "composer:wheel-up" | "composer:wheel-down"
+        ) {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let position = workspace.read(cx).slots[index]
+                .panel
+                .read(cx)
+                .input
+                .read(cx)
+                .composer_wheel_position();
+            let y = if selector == "composer:wheel-up" {
+                12_000.
+            } else {
+                -12_000.
+            };
+            window.dispatch_event(
+                gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    position,
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(y))),
+                    touch_phase: gpui::TouchPhase::Moved,
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+            return ok(json!({"selector": selector}));
         }
         // Platform input can synchronously call listeners that update the Workspace.
         // Route every synthetic event here, before taking its update lease.
@@ -74,8 +103,27 @@ pub(super) fn handle_window_request(
                 "fixture keys require the isolated fixture",
             );
         }
-        if let Err(response) = workspace.read(cx).control_target(target, window, cx) {
-            return response;
+        let index = match workspace.read(cx).control_target(target, window, cx) {
+            Ok(index) => index,
+            Err(response) => return response,
+        };
+        if key == "seed-composer-image"
+            && crate::fixture_control_targets::transcript_scroll_fixture()
+        {
+            let input = workspace.read(cx).slots[index].panel.read(cx).input.clone();
+            input.update(cx, |input, cx| {
+                input.attach_image(
+                    crate::clipboard_image::ClipboardImage {
+                        media_type: "image/png".into(),
+                        bytes: include_bytes!("../../../assets/previews/image-preview.png")
+                            .to_vec(),
+                        width: 640,
+                        height: 480,
+                    },
+                    cx,
+                );
+            });
+            return ok(json!({"key": key}));
         }
         if !matches!(
             key,
@@ -92,6 +140,8 @@ pub(super) fn handle_window_request(
                 | "home"
                 | "backspace"
                 | "pageup"
+                | "alt-shift-up"
+                | "alt-shift-down"
         ) {
             return error("unsupported_key", "unknown fixture key");
         }
@@ -116,7 +166,8 @@ pub(super) fn handle_window_request(
     // update entities, so refresh before leasing the Workspace for capture.
     if matches!(&request.action, DesktopAction::Render { .. })
         || (fixture_input_enabled
-            && crate::fixture_control_targets::resume_preview()
+            && (crate::fixture_control_targets::resume_preview()
+                || crate::fixture_control_targets::transcript_scroll_fixture())
             && matches!(&request.action, DesktopAction::State { .. }))
     {
         window.refresh();

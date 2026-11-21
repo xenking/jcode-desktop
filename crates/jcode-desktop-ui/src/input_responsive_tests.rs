@@ -1,7 +1,7 @@
 use super::*;
 
 #[gpui::test]
-fn wheel_scrolls_editor_only_until_its_edge(cx: &mut gpui::TestAppContext) {
+fn editor_keeps_wheel_scroll_at_its_edge(cx: &mut gpui::TestAppContext) {
     struct Outer {
         input: Entity<PromptInput>,
         scroll: gpui::ScrollHandle,
@@ -62,10 +62,33 @@ fn wheel_scrolls_editor_only_until_its_edge(cx: &mut gpui::TestAppContext) {
     });
     vcx.run_until_parked();
     wheel(vcx, -40.);
-    assert!(
-        outer.read_with(vcx, |outer, _| outer.scroll.offset().y) < before_outer,
-        "outer transcript receives the wheel when the editor is at its edge"
+    assert_eq!(
+        outer.read_with(vcx, |outer, _| outer.scroll.offset().y),
+        before_outer,
+        "the wheel must not escape at the editor edge"
     );
+}
+
+#[gpui::test]
+fn long_draft_can_be_resized_and_reset_with_the_keyboard(cx: &mut gpui::TestAppContext) {
+    cx.update(bind_keys);
+    let (input, vcx) = cx.add_window_view(|window, cx| {
+        let input = PromptInput::new(cx, "test", |_, _, _, _| {});
+        window.focus(&input.focus_handle, cx);
+        input
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-resize-handle").is_none());
+    input.update(vcx, |input, cx| input.set_content("line\n".repeat(80), cx));
+    vcx.run_until_parked();
+    let auto = vcx.debug_bounds("prompt-editor").unwrap().size.height;
+    assert!(vcx.debug_bounds("prompt-resize-handle").is_some());
+    vcx.simulate_keystrokes("alt-shift-up");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-editor").unwrap().size.height > auto);
+    vcx.simulate_keystrokes("alt-shift-down alt-shift-down");
+    vcx.run_until_parked();
+    assert_eq!(vcx.debug_bounds("prompt-editor").unwrap().size.height, auto);
 }
 
 #[gpui::test]

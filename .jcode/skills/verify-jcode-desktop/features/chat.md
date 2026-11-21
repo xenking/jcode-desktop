@@ -25,6 +25,12 @@ is an offline fixture, not a provider-connected session.
 - **Arrows and stash:** on a fresh offline run, use `drive --run "$RUN" --journey composer-arrows`.
   Require `composer-arrows-proof.json` and the stash indicator in `composer-arrows-stashed.png`.
   This dispatches real GPUI key events to the hidden window, not macOS HID events.
+- **Composer controls:** launch with `--fixture transcript-scroll`, then use
+  `drive --run "$RUN" --journey composer-advanced`. Require
+  `composer-advanced-proof.json`. It checks an embedded command after Escape,
+  image draft/history round-trip and gallery visibility, resize by drag and
+  Alt+Shift+Up/Down, reset by double-click, and scroll containment at the edge.
+  It seeds the image without touching the system clipboard.
 - **Enter:** `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action press_key --params '{"key":"Enter"}'`.
   Then `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state`.
   Require `submitted: true` in the action reply and an empty composer.

@@ -372,6 +372,8 @@ class Instance:
             return self.side_question_journey()
         if name == "composer-arrows":
             return self.composer_arrows_journey()
+        if name == "composer-advanced":
+            return self.composer_advanced_journey()
         if name == "resume-preview":
             return self.resume_preview_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
@@ -465,6 +467,83 @@ class Instance:
                   "stashed": stashed, "after": after,
                   "scope": "native GPUI key dispatch, no macOS HID injection or provider"}
         save(self.run / "composer-arrows-proof.json", report)
+        return report
+
+    def composer_advanced_journey(self):
+        if self.manifest["fixture"] != "transcript-scroll":
+            raise RuntimeError("relaunch with --fixture transcript-scroll")
+
+        def key(value):
+            self.drive("press_key", {"key": f"fixture:{value}"})
+
+        def click(selector):
+            self.drive("click", {"selector": selector})
+
+        def draft(text):
+            self.drive("set_composer", {"text": text})
+
+        def state(stage, predicate):
+            deadline = time.monotonic() + 3
+            while True:
+                panel = self.drive("state")["panel"]
+                if predicate(panel):
+                    save(self.run / f"composer-advanced-{stage}.json", panel)
+                    return panel
+                if time.monotonic() >= deadline:
+                    save(self.run / f"composer-advanced-{stage}.json", panel)
+                    raise RuntimeError(f"composer proof failed at {stage}")
+                time.sleep(.05)
+
+        literal = "вывывы /skills"
+        draft(literal)
+        state("menu", lambda p: p["composer_fixture"]["command_menu"])
+        self.screenshot("composer-advanced-menu.png")
+        key("up")
+        key("escape")
+        state("escaped", lambda p: p["composer"] == literal and not p["composer_fixture"]["command_menu"])
+        key("enter")
+        short_height = state("literal", lambda p: not p["composer"])["composer_fixture"]["editor_height"]
+
+        try:
+            click("composer:images")
+        except RuntimeError as error:
+            if "selector_not_visible" not in str(error):
+                raise
+        else:
+            raise RuntimeError("image toggle appeared without any images")
+        draft("image draft")
+        key("seed-composer-image")
+        with_image = state("attached", lambda p: p["composer_fixture"]["attachments"] == 1)["composer"]
+        click("composer:images")
+        self.screenshot("composer-advanced-gallery.png")
+        click("composer:images")
+        key("up")
+        state("history", lambda p: p["composer"] == literal and p["composer_fixture"]["attachments"] == 0)
+        key("down")
+        state("restored", lambda p: p["composer"] == with_image and p["composer_fixture"]["attachments"] == 1)
+        key("escape")
+
+        draft("Long draft line\n" * 100)
+        automatic = state("automatic", lambda p: p["composer_fixture"]["editor_height"] > short_height)["composer_fixture"]["editor_height"]
+        key("alt-shift-up")
+        state("keyboard", lambda p: p["composer_fixture"]["editor_height"] > automatic)
+        key("alt-shift-down")
+        click("composer:resize-drag")
+        state("dragged", lambda p: p["composer_fixture"]["editor_height"] > automatic)
+        self.screenshot("composer-advanced-expanded.png")
+        click("composer:resize-reset")
+        state("reset", lambda p: p["composer_fixture"]["editor_height"] == automatic)
+
+        click("history:scroll-up")
+        click("composer:wheel-up")
+        before = state("before-wheel", lambda p: p["composer_fixture"]["editor_y"] == 0)["scroll_fixture"]["transcript"]
+        click("composer:wheel-down")
+        state("editor-wheel", lambda p: p["composer_fixture"]["editor_y"] < 0 and p["scroll_fixture"]["transcript"] == before)
+        click("composer:wheel-down")
+        state("editor-edge", lambda p: p["scroll_fixture"]["transcript"] == before)
+        report = {"journey": "composer-advanced", "passed": True,
+                  "scope": "hidden native GPUI dispatch, fixture image seed; no HID or provider"}
+        save(self.run / "composer-advanced-proof.json", report)
         return report
 
     def resume_preview_journey(self):
@@ -1131,7 +1210,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

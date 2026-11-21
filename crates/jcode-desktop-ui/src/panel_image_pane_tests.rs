@@ -86,7 +86,7 @@ fn session_image_marker_labels_the_user_chip(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn image_pane_button_is_available_without_transcript_images(cx: &mut gpui::TestAppContext) {
+fn image_pane_button_hides_when_the_last_image_is_removed(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = setup(cx);
     assert!(vcx.debug_bounds("panel-images").is_some());
     panel.update(vcx, |panel, cx| {
@@ -94,7 +94,7 @@ fn image_pane_button_is_available_without_transcript_images(cx: &mut gpui::TestA
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("panel-images").is_some());
+    assert!(vcx.debug_bounds("panel-images").is_none());
     assert!(vcx.debug_bounds("panel-status-badge").is_none());
 }
 
@@ -365,13 +365,10 @@ fn image_pane_empty_session_accepts_first_image(cx: &mut gpui::TestAppContext) {
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("panel-images").is_some());
+    assert!(vcx.debug_bounds("panel-images").is_none());
     panel.update(vcx, |panel, cx| panel.set_image_pane_open(true, cx));
     vcx.run_until_parked();
-    assert!(
-        vcx.debug_bounds("panel-images").is_some(),
-        "open pane keeps its toggle"
-    );
+    assert!(vcx.debug_bounds("panel-images").is_none());
     assert!(vcx.debug_bounds("session-image-pane").is_some());
     assert!(vcx.debug_bounds("session-image-main").is_none());
     panel.update(vcx, |panel, cx| {

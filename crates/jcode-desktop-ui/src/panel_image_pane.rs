@@ -10,29 +10,22 @@ struct GalleryImage {
     media_type: String,
 }
 
-thread_local! {
-    // GPUI panels live on the UI thread. Only metadata is retained here, never
-    // base64 payloads. Closing the pane discards its cached session list.
-    static GALLERIES: std::cell::RefCell<std::collections::HashMap<String, Result<Vec<GalleryImage>, String>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+#[derive(Default)]
+pub(super) struct Gallery {
+    metadata: Option<Result<Vec<GalleryImage>, String>>,
+    loading: bool,
 }
 
-pub(super) fn receive_session_image_list(session_id: &str, result: Result<String, String>) {
-    let parsed = result.and_then(|json| serde_json::from_str(&json).map_err(|e| e.to_string()));
-    GALLERIES.with(|galleries| {
-        galleries.borrow_mut().insert(session_id.to_owned(), parsed);
-    });
-}
+impl Gallery {
+    pub(super) fn receive(&mut self, result: Result<String, String>) {
+        self.loading = false;
+        self.metadata = Some(result.and_then(|json| {
+            serde_json::from_str(&json).map_err(|error| error.to_string())
+        }));
+    }
 
-pub(super) fn gallery_loaded_image(
-    session_id: &str,
-    image_id: &str,
-    data: &str,
-) -> Option<TranscriptImage> {
-    GALLERIES.with(|galleries| {
-        let galleries = galleries.borrow();
-        let image = galleries
-            .get(session_id)?
+    pub(super) fn loaded_image(&self, image_id: &str, data: &str) -> Option<TranscriptImage> {
+        let image = self.metadata.as_ref()?
             .as_ref()
             .ok()?
             .iter()
@@ -42,7 +35,7 @@ pub(super) fn gallery_loaded_image(
             data.to_owned(),
             Some(format!("[#{image_id}]")),
         ))
-    })
+    }
 }
 
 impl Panel {
@@ -200,24 +193,36 @@ impl Panel {
 
     pub(super) fn set_image_pane_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.image_pane_open = open;
-        GALLERIES.with(|galleries| {
-            galleries.borrow_mut().remove(&self.session_id);
-        });
         if open {
-            self.bridge.send(Command::ListSessionImages {
-                session_id: self.session_id.clone(),
-            });
+            self.request_session_image_gallery();
         }
         self.cancel_transcript_momentum();
         self.transcript_measurements.dirty = true;
         cx.notify();
     }
 
-    /// The gallery must also be reachable when images are on older pages.
+    pub(super) fn request_session_image_gallery(&mut self) {
+        if self.session_image_gallery.loading || self.is_pending_session() {
+            return;
+        }
+        self.session_image_gallery.loading = true;
+        self.bridge.send(Command::ListSessionImages {
+            session_id: self.session_id.clone(),
+        });
+    }
+
     pub(super) fn render_image_pane_toggle(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        if !self.draft_has_images
+            && self.selected_session_image_index().is_none()
+            && !self.session_image_gallery.metadata.as_ref().is_some_and(|result| {
+                result.as_ref().is_ok_and(|images| !images.is_empty())
+            })
+        {
+            return None;
+        }
         let theme = Theme::global();
         let color = if self.image_pane_open {
             theme.TEXT
@@ -227,6 +232,11 @@ impl Panel {
         div()
             .id("panel-images")
             .debug_selector(|| "panel-images".into())
+            .relative()
+            .children(crate::fixture_control_targets::marker(
+                || "composer:images".into(),
+                || Some(self.session_id.clone()),
+            ))
             .flex_none()
             .size(px(22.))
             .flex()
@@ -294,7 +304,7 @@ impl Panel {
         let theme = Theme::global();
         let indices = self.session_image_indices();
         let selected = self.selected_session_image_index();
-        let gallery = GALLERIES.with(|galleries| galleries.borrow().get(&self.session_id).cloned());
+        let gallery = self.session_image_gallery.metadata.clone();
         let gallery_has_images = gallery
             .as_ref()
             .is_some_and(|result| result.as_ref().is_ok_and(|images| !images.is_empty()));

@@ -202,7 +202,11 @@ impl Panel {
         let prompt_offset = page
             .prompt_offset
             .or_else(|| page.before.is_none().then_some(0));
+        let has_older_pages = page.before.is_some();
         self.load_history(page.messages, page.images, cx);
+        if has_older_pages {
+            self.request_session_image_gallery();
+        }
         if let Some(mut previous) = previous.filter(|paging| paging.bounded) {
             previous.in_flight = false;
             previous.recovery = None;
@@ -606,7 +610,8 @@ mod tests {
             );
             panel.request_older_history();
         });
-        let _ = commands.try_recv().unwrap();
+        assert!(matches!(commands.try_recv(), Ok(Command::ListSessionImages { .. })));
+        assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before: Some(_), .. })));
         panel.update(vcx, |panel, cx| {
             panel.load_bounded_history_page(Err("internal: stale cursor".into()), cx)
         });
@@ -659,7 +664,8 @@ mod tests {
             panel.request_older_history();
             panel.load_bounded_history_page(Err("stale cursor".into()), cx);
         });
-        let _ = commands.try_recv().unwrap();
+        assert!(matches!(commands.try_recv(), Ok(Command::ListSessionImages { .. })));
+        assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before: Some(_), .. })));
         assert!(matches!(
             commands.try_recv(),
             Ok(Command::GetHistoryPage { before: None, .. })
@@ -718,6 +724,7 @@ mod tests {
             panel.request_older_history();
             panel.request_older_history();
         });
+        assert!(matches!(commands.try_recv(), Ok(Command::ListSessionImages { .. })));
         assert!(
             matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before.as_deref() == Some("cursor1"))
         );
@@ -791,6 +798,7 @@ mod tests {
         });
         vcx.run_until_parked();
         scroll_momentum_tests::settle(vcx);
+        assert!(matches!(commands.try_recv(), Ok(Command::ListSessionImages { .. })));
         assert!(
             matches!(commands.try_recv(), Ok(Command::GetHistoryPage { before, .. }) if before.as_deref() == Some("cursor"))
         );

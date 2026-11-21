@@ -1,7 +1,7 @@
 use super::*;
 
 #[gpui::test]
-fn composer_wheel_does_not_move_transcript_until_editor_edge(cx: &mut gpui::TestAppContext) {
+fn composer_wheel_does_not_move_transcript_at_editor_edge(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         Panel::new(
@@ -41,17 +41,17 @@ fn composer_wheel_does_not_move_transcript_until_editor_edge(cx: &mut gpui::Test
     let editor_before = scroll.offset().y;
     let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
     let position = vcx.debug_bounds("prompt-editor").unwrap().center();
-    let wheel = |vcx: &mut gpui::VisualTestContext, y| {
+    let wheel = |vcx: &mut gpui::VisualTestContext, position, y, touch_phase| {
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position,
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(y))),
             modifiers: Default::default(),
-            touch_phase: gpui::TouchPhase::Moved,
+            touch_phase,
         });
         vcx.run_until_parked();
         scroll_momentum_tests::settle(vcx);
     };
-    wheel(vcx, -40.);
+    wheel(vcx, position, -40., gpui::TouchPhase::Started);
     assert!(scroll.offset().y < editor_before);
     let after = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
     assert_eq!(
@@ -61,12 +61,26 @@ fn composer_wheel_does_not_move_transcript_until_editor_edge(cx: &mut gpui::Test
     scroll.set_offset(point(px(0.), -scroll.max_offset().y));
     vcx.update(|_, cx| cx.refresh_windows());
     vcx.run_until_parked();
-    wheel(vcx, -100.);
+    wheel(vcx, position, -100., gpui::TouchPhase::Moved);
     let edge = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
-    assert_ne!(
+    assert_eq!(
         (edge.item_ix, edge.offset_in_item),
         (before.item_ix, before.offset_in_item),
-        "transcript must receive wheel at editor edge"
+        "transcript must not receive wheel at editor edge"
+    );
+    let transcript = vcx.debug_bounds("transcript").unwrap().center();
+    wheel(vcx, transcript, -100., gpui::TouchPhase::Moved);
+    let crossed = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert_eq!(
+        (crossed.item_ix, crossed.offset_in_item),
+        (before.item_ix, before.offset_in_item)
+    );
+    wheel(vcx, transcript, 0., gpui::TouchPhase::Ended);
+    wheel(vcx, transcript, -100., gpui::TouchPhase::Started);
+    let fresh = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    assert_ne!(
+        (fresh.item_ix, fresh.offset_in_item),
+        (before.item_ix, before.offset_in_item)
     );
 }
 

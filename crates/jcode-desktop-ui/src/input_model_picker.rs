@@ -588,6 +588,12 @@ impl PromptInput {
                         cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             window.focus(&this.focus_handle, cx);
+                            if this.embedded_command_token().is_some() {
+                                this.command_selection = index;
+                                this.command_selection_explicit = Some(suggestion.value.clone());
+                                cx.notify();
+                                return;
+                            }
                             if let Some(name) = &mode_target {
                                 this.command_selection = index;
                                 this.toggle_mode_row(name, window, cx);

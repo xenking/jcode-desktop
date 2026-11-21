@@ -70,6 +70,29 @@ fn embedded_known_slash_is_text(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn embedded_slash_opens_a_menu_and_only_explicit_selection_runs(cx: &mut TestAppContext) {
+    let (vcx, commands) = composer(cx);
+    vcx.simulate_input("вывывы /");
+    assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+    vcx.simulate_input("skills");
+    vcx.simulate_keystrokes("up enter");
+    assert!(matches!(commands.try_recv(), Ok(Command::RuntimeCommand {
+        command: jcode_sdk::api::RuntimeCommand::Skills, args, ..
+    }) if args.is_empty()));
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn escaped_embedded_slash_sends_the_original_draft(cx: &mut TestAppContext) {
+    let (vcx, commands) = composer(cx);
+    let text = "вывывы /skills";
+    vcx.simulate_input(text);
+    assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+    vcx.simulate_keystrokes("up escape enter");
+    assert!(matches!(commands.try_recv(), Ok(Command::Send {content, ..}) if content == text));
+}
+
+#[gpui::test]
 fn embedded_paths_and_fractions_are_text(cx: &mut TestAppContext) {
     assert_literal(cx, "Compare src/main.rs and 1/2", false, false);
 }
