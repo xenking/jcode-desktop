@@ -1,19 +1,12 @@
 use serde::Deserialize;
 
-use crate::{encode, get, inbox};
+use crate::{encode, get_target, host::HostRegistry, inbox};
+
+pub use crate::HostTarget;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fleet {
     pub hosts: Vec<Host>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HostTarget {
-    Local,
-    Remote {
-        alias: String,
-        endpoint: Option<String>,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -23,12 +16,16 @@ pub struct Host {
     pub target: HostTarget,
     pub status: Option<String>,
     pub rigs: Option<Vec<Rig>>,
-    direct: bool,
+    pub error: Option<String>,
 }
 
 impl Host {
     pub(crate) fn queue_host_id(&self) -> &str {
-        if self.direct { "local" } else { &self.id }
+        if self.target.is_primary() {
+            "local"
+        } else {
+            &self.id
+        }
     }
 }
 
@@ -86,20 +83,6 @@ pub(crate) struct SeatAttention {
     pub observed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub clear: Option<inbox::ClearEvidence>,
     pub class: inbox::SeatReasonClass,
-}
-
-#[derive(Deserialize)]
-struct HostList {
-    #[serde(rename = "ownName")]
-    own_name: Option<String>,
-    hosts: Vec<HostEntry>,
-}
-
-#[derive(Deserialize)]
-struct HostEntry {
-    id: String,
-    status: Option<String>,
-    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -350,29 +333,6 @@ fn group_pods(nodes: Vec<Node>) -> Vec<Pod> {
     pods
 }
 
-fn endpoint_host(url: &str) -> Option<String> {
-    let url = url::Url::parse(url).ok()?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return None;
-    }
-    url.host_str().map(str::to_owned)
-}
-
-fn daemon_target(base: &str, host_id: &str) -> HostTarget {
-    let endpoint = endpoint_host(base);
-    if matches!(
-        endpoint.as_deref(),
-        Some("localhost" | "127.0.0.1" | "[::1]")
-    ) {
-        HostTarget::Local
-    } else {
-        HostTarget::Remote {
-            alias: host_id.into(),
-            endpoint,
-        }
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Inventory<T> {
@@ -396,16 +356,16 @@ impl Fleet {
         rigs: Option<&serde_json::Value>,
         errors: &mut Vec<String>,
     ) -> Self {
-        Self::load(base, health, hosts, rigs, errors, |route| get(base, route))
+        Self::load(base, health, hosts, rigs, errors, get_target)
     }
 
-    fn load(
+    pub(crate) fn load(
         base: &str,
         health: Option<&serde_json::Value>,
         hosts: Option<&serde_json::Value>,
         rigs: Option<&serde_json::Value>,
         errors: &mut Vec<String>,
-        get: impl Fn(&str) -> Result<serde_json::Value, String>,
+        get: impl Fn(&HostTarget, &str) -> Result<serde_json::Value, String>,
     ) -> Self {
         if health.is_none() && hosts.is_none() && rigs.is_none() {
             return Self::default();
@@ -416,7 +376,7 @@ impl Fleet {
             .unwrap_or("local");
         let hosts =
             hosts.and_then(
-                |value| match serde_json::from_value::<HostList>(value.clone()) {
+                |value| match serde_json::from_value::<HostRegistry>(value.clone()) {
                     Ok(hosts) => Some(hosts),
                     Err(error) => {
                         errors.push(format!("Fleet hosts: {error}"));
@@ -425,41 +385,45 @@ impl Fleet {
                 },
             );
         let mut local = Host {
-            direct: true,
+            error: None,
             id: host_id.into(),
             name: hosts
                 .as_ref()
                 .and_then(|hosts| hosts.own_name.clone())
                 .unwrap_or_else(|| host_id.into()),
-            target: daemon_target(base, host_id),
+            target: HostTarget::primary(base, host_id),
             status: health
                 .and_then(|value| value["status"].as_str())
                 .map(str::to_owned),
             rigs: rigs.and_then(|value| record(inventory(value.clone()), "Fleet rigs", errors)),
         };
-        populate_nodes(&mut local, "", &get, errors);
+        populate_nodes(&mut local, &get, errors);
         let mut fleet = Self { hosts: vec![local] };
-        for entry in hosts.into_iter().flat_map(|hosts| hosts.hosts) {
-            if entry.id.is_empty() || entry.id == "local" || entry.id == host_id {
+        for (target, status) in hosts.into_iter().flat_map(HostRegistry::into_targets) {
+            let id = target.alias().to_owned();
+            if fleet.hosts.iter().any(|host| host.id == id) {
                 continue;
             }
-            let query = format!("?host={}", encode(&entry.id));
-            let mut host = Host {
-                direct: false,
-                name: entry.id.clone(),
-                target: HostTarget::Remote {
-                    alias: entry.id.clone(),
-                    endpoint: entry.url.as_deref().and_then(endpoint_host),
-                },
-                status: entry.status,
-                rigs: record(
-                    get(&format!("/api/rigs/summary{query}")).and_then(inventory),
-                    &format!("Fleet rigs on {}", entry.id),
-                    errors,
-                ),
-                id: entry.id,
+            let (rigs, error) = match get(&target, "/api/rigs/summary").and_then(inventory) {
+                Ok(rigs) => (Some(rigs), None),
+                Err(error) => {
+                    errors.push(format!("Fleet rigs on {id}: {error}"));
+                    (None, Some(error))
+                }
             };
-            populate_nodes(&mut host, &query, &get, errors);
+            let mut host = Host {
+                name: id.clone(),
+                target,
+                status: if error.is_some() {
+                    Some("Unavailable".into())
+                } else {
+                    status
+                },
+                rigs,
+                id,
+                error,
+            };
+            populate_nodes(&mut host, &get, errors);
             fleet.hosts.push(host);
         }
         fleet
@@ -496,12 +460,12 @@ impl Fleet {
             Some(&data["hosts"]),
             Some(&data["rigs"]),
             errors,
-            |route| match route {
-                "/api/rigs/local-kernel/nodes" => Ok(data["localNodes"].clone()),
-                "/api/rigs/local-verteam/nodes" => Ok(serde_json::json!([])),
-                "/api/rigs/summary?host=worker-east" => Ok(data["remote"].clone()),
-                "/api/rigs/remote-kernel/nodes?host=worker-east" => Ok(data["remoteNodes"].clone()),
-                route => Err(format!("unexpected fixture route {route}")),
+            |target, route| match (target.is_primary(), route) {
+                (true, "/api/rigs/local-kernel/nodes") => Ok(data["localNodes"].clone()),
+                (true, "/api/rigs/local-verteam/nodes") => Ok(serde_json::json!([])),
+                (false, "/api/rigs/summary") => Ok(data["remote"].clone()),
+                (false, "/api/rigs/remote-kernel/nodes") => Ok(data["remoteNodes"].clone()),
+                _ => Err(format!("unexpected fixture route {route}")),
             },
         )
     }
@@ -519,15 +483,17 @@ fn record<T>(result: Result<T, String>, what: &str, errors: &mut Vec<String>) ->
 
 fn populate_nodes(
     host: &mut Host,
-    query: &str,
-    get: &impl Fn(&str) -> Result<serde_json::Value, String>,
+    get: &impl Fn(&HostTarget, &str) -> Result<serde_json::Value, String>,
     errors: &mut Vec<String>,
 ) {
     for rig in host.rigs.as_mut().into_iter().flatten() {
         rig.pods = record(
-            get(&format!("/api/rigs/{}/nodes{query}", encode(&rig.id)))
-                .and_then(inventory)
-                .map(group_pods),
+            get(
+                &host.target,
+                &format!("/api/rigs/{}/nodes", encode(&rig.id)),
+            )
+            .and_then(inventory)
+            .map(group_pods),
             &format!("Fleet seats on {}/{}", host.name, rig.name),
             errors,
         );
@@ -574,14 +540,11 @@ mod tests {
         let fleet = Fleet::from_fixture(&data, &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(fleet.hosts[0].id, "host-fixture-local");
-        assert_eq!(fleet.hosts[0].target, HostTarget::Local);
+        assert!(fleet.hosts[0].target.is_local_machine());
         assert_eq!(fleet.hosts[1].id, "worker-east");
         assert_eq!(
-            fleet.hosts[1].target,
-            HostTarget::Remote {
-                alias: "worker-east".into(),
-                endpoint: Some("worker-east.example.test".into())
-            }
+            fleet.hosts[1].target.endpoint(),
+            Some("worker-east.example.test")
         );
         for (index, prefix) in [(0, "local"), (1, "remote")] {
             let rig = &fleet.hosts[index].rigs.as_ref().unwrap()[0];
@@ -644,7 +607,7 @@ mod tests {
     #[ignore = "needs a running OpenRig daemon"]
     fn live_daemon_links_jcode_seats_to_sessions() {
         let base = std::env::var("OPENRIG_LIVE_BASE").expect("set OPENRIG_LIVE_BASE");
-        let fetch = |route: &str| get(&base, route).ok();
+        let fetch = |route: &str| crate::get(&base, route).ok();
         let (health, hosts, rigs) = (
             fetch("/healthz"),
             fetch("/api/hosts"),
@@ -690,15 +653,9 @@ mod tests {
             None,
             Some(&rigs),
             &mut errors,
-            |_| Err("offline".into()),
+            |_, _| Err("offline".into()),
         );
-        assert_eq!(
-            fleet.hosts[0].target,
-            HostTarget::Remote {
-                alias: "remote-daemon".into(),
-                endpoint: Some("rig.example.test".into())
-            }
-        );
+        assert_eq!(fleet.hosts[0].target.endpoint(), Some("rig.example.test"));
         assert!(fleet.hosts[0].rigs.as_ref().unwrap()[0].pods.is_none());
         assert_eq!(errors, ["Fleet seats on remote-daemon/Rig: offline"]);
     }

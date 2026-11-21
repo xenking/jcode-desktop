@@ -11,9 +11,11 @@ fn session_address(target: &HostTarget, native_id: &str, ssh_hosts: &[String]) -
     {
         return None;
     }
-    let HostTarget::Remote { alias, endpoint } = target else {
+    if target.is_local_machine() {
         return Some(native_id.into());
-    };
+    }
+    let alias = target.alias();
+    let endpoint = target.endpoint();
     // Prefer the operator's configured alias (including an SSH username) over
     // a DNS name. An OpenRig ID by itself is not necessarily an SSH destination.
     let host = ssh_hosts
@@ -27,10 +29,10 @@ fn session_address(target: &HostTarget, native_id: &str, ssh_hosts: &[String]) -
         .or_else(|| {
             ssh_hosts
                 .iter()
-                .find(|host| host.rsplit('@').next() == endpoint.as_deref())
+                .find(|host| host.rsplit('@').next() == endpoint)
         })
         .map(String::as_str)
-        .or(endpoint.as_deref())?;
+        .or(endpoint)?;
     if remotes::managed_destination(host) {
         return None;
     }
@@ -56,7 +58,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !cfg!(test) && matches!(&action.target, HostTarget::Remote { .. }) {
+        if !cfg!(test) && !action.target.is_local_machine() {
             let target = action.target.clone();
             let native_id = action.native_id.clone();
             let mut ssh_hosts = self.remotes.hosts.clone();
@@ -128,12 +130,10 @@ mod tests {
 
     #[test]
     fn host_mapping_preserves_the_machine_and_prefers_configured_ssh_targets() {
-        let remote = HostTarget::Remote {
-            alias: "east".into(),
-            endpoint: Some("east.example.test".into()),
-        };
+        let remote = HostTarget::primary("https://east.example.test", "east");
+        let local = HostTarget::primary("http://127.0.0.1:7433", "local");
         assert_eq!(
-            session_address(&HostTarget::Local, "session_a", &[]).as_deref(),
+            session_address(&local, "session_a", &[]).as_deref(),
             Some("session_a")
         );
         assert_eq!(
@@ -160,18 +160,11 @@ mod tests {
         );
         assert_eq!(session_address(&remote, "", &[]), None);
         assert_eq!(
-            session_address(&HostTarget::Local, "ssh://elsewhere/session_a", &[]),
+            session_address(&local, "ssh://elsewhere/session_a", &[]),
             None
         );
         assert_eq!(
-            session_address(
-                &HostTarget::Remote {
-                    alias: "east".into(),
-                    endpoint: None
-                },
-                "session_a",
-                &[]
-            ),
+            session_address(&HostTarget::primary("", "east"), "session_a", &[]),
             None
         );
     }

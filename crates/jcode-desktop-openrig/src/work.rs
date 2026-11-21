@@ -60,22 +60,18 @@ pub fn fetch_work(base: &str) -> Work {
         let (queue, workflows) = std::thread::scope(|scope| {
             let queue = scope.spawn(|| {
                 section_get::<Vec<QueueItem>>(
-                    base,
                     host,
                     &format!("/api/queue/list?limit={limit}&sort=updated"),
                 )
                 .map(Into::into)
             });
-            let workflows = section_get::<Vec<Workflow>>(
-                base,
-                host,
-                &format!("/api/workflow/list?limit={limit}"),
-            )
-            .map(Into::into);
+            let workflows =
+                section_get::<Vec<Workflow>>(host, &format!("/api/workflow/list?limit={limit}"))
+                    .map(Into::into);
             (queue.join().expect("queue reader panicked"), workflows)
         });
         HostWork {
-            host: host.into(),
+            host: host.alias().into(),
             queue,
             workflows,
         }
@@ -136,34 +132,42 @@ mod tests {
     }
 
     #[test]
-    fn work_live_capture_distinguishes_empty_and_refused() {
-        let (base, server) = crate::sections::serve_fixture(5, |target| match target {
-            "/api/hosts" => (200, include_str!("../tests/fixtures/work-hosts-get.json")),
-            "/api/queue/list?limit=101&sort=updated" => {
-                (200, include_str!("../tests/fixtures/work-queue-get.json"))
-            }
+    fn work_loads_remote_directly_and_distinguishes_unavailable_from_empty() {
+        let (remote, remote_server) = crate::sections::serve_fixture(2, |route| match route {
+            "/api/queue/list?limit=101&sort=updated" => (
+                200,
+                include_str!("../tests/fixtures/work-queue-example.json").into(),
+            ),
             "/api/workflow/list?limit=101" => (
                 200,
-                include_str!("../tests/fixtures/work-workflow-get.json"),
+                include_str!("../tests/fixtures/work-workflow-example.json").into(),
             ),
-            "/api/queue/list?limit=101&sort=updated&host=ai-core" => (
-                403,
-                include_str!("../tests/fixtures/work-queue-ai-core-get.json"),
-            ),
-            "/api/workflow/list?limit=101&host=ai-core" => (
-                403,
-                include_str!("../tests/fixtures/work-workflow-ai-core-get.json"),
-            ),
-            _ => panic!("unexpected route {target}"),
+            _ => panic!("unexpected remote route {route}"),
+        });
+        let (base, server) = crate::sections::serve_fixture(3, move |route| {
+            match route {
+            "/api/hosts" => (200, serde_json::json!({"hosts":[
+                {"id":"ai-core", "url":remote},
+                {"id":"missing-bearer", "url":remote, "bearer_file":"/nonexistent/openrig-test-token"}
+            ]}).to_string()),
+            "/api/queue/list?limit=101&sort=updated" | "/api/workflow/list?limit=101" => (200, "[]".into()),
+            _ => panic!("unexpected primary route {route}"),
+        }
         });
         let work = fetch_work(&base);
         server.join().unwrap();
+        remote_server.join().unwrap();
         assert!(work.discovery_issue.is_none());
         assert!(work.hosts[0].queue.as_ref().unwrap().items.is_empty());
         assert!(work.hosts[0].workflows.as_ref().unwrap().items.is_empty());
         assert_eq!(work.hosts[1].host, "ai-core");
-        assert_eq!(work.hosts[1].queue, Err("HTTP 403".into()));
-        assert_eq!(work.hosts[1].workflows, Err("HTTP 403".into()));
+        assert!(!work.hosts[1].queue.as_ref().unwrap().items.is_empty());
+        assert!(!work.hosts[1].workflows.as_ref().unwrap().items.is_empty());
+        assert_eq!(work.hosts[2].queue, Err("Bearer file is missing".into()));
+        assert_eq!(
+            work.hosts[2].workflows,
+            Err("Bearer file is missing".into())
+        );
     }
 
     #[test]
@@ -175,6 +179,14 @@ mod tests {
         let local = &work.hosts[0];
         assert_eq!(local.host, "local");
         assert!(local.queue.is_ok() && local.workflows.is_ok(), "{local:?}");
+        if let Ok(expected) = std::env::var("OPENRIG_LIVE_HOST") {
+            let host = work
+                .hosts
+                .iter()
+                .find(|host| host.host == expected)
+                .expect("registered live host");
+            assert!(host.queue.is_ok() && host.workflows.is_ok(), "{host:?}");
+        }
         for host in work.hosts {
             println!(
                 "{}: queue={:?}, workflows={:?}",

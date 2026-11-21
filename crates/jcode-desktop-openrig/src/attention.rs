@@ -1,9 +1,7 @@
-use std::time::Duration;
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{encode, fleet::Fleet, get, inbox::Inbox, token};
+use crate::{HostTarget, encode, fleet::Fleet, get_target, host::redact, inbox::Inbox};
 
 const TERMINAL_ACTOR: &str = "human@host";
 const MISSION_ACTION: &str = "/api/mission-control/action";
@@ -48,7 +46,6 @@ enum Operation {
         option: OfferedOption,
     },
     Human {
-        host: String,
         id: String,
         revision: Option<String>,
         verb: HumanVerb,
@@ -95,9 +92,8 @@ impl Action {
         })
     }
 
-    pub(crate) fn human(host: &str, id: &str, revision: Option<&str>, verb: HumanVerb) -> Self {
+    pub(crate) fn human(id: &str, revision: Option<&str>, verb: HumanVerb) -> Self {
         Self(Operation::Human {
-            host: host.into(),
             id: id.into(),
             revision: revision.map(str::to_owned),
             verb,
@@ -181,12 +177,7 @@ impl Action {
                 None,
                 json!({"optionId":option.id,"reason":input}),
             ),
-            Operation::Human {
-                host,
-                id,
-                revision,
-                verb,
-            } => {
+            Operation::Human { id, revision, verb } => {
                 let mut body = match verb {
                     HumanVerb::Approve => json!({"verb":"approve"}),
                     HumanVerb::Resolve => json!({"verb":"resolve","decision":input}),
@@ -198,11 +189,7 @@ impl Action {
                 };
                 body["qitemId"] = json!(id);
                 body["actorSession"] = json!(TERMINAL_ACTOR);
-                if host == "local" {
-                    body["authority"] = json!("primary-user");
-                } else {
-                    body["hostId"] = json!(host);
-                }
+                body["authority"] = json!("primary-user");
                 if let Some(revision) = revision {
                     body["expectedRevision"] = json!(revision);
                 }
@@ -224,15 +211,10 @@ pub struct ConfirmedAction {
 }
 
 impl ConfirmedAction {
-    pub fn execute(self, base: &str) -> Result<(), String> {
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout(Duration::from_secs(20))
-            .build();
-        let mut request = agent.post(&format!("{}{}", base.trim_end_matches('/'), self.route));
-        if let Some(token) = token(self.route == MISSION_ACTION) {
-            request = request.set("Authorization", &format!("Bearer {token}"));
-        }
+    pub fn execute(self, target: &HostTarget) -> Result<(), String> {
+        let bearer = target.bearer(self.route == MISSION_ACTION)?;
+        let safe = |value: &str| redact(value, bearer.as_deref());
+        let mut request = target.request("POST", &self.route, 20, bearer.as_deref())?;
         if let Some(actor) = self.actor {
             request = request.set("X-OpenRig-Session", actor);
         }
@@ -243,16 +225,16 @@ impl ConfirmedAction {
                     .into_json()
                     .map_err(|_| "OpenRig returned an invalid action response.".to_owned())?;
                 if result["ok"] == false {
-                    return Err(daemon_error(&result)
-                        .unwrap_or("OpenRig refused the action.")
-                        .to_owned());
+                    return Err(safe(
+                        daemon_error(&result).unwrap_or("OpenRig refused the action."),
+                    ));
                 }
                 if self.route.ends_with("/decide")
                     && !matches!(result["state"].as_str(), Some("answered" | "refused"))
                 {
                     return Err(format!(
                         "No decision was recorded. Request state: {}",
-                        result["state"].as_str().unwrap_or("–")
+                        safe(result["state"].as_str().unwrap_or("–"))
                     ));
                 }
                 Ok(())
@@ -261,15 +243,15 @@ impl ConfirmedAction {
                 let status = response.status();
                 let raw = response.into_string().unwrap_or_default();
                 let body = serde_json::from_str(&raw).unwrap_or(Value::Null);
-                Err(daemon_error(&body).map(str::to_owned).unwrap_or_else(|| {
+                Err(daemon_error(&body).map(safe).unwrap_or_else(|| {
                     if raw.is_empty() {
                         format!("OpenRig returned HTTP {status}.")
                     } else {
-                        raw
+                        safe(&raw)
                     }
                 }))
             }
-            Err(error) => Err(error.to_string()),
+            Err(_) => Err("Connection failed or timed out".into()),
         }
     }
 }
@@ -349,35 +331,22 @@ pub(crate) struct HeldBinding {
     pub node_id: String,
 }
 
-fn read<T: serde::de::DeserializeOwned>(base: &str, route: &str) -> Result<T, String> {
-    serde_json::from_value(get(base, route)?).map_err(|error| format!("{route}: {error}"))
+fn read<T: serde::de::DeserializeOwned>(target: &HostTarget, route: &str) -> Result<T, String> {
+    serde_json::from_value(get_target(target, route)?).map_err(|error| format!("{route}: {error}"))
 }
 
-fn parked(base: &str, host: &str, rig: &str) -> Result<Vec<ParkedSeat>, String> {
-    let remote = if host == "local" {
-        String::new()
-    } else {
-        format!("&host={}", encode(host))
-    };
-    let model: ParkedRead = read(
-        base,
-        &format!("/api/activity/parked?rig={}{remote}", encode(rig)),
-    )?;
+fn parked(target: &HostTarget, rig: &str) -> Result<Vec<ParkedSeat>, String> {
+    let model: ParkedRead = read(target, &format!("/api/activity/parked?rig={}", encode(rig)))?;
     Ok(model.rig.seats)
 }
 
-fn held(base: &str, host: &str, session: &str) -> Result<Vec<HeldMessage>, String> {
-    let remote = if host == "local" {
-        String::new()
-    } else {
-        format!("&host={}", encode(host))
-    };
+fn held(target: &HostTarget, session: &str) -> Result<Vec<HeldMessage>, String> {
     let mut result = Vec::new();
     loop {
         let page: HeldPage = read(
-            base,
+            target,
             &format!(
-                "/api/seat/held-messages/{}?limit=100&offset={}{remote}",
+                "/api/seat/held-messages/{}?limit=100&offset={}",
                 encode(session),
                 result.len()
             ),
@@ -402,14 +371,12 @@ fn held(base: &str, host: &str, session: &str) -> Result<Vec<HeldMessage>, Strin
     }
 }
 
-pub fn load_waits(base: &str, fleet: &Fleet, inbox: &mut Inbox) {
+pub(crate) fn load_waits(fleet: &Fleet, inbox: &mut Inbox) {
     for host in &fleet.hosts {
         let Some(rigs) = &host.rigs else { continue };
-        let mut parked_unavailable = false;
-        let mut held_unavailable = false;
         for rig in rigs {
-            if !parked_unavailable {
-                match parked(base, host.queue_host_id(), &rig.name) {
+            {
+                match parked(&host.target, &rig.name) {
                     Ok(seats) => {
                         for seat in seats {
                             match seat.parked {
@@ -423,8 +390,6 @@ pub fn load_waits(base: &str, fleet: &Fleet, inbox: &mut Inbox) {
                         }
                     }
                     Err(error) => {
-                        parked_unavailable = host.queue_host_id() != "local"
-                            && error.contains("read_through_path_not_allowed");
                         inbox.issues.push(format!(
                             "{} / {} · Parked work: {error}",
                             host.name, rig.name
@@ -437,10 +402,7 @@ pub fn load_waits(base: &str, fleet: &Fleet, inbox: &mut Inbox) {
                 let Some(session) = seat.canonical_session_name.as_deref() else {
                     continue;
                 };
-                if held_unavailable {
-                    break;
-                }
-                match held(base, host.queue_host_id(), session) {
+                match held(&host.target, session) {
                     Ok(messages) => {
                         for message in messages {
                             if message.guard_binding.node_id == seat.id {
@@ -454,8 +416,6 @@ pub fn load_waits(base: &str, fleet: &Fleet, inbox: &mut Inbox) {
                         }
                     }
                     Err(error) => {
-                        held_unavailable = host.queue_host_id() != "local"
-                            && error.contains("read_through_path_not_allowed");
                         inbox.issues.push(format!(
                             "{} / {session} · Held messages: {error}",
                             host.name
@@ -475,22 +435,53 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
-    fn parses_captured_parked_and_held_gets() {
-        let parked: ParkedRead =
-            serde_json::from_str(include_str!("../tests/fixtures/attention_parked_get.json"))
-                .unwrap();
-        assert!(matches!(
-            parked.rig.seats[0].parked,
-            ParkedVerdict::Known(false)
-        ));
-        assert!(matches!(
-            parked.rig.seats[1].parked,
-            ParkedVerdict::Unknown(_)
-        ));
-        let held: HeldPage =
-            serde_json::from_str(include_str!("../tests/fixtures/attention_held_get.json"))
-                .unwrap();
-        assert!(held.items.is_empty() && !held.truncated);
+    fn parked_and_held_loaders_read_the_registered_host_directly() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let registry: crate::host::HostRegistry = serde_json::from_value(json!({"hosts":[{
+            "id":"remote", "url":format!("http://{}", listener.local_addr().unwrap())
+        }]}))
+        .unwrap();
+        let (target, _) = registry.into_targets().next().unwrap();
+        let cases = [
+            (
+                "/api/activity/parked?rig=rig%2Fone",
+                include_str!("../tests/fixtures/attention_parked_get.json"),
+            ),
+            (
+                "/api/seat/held-messages/seat%40rig?limit=100&offset=0",
+                include_str!("../tests/fixtures/attention_held_get.json"),
+            ),
+        ];
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for (route, body) in cases {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let mut lines = BufReader::new(&stream).lines();
+                    assert_eq!(
+                        lines.next().unwrap().unwrap(),
+                        format!("GET {route} HTTP/1.1")
+                    );
+                    for line in lines {
+                        if line.unwrap().is_empty() {
+                            break;
+                        }
+                    }
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+            });
+            let seats = parked(&target, "rig/one").unwrap();
+            assert!(matches!(seats[0].parked, ParkedVerdict::Known(false)));
+            assert!(matches!(seats[1].parked, ParkedVerdict::Unknown(_)));
+            assert!(held(&target, "seat@rig").unwrap().is_empty());
+        });
     }
 
     #[test]
@@ -524,18 +515,18 @@ mod tests {
                 json!({"optionId":"exact-id","reason":""}),
             ),
             (
-                Action::human("local", "request-7", Some("dr1-123"), HumanVerb::Resolve),
+                Action::human("request-7", Some("dr1-123"), HumanVerb::Resolve),
                 "Proceed",
                 MISSION_ACTION,
                 None,
                 json!({"verb":"resolve","qitemId":"request-7","actorSession":"human@host","decision":"Proceed","authority":"primary-user","expectedRevision":"dr1-123"}),
             ),
             (
-                Action::human("ai-core", "request-8", None, HumanVerb::Approve),
+                Action::human("request-8", None, HumanVerb::Approve),
                 "",
                 MISSION_ACTION,
                 None,
-                json!({"verb":"approve","qitemId":"request-8","actorSession":"human@host","hostId":"ai-core"}),
+                json!({"verb":"approve","qitemId":"request-8","actorSession":"human@host","authority":"primary-user"}),
             ),
         ];
         for (action, input, route, actor, payload) in cases {
@@ -577,7 +568,7 @@ mod tests {
                     action
                         .confirm(input)
                         .unwrap()
-                        .execute(&format!("http://{addr}")),
+                        .execute(&HostTarget::primary(&format!("http://{addr}"), "local")),
                     Err(refusal.into())
                 );
             });
@@ -589,51 +580,51 @@ mod tests {
     fn live_daemon_reads_attention_sources() {
         let base = std::env::var("OPENRIG_LIVE_BASE").expect("set OPENRIG_LIVE_BASE");
         let mut snapshot = crate::fetch_snapshot(&base);
-        let local = snapshot
+        let host_id = std::env::var("OPENRIG_LIVE_HOST").unwrap_or_else(|_| "local".into());
+        let host = snapshot
             .fleet
             .hosts
             .iter()
-            .find(|host| host.queue_host_id() == "local")
-            .expect("local host");
-        let rigs = local.rigs.as_ref().expect("local rig inventory");
+            .find(|host| host.queue_host_id() == host_id)
+            .expect("registered live host");
+        let rigs = host.rigs.as_ref().expect("host rig inventory");
         let mut parked_reads = 0;
         let mut held_reads = 0;
         for rig in rigs {
-            parked(&base, "local", &rig.name).expect("local parked read");
+            parked(&host.target, &rig.name).expect("host parked read");
             parked_reads += 1;
             for seat in rig.pods.iter().flatten().flat_map(|pod| &pod.seats) {
                 if let Some(session) = &seat.canonical_session_name {
-                    held(&base, "local", session).expect("local held read");
+                    held(&host.target, session).expect("host held read");
                     held_reads += 1;
                 }
             }
         }
-        snapshot.load_attention(&base);
-        let inbox = snapshot.inbox.expect("attention aggregate");
+        assert!(
+            parked_reads > 0 && held_reads > 0,
+            "no live rig or seat on {host_id}"
+        );
+        snapshot.load_attention();
+        let inbox = snapshot.inbox.expect("attention queue");
         assert!(inbox.waits_loaded());
         assert!(
             inbox
                 .hosts
                 .iter()
-                .any(|host| host.host_id == "local" && host.status == "ok")
+                .any(|host| host.host_id == host_id && host.status == "ok")
         );
         assert!(
-            inbox
-                .issues
-                .iter()
-                .all(|issue| !issue.starts_with("Local human actions:")
-                    && !issue.starts_with("Local runner permissions:")),
+            inbox.issues.iter().all(|issue| !issue
+                .starts_with(&format!("{host_id} · Human actions:"))
+                && !issue.starts_with(&format!("{host_id} · Runner permissions:"))),
             "{:?}",
             inbox.issues
         );
         eprintln!(
-            "Attention: {parked_reads} local parked and {held_reads} local held GETs succeeded; {} items, {} queue hosts, {} source issues",
+            "Attention {host_id}: {parked_reads} parked and {held_reads} held GETs succeeded; {} items, {} queue hosts, {} source issues",
             inbox.items.len(),
             inbox.hosts.len(),
             inbox.issues.len()
         );
-        for issue in inbox.issues {
-            eprintln!("  {issue}");
-        }
     }
 }

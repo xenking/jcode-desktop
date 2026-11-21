@@ -473,7 +473,7 @@ impl Panel {
                             let base = default_base_url();
                             let mut snapshot = fetch_snapshot(&base);
                             if read_attention && !writing {
-                                snapshot.load_attention(&base);
+                                snapshot.load_attention();
                             }
                             (snapshot, fetch_stream_tail(&base, 5))
                         })

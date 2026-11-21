@@ -25,33 +25,37 @@ impl<T> From<Vec<T>> for ReadWindow<T> {
     }
 }
 
-#[derive(Deserialize)]
-struct HostCatalog {
-    hosts: Vec<HostIdentity>,
+fn registry(base: &str) -> Result<crate::host::HostRegistry, String> {
+    section_get(&crate::HostTarget::primary(base, "local"), "/api/hosts")
 }
 
-#[derive(Deserialize)]
-struct HostIdentity {
-    id: String,
+pub(crate) fn host_target(base: &str, alias: &str) -> Result<crate::HostTarget, String> {
+    if alias == "local" {
+        return Ok(crate::HostTarget::primary(base, alias));
+    }
+    registry(base)?
+        .into_targets()
+        .find_map(|(target, _)| (target.alias() == alias).then_some(target))
+        .ok_or_else(|| "Host is not in the OpenRig registry".into())
 }
 
 pub(crate) fn read_hosts<T: Send>(
     base: &str,
-    read: impl Fn(&str) -> T + Sync,
+    read: impl Fn(&crate::HostTarget) -> T + Sync,
 ) -> (Vec<T>, Option<String>) {
-    let mut ids = vec!["local".to_owned()];
-    let issue = match section_get::<HostCatalog>(base, "local", "/api/hosts") {
+    let mut hosts = vec![crate::HostTarget::primary(base, "local")];
+    let issue = match registry(base) {
         Ok(catalog) => {
-            for entry in catalog.hosts {
-                if !entry.id.trim().is_empty() && !ids.contains(&entry.id) {
-                    ids.push(entry.id);
-                    if ids.len() > SECTION_HOST_LIMIT {
+            for (target, _) in catalog.into_targets() {
+                if !hosts.iter().any(|host| host.alias() == target.alias()) {
+                    hosts.push(target);
+                    if hosts.len() > SECTION_HOST_LIMIT {
                         break;
                     }
                 }
             }
-            (ids.len() > SECTION_HOST_LIMIT).then(|| {
-                ids.truncate(SECTION_HOST_LIMIT);
+            (hosts.len() > SECTION_HOST_LIMIT).then(|| {
+                hosts.truncate(SECTION_HOST_LIMIT);
                 format!("Host list truncated to {SECTION_HOST_LIMIT} hosts")
             })
         }
@@ -59,8 +63,9 @@ pub(crate) fn read_hosts<T: Send>(
     };
     let results = std::thread::scope(|scope| {
         let read = &read;
-        ids.iter()
-            .map(|id| scope.spawn(move || read(id)))
+        hosts
+            .iter()
+            .map(|host| scope.spawn(move || read(host)))
             .collect::<Vec<_>>()
             .into_iter()
             .map(|task| task.join().expect("section reader panicked"))
@@ -70,32 +75,20 @@ pub(crate) fn read_hosts<T: Send>(
 }
 
 pub(crate) fn section_get<T: serde::de::DeserializeOwned>(
-    base: &str,
-    host: &str,
+    target: &crate::HostTarget,
     route: &str,
 ) -> Result<T, String> {
     use std::io::Read;
-    use std::time::Duration;
 
     const MAX_BYTES: u64 = 8 * 1024 * 1024;
-    let route = if host == "local" {
-        route.to_owned()
-    } else {
-        let separator = if route.contains('?') { '&' } else { '?' };
-        format!("{route}{separator}host={}", crate::encode(host))
-    };
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(8))
-        .redirects(0)
-        .build();
-    let mut req = agent.get(&format!("{}{route}", base.trim_end_matches('/')));
-    if let Some(token) = crate::token(false) {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
-    let response = req.call().map_err(|error| match error {
-        ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(_) => "Connection failed or timed out".into(),
-    })?;
+    let bearer = target.bearer(false)?;
+    let response = target
+        .request("GET", route, 8, bearer.as_deref())?
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Status(code, _) => format!("HTTP {code}"),
+            ureq::Error::Transport(_) => "Connection failed or timed out".into(),
+        })?;
     if response.status() != 200 {
         return Err(format!("HTTP {}", response.status()));
     }
@@ -114,7 +107,7 @@ pub(crate) fn section_get<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 pub(crate) fn serve_fixture(
     count: usize,
-    response: impl Fn(&str) -> (u16, &'static str) + Send + 'static,
+    response: impl Fn(&str) -> (u16, String) + Send + 'static,
 ) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;

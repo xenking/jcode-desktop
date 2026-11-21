@@ -127,6 +127,8 @@ def main():
                         help="choose the isolated transcript fixture")
     parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
                         help="capture live loopback GETs or the offline inspector/confirmation in OpenRig")
+    parser.add_argument("--openrig-live-base", default="http://127.0.0.1:7433",
+                        help="registry daemon URL for the read-only OpenRig attention capture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
     parser.add_argument("--queued", type=int, default=0,
@@ -506,6 +508,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR"] = "1"
         if args.openrig_attention:
             env["JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION"] = args.openrig_attention
+        if args.openrig_attention == "live":
+            env["OPENRIG_URL"] = args.openrig_live_base
         if args.queued > 0:
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(args.queued)
         if args.panel_transcripts:

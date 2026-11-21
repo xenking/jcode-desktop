@@ -5,12 +5,13 @@ use crate::{
     attention::{Action, HeldMessage, HumanVerb, ParkedSeat, Question},
     encode,
     fleet::{Fleet, Host, HostTarget, Rig, Seat},
-    get, request,
+    get_target,
+    sections::section_get,
 };
 
 pub(crate) use crate::attention::ClearEvidence;
 
-const ROUTE: &str = "/api/queue/attention-aggregate";
+const ROUTE: &str = "/api/queue/list?attention=1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ItemId {
@@ -34,6 +35,17 @@ pub enum ItemId {
         node: String,
         message: String,
     },
+}
+
+impl ItemId {
+    pub fn host_id(&self) -> &str {
+        match self {
+            Self::Queue { host, .. }
+            | Self::Seat { host, .. }
+            | Self::Parked { host, .. }
+            | Self::HeldMessage { host, .. } => host,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,39 +261,19 @@ impl From<QueueItem> for Item {
             item.state.as_deref(),
             Some("pending" | "in-progress" | "blocked")
         ) && item.human_intent.as_deref() != Some("update")
+            && is_permission
+            && let Some(question) = questions
+                .iter()
+                .find(|question| question.id == "permission")
         {
-            if is_permission && item.host_id == "local" {
-                if let Some(question) = questions
+            actions.extend(
+                question
+                    .options
                     .iter()
-                    .find(|question| question.id == "permission")
-                {
-                    actions.extend(
-                        question
-                            .options
-                            .iter()
-                            .filter(|option| !option.id.is_empty() && !option.label.is_empty())
-                            .cloned()
-                            .map(|option| Action::decide(&item.qitem_id, option)),
-                    );
-                }
-            } else if !is_permission
-                && item.state.as_deref() == Some("pending")
-                && item.host_id != "local"
-                && item.destination_session.as_deref() == Some("human@host")
-                && item.human_questions.as_ref().is_none_or(Vec::is_empty)
-                && !item
-                    .evidence_ref
-                    .as_deref()
-                    .is_some_and(|value| value.starts_with("pair-request:"))
-            {
-                // This actor survives remote forwarding only for the generic terminal address.
-                actions.push(Action::human(
-                    &item.host_id,
-                    &item.qitem_id,
-                    None,
-                    HumanVerb::Approve,
-                ));
-            }
+                    .filter(|option| !option.id.is_empty() && !option.label.is_empty())
+                    .cloned()
+                    .map(|option| Action::decide(&item.qitem_id, option)),
+            );
         }
         let seat = present(item.source_session.clone());
         let reason = present(item.blocked_on.clone());
@@ -398,7 +390,7 @@ impl Inbox {
                     };
                     let mut item = Item {
                         id: ItemId::Seat {
-                            host: host.id.clone(),
+                            host: host.queue_host_id().to_owned(),
                             rig: rig.id.clone(),
                             node: seat.id.clone(),
                         },
@@ -419,12 +411,8 @@ impl Inbox {
                         reason: signal.reason.clone(),
                         reason_class: Some(signal.class),
                         session: None,
-                        actions: match (
-                            host.queue_host_id(),
-                            seat.canonical_session_name.as_deref(),
-                            signal.clear,
-                        ) {
-                            ("local", Some(session), Some(evidence)) => {
+                        actions: match (seat.canonical_session_name.as_deref(), signal.clear) {
+                            (Some(session), Some(evidence)) => {
                                 vec![Action::clear(session, evidence, signal.observed_at)]
                             }
                             _ => Vec::new(),
@@ -471,7 +459,7 @@ impl Inbox {
     pub(crate) fn include_parked(&mut self, host: &Host, rig: &Rig, parked: ParkedSeat) {
         let mut item = Item {
             id: ItemId::Parked {
-                host: host.id.clone(),
+                host: host.queue_host_id().to_owned(),
                 rig: rig.id.clone(),
                 node: parked.seat_node_id.clone(),
             },
@@ -520,7 +508,7 @@ impl Inbox {
             .and_then(|delivery| present(delivery.reason.clone()));
         let mut item = Item {
             id: ItemId::HeldMessage {
-                host: host.id.clone(),
+                host: host.queue_host_id().to_owned(),
                 rig: rig.id.clone(),
                 node: seat.id.clone(),
                 message: message.outbox_id.clone(),
@@ -542,27 +530,24 @@ impl Inbox {
             rig: None,
             seat: None,
             session: None,
-            actions: (host.queue_host_id() == "local")
-                .then(|| Action::retire(session, message.outbox_id))
-                .into_iter()
-                .collect(),
+            actions: vec![Action::retire(session, message.outbox_id)],
         };
         item.locate(host, rig, seat);
         self.items.push(item);
     }
 
-    fn apply_feed(&mut self, feed: FeedRead) {
+    fn apply_feed(&mut self, host_id: &str, feed: FeedRead) {
         self.issues.extend(
             feed.sources
                 .into_iter()
                 .filter(|source| source.source == "queue" && source.state != "available")
-                .map(|source| format!("Local human actions: {}", source.detail)),
+                .map(|source| format!("{host_id} · Human actions: {}", source.detail)),
         );
         for item in &mut self.items {
             let ItemId::Queue { host, item: id } = &item.id else {
                 continue;
             };
-            if host != "local"
+            if host != host_id
                 || item
                     .evidence
                     .as_deref()
@@ -579,7 +564,7 @@ impl Inbox {
             else {
                 continue;
             };
-            let action = |verb| Action::human(host, id, revision.as_deref(), verb);
+            let action = |verb| Action::human(id, revision.as_deref(), verb);
             match answer.verb {
                 FeedVerb::Approve if item.questions.is_none() => {
                     item.actions.push(action(HumanVerb::Approve))
@@ -612,22 +597,24 @@ impl Inbox {
         }
     }
 
-    pub(crate) fn load_human_actions(&mut self, base: &str) {
+    pub(crate) fn load_human_actions(&mut self, host: &Host) {
+        let host_id = host.queue_host_id();
         const FEED: &str = "/api/attention?kind=action";
-        match get(base, FEED).and_then(|value| {
+        match get_target(&host.target, FEED).and_then(|value| {
             serde_json::from_value::<FeedRead>(value).map_err(|error| format!("{FEED}: {error}"))
         }) {
             Ok(feed) => {
                 let missing: Vec<_> = feed.items.iter().filter_map(|row| row.id.strip_prefix("queue:")).filter(|id| {
-                    !self.items.iter().any(|item| matches!(&item.id, ItemId::Queue {host, item} if host == "local" && item == id))
+                    !self.items.iter().any(|item| matches!(&item.id, ItemId::Queue {host, item} if host == host_id && item == id))
                 }).collect();
                 if missing.len() > 20 {
-                    self.issues
-                        .push("Showing details for at most 20 additional local requests.".into());
+                    self.issues.push(format!(
+                        "{host_id}: showing details for at most 20 additional requests."
+                    ));
                 }
                 for id in missing.into_iter().take(20) {
                     let route = format!("/api/queue/{}", encode(id));
-                    match get(base, &route).and_then(|value| {
+                    match get_target(&host.target, &route).and_then(|value| {
                         serde_json::from_value::<QueueItem>(value)
                             .map_err(|error| format!("{route}: {error}"))
                     }) {
@@ -638,23 +625,26 @@ impl Inbox {
                                     Some("pending" | "blocked" | "in-progress")
                                 ) =>
                         {
-                            row.host_id = "local".into();
+                            row.host_id = host_id.into();
                             self.items.push(row.into());
                         }
                         Ok(_) => {}
                         Err(error) => self.issues.push(error),
                     }
                 }
-                self.apply_feed(feed);
+                self.apply_feed(host_id, feed);
             }
-            Err(error) => self.issues.push(format!("Local human actions: {error}")),
+            Err(error) => self
+                .issues
+                .push(format!("{host_id} · Human actions: {error}")),
         }
     }
 
-    pub(crate) fn load_local_permissions(&mut self, base: &str) {
+    pub(crate) fn load_permissions(&mut self, host: &Host) {
+        let host_id = host.queue_host_id();
         const ROUTE: &str =
             "/api/queue/list?tag=runner-permission&state=pending,in-progress,blocked&limit=100";
-        let rows = get(base, ROUTE).and_then(|value| {
+        let rows = get_target(&host.target, ROUTE).and_then(|value| {
             serde_json::from_value::<Vec<QueueItem>>(value)
                 .map_err(|error| format!("{ROUTE}: {error}"))
         });
@@ -662,13 +652,14 @@ impl Inbox {
             Ok(rows) => rows,
             Err(error) => {
                 self.issues
-                    .push(format!("Local runner permissions: {error}"));
+                    .push(format!("{host_id} · Runner permissions: {error}"));
                 return;
             }
         };
         if rows.len() == 100 {
-            self.issues
-                .push("Showing up to 100 open local runner permissions.".into());
+            self.issues.push(format!(
+                "{host_id}: showing up to 100 open runner permissions."
+            ));
         }
         for mut row in rows {
             let Some((node, generation)) = row.permission_origin() else {
@@ -686,7 +677,7 @@ impl Inbox {
                 }
                 let Some(id) = previous else { break };
                 let route = format!("/api/queue/{}", encode(&id));
-                let parent = get(base, &route).and_then(|value| {
+                let parent = get_target(&host.target, &route).and_then(|value| {
                     serde_json::from_value::<QueueItem>(value)
                         .map_err(|error| format!("{route}: {error}"))
                 });
@@ -702,12 +693,12 @@ impl Inbox {
                     Ok(_) => break,
                     Err(error) => {
                         self.issues
-                            .push(format!("Local runner permissions: {error}"));
+                            .push(format!("{host_id} · Runner permissions: {error}"));
                         break;
                     }
                 }
             }
-            row.host_id = "local".into();
+            row.host_id = host_id.into();
             let item = Item::from(row);
             if let Some(index) = self.items.iter().position(|current| current.id == item.id) {
                 self.items[index] = item;
@@ -722,15 +713,57 @@ impl Inbox {
             serde_json::from_str(include_str!("../tests/fixtures/inbox.json")).unwrap(),
         )
         .unwrap();
-        inbox.apply_feed(serde_json::from_value(serde_json::json!({"items":[{"id":"queue:q1","answer":{"verb":"answer"},"revision":"fixture-revision"}],"sources":[]})).unwrap());
+        inbox.apply_feed("local", serde_json::from_value(serde_json::json!({"items":[{"id":"queue:q1","answer":{"verb":"answer"},"revision":"fixture-revision"}],"sources":[]})).unwrap());
         inbox.waits_loaded = true;
         inbox
     }
 }
 
-pub fn fetch_inbox(base: &str) -> Result<Inbox, String> {
-    // The daemon's own per-host read deadline is five seconds.
-    Inbox::parse(request(base, ROUTE, None, false, 8)?)
+pub(crate) fn fetch_inbox(fleet: &Fleet) -> Inbox {
+    let reads = std::thread::scope(|scope| {
+        fleet
+            .hosts
+            .iter()
+            .map(|host| {
+                scope.spawn(|| {
+                    (
+                        host.queue_host_id(),
+                        section_get::<Vec<QueueItem>>(&host.target, ROUTE),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|read| read.join().expect("Inbox reader panicked"))
+            .collect::<Vec<_>>()
+    });
+    let mut inbox = Inbox::default();
+    for (id, read) in reads {
+        let rows = read.and_then(|rows| {
+            if rows.iter().any(|row| row.qitem_id.trim().is_empty()) {
+                return Err("Invalid queue item identity".into());
+            }
+            Ok(rows)
+        });
+        let error = rows.as_ref().err().cloned();
+        if let Some(error) = &error {
+            inbox
+                .issues
+                .push(format!("{id} · Queue unavailable: {error}"));
+        }
+        inbox.hosts.push(HostRead {
+            host_id: id.into(),
+            status: if error.is_some() { "unavailable" } else { "ok" }.into(),
+            error,
+        });
+        if let Ok(rows) = rows {
+            inbox.items.extend(rows.into_iter().map(|mut row| {
+                row.host_id = id.into();
+                row.into()
+            }));
+        }
+    }
+    inbox
 }
 
 #[cfg(test)]
@@ -749,14 +782,13 @@ mod tests {
             "../tests/fixtures/attention_isolated_get.json"
         ))
         .unwrap();
-        inbox.apply_feed(feed);
+        inbox.apply_feed("local", feed);
         let [action] = inbox.items[0].actions() else {
             panic!("expected the daemon's acknowledgement action")
         };
         assert_eq!(
             action,
             &Action::human(
-                "local",
                 "qitem-desktop-isolated-ack",
                 Some("dr1-c2c3a05a96be5d8005096e88"),
                 HumanVerb::Approve
@@ -801,31 +833,55 @@ mod tests {
     }
 
     #[test]
-    fn inbox_get_reports_unavailable_route() {
-        use std::io::{BufRead, BufReader, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let (mut client, _) = listener.accept().unwrap();
-                let mut line = String::new();
-                BufReader::new(&client).read_line(&mut line).unwrap();
-                assert_eq!(line.trim_end(), format!("GET {ROUTE} HTTP/1.1"));
-                client.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
-            });
-            assert!(
-                fetch_inbox(&format!("http://{addr}"))
-                    .unwrap_err()
-                    .contains("HTTP 404")
-            );
+    fn inbox_reads_own_queue_and_offers_actions_per_host() {
+        let (remote, remote_server) = crate::sections::serve_fixture(2, |route| {
+            match route {
+            ROUTE => (200, r#"[{"qitemId":"same","hostId":"local","state":"pending"}]"#.into()),
+            "/api/attention?kind=action" => (200, r#"{"sources":[],"items":[{"id":"queue:same","answer":{"verb":"approve"},"revision":"remote-revision"}]}"#.into()),
+            _ => panic!("unexpected remote route {route}"),
+        }
         });
+        let (base, server) = crate::sections::serve_fixture(1, |route| {
+            assert_eq!(route, ROUTE);
+            (404, "{}".into())
+        });
+        let health = json!({"selfHostId":"me"});
+        let registry = json!({"hosts":[{"id":"another", "url":remote}]});
+        let fleet = Fleet::load(
+            &base,
+            Some(&health),
+            Some(&registry),
+            Some(&json!([])),
+            &mut Vec::new(),
+            |_, _| Ok(json!([])),
+        );
+        let mut inbox = fetch_inbox(&fleet);
+        inbox.load_human_actions(&fleet.hosts[1]);
+        server.join().unwrap();
+        remote_server.join().unwrap();
+        assert_eq!(inbox.hosts[0].error.as_deref(), Some("HTTP 404"));
+        assert_eq!(inbox.hosts[1].status, "ok");
+        let [item] = inbox.items.as_slice() else {
+            panic!("expected remote queue item");
+        };
+        assert_eq!(item.id.host_id(), "another");
+        assert_eq!(
+            item.actions(),
+            &[Action::human(
+                "same",
+                Some("remote-revision"),
+                HumanVerb::Approve
+            )]
+        );
     }
 
     #[test]
     #[ignore = "needs a running OpenRig daemon"]
     fn live_daemon_reads_inbox() {
         let base = std::env::var("OPENRIG_LIVE_BASE").expect("set OPENRIG_LIVE_BASE");
-        let inbox = fetch_inbox(&base).expect("load attention queue");
+        let inbox = crate::fetch_snapshot(&base)
+            .inbox
+            .expect("load attention queue");
         assert!(
             inbox
                 .hosts

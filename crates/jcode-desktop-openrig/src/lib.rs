@@ -2,7 +2,9 @@ pub mod attention;
 pub mod build;
 pub mod connections;
 pub mod cost;
+mod host;
 pub mod inbox;
+pub use host::HostTarget;
 pub mod sections;
 pub mod usage;
 pub mod util;
@@ -273,44 +275,38 @@ impl std::fmt::Display for ReadFailure {
     }
 }
 fn request_typed(
-    base: &str,
+    target: &HostTarget,
     route: &str,
     body: Option<Value>,
     operator: bool,
     timeout: u64,
 ) -> Result<Value, ReadFailure> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(timeout))
-        .build();
-    let url = format!("{}{}", base.trim_end_matches('/'), route);
-    let mut req = if body.is_some() {
-        agent.post(&url)
-    } else {
-        agent.get(&url)
-    };
-    if let Some(token) = token(operator) {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
-    let response = match body {
-        Some(value) => req.send_json(value),
-        None => req.call(),
-    };
     let fail = |status, error: String| ReadFailure {
         status,
         error,
         message: None,
     };
+    let bearer = target.bearer(operator).map_err(|error| fail(None, error))?;
+    let method = if body.is_some() { "POST" } else { "GET" };
+    let req = target
+        .request(method, route, timeout, bearer.as_deref())
+        .map_err(|error| fail(None, error))?;
+    let response = match body {
+        Some(value) => req.send_json(value),
+        None => req.call(),
+    };
     match response {
-        Ok(response) => response
+        Ok(response) if (200..300).contains(&response.status()) => response
             .into_json()
             .map_err(|_| fail(None, format!("{route}: invalid JSON response"))),
-        Err(ureq::Error::Status(code, response)) => {
+        Ok(response) | Err(ureq::Error::Status(_, response)) => {
+            let code = response.status();
             let body = response.into_json::<Value>().ok();
             let text = |key: &str| {
                 body.as_ref()
                     .and_then(|v| v.get(key))
                     .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .map(|value| host::redact(value, bearer.as_deref()))
             };
             let message = text("message");
             let detail = text("error").or_else(|| message.clone());
@@ -336,11 +332,18 @@ fn request(
     operator: bool,
     timeout: u64,
 ) -> Result<Value, String> {
-    request_typed(base, route, body, operator, timeout).map_err(|f| f.error)
+    request_typed(
+        &HostTarget::primary(base, "local"),
+        route,
+        body,
+        operator,
+        timeout,
+    )
+    .map_err(|f| f.error)
 }
 fn get_typed(base: &str, route: &str) -> Result<Value, ReadFailure> {
     request_typed(
-        base,
+        &HostTarget::primary(base, "local"),
         route,
         None,
         false,
@@ -349,6 +352,9 @@ fn get_typed(base: &str, route: &str) -> Result<Value, ReadFailure> {
 }
 fn get(base: &str, route: &str) -> Result<Value, String> {
     get_typed(base, route).map_err(|f| f.error)
+}
+fn get_target(target: &HostTarget, route: &str) -> Result<Value, String> {
+    request_typed(target, route, None, false, 5).map_err(|failure| failure.error)
 }
 fn encode(s: &str) -> String {
     s.bytes()
@@ -510,9 +516,8 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         "/api/provider/usage/hosts",
         "/api/telemetry/usage/cost",
     ];
-    let (results, inbox) = std::thread::scope(|scope| {
-        let inbox = scope.spawn(|| inbox::fetch_inbox(base_url));
-        let results: Vec<_> = routes
+    let results: Vec<_> = std::thread::scope(|scope| {
+        routes
             .iter()
             .map(|route| scope.spawn(move || get_typed(base_url, route)))
             .collect::<Vec<_>>()
@@ -526,13 +531,7 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                     })
                 })
             })
-            .collect();
-        (
-            results,
-            inbox
-                .join()
-                .unwrap_or_else(|_| Err("Inbox read worker failed".into())),
-        )
+            .collect()
     });
     let mut errors: Vec<String> = results
         .iter()
@@ -540,10 +539,7 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         .collect();
     let val = |i: usize| results[i].as_ref().ok();
     let fleet = fleet::Fleet::fetch(base_url, val(0), val(1), val(2), &mut errors);
-    let mut inbox = inbox.unwrap_or_else(|error| inbox::Inbox {
-        issues: vec![error],
-        ..inbox::Inbox::default()
-    });
+    let mut inbox = inbox::fetch_inbox(&fleet);
     if val(1).is_none() {
         inbox.issues.push("OpenRig host list unavailable".into());
     }
@@ -649,14 +645,24 @@ fn demo_rows(kind: SectionKind) -> Option<Vec<Row>> {
     }
 }
 impl Snapshot {
-    pub fn load_attention(&mut self, base: &str) {
+    pub fn attention_target(&self, id: &inbox::ItemId) -> Option<&HostTarget> {
+        self.fleet
+            .hosts
+            .iter()
+            .find(|host| host.queue_host_id() == id.host_id())
+            .map(|host| &host.target)
+    }
+
+    pub fn load_attention(&mut self) {
         if let Some(inbox) = &mut self.inbox
             && !inbox.waits_loaded()
         {
-            inbox.load_local_permissions(base);
-            inbox.load_human_actions(base);
+            for host in &self.fleet.hosts {
+                inbox.load_permissions(host);
+                inbox.load_human_actions(host);
+            }
             inbox.locate_queue_items(&self.fleet);
-            attention::load_waits(base, &self.fleet, inbox);
+            attention::load_waits(&self.fleet, inbox);
             inbox.waits_loaded = true;
         }
     }

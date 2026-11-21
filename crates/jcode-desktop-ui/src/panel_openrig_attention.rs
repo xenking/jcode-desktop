@@ -1,5 +1,6 @@
 use gpui::{Context, Entity, FontWeight, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
+    HostTarget,
     attention::Action,
     inbox::{Inbox, Item, ItemId},
 };
@@ -20,6 +21,7 @@ enum Phase {
     Confirm {
         item: ItemId,
         action: Action,
+        target: Box<HostTarget>,
         input: Option<Entity<PromptInput>>,
     },
     Running {
@@ -101,9 +103,8 @@ impl State {
         let mode = std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION");
         match mode.as_deref() {
             Ok("live") => {
-                let base = "http://127.0.0.1:7433";
-                self.snapshot = jcode_desktop_openrig::fetch_snapshot(base);
-                self.snapshot.load_attention(base);
+                self.snapshot = jcode_desktop_openrig::fetch_snapshot(&default_base_url());
+                self.snapshot.load_attention();
                 self.attention.show_sources = true;
                 self.events.clear();
             }
@@ -116,10 +117,13 @@ impl State {
                     .find(|row| !row.actions().is_empty())
                 {
                     self.attention.selected = Some(row.id.clone());
-                    if mode.as_deref() == Ok("confirm") {
+                    if mode.as_deref() == Ok("confirm")
+                        && let Some(target) = self.snapshot.attention_target(&row.id).cloned()
+                    {
                         self.attention_action.phase = Phase::Confirm {
                             item: row.id.clone(),
                             action: row.actions()[0].clone(),
+                            target: Box::new(target),
                             input: None,
                         };
                     }
@@ -167,11 +171,8 @@ impl Panel {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let state = &self
-            .openrig
-            .as_ref()
-            .expect("OpenRig panel")
-            .attention_action;
+        let openrig = self.openrig.as_ref().expect("OpenRig panel");
+        let state = &openrig.attention_action;
         let mut content = div().flex().flex_col().gap_2();
         if let Some(session) = &row.session {
             let action = OpenFleetSession {
@@ -196,9 +197,11 @@ impl Panel {
             Phase::Confirm {
                 item,
                 action,
+                target,
                 input,
             } if item == &row.id => {
-                let stale = !row.actions().contains(action);
+                let stale = !row.actions().contains(action)
+                    || openrig.snapshot.attention_target(item) != Some(target.as_ref());
                 return content.child(
                     div()
                         .id("openrig-attention-confirmation")
@@ -325,6 +328,9 @@ impl Panel {
         if state.attention_action.running() {
             return;
         }
+        let Some(target) = state.snapshot.attention_target(&item).cloned() else {
+            return;
+        };
         let input = action.input_label().map(|label| {
             let weak = cx.weak_entity();
             cx.new(|cx| {
@@ -349,6 +355,7 @@ impl Panel {
         state.attention_action.phase = Phase::Confirm {
             item,
             action,
+            target: Box::new(target),
             input,
         };
         cx.notify();
@@ -369,6 +376,7 @@ impl Panel {
         let Phase::Confirm {
             item,
             action,
+            target,
             input,
         } = &state.attention_action.phase
         else {
@@ -380,7 +388,7 @@ impl Panel {
                 .iter()
                 .any(|row| &row.id == item && row.actions().contains(action))
         });
-        if !offered {
+        if !offered || state.snapshot.attention_target(item) != Some(target.as_ref()) {
             return;
         }
         let text = input
@@ -392,13 +400,14 @@ impl Panel {
             }
             return;
         };
+        let target = target.as_ref().clone();
         let item = item.clone();
         state.attention_action.revision += 1;
         state.attention_action.phase = Phase::Running { item: item.clone() };
         window.focus(&self.focus_handle, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let (result, inbox) = cx
+            let (result, snapshot) = cx
                 .background_executor()
                 .spawn(async move {
                     // Fixtures never send mutations, even if the synthetic Confirm button is clicked.
@@ -406,18 +415,19 @@ impl Panel {
                         return (Err("This fixture refused the request.".into()), None);
                     }
                     let base = default_base_url();
-                    let result = confirmed.execute(&base);
+                    let result = confirmed.execute(&target);
                     let mut snapshot = jcode_desktop_openrig::fetch_snapshot(&base);
-                    snapshot.load_attention(&base);
-                    (result, snapshot.inbox)
+                    snapshot.load_attention();
+                    (result, Some(snapshot))
                 })
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 if let Some(state) = panel.openrig.as_mut() {
                     state.attention_action.revision += 1;
                     state.attention_action.phase = Phase::Finished { item, result };
-                    if inbox.is_some() {
-                        state.snapshot.inbox = inbox;
+                    if let Some(snapshot) = snapshot {
+                        state.snapshot.fleet = snapshot.fleet;
+                        state.snapshot.inbox = snapshot.inbox;
                     }
                     cx.notify();
                 }

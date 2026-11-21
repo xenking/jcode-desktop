@@ -5,7 +5,7 @@ use crate::{theme::Theme, ui_actions::OpenFleetSession};
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, SharedString, div, prelude::*, px};
 use jcode_desktop_openrig::{
     Tone,
-    fleet::{Fleet, Host, HostTarget, Pod, Rig, Runtime, Seat},
+    fleet::{Fleet, Host, Pod, Rig, Runtime, Seat},
 };
 use std::collections::HashSet;
 
@@ -68,11 +68,10 @@ impl<'a> Item<'a> {
 
     fn meta(self) -> &'a str {
         match self {
-            Self::Host(Host { rigs: None, .. }) => "Rigs unavailable",
             Self::Host(Host {
-                target: HostTarget::Local,
-                ..
-            }) => "This machine",
+                rigs: None, error, ..
+            }) => error.as_deref().unwrap_or("Rigs unavailable"),
+            Self::Host(host) if host.target.is_local_machine() => "This machine",
             Self::Host(_) => "Remote host",
             Self::Rig(_, Rig { pods: None, .. }) => "Seats unavailable",
             Self::Rig(..) => "Rig",
@@ -617,9 +616,11 @@ mod tests {
         );
         view.selected = Some(filtered[3].key());
         fleet.hosts.reverse();
-        assert_eq!(
-            view.key(&fleet, query, "enter").unwrap().target,
-            HostTarget::Local
+        assert!(
+            view.key(&fleet, query, "enter")
+                .unwrap()
+                .target
+                .is_local_machine()
         );
     }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::sections::{ReadWindow, SECTION_LIST_LIMIT, read_hosts, section_get};
+use crate::sections::{ReadWindow, SECTION_LIST_LIMIT, host_target, read_hosts, section_get};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -198,7 +198,7 @@ pub fn fetch_build(base: &str) -> Build {
                     (
                         catalog,
                         scope.spawn(move || {
-                            section_get(base, host, catalog.route())
+                            section_get(host, catalog.route())
                                 .map(|rows| catalog_rows(catalog, rows))
                         }),
                     )
@@ -209,7 +209,7 @@ pub fn fetch_build(base: &str) -> Build {
                 .collect()
         });
         HostBuild {
-            host: host.into(),
+            host: host.alias().into(),
             catalogs,
         }
     });
@@ -425,8 +425,7 @@ fn preview(review: Review) -> Result<Preview, String> {
 
 pub fn fetch_preview(base: &str, host: &str, id: &str) -> Result<Preview, String> {
     section_get(
-        base,
-        host,
+        &host_target(base, host)?,
         &format!("/api/specs/library/{}/review", crate::encode(id)),
     )
     .and_then(preview)
@@ -447,30 +446,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_captures_prove_get_only_host_catalogs_and_preview() {
-        let (base, server) = crate::sections::serve_fixture(12, |target| {
-            if target == "/api/hosts" {
-                return (200, include_str!("../tests/fixtures/work-hosts-get.json"));
-            }
-            if target == "/api/specs/library/0a25241dadbcaf2d/review?host=ai-core" {
-                return (
-                    200,
-                    include_str!("../tests/fixtures/build-rig-review-get.json"),
-                );
-            }
-            let (route, remote) = target
-                .strip_suffix("?host=ai-core")
-                .map_or((target, false), |route| (route, true));
-            let (catalog, body) = Catalog::ALL
+    fn build_loads_remote_catalogs_and_preview_directly() {
+        let catalog = |route: &str| {
+            let (_, body) = Catalog::ALL
                 .into_iter()
                 .zip(FIXTURE_CATALOGS)
                 .find(|(catalog, _)| catalog.route() == route)
-                .unwrap();
-            if remote && catalog != Catalog::Specs {
-                (403, "{}")
-            } else {
-                (200, body)
+                .unwrap_or_else(|| panic!("unexpected route {route}"));
+            (200, body.to_owned())
+        };
+        let (remote, remote_server) = crate::sections::serve_fixture(6, move |route| {
+            if route == "/api/specs/library/0a25241dadbcaf2d/review" {
+                return (
+                    200,
+                    include_str!("../tests/fixtures/build-rig-review-get.json").into(),
+                );
             }
+            catalog(route)
+        });
+        let (base, server) = crate::sections::serve_fixture(7, move |route| {
+            if route == "/api/hosts" {
+                return (
+                    200,
+                    serde_json::json!({"hosts":[{"id":"ai-core", "url":remote}]}).to_string(),
+                );
+            }
+            catalog(route)
         });
         let build = fetch_build(&base);
         let Preview::Rig(members) = fetch_preview(&base, "ai-core", "0a25241dadbcaf2d").unwrap()
@@ -478,6 +479,7 @@ mod tests {
             panic!()
         };
         server.join().unwrap();
+        remote_server.join().unwrap();
         assert_eq!(members.items.len(), 3);
         assert_eq!(members.items[0].runtime.as_deref(), Some("claude-code"));
         assert_eq!(members.items[0].model, None);
@@ -493,7 +495,7 @@ mod tests {
                 .any(|row| row.kind == Kind::Application)
         );
         assert_eq!(build.hosts[1].host, "ai-core");
-        assert_eq!(build.hosts[1].catalogs[1].1, Err("HTTP 403".into()));
+        assert!(build.hosts[1].catalogs.iter().all(|(_, read)| read.is_ok()));
         assert!(matches!(
             fixture_preview("33d11aa6749be7f8"),
             Ok(Preview::Agent(_))
