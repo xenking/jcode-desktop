@@ -122,6 +122,8 @@ mod ask_images;
 mod background_jobs;
 #[path = "panel_cache_card.rs"]
 mod cache_card;
+#[path = "panel_rig_hud.rs"]
+mod rig_hud;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -662,6 +664,8 @@ impl gpui::EventEmitter<AccountsPanelChooseModel> for Panel {}
 impl gpui::EventEmitter<AccountsPanelClosed> for Panel {}
 
 pub struct Panel {
+    rig_feed: Entity<crate::openrig_feed::Feed>,
+    pub(crate) rig_host_id: Option<String>,
     pub preview_state: Option<PreviewState>,
     /// Scripted onboarding replay: real rendering and motion, never sounds.
     pub(crate) demo: bool,
@@ -1454,6 +1458,8 @@ impl Panel {
         bridge: Bridge,
         cx: &mut Context<Self>,
     ) -> Self {
+        let rig_feed = crate::openrig_feed::get(cx);
+        cx.observe(&rig_feed, |_, _, cx| cx.notify()).detach();
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
@@ -1701,6 +1707,10 @@ impl Panel {
             transcript_end_pad: 0.0,
             pending_history_scroll: None,
             bridge,
+            rig_feed,
+            rig_host_id: (crate::harness::screenshot_mode()
+                && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some())
+                .then(|| "host-fixture-local".into()),
             preview_state: None,
             demo: false,
             history_loaded: false,

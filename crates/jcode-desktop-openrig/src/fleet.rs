@@ -12,6 +12,7 @@ pub struct Fleet {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Host {
     pub id: String,
+    pub self_host_id: Option<String>,
     pub name: String,
     pub target: HostTarget,
     pub status: Option<String>,
@@ -70,6 +71,8 @@ pub struct Seat {
     pub runtime: Option<Runtime>,
     pub status: Option<String>,
     pub session_status: Option<String>,
+    /// A non-stale activity reported by OpenRig.
+    pub activity: Option<String>,
     pub(crate) last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
     pub jcode_session_id: Option<String>,
     pub context_percent: Option<f64>,
@@ -304,6 +307,11 @@ impl From<Node> for Seat {
             runtime,
             status: node.lifecycle_state.or_else(|| node.session_status.clone()),
             session_status: node.session_status,
+            activity: node
+                .agent_activity
+                .as_ref()
+                .filter(|activity| activity.stale != Some(true))
+                .and_then(|activity| activity.state.clone()),
             last_activity_at: [
                 node.last_activity_at.as_deref(),
                 node.agent_activity
@@ -362,6 +370,38 @@ fn inventory<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result
 }
 
 impl Fleet {
+    /// Resolve only an unambiguous native Jcode session on the given host.
+    pub fn jcode_seat<'a>(
+        &'a self,
+        self_host_id: &str,
+        native_id: &str,
+    ) -> Option<(&'a Host, &'a Rig, &'a Pod, &'a Seat)> {
+        if native_id.is_empty() || self_host_id.is_empty() {
+            return None;
+        }
+        let mut hosts = self
+            .hosts
+            .iter()
+            .filter(|host| host.self_host_id.as_deref() == Some(self_host_id));
+        let host = hosts.next()?;
+        if hosts.next().is_some() {
+            return None;
+        }
+        let mut matches = std::iter::once(host).flat_map(|host| {
+            host.rigs.iter().flatten().flat_map(move |rig| {
+                rig.pods.iter().flatten().flat_map(move |pod| {
+                    pod.seats.iter().filter_map(move |seat| {
+                        (seat.runtime == Some(Runtime::Jcode)
+                            && seat.jcode_session_id.as_deref() == Some(native_id))
+                        .then_some((host, rig, pod, seat))
+                    })
+                })
+            })
+        });
+        let result = matches.next()?;
+        matches.next().is_none().then_some(result)
+    }
+
     pub(crate) fn fetch(
         base: &str,
         health: Option<&serde_json::Value>,
@@ -400,6 +440,10 @@ impl Fleet {
         let mut local = Host {
             error: None,
             id: host_id.into(),
+            self_host_id: health
+                .and_then(|value| value["selfHostId"].as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
             name: hosts
                 .as_ref()
                 .and_then(|hosts| hosts.own_name.clone())
@@ -417,6 +461,12 @@ impl Fleet {
             if fleet.hosts.iter().any(|host| host.id == id) {
                 continue;
             }
+            let identity_before = get(&target, "/healthz").ok().and_then(|value| {
+                value["selfHostId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+            });
             let (rigs, error) = match get(&target, "/api/rigs/summary").and_then(inventory) {
                 Ok(rigs) => (Some(rigs), None),
                 Err(error) => {
@@ -427,6 +477,7 @@ impl Fleet {
             let mut host = Host {
                 name: id.clone(),
                 target,
+                self_host_id: None,
                 status: if error.is_some() {
                     Some("Unavailable".into())
                 } else {
@@ -437,6 +488,15 @@ impl Fleet {
                 error,
             };
             populate_nodes(&mut host, &get, errors);
+            let identity_after = get(&host.target, "/healthz").ok().and_then(|value| {
+                value["selfHostId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+            });
+            if identity_before.is_some() && identity_before == identity_after {
+                host.self_host_id = identity_before;
+            }
             fleet.hosts.push(host);
         }
         fleet
@@ -477,6 +537,7 @@ impl Fleet {
                 (true, "/api/rigs/local-kernel/nodes") => Ok(data["localNodes"].clone()),
                 (true, "/api/rigs/local-verteam/nodes") => Ok(serde_json::json!([])),
                 (false, "/api/rigs/summary") => Ok(data["remote"].clone()),
+                (false, "/healthz") => Ok(serde_json::json!({"selfHostId":"host-fixture-remote"})),
                 (false, "/api/rigs/remote-kernel/nodes") => Ok(data["remoteNodes"].clone()),
                 _ => Err(format!("unexpected fixture route {route}")),
             },
@@ -516,6 +577,40 @@ fn populate_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_jcode_seat_requires_exact_host_and_unambiguous_session() {
+        let mut fleet = Fleet::fixture();
+        let local = fleet.hosts[0].self_host_id.clone().unwrap();
+        let remote = fleet.hosts[1].self_host_id.clone().unwrap();
+        let id = "session_fox_1700000000000_0123456789abcdef";
+        assert_eq!(
+            fleet.jcode_seat(&local, id).unwrap().3.logical_id,
+            "operator.agent"
+        );
+        assert_eq!(
+            fleet
+                .jcode_seat(&remote, id)
+                .unwrap()
+                .0
+                .self_host_id
+                .as_deref(),
+            Some(remote.as_str())
+        );
+        assert!(fleet.jcode_seat(&local, "ordinary-session").is_none());
+        assert!(fleet.jcode_seat(&local, "").is_none());
+
+        let seat = fleet.jcode_seat(&local, id).unwrap().3.clone();
+        let pod = fleet.hosts[0].rigs.as_mut().unwrap()[0]
+            .pods
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|pod| pod.seats.iter().any(|s| s.id == seat.id))
+            .unwrap();
+        pod.seats.push(seat);
+        assert!(fleet.jcode_seat(&local, id).is_none());
+    }
     use serde_json::json;
 
     #[test]

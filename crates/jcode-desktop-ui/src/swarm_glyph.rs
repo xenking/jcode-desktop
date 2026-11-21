@@ -38,6 +38,7 @@ pub(crate) enum Icon {
     Timer,
     /// The prompt cache once its window has lapsed.
     Snowflake,
+    OpenRig,
 }
 
 impl Icon {
@@ -62,6 +63,7 @@ impl Icon {
             Self::Workers => icon!("workers"),
             Self::Timer => icon!("timer"),
             Self::Snowflake => icon!("snowflake"),
+            Self::OpenRig => icon!("openrig"),
         }
     }
 }

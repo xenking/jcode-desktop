@@ -108,6 +108,7 @@ impl Panel {
         // and ticks never rebuild the composer.
         let workers_pill = self.render_swarm_indicator(cx);
         let cache_pill = self.render_cache_pill(cx);
+        let rig_hud = self.render_rig_hud(cx);
         let activity_icon = self.render_activity_icon(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
@@ -158,6 +159,7 @@ impl Panel {
                         )
                     })
                     .children(workers_pill)
+                    .children(rig_hud)
                     .children(cache_pill)
                     .children(activity_icon)
                     .children(self.render_voice_status(status_line))

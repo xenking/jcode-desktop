@@ -52,6 +52,63 @@ fn session_address(target: &HostTarget, native_id: &str, ssh_hosts: &[String]) -
 }
 
 impl Workspace {
+    pub(super) fn inspect_fleet_seat(
+        &mut self,
+        action: &crate::ui_actions::InspectFleetSeat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self.slots.iter().position(|slot| {
+            !slot.closing && slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID
+        }) {
+            self.slots[index]
+                .panel
+                .update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+        } else {
+            let current = window.window_handle();
+            for handle in cx.windows().into_iter().filter(|handle| *handle != current) {
+                if let Some(handle) = handle.downcast::<Workspace>() {
+                    if handle.read(cx).is_ok_and(|other| {
+                        other.slots.iter().any(|slot| {
+                            !slot.closing
+                                && slot.panel.read(cx).session_id
+                                    == crate::panel::openrig::SESSION_ID
+                        })
+                    }) {
+                        let _ = handle.update(cx, |other, window, cx| {
+                            other.inspect_fleet_seat(action, window, cx);
+                            window.activate_window();
+                        });
+                        return;
+                    }
+                } else if let Some(handle) = handle.downcast::<panel_window::PanelWindow>() {
+                    if handle.read(cx).is_ok_and(|other| {
+                        other.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID
+                    }) {
+                        let _ = handle.update(cx, |other, window, cx| {
+                            other
+                                .panel
+                                .update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+                            window.activate_window();
+                        });
+                        return;
+                    }
+                }
+            }
+            let panel = cx.new(|cx| Panel::new_openrig(self.bridge.clone(), cx));
+            if self.single_panel {
+                if let Ok(hosted) = panel_window::open_panel_window(panel, None, window, cx) {
+                    hosted.update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+                }
+            } else {
+                panel.update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+                self.insert_spawned_panel(panel, window, cx);
+            }
+        }
+    }
+
     pub(super) fn open_fleet_session(
         &mut self,
         action: &OpenFleetSession,
@@ -135,6 +192,157 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn hud_opens_exact_seat_and_reuses_openrig(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let id = "session_fox_1700000000000_0123456789abcdef";
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let feed = crate::openrig_feed::get(cx);
+            feed.update(cx, |feed, cx| {
+                feed.snapshot = Some(jcode_desktop_openrig::Snapshot::fixture());
+                cx.notify();
+            });
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel(id, cx);
+            workspace.apply(
+                harness::Update::OpenrigHostIdentity {
+                    session_id: id.into(),
+                    self_host_id: Some("host-fixture-local".into()),
+                },
+                cx,
+            );
+            workspace.slots[0].panel.update(cx, |panel, cx| {
+                panel.input.update(cx, |input, cx| {
+                    input.set_content("keep this draft".into(), cx)
+                });
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        let icon = vcx
+            .debug_bounds("panel-openrig:session_fox_1700000000000_0123456789abcdef")
+            .expect("seat HUD");
+        vcx.simulate_mouse_move(icon.center(), None, Default::default());
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-openrig-tooltip").is_some());
+        let click_hud = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx.debug_bounds(selector).expect("seat HUD");
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        click_hud(
+            vcx,
+            "panel-openrig:session_fox_1700000000000_0123456789abcdef",
+        );
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "keep this draft"
+            );
+            assert_eq!(w.slots.len(), 2);
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).inspected_fleet_key(),
+                Some("seat:\"host-fixture-local\"/\"local-kernel\"/\"local-operator.agent\"")
+            );
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.push_test_panel(&format!("ssh://worker-east.example.test/{id}"), cx);
+            let index = w.slots.len() - 1;
+            w.apply(
+                harness::Update::OpenrigHostIdentity {
+                    session_id: format!("ssh://worker-east.example.test/{id}"),
+                    self_host_id: Some("host-fixture-remote".into()),
+                },
+                cx,
+            );
+            w.set_active(index, cx);
+            w.focus_active(window, cx);
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        click_hud(
+            vcx,
+            "panel-openrig:ssh://worker-east.example.test/session_fox_1700000000000_0123456789abcdef",
+        );
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 3);
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).inspected_fleet_key(),
+                Some("seat:\"worker-east\"/\"remote-kernel\"/\"remote-operator.agent\"")
+            );
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.apply(
+                harness::Update::OpenrigHostIdentity {
+                    session_id: format!("ssh://worker-east.example.test/{id}"),
+                    self_host_id: None,
+                },
+                cx,
+            );
+            w.set_active(2, cx);
+            w.focus_active(window, cx);
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-openrig:ssh://worker-east.example.test/session_fox_1700000000000_0123456789abcdef").is_none());
+    }
+
+    #[gpui::test]
+    fn hud_reuses_openrig_in_another_window(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let id = "session_fox_1700000000000_0123456789abcdef";
+        let (source, vcx) = cx.add_window_view(|_, cx| {
+            let feed = crate::openrig_feed::get(cx);
+            feed.update(cx, |feed, cx| {
+                feed.snapshot = Some(jcode_desktop_openrig::Snapshot::fixture());
+                cx.notify();
+            });
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel(id, cx);
+            workspace.slots[0].panel.update(cx, |panel, _| {
+                panel.rig_host_id = Some("host-fixture-local".into())
+            });
+            workspace
+        });
+        let target = vcx.update(|_, cx| {
+            let handle = cx
+                .open_window(gpui::WindowOptions::default(), |_, cx| {
+                    cx.new(|cx| {
+                        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                        workspace.push_test_panel("other-chat", cx);
+                        workspace
+                    })
+                })
+                .unwrap();
+            handle
+                .update(cx, |workspace, window, cx| {
+                    workspace.open_openrig(&OpenOpenrig, window, cx)
+                })
+                .unwrap();
+            handle
+        });
+        vcx.run_until_parked();
+        let bounds = vcx
+            .debug_bounds("panel-openrig:session_fox_1700000000000_0123456789abcdef")
+            .expect("seat HUD");
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        source.read_with(vcx, |workspace, _| assert_eq!(workspace.slots.len(), 1));
+        vcx.update(|_, cx| {
+            let workspace = target.read(cx).unwrap();
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(
+                workspace.slots[workspace.active]
+                    .panel
+                    .read(cx)
+                    .inspected_fleet_key(),
+                Some("seat:\"host-fixture-local\"/\"local-kernel\"/\"local-operator.agent\"")
+            );
+        });
+    }
 
     #[gpui::test]
     fn chat_lists_each_host_and_opens_or_focuses_the_exact_seat_session(

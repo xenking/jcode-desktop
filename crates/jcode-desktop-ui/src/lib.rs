@@ -28,6 +28,7 @@ mod image_modal;
 mod ime_log;
 mod inline_image;
 mod input;
+mod keyboard;
 mod live_profile;
 mod markdown;
 mod markdown_inline_code;
@@ -36,10 +37,10 @@ mod mode_catalog;
 mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
+mod openrig_feed;
 mod panel;
 mod pdf_viewer;
 mod performance;
-mod keyboard;
 mod persisted_history;
 mod popover;
 mod preview_control;
@@ -377,6 +378,37 @@ unsafe extern "C-unwind" fn activate(
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(4))
                         .await;
+                    if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some() {
+                        let hovered = cx
+                            .update(|window, cx| {
+                                fixture_control_targets::dispatch(
+                                    "hover:panel-openrig",
+                                    "screenshot-fixture",
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .unwrap_or(false);
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(2))
+                            .await;
+                        let located = cx
+                            .update(|window, cx| {
+                                fixture_control_targets::locate(
+                                    "tooltip:openrig",
+                                    "screenshot-fixture",
+                                    window,
+                                    cx,
+                                )
+                                .is_some()
+                            })
+                            .unwrap_or(false);
+                        if !hovered || !located {
+                            eprintln!("screenshot: OpenRig HUD tooltip not visible");
+                            cx.update(|_, cx| cx.quit()).ok();
+                            return;
+                        }
+                    }
                     let _ = cx.update(|window, _| window.refresh());
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(600))

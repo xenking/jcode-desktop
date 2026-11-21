@@ -57,6 +57,14 @@ pub(crate) struct OpenFleetSession {
     pub native_id: String,
 }
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct InspectFleetSeat {
+    pub host_id: String,
+    pub rig_id: String,
+    pub seat_id: String,
+}
+
 /// Pick another folder for the source panel, from its location pill.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

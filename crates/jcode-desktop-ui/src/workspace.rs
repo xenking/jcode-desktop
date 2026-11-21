@@ -3089,6 +3089,16 @@ impl Workspace {
                     }
                 }
             }
+            Update::OpenrigHostIdentity { session_id, self_host_id } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.rig_host_id = self_host_id.clone();
+                            cx.notify();
+                        });
+                    }
+                }
+            }
             Update::SessionConnected { session_id } => {
                 self.set_cloud_transport_connected(&session_id, true);
                 for slot in &self.slots {
@@ -9769,6 +9779,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_openrig))
+            .on_action(cx.listener(Self::inspect_fleet_seat))
             .on_action(cx.listener(Self::open_fleet_session))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_usage_reset_command))

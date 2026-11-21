@@ -55,9 +55,25 @@ fn protocol_failure_during_connect_stops_after_one_attempt() {
         ))
     });
     assert_eq!(attempts, 1);
-    assert!(matches!(updates.try_recv(), Ok(Update::SessionLost { .. })));
-    assert!(matches!(
-        updates.try_recv(),
-        Ok(Update::CommandFailed { .. })
-    ));
+    let mut received = Vec::new();
+    while let Ok(update) = updates.try_recv() {
+        received.push(update);
+    }
+    assert!(received.iter().any(|update| matches!(
+        update,
+        Update::OpenrigHostIdentity {
+            self_host_id: None,
+            ..
+        }
+    )));
+    assert!(
+        received
+            .iter()
+            .any(|update| matches!(update, Update::SessionLost { .. }))
+    );
+    assert!(
+        received
+            .iter()
+            .any(|update| matches!(update, Update::CommandFailed { .. }))
+    );
 }

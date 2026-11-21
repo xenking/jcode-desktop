@@ -95,6 +95,11 @@ pub fn remote_host(session_id: &str) -> Option<String> {
     remote::SessionAddress::parse(session_id).ok()?.host
 }
 
+pub fn session_address(session_id: &str) -> Option<(Option<String>, String)> {
+    let address = remote::SessionAddress::parse(session_id).ok()?;
+    Some((address.host, address.session_id))
+}
+
 const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 
 /// A `/btw` fork inherits the whole agent prompt, tools included. Steer it to
@@ -248,6 +253,11 @@ pub enum Update {
     TabWaitingState {
         session_id: String,
         waiting: bool,
+    },
+    /// Identity reported by the connected daemon, or None when unavailable.
+    OpenrigHostIdentity {
+        session_id: String,
+        self_host_id: Option<String>,
     },
     /// A per-session connection died.
     SessionLost {
@@ -2962,6 +2972,20 @@ fn saved_session_identity(
     })
 }
 
+struct RemoteIdentityLease<'a> {
+    session_id: &'a str,
+    updates: &'a UpdateSender,
+}
+
+impl Drop for RemoteIdentityLease<'_> {
+    fn drop(&mut self) {
+        let _ = self.updates.send(Update::OpenrigHostIdentity {
+            session_id: self.session_id.to_owned(),
+            self_host_id: None,
+        });
+    }
+}
+
 fn session_worker_with_connector(
     session_id: String,
     commands: Receiver<SessionCommand>,
@@ -3011,6 +3035,14 @@ fn session_worker_with_connector(
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
     'reconnect: loop {
+        let identity_lease = RemoteIdentityLease {
+            session_id: &session_id,
+            updates: &updates,
+        };
+        let _ = updates.send(Update::OpenrigHostIdentity {
+            session_id: session_id.clone(),
+            self_host_id: None,
+        });
         if collect_disconnected_commands(&commands, &mut pending) {
             return;
         }
@@ -3116,6 +3148,10 @@ fn session_worker_with_connector(
         }
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
+        });
+        let _ = updates.send(Update::OpenrigHostIdentity {
+            session_id: session_id.clone(),
+            self_host_id: client.openrig_self_host_id().map(str::to_owned),
         });
 
         if client.supports(jcode_sdk::api::BACKGROUND_TASKS_CAPABILITY) {
@@ -4143,6 +4179,7 @@ fn session_worker_with_connector(
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+        drop(identity_lease);
         if address.host.is_some() {
             // A reachable SSH server whose API immediately closes should not
             // produce an unbounded rapid reconnect storm either.

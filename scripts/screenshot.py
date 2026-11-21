@@ -37,6 +37,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")
     parser.add_argument("--accounts", action="store_true",
                         help="open the Accounts panel with offline multi-account fixtures")
     parser.add_argument("--sign-in-steps", action="store_true",
@@ -452,7 +453,7 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    native_fleet = (sys.platform == "darwin" and args.transcript in ("openrig", "openrig-inspector")
+    native_fleet = (sys.platform == "darwin" and (args.rig_hud or args.transcript in ("openrig", "openrig-inspector"))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
     if args.openrig_attention and not (native_fleet and args.transcript == "openrig"):
@@ -478,6 +479,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.rig_hud:
+            env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
         if args.fps_header_interact:
             env["JCODE_DESKTOP_SHOW_FPS"] = "1"
         if args.release_status:
@@ -557,6 +560,11 @@ def main():
                                     capture_output=True, text=True, timeout=45)
             if result.returncode or not capture.is_file():
                 raise RuntimeError("Native Fleet capture failed:\n" + result.stdout + result.stderr)
+            if args.rig_hud:
+                print(result.stderr)
+                diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
+                if diagnostics.exists():
+                    print(diagnostics.read_text())
             shutil.copyfile(capture, output)
             print(output)
             return

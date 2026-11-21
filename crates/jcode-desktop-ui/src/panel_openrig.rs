@@ -3,7 +3,7 @@ use super::Panel;
 use crate::theme::Theme;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
-    LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url, fetch_snapshot,
+    LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url,
     fetch_stream_tail, subscribe_events,
 };
 use std::{
@@ -329,6 +329,24 @@ impl State {
     }
 }
 impl Panel {
+    #[cfg(test)]
+    pub(crate) fn inspected_fleet_key(&self) -> Option<&str> {
+        self.openrig.as_ref()?.fleet.selected_key()
+    }
+    pub(crate) fn inspect_fleet_seat(
+        &mut self,
+        action: &crate::ui_actions::InspectFleetSeat,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.openrig.as_mut() else {
+            return;
+        };
+        state.section = state.snapshot.sections.iter().position(|s| s.kind == SectionKind::Fleet).unwrap_or(0);
+        state.filter.clear();
+        state.command = None;
+        state.fleet.inspect(&state.snapshot.fleet, &action.host_id, &action.rig_id, &action.seat_id);
+        cx.notify();
+    }
     fn load_openrig_destination(&mut self, refresh: bool, cx: &mut Context<Self>) {
         let Some(state) = self.openrig.as_mut() else {
             return;
@@ -461,22 +479,27 @@ impl Panel {
             state.snapshot = Snapshot::default();
             state._poll = Some(cx.spawn(async move |this, cx| {
                 loop {
-                    let Ok((read_attention, writing, revision)) = this.update(cx, |panel, _| {
-                        panel.openrig.as_ref().map_or((false, false, 0), |state| {
+                    let Ok((read_attention, writing, revision, shared)) = this.update(cx, |panel, cx| {
+                        let shared = panel.rig_feed.read(cx).snapshot.clone();
+                        panel.openrig.as_ref().map_or((false, false, 0, shared.clone()), |state| {
                             (
                                 state.attention_page().is_some(),
                                 state.attention_action.running(),
                                 state.attention_action.revision,
+                                shared,
                             )
                         })
                     }) else {
                         break;
                     };
+                    let Some(mut snapshot) = shared else {
+                        cx.background_executor().timer(Duration::from_secs(2)).await;
+                        continue;
+                    };
                     let (snapshot, tail) = cx
                         .background_executor()
                         .spawn(async move {
                             let base = default_base_url();
-                            let mut snapshot = fetch_snapshot(&base);
                             if read_attention && !writing {
                                 snapshot.load_attention();
                             }

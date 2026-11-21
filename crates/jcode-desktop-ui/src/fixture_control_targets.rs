@@ -119,6 +119,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || (selector.starts_with("openrig-chat:") && selector.ends_with(":open"))
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
+        || selector == "hover:panel-openrig"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
@@ -194,7 +195,7 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
-    if selector == "hover:panel-cache" {
+    if matches!(selector, "hover:panel-cache" | "hover:panel-openrig") {
         window.dispatch_event(
             PlatformInput::MouseMove(gpui::MouseMoveEvent {
                 position,
@@ -266,7 +267,7 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     true
 }
 
-fn locate(
+pub(crate) fn locate(
     selector: &str,
     session: &str,
     window: &mut Window,

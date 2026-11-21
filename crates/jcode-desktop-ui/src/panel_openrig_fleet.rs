@@ -113,6 +113,24 @@ impl<'a> Item<'a> {
 }
 
 impl FleetView {
+    #[cfg(test)]
+    pub(super) fn selected_key(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+    pub(super) fn inspect(&mut self, fleet: &Fleet, host_id: &str, rig_id: &str, seat_id: &str) {
+        self.selected = Some(format!("seat:{host_id:?}/{rig_id:?}/{seat_id:?}"));
+        self.properties = true;
+        for host in fleet.hosts.iter().filter(|host| host.id == host_id) {
+            self.collapsed.remove(&Item::Host(host).key());
+            for rig in host.rigs.iter().flatten().filter(|rig| rig.id == rig_id) {
+                self.collapsed.remove(&Item::Rig(host, rig).key());
+                for pod in rig.pods.iter().flatten().filter(|pod| pod.seats.iter().any(|seat| seat.id == seat_id)) {
+                    self.collapsed.remove(&Item::Pod(host, rig, pod).key());
+                }
+            }
+        }
+    }
+
     pub(super) fn fixture(properties: bool) -> Self {
         let fleet = Fleet::fixture();
         let selected = properties.then(|| {

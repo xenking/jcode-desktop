@@ -466,6 +466,9 @@ fn restored_remote_address_reconnects_to_same_host_without_blocking_local_worker
         &updates,
         |u| matches!(u, Update::SessionLost { session_id, .. } if session_id == &ui_id),
     );
+    wait_update(&updates, |u| matches!(u,
+        Update::OpenrigHostIdentity { session_id, self_host_id: None } if session_id == &ui_id
+    ));
 
     // The same raw ID on the local host remains independent and responsive.
     let (local_client, local_server) = Server::new();
