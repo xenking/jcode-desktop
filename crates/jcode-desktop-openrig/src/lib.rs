@@ -99,9 +99,11 @@ pub fn subscribe_events(
     }
 }
 
+pub mod fleet;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SectionKind {
-    Topology,
+    Fleet,
     Specs,
     Scopes,
     Terminals,
@@ -218,6 +220,7 @@ pub struct Section {
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
+    pub fleet: fleet::Fleet,
     pub sections: Vec<Section>,
     pub error: Option<String>,
 }
@@ -472,114 +475,6 @@ fn make_section(kind: SectionKind, title: &str, rows: Vec<Row>) -> Section {
         rows,
     }
 }
-fn reachability_tone(status: &str) -> Tone {
-    match status {
-        "reachable" | "ok" => Tone::Ok,
-        "unreachable" => Tone::Error,
-        _ => Tone::Warn,
-    }
-}
-fn topology(
-    base: &str,
-    health: Option<&Value>,
-    hosts: Option<&Value>,
-    rigs: Option<&Value>,
-    errors: &mut Vec<String>,
-) -> Vec<Row> {
-    let control_plane: connections::ControlPlane = health
-        .and_then(|h| serde_json::from_value(h.clone()).ok())
-        .unwrap_or_default();
-    let host_id = control_plane
-        .self_host_id
-        .get()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "local".into());
-    let summaries: util::Items<sections::RigSummary> = rigs
-        .and_then(|r| serde_json::from_value(r.clone()).ok())
-        .unwrap_or_default();
-    let mut result = if health.is_none() && hosts.is_none() && rigs.is_none() {
-        Vec::new()
-    } else {
-        let mut host = Row::new(
-            host_id.clone(),
-            0,
-            hosts
-                .and_then(|v| field(v, &["ownName"]))
-                .unwrap_or_else(|| host_id.clone()),
-        )
-        .status("this host", Tone::Ok)
-        .with("host id", host_id.clone())
-        .with_opt("host id source", control_plane.self_host_id_source.get())
-        .with_opt("daemon", control_plane.status.get())
-        .with_opt("version", control_plane.semver.get())
-        .with_opt("commit", control_plane.commit.get())
-        .with_opt("built", control_plane.built_at.get());
-        if control_plane.dirty.truthy() {
-            host.put("build", "dirty");
-        }
-        host.children_count = summaries.len();
-        vec![host]
-    };
-    for rig in &summaries {
-        let rig_id = rig.id.or(&rig.name.unknown());
-        let mut rr = sections::rig_row(rig, 1, &rig_id);
-        match get(base, &format!("/api/rigs/{}/nodes", encode(&rig_id))) {
-            Ok(nodes) => {
-                let nodes: util::Items<sections::Node> =
-                    serde_json::from_value(nodes).unwrap_or_default();
-                let pods = sections::group_pods(nodes.as_slice());
-                let seats: usize = pods.iter().map(|(_, a)| a.len()).sum();
-                rr.put("seats", seats.to_string());
-                rr.children_count = pods.len();
-                result.push(rr);
-                for (name, agents) in pods {
-                    let mut pod = Row::new(format!("{rig_id}/{name}"), 2, name)
-                        .with("seats", agents.len().to_string());
-                    pod.children_count = agents.len();
-                    result.push(pod);
-                    for agent in agents {
-                        let id = agent.node_id.or(&agent.logical_id.unknown());
-                        result.push(sections::seat_row(agent, 3, &format!("{rig_id}/{id}")));
-                    }
-                }
-            }
-            Err(e) => {
-                errors.push(e);
-                rr.put("seat inventory", "unavailable");
-                result.push(rr);
-            }
-        }
-    }
-    for host in hosts.map(|h| array(h, "hosts")).unwrap_or(&[]) {
-        if let Some(id) = field(host, &["id"])
-            && id != "local"
-            && id != host_id
-        {
-            let mut host_row = row(host, 0, "host");
-            if let Some(status) = host_row.status.clone() {
-                host_row.tone = reachability_tone(&status);
-            }
-            match get(base, &format!("/api/rigs/summary?host={}", encode(&id))) {
-                Ok(remote) => {
-                    let remote: util::Items<sections::RigSummary> =
-                        serde_json::from_value(remote).unwrap_or_default();
-                    host_row.children_count = remote.len();
-                    result.push(host_row);
-                    for rig in &remote {
-                        let rig_id = rig.id.or(&rig.name.unknown());
-                        result.push(sections::rig_row(rig, 1, &format!("{id}/{rig_id}")));
-                    }
-                }
-                Err(e) => {
-                    errors.push(e);
-                    result.push(host_row);
-                }
-            }
-        }
-    }
-    result
-}
 
 /// The daemon address without credentials or query, as the TUI shows its target.
 fn daemon_target(base: &str) -> String {
@@ -632,11 +527,8 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         .filter_map(|r| r.as_ref().err().map(|f| f.error.clone()))
         .collect();
     let val = |i: usize| results[i].as_ref().ok();
-    let mut sections = vec![make_section(
-        SectionKind::Topology,
-        "Topology",
-        topology(base_url, val(0), val(1), val(2), &mut errors),
-    )];
+    let fleet = fleet::Fleet::fetch(base_url, val(0), val(1), val(2), &mut errors);
+    let mut sections = vec![make_section(SectionKind::Fleet, "Fleet", Vec::new())];
     for (kind, title, index, keys) in [
         (SectionKind::Specs, "Specs", 3, vec![]),
         (SectionKind::Scopes, "Scopes", 4, vec!["missions"]),
@@ -714,6 +606,7 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         make_section(SectionKind::Terminals, "Terminals", terminals),
     );
     Snapshot {
+        fleet,
         sections,
         error: (!errors.is_empty()).then(|| errors.join("\n")),
     }
@@ -741,10 +634,9 @@ fn demo_rows(kind: SectionKind) -> Option<Vec<Row>> {
     }
 }
 impl Snapshot {
-    #[allow(clippy::possible_missing_else)]
     pub fn fixture() -> Self {
         let kinds = [
-            (SectionKind::Topology, "Topology"),
+            (SectionKind::Fleet, "Fleet"),
             (SectionKind::Specs, "Specs"),
             (SectionKind::Scopes, "Scopes"),
             (SectionKind::Terminals, "Terminals"),
@@ -756,7 +648,25 @@ impl Snapshot {
             (SectionKind::UsageHosts, "Usage hosts"),
             (SectionKind::Cost, "Cost"),
         ];
-        Self { sections: kinds.into_iter().map(|(kind,title)| { let mut rows = vec![row(&json!({"id":format!("demo-{title}"),"name":format!("Demo {title}"),"status":"ready","source":"Demo data"}),0,"demo")]; if kind == SectionKind::Topology { rows[0].label="local host".into(); rows[0].children_count=1; for (depth,name) in [(1,"demo rig"),(2,"engineering"),(3,"builder"),(3,"reviewer")] { let mut r=row(&json!({"id":name,"name":name,"status":"running","runtime":"jcode"}),depth,name); r.children_count=usize::from(depth<3); rows.push(r); } } if let Some(real) = demo_rows(kind) { rows = real; } make_section(kind,title,rows) }).collect(), error: None }
+        Self {
+            fleet: fleet::Fleet::fixture(),
+            sections: kinds
+                .into_iter()
+                .map(|(kind, title)| {
+                    let rows =
+                        if kind == SectionKind::Fleet {
+                            Vec::new()
+                        } else {
+                            demo_rows(kind).unwrap_or_else(|| vec![row(&json!({
+                        "id": format!("demo-{title}"), "name": format!("Demo {title}"),
+                        "status": "ready", "source": "Demo data",
+                    }), 0, "demo")])
+                        };
+                    make_section(kind, title, rows)
+                })
+                .collect(),
+            error: None,
+        }
     }
 }
 #[cfg(test)]
@@ -770,10 +680,11 @@ mod tests {
         assert!(live_event(&json!(null)).is_none());
     }
     #[test]
-    fn fixture_has_all_sections_and_topology() {
+    fn fixture_has_all_sections_and_fleet() {
         let s = Snapshot::fixture();
         assert_eq!(s.sections.len(), 11);
-        assert!(s.sections[0].rows.iter().any(|r| r.depth == 3));
+        assert_eq!(s.sections[0].kind, SectionKind::Fleet);
+        assert_eq!(s.fleet.hosts.len(), 2);
     }
     #[test]
     fn encodes_route_components() {

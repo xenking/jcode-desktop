@@ -139,6 +139,8 @@ mod nav_profile_tests;
 mod navigation_map_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
+#[path = "workspace_openrig.rs"]
+mod openrig;
 #[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
@@ -1160,7 +1162,10 @@ impl Workspace {
             single_panel,
             launch: launch.clone(),
             resume: None,
-            show_beta_notice: snapshot.is_none() && !single_panel,
+            show_beta_notice: snapshot.is_none()
+                && !single_panel
+                && !(harness::screenshot_mode()
+                    && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_HIDE_BETA").is_some()),
             account_sign_in: account_sign_in::State::startup(),
             account_menu: account_menu::State::startup(),
             show_minimap: false,
@@ -1509,7 +1514,9 @@ impl Workspace {
                 workspace.sessions.push(session.clone());
                 workspace.active = workspace.open_session(session, cx);
             }
-            if panel_count > 1 {
+            if panel_count > 1
+                || std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("openrig")
+            {
                 for slot in &mut workspace.slots {
                     slot.width_fraction = 1.0 / panel_count as f32;
                     slot.animated_width = AnimatedValue::new(
@@ -5380,6 +5387,10 @@ impl Workspace {
         for (index, width, order_offset, close_progress) in panels {
             let slot = &self.slots[index];
             let focused = index == self.active;
+            let content_width = px((width - if folders { 0. } else { 12. }).max(1.));
+            if slot.panel.read(cx).openrig_width_changed(content_width) {
+                slot.panel.update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
+            }
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             // Update only on a real change: GPUI retains views between frames and
             // treats any update while drawing as a change to what they read.
@@ -5409,7 +5420,7 @@ impl Workspace {
                 // Tagged so a render test can click the real panel element
                 // and exercise the pointer slow-path detection.
                 .debug_selector(move || format!("panel-{index}"))
-                .w(px((width - if folders { 0. } else { 12. }).max(1.)))
+                .w(content_width)
                 .h(px(panel_h - top))
                 .flex_none()
                 // Paint focus on each pane, rather than inheriting the shared sheet.
@@ -9736,6 +9747,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_openrig))
+            .on_action(cx.listener(Self::open_fleet_session))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))

@@ -1,0 +1,159 @@
+{
+  "health": {
+    "selfHostId": "host-fixture-local",
+    "status": "ok"
+  },
+  "hosts": {
+    "ownName": "localhost",
+    "hosts": [
+      {
+        "id": "worker-east",
+        "status": "reachable",
+        "url": "http://worker-east.example.test:7433"
+      }
+    ]
+  },
+  "rigs": [
+    {
+      "id": "local-kernel",
+      "name": "kernel",
+      "lifecycleState": "attention_required"
+    },
+    {
+      "id": "local-verteam",
+      "name": "verteam",
+      "lifecycleState": "stopped"
+    }
+  ],
+  "remote": [
+    {
+      "id": "remote-kernel",
+      "name": "kernel",
+      "lifecycleState": "running"
+    }
+  ],
+  "localNodes": [
+    {
+      "nodeId": "local-advisor.lead",
+      "logicalId": "advisor.lead",
+      "podId": "local-advisor",
+      "podNamespace": "advisor",
+      "runtime": "jcode",
+      "lifecycleState": "attention_required",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "local-operator.agent",
+      "logicalId": "operator.agent",
+      "podId": "local-operator",
+      "podNamespace": "operator",
+      "runtime": "jcode",
+      "lifecycleState": "attention_required",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "local-operator.human",
+      "logicalId": "operator.human",
+      "podId": "local-operator",
+      "podNamespace": "operator",
+      "runtime": "terminal",
+      "lifecycleState": "running",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "local-queue.worker",
+      "logicalId": "queue.worker",
+      "podId": "local-queue",
+      "podNamespace": "queue",
+      "runtime": "jcode",
+      "lifecycleState": "attention_required",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    }
+  ],
+  "remoteNodes": [
+    {
+      "nodeId": "remote-advisor.lead",
+      "logicalId": "advisor.lead",
+      "podId": "remote-advisor",
+      "podNamespace": "advisor",
+      "runtime": "jcode",
+      "lifecycleState": "running",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "remote-operator.agent",
+      "logicalId": "operator.agent",
+      "podId": "remote-operator",
+      "podNamespace": "operator",
+      "runtime": "jcode",
+      "lifecycleState": "running",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "remote-operator.human",
+      "logicalId": "operator.human",
+      "podId": "remote-operator",
+      "podNamespace": "operator",
+      "runtime": "terminal",
+      "lifecycleState": "running",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    },
+    {
+      "nodeId": "remote-queue.worker",
+      "logicalId": "queue.worker",
+      "podId": "remote-queue",
+      "podNamespace": "queue",
+      "runtime": "jcode",
+      "lifecycleState": "running",
+      "sessionStatus": "running",
+      "contextUsage": {
+        "availability": "unknown",
+        "usedPercentage": null
+      },
+      "hasAssignedWork": false,
+      "inProgressWorkCount": 0
+    }
+  ]
+}

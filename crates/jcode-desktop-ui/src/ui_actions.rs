@@ -50,6 +50,13 @@ pub(crate) struct PromoteSideQuestion {
     pub session: jcode_sdk::SessionInfo,
 }
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenFleetSession {
+    pub target: jcode_desktop_openrig::fleet::HostTarget,
+    pub native_id: String,
+}
+
 /// Pick another folder for the source panel, from its location pill.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

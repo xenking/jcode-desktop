@@ -3,13 +3,16 @@ use super::Panel;
 use crate::theme::Theme;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
 use jcode_desktop_openrig::{
-    LiveEvent, Meter, Snapshot, Tone, default_base_url, fetch_snapshot, fetch_stream_tail,
-    subscribe_events,
+    LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url, fetch_snapshot,
+    fetch_stream_tail, subscribe_events,
 };
 use std::{
     collections::{HashSet, VecDeque},
     time::Duration,
 };
+
+#[path = "panel_openrig_fleet.rs"]
+mod fleet;
 
 pub(crate) const SESSION_ID: &str = "openrig://mission-control";
 
@@ -74,6 +77,9 @@ fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, Str
 
 pub(super) struct State {
     snapshot: Snapshot,
+    fleet: fleet::FleetView,
+    compact: bool,
+    show_sections: bool,
     section: usize,
     selected: usize,
     filter: String,
@@ -89,8 +95,14 @@ pub(super) struct State {
 }
 impl State {
     pub(super) fn fixture() -> Self {
+        let snapshot = Snapshot::fixture();
         Self {
-            snapshot: Snapshot::fixture(),
+            snapshot,
+            fleet: fleet::FleetView::fixture(
+                std::env::var_os("JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR").is_some(),
+            ),
+            compact: false,
+            show_sections: false,
             section: 0,
             selected: 0,
             filter: String::new(),
@@ -109,6 +121,12 @@ impl State {
             _poll: None,
             _events: None,
         }
+    }
+    fn is_fleet(&self) -> bool {
+        self.snapshot
+            .sections
+            .get(self.section)
+            .is_none_or(|section| section.kind == SectionKind::Fleet)
     }
     fn is_open(&self, row: &jcode_desktop_openrig::Row) -> bool {
         row.default_open != self.toggled.contains(&row.id)
@@ -227,6 +245,19 @@ impl State {
     }
 }
 impl Panel {
+    pub(crate) fn openrig_width_changed(&self, width: gpui::Pixels) -> bool {
+        self.openrig
+            .as_ref()
+            .is_some_and(|state| state.compact != (width < px(740.)))
+    }
+
+    pub(crate) fn set_openrig_width(&mut self, width: gpui::Pixels, cx: &mut Context<Self>) {
+        if let Some(state) = self.openrig.as_mut() {
+            state.compact = width < px(740.);
+            cx.notify();
+        }
+    }
+
     pub fn new_openrig(bridge: crate::harness::Bridge, cx: &mut Context<Self>) -> Self {
         let mut panel = Self::new(SESSION_ID.into(), Some("OpenRig".into()), None, bridge, cx);
         panel.items.clear();
@@ -288,10 +319,7 @@ impl Panel {
                         .await;
                 }
             }));
-            state.snapshot = Snapshot {
-                sections: Vec::new(),
-                error: None,
-            };
+            state.snapshot = Snapshot::default();
             state._poll = Some(cx.spawn(async move |this, cx| {
                 loop {
                     let (snapshot, tail) = cx
@@ -334,14 +362,14 @@ impl Panel {
     ) -> gpui::AnyElement {
         let state = self.openrig.as_ref().expect("openrig state");
         let theme = Theme::global();
-        let mut explorer = div()
-            .w(px(155.))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_2()
-            .overflow_hidden();
+        let is_fleet = state.is_fleet();
+        let compact = state.compact;
+        let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
+        explorer = if compact {
+            explorer.w_full().flex_wrap()
+        } else {
+            explorer.w(px(143.)).flex_col()
+        };
         for (index, section) in state.snapshot.sections.iter().enumerate() {
             let active = index == state.section;
             explorer = explorer.child(
@@ -366,14 +394,21 @@ impl Panel {
                                 state.selected = 0;
                                 state.explorer = true;
                                 state.filter.clear();
+                                state.show_sections = false;
                             }
                             window.focus(&this.focus_handle, cx);
+                            cx.stop_propagation();
                             cx.notify();
                         }),
                     )
                     .child(section.title.clone()),
             );
         }
+        let (top_sections, side_sections) = if compact {
+            (state.show_sections.then_some(explorer), None)
+        } else {
+            (None, Some(explorer))
+        };
         let visible = state.visible();
         let section = state.snapshot.sections.get(state.section);
         let mut list = div()
@@ -418,6 +453,7 @@ impl Panel {
                                 state.explorer = false;
                             }
                             window.focus(&this.focus_handle, cx);
+                            cx.stop_propagation();
                             cx.notify();
                         }),
                     )
@@ -447,7 +483,9 @@ impl Panel {
         }
         let mut detail = div()
             .id("openrig-detail")
-            .w(px(320.))
+            .when(compact, |el| el.w(gpui::relative(0.42)))
+            .when(!compact, |el| el.w(px(320.)))
+            .min_w_0()
             .flex_none()
             .overflow_y_scroll()
             .p_3()
@@ -493,12 +531,13 @@ impl Panel {
                 }
             }
         }
-        let status = state
-            .snapshot
-            .error
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| "Live · polling every 2s".into());
+        let status = state.snapshot.error.as_ref().cloned().unwrap_or_else(|| {
+            if crate::harness::screenshot_mode() {
+                "Fixture data".into()
+            } else {
+                "Live · polling every 2s".into()
+            }
+        });
         let command = state.command.clone().unwrap_or_else(|| {
             if state.filter.is_empty() {
                 ":section    /filter".into()
@@ -508,11 +547,12 @@ impl Panel {
         });
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if let Some(state) = this.openrig.as_mut() {
                     let key = event.keystroke.key.as_str();
                     let text = event.keystroke.key_char.as_deref();
@@ -521,6 +561,30 @@ impl Panel {
                     } else {
                         key
                     };
+                    if state.is_fleet()
+                        && !state.explorer
+                        && state.command.is_none()
+                        && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
+                    {
+                        if let Some(action) =
+                            state.fleet.key(&state.snapshot.fleet, &state.filter, key)
+                        {
+                            window.dispatch_action(Box::new(action), cx);
+                        }
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if state.is_fleet()
+                        && state.command.is_none()
+                        && state.fleet.properties
+                        && matches!(key, "escape" | "left")
+                    {
+                        state.fleet.properties = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     state.key(key, text);
                     if !state.explorer
                         && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
@@ -538,14 +602,32 @@ impl Panel {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("OpenRig mission control"),
-                    )
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("OpenRig"))
+                    .when(compact, |header| {
+                        header.child(
+                            div()
+                                .id("openrig-section-menu")
+                                .rounded_full()
+                                .bg(theme.HEADER_BG)
+                                .px_3()
+                                .py_1()
+                                .text_size(px(11.))
+                                .cursor_pointer()
+                                .child("Sections")
+                                .on_click(cx.listener(|panel, _, window, cx| {
+                                    if let Some(state) = panel.openrig.as_mut() {
+                                        state.show_sections = !state.show_sections;
+                                    }
+                                    window.focus(&panel.focus_handle, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .rounded_full()
+                            .min_w_0()
+                            .truncate()
                             .bg(theme.HEADER_BG)
                             .px_3()
                             .py_1()
@@ -554,14 +636,15 @@ impl Panel {
                             .child(command),
                     ),
             )
+            .children(top_sections)
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(explorer)
-                    .child(list)
-                    .child(detail),
+                    .children(side_sections)
+                    .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
+                    .when(!is_fleet, |el| el.child(list).child(detail)),
             )
             .child(
                 div()
@@ -569,27 +652,37 @@ impl Panel {
                     .py_2()
                     .text_size(px(11.))
                     .text_color(theme.TEXT_FAINT)
-                    .child(format!(
-                        "{status}   ·   j/k navigate   enter select   esc back"
-                    )),
+                    .truncate()
+                    .child(if compact {
+                        status
+                    } else {
+                        format!("{status}   ·   j/k navigate   Enter activate   Esc back")
+                    }),
             )
-            .children(state.events.iter().rev().take(3).map(|event| {
-                div()
-                    .px_4()
-                    .text_size(px(11.))
-                    .text_color(theme.TEXT_DIM)
-                    .child(format!(
-                        "{}  {}  {}{}",
-                        event.ts,
-                        event.kind,
-                        event.summary,
-                        event
-                            .rig
-                            .as_ref()
-                            .map(|rig| format!(" · {rig}"))
-                            .unwrap_or_default()
-                    ))
-            }))
+            .children(
+                state
+                    .events
+                    .iter()
+                    .rev()
+                    .take(if compact { 0 } else { 3 })
+                    .map(|event| {
+                        div()
+                            .px_4()
+                            .text_size(px(11.))
+                            .text_color(theme.TEXT_DIM)
+                            .child(format!(
+                                "{}  {}  {}{}",
+                                event.ts,
+                                event.kind,
+                                event.summary,
+                                event
+                                    .rig
+                                    .as_ref()
+                                    .map(|rig| format!(" · {rig}"))
+                                    .unwrap_or_default()
+                            ))
+                    }),
+            )
             .into_any_element()
     }
 }
