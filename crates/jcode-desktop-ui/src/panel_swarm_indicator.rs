@@ -1222,7 +1222,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn finishing_the_last_worker_keeps_its_status_until_removed(cx: &mut gpui::TestAppContext) {
+    fn finishing_the_last_worker_moves_its_status_into_history(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
@@ -1233,6 +1233,11 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "ready")], cx)
         });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-workers-count").is_none());
+        assert!(vcx.debug_bounds("swarm-list-state-0").is_none());
+        let history = vcx.debug_bounds("work-section-Finished workers").unwrap();
+        vcx.simulate_click(history.center(), Default::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list-state-0").is_some());
         assert!(vcx.debug_bounds("swarm-list-mark-0").is_some());
