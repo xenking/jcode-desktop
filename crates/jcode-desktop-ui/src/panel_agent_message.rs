@@ -12,31 +12,40 @@ pub(super) fn dm_body(message: &str) -> &str {
     split_dm(message).map_or(message, |(_, body)| body)
 }
 
-pub(super) fn history_user_item(content: String, has_attachments: bool) -> Item {
+pub(super) fn history_user_item(
+    content: String,
+    has_attachments: bool,
+    timestamp_ms: Option<i64>,
+) -> Item {
     if !has_attachments && let Some((sender, _)) = split_dm(&content) {
         return Item::AgentMessage {
             // Old history stores a display name, not a signed session ID.
             from_session: String::new(),
             from_name: Some(sender.to_owned()),
             message: content,
+            timestamp_ms,
         };
     }
     Item::User(content)
 }
 
 impl Panel {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_agent_message(
         &self,
         index: usize,
         from_session: &str,
         from_name: Option<&str>,
         message: &str,
+        timestamp_ms: Option<i64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
+        let icon_name = crate::swarm_view::friendly_name(from_session);
         let sender = from_name
             .filter(|name| !name.is_empty())
+            .or(icon_name)
             .map_or_else(|| short_id(from_session), str::to_owned);
         let target = if !from_session.is_empty() {
             Some(from_session.to_owned())
@@ -67,25 +76,47 @@ impl Panel {
         } else {
             first_line.to_owned()
         };
+        let peer = swarm_card::row_peer(format!(
+            "{} {sender}",
+            jcode_core::id::session_icon(icon_name.unwrap_or(&sender))
+        ))
+        .id(("agent-message-sender", index))
+        .debug_selector(|| "agent-message-sender".into())
+        .relative();
+        let peer = if let Some(target) = target {
+            crate::keyboard::button(peer)
+                .hover(|el| el.text_color(theme.ACCENT))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(OpenSwarmWorker(target.clone()));
+                }))
+                .children(crate::fixture_control_targets::marker(
+                    || format!("agent-message:sender:{index}"),
+                    || Some(self.session_id.clone()),
+                ))
+        } else {
+            peer
+        };
+        let row = swarm_card::Row {
+            action: "dm",
+            direction: Some(swarm_card::Direction::From),
+            peer: peer.into_any_element(),
+            message: &summary,
+            clock: timestamp_ms.and_then(swarm_card::render_swarm_timestamp),
+            tokens: None,
+            done: true,
+            failed: false,
+        };
         div()
             .debug_selector(|| "agent-message".into())
             .flex()
             .flex_col()
             .flex_none()
             .min_w_0()
-            .child(
+            .child(row.render(
                 crate::keyboard::tracked_button(div().id(("agent-message-summary", index)), &focus)
                     .debug_selector(|| "agent-message-summary".into())
                     .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .min_w_0()
-                    .px_1()
-                    .py(px(2.0))
-                    .line_height(px(18.0))
-                    .text_size(px(12.0))
-                    .cursor_pointer()
                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if event.keystroke.key == "enter" && !event.is_held {
                             this.toggle_line(&keyboard_key, cx);
@@ -100,55 +131,8 @@ impl Panel {
                     .children(crate::fixture_control_targets::marker(
                         || format!("agent-message:summary:{index}"),
                         || Some(self.session_id.clone()),
-                    ))
-                    .child(
-                        gpui::svg()
-                            .data(swarm_card::action_icon("dm"))
-                            .size(px(14.0))
-                            .flex_none()
-                            .text_color(theme.TEXT_FAINT),
-                    )
-                    .child({
-                        let name = div()
-                            .id(("agent-message-sender", index))
-                            .debug_selector(|| "agent-message-sender".into())
-                            .relative()
-                            .min_w_0()
-                            .max_w(px(160.0))
-                            .truncate()
-                            .text_color(theme.TEXT_DIM)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(sender);
-                        if let Some(target) = target {
-                            crate::keyboard::button(name)
-                                .hover(|el| el.text_color(theme.ACCENT))
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.emit(OpenSwarmWorker(target.clone()));
-                                }))
-                                .children(crate::fixture_control_targets::marker(
-                                    || format!("agent-message:sender:{index}"),
-                                    || Some(self.session_id.clone()),
-                                ))
-                        } else {
-                            name
-                        }
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.TOOL_TEXT)
-                            .child(summary),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(if expanded { "▾" } else { "▸" }),
-                    ),
-            )
+                    )),
+            ))
             .when(expanded, |row| {
                 row.child(
                     div()

@@ -139,6 +139,7 @@ impl Panel {
                     let item = agent_message::history_user_item(
                         message.content.clone(),
                         !message.attachments.is_empty(),
+                        message.timestamp_ms,
                     );
                     if let Some(at) = message.timestamp_ms
                         && matches!(item, Item::User(_))
@@ -223,6 +224,7 @@ impl Panel {
                         let item = agent_message::history_user_item(
                             message.content.clone(),
                             !message.attachments.is_empty(),
+                            message.timestamp_ms,
                         );
                         if let Some(at) = message.timestamp_ms
                             && matches!(item, Item::User(_))

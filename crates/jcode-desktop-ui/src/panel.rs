@@ -377,6 +377,9 @@ pub enum Item {
         from_session: String,
         from_name: Option<String>,
         message: String,
+        /// Local arrival time for notifications, or the stored time for history.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp_ms: Option<i64>,
     },
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
@@ -3460,6 +3463,7 @@ impl Panel {
                         message.content,
                         !message.attachments.is_empty()
                             || images_by_prompt.contains_key(&user_ordinal),
+                        message.timestamp_ms,
                     );
                     if let Some(at) = message.timestamp_ms
                         && matches!(prompt, Item::User(_))
@@ -4051,6 +4055,7 @@ impl Panel {
                     from_session: from_session.clone(),
                     from_name: from_name.clone(),
                     message: message.clone(),
+                    timestamp_ms: response_stats::now_ms(),
                 });
             }
             ApiEvent::MessageAccepted { .. } => {
@@ -5212,11 +5217,7 @@ impl Panel {
         finished: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let clock = div()
-            .debug_selector(|| "tool-elapsed".into())
-            .flex_none()
-            .text_size(px(11.0))
-            .text_color(Theme::global().TEXT_FAINT);
+        let clock = compact_clock();
         let start = self
             .tool_wall_times
             .get(call_id)
@@ -5461,11 +5462,13 @@ impl Panel {
                 from_session,
                 from_name,
                 message,
+                timestamp_ms,
             } => self.render_agent_message(
                 index,
                 from_session,
                 from_name.as_deref(),
                 message,
+                *timestamp_ms,
                 window,
                 cx,
             ),
@@ -8741,6 +8744,14 @@ fn history_tool_times(messages: &[jcode_sdk::HistoryMessage]) -> HistoryToolTime
         .collect()
 }
 
+fn compact_clock() -> gpui::Div {
+    div()
+        .debug_selector(|| "tool-elapsed".into())
+        .flex_none()
+        .text_size(px(11.0))
+        .text_color(Theme::global().TEXT_FAINT)
+}
+
 fn tool_clock_label(ms: i64) -> Option<String> {
     use chrono::TimeZone;
     Some(
@@ -11501,6 +11512,22 @@ mod tests {
         let summary = vcx
             .debug_bounds("agent-message-summary")
             .expect("one-line DM disclosure");
+        let pill = vcx
+            .debug_bounds("tool-identity-pill")
+            .expect("incoming DM shows the swarm pill");
+        let time = vcx
+            .debug_bounds("tool-elapsed")
+            .expect("live DM shows its arrival time");
+        assert!(pill.left() >= summary.left() && time.right() <= summary.right());
+        assert!(pill.right() < time.left());
+        assert!(vcx.debug_bounds("tool-card-tokens").is_none());
+        let window = vcx.window_handle();
+        vcx.simulate_window_resize(window, gpui::size(px(480.), px(680.)));
+        vcx.run_until_parked();
+        let summary = vcx.debug_bounds("agent-message-summary").unwrap();
+        let preview = vcx.debug_bounds("tool-swarm-preview").unwrap();
+        let time = vcx.debug_bounds("tool-elapsed").unwrap();
+        assert!(preview.right() <= time.left() && time.right() <= summary.right());
         assert!(vcx.debug_bounds("agent-message-body").is_none());
         vcx.simulate_click(summary.center(), gpui::Modifiers::none());
         vcx.run_until_parked();
@@ -11541,6 +11568,9 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("agent-message-summary").is_some());
+        assert!(vcx.debug_bounds("tool-identity-pill").is_some());
+        assert!(vcx.debug_bounds("tool-elapsed").is_none());
+        assert!(vcx.debug_bounds("tool-card-tokens").is_none());
         assert!(vcx.debug_bounds("agent-message-body").is_none());
         panel.update(vcx, |panel, cx| {
             panel.search_terms = vec!["obscured".into()];

@@ -268,7 +268,11 @@ class Instance:
         if env.get("JCODE_DESKTOP_CONTROL_OPENRIG_LIVE") == "1":
             scope = "real hidden GPUI window; Work and Build GETs to OpenRig on loopback only"
         save(self.run / "isolation.json", {"environment": env, "scope": scope})
-        with (self.run / "desktop.log").open("w") as log:
+        self.start_desktop(env, modes)
+
+    def start_desktop(self, env, modes, suffix=""):
+        self.endpoint = None
+        with (self.run / f"desktop{suffix}.log").open("w") as log:
             self.process = subprocess.Popen([self.manifest["binary"], *modes, "--no-hot-reload"], env=env, cwd=self.profile / "home", stdout=log, stderr=log, start_new_session=True)
         self.manifest["desktop_pid"] = self.process.pid
         save(self.run / "run.json", self.manifest)
@@ -300,7 +304,7 @@ class Instance:
                                 and len(panels) == (2 if fixture == "openrig-live-split" else 1))
                             or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
-                        save(self.run / "ready.json", {"target": self.target, "state": state})
+                        save(self.run / f"ready{suffix}.json", {"target": self.target, "state": state})
                         save(self.run / "run.json", self.manifest)
                         return
             time.sleep(.1)
@@ -1020,21 +1024,26 @@ class Instance:
         )
         self.drive("set_composer", {"text": draft})
         save(self.run / "swarm-dm-before.json", self.drive("state"))
-        command = {"type": "comm_message", "id": 1, "from_session": sender,
-                   "to_session": recipient, "message": body, "delivery": "notify", "require_target": True}
-        with socket.socket(socket.AF_UNIX) as conn:
-            conn.settimeout(10)
-            conn.connect(str(self.legacy_socket))
-            conn.sendall(json.dumps(command).encode() + b"\n")
-            with conn.makefile("rb") as reader:
-                for line in reader:
-                    reply = json.loads(line)
-                    if reply.get("id") == command["id"] and reply.get("type") in ("done", "error"):
-                        break
-                else:
-                    raise RuntimeError("swarm DM ended without an acknowledgment")
-        if reply["type"] != "done":
-            raise RuntimeError(f"swarm DM failed: {reply['message']}")
+
+        def send_dm(message, delivery):
+            command = {"type": "comm_message", "id": 1, "from_session": sender,
+                       "to_session": recipient, "message": message, "delivery": delivery,
+                       "require_target": True}
+            with socket.socket(socket.AF_UNIX) as conn:
+                conn.settimeout(10)
+                conn.connect(str(self.legacy_socket))
+                conn.sendall(json.dumps(command).encode() + b"\n")
+                with conn.makefile("rb") as reader:
+                    for line in reader:
+                        reply = json.loads(line)
+                        if reply.get("id") == command["id"] and reply.get("type") in ("done", "error"):
+                            if reply["type"] != "done":
+                                raise RuntimeError(f"swarm DM failed: {reply['message']}")
+                            return
+            raise RuntimeError("swarm DM ended without an acknowledgment")
+
+        sent_at = time.time_ns() // 1_000_000
+        send_dm(body, "notify")
 
         def received():
             state = self.drive("state")
@@ -1046,6 +1055,8 @@ class Instance:
                         and message["message"] == f"DM from {name}: {body}"):
                     if panel["session_id"] != recipient or panel["composer"] != draft:
                         raise RuntimeError("swarm DM reached the wrong session or replaced the draft")
+                    if not sent_at <= message.get("timestamp_ms", 0) <= time.time_ns() // 1_000_000:
+                        raise RuntimeError("live DM did not store its actual arrival time")
                     if not (self.run / "swarm-dm-arrival.png").exists():
                         # Force a frame after the async event in the hidden window.
                         self.screenshot("swarm-dm-arrival.png")
@@ -1093,11 +1104,90 @@ class Instance:
                 or sender_state["panel"]["composer"] != draft):
             raise RuntimeError("sender click did not open and focus its session or keep the draft")
         save(self.run / "swarm-dm-sender.json", sender_state)
+        request_log = self.run / "fake-requests.jsonl"
+        if request_log.exists() and "Please check the build output" in request_log.read_text():
+            raise RuntimeError("notify delivery unexpectedly started a provider turn")
+
+        self.drive("focus")
+        self.drive("click", {"selector": f"agent-message:summary:{index}"})
+        outgoing_text = "native_dm_verification"
+        self.drive("set_composer", {"text": f"[e2e:worker-dm:{sender}:{outgoing_text}]"})
+        self.drive("send")
+        self.drive("set_composer", {"text": draft})
+
+        def outgoing(panel):
+            return [item["Tool"] for item in panel["loaded_transcript_items"]
+                    if isinstance(item, dict) and "Tool" in item
+                    and item["Tool"]["name"] == "swarm"
+                    and outgoing_text in item["Tool"]["input"]]
+
+        def outgoing_ready():
+            state = self.drive("state")
+            panel = state["panel"]
+            calls = outgoing(panel)
+            if len(calls) > 1:
+                raise RuntimeError("a single tool execution produced duplicate outgoing rows")
+            if len(calls) == 1 and calls[0]["done"]:
+                if calls[0]["error"]:
+                    raise RuntimeError(f"outgoing tool reported {calls[0]['error']}")
+                if panel["composer"] != draft or any(
+                    item.get("AgentMessage", {}).get("message", "").endswith(outgoing_text)
+                    for item in panel["loaded_transcript_items"] if isinstance(item, dict)
+                ):
+                    raise RuntimeError("sending created an incoming echo or changed the draft")
+                return state, calls[0]["call_id"]
+            return None
+
+        live, call_id = self.runtime_wait(outgoing_ready, "one live outgoing swarm tool row")
+        self.screenshot("swarm-dm-live-pair.png")
+        save(self.run / "swarm-dm-live-pair.json", live)
+        self.screenshot("swarm-dm-live-outgoing.png", f"tool:{call_id}")
+
+        # New notifications are not legacy user rows. Seed the legacy
+        # envelope through the real session history path, not the UI fixture.
+        replay_body = "Persisted incoming DM\n\n**Markdown survives a fresh attach.**"
+        replay_sent_at = time.time_ns() // 1_000_000
+        self.runtime_debug("message", f"DM from {name}: {replay_body}",
+                           "--session", recipient, "--wait")
+        replay_before_restart = time.time_ns() // 1_000_000
+        live_pid = self.process.pid
+        self.runtime_stop(self.process)
+        env = json.loads((self.run / "isolation.json").read_text())["environment"]
+        self.start_desktop(env, [], suffix="-replay")
+
+        def replay_ready():
+            state = self.drive("state")
+            panel = state["panel"]
+            calls = outgoing(panel)
+            incoming = [(index, item) for index, item in enumerate(panel["loaded_transcript_items"])
+                        if isinstance(item, dict) and item.get("AgentMessage", {}).get("message")
+                        == f"DM from {name}: {replay_body}"]
+            if len(calls) != 1 or len(incoming) != 1:
+                return None
+            index, item = incoming[0]
+            at = item["AgentMessage"].get("timestamp_ms", 0)
+            if not replay_sent_at <= at <= replay_before_restart:
+                raise RuntimeError("replay did not use the persisted DM timestamp")
+            return index, item
+
+        replay_index, replay_item = self.runtime_wait(replay_ready, "fresh attach with both DM rows")
+        self.screenshot("swarm-dm-replay-pair.png")
+        replay = self.drive("state")
+        replay_selector = next(row["selector"] for row in replay["panel"]["visible_transcript_items"]
+                               if row["item"] == replay_item)
+        save(self.run / "swarm-dm-replay.json", replay)
+        self.screenshot("swarm-dm-replay-incoming.png", replay_selector)
+        self.screenshot("swarm-dm-replay-outgoing.png", f"tool:{call_id}")
+        self.drive("reveal", {"row": {"kind": "text", "text": "Markdown survives a fresh attach."}})
+        if f"details:{replay_index}" not in self.drive("state")["panel"]["expanded_regions"]:
+            raise RuntimeError("search did not expand the replayed DM")
 
         report = {"journey": "swarm-dm", "passed": True, "from_session": sender,
                   "from_name": name, "recipient": recipient, "draft_preserved": True,
                   "sender_opened": True, "collapsed": collapsed, "expanded": expanded,
-                  "highlighted": highlighted}
+                  "highlighted": highlighted, "outgoing_call_id": call_id,
+                  "live_pid": live_pid, "replay_pid": self.process.pid,
+                  "legacy_replay_timestamp_ms": replay_item["AgentMessage"]["timestamp_ms"]}
         save(self.run / "swarm-dm-proof.json", report)
         return report
 

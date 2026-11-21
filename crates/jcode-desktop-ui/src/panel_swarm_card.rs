@@ -121,13 +121,106 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
     })
 }
 
-pub(super) fn action_icon(action: &str) -> &'static [u8] {
+fn action_icon(action: &str) -> &'static [u8] {
     match action {
         "message" | "dm" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2 4h12v8H2z M2 4l6 5 6-5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>"#,
         "spawn" | "resume" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>"#,
         "stop" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/></svg>"#,
         "await_members" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 2h10M3 14h10M4 2c0 4 4 4 4 6s-4 2-4 6M12 2c0 4-4 4-4 6s4 2 4 6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>"#,
         _ => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2 4h2M6 4h8M2 8h2M6 8h8M2 12h2M6 12h8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>"#,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Direction {
+    From,
+    To,
+}
+
+impl Direction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::From => "From",
+            Self::To => "To",
+        }
+    }
+
+    fn icon(self) -> &'static [u8] {
+        match self {
+            Self::From => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 9v4h10V9M8 2v7M5 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+            Self::To => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 9v4h10V9M8 10V3M5 6l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        }
+    }
+}
+
+pub(super) fn row_peer(peer: String) -> gpui::Div {
+    div()
+        .min_w_0()
+        .max_w(px(260.0))
+        .truncate()
+        .text_color(Theme::global().TEXT_DIM)
+        .child(peer)
+}
+
+pub(super) fn render_swarm_timestamp(ms: i64) -> Option<gpui::AnyElement> {
+    Some(compact_clock().child(tool_clock_label(ms)?).into_any_element())
+}
+
+pub(super) struct Row<'a> {
+    pub action: &'a str,
+    pub direction: Option<Direction>,
+    pub peer: gpui::AnyElement,
+    pub message: &'a str,
+    pub clock: Option<gpui::AnyElement>,
+    pub tokens: Option<gpui::Div>,
+    pub done: bool,
+    pub failed: bool,
+}
+
+impl Row<'_> {
+    pub(super) fn render(self, header: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::global();
+        let preview = row_preview(self.message);
+        header
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .min_w_0()
+            .px_1()
+            .py(px(2.0))
+            .text_size(px(12.0))
+            .cursor_pointer()
+            .child(crate::tool_icon::render_badge("swarm", self.done, self.failed).flex_none())
+            .child(
+                gpui::svg()
+                    .data(self.direction.map_or_else(|| action_icon(self.action), Direction::icon))
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.TEXT_FAINT),
+            )
+            .children(self.direction.map(|direction| {
+                div()
+                    .debug_selector(|| "swarm-direction".into())
+                    .flex_none()
+                    .text_color(theme.TEXT_FAINT)
+                    .child(direction.label())
+            }))
+            .child(self.peer)
+            .child(
+                div()
+                    .debug_selector(|| "tool-swarm-preview".into())
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_color(theme.TOOL_TEXT)
+                    .child(if preview.is_empty() {
+                        self.action.to_owned()
+                    } else {
+                        format!("· {preview}")
+                    }),
+            )
+            .children(self.clock)
+            .children(self.tokens)
     }
 }
 
@@ -190,13 +283,31 @@ impl Panel {
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         let click_focus = focus.clone();
-        let preview = row_preview(&call.text);
         let mut body = tool_detail(name, input, output);
         if let Some(error) = error {
             body.push_str("\n\nError\n");
             body.push_str(&strip_ansi(error));
         }
-        let (token_label, token_color) = tool_output_token_badge(output);
+        let direction = (matches!(call.action.as_str(), "dm" | "message")
+            && !call.session_ids.is_empty())
+        .then_some(Direction::To);
+        let clock = self
+            .render_tool_clock(index, call_id, done || error.is_some(), cx)
+            .or_else(|| {
+                direction?;
+                let (_, finished_at) = self.tool_wall_times.get(call_id)?;
+                finished_at.and_then(render_swarm_timestamp)
+            });
+        let row = Row {
+            action: &call.action,
+            direction,
+            peer: row_peer(call.target.clone()).into_any_element(),
+            message: &call.text,
+            clock,
+            tokens: tool_card_token_pill(output),
+            done,
+            failed: error.is_some(),
+        };
         let height = if self.expandable_viewport_height > px(0.) {
             (f32::from(self.expandable_viewport_height) * 0.6).clamp(1., expandable::MAX_HEIGHT)
         } else {
@@ -210,17 +321,10 @@ impl Panel {
             .flex_col()
             .ml(px(offset))
             .opacity(opacity)
-            .child(
+            .child(row.render(
                 div()
                     .id(("swarm-card-row", index))
                     .debug_selector(|| "tool-swarm-header".into())
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .min_w_0()
-                    .px_1()
-                    .py(px(2.0))
-                    .cursor_pointer()
                     .track_focus(&focus)
                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if event.keystroke.key == "enter" && !event.is_held {
@@ -235,55 +339,8 @@ impl Panel {
                         expandable::flip(&mut this.expanded_regions, &key);
                         this.transcript_measurements.dirty = true;
                         cx.notify();
-                    }))
-                    .child(crate::tool_icon::render_badge(
-                        "swarm",
-                        done,
-                        error.is_some(),
-                    ))
-                    .child(
-                        gpui::svg()
-                            .data(action_icon(&call.action))
-                            .size(px(14.0))
-                            .text_color(theme.TEXT_FAINT),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(260.0))
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT_DIM)
-                            .child(call.target.clone()),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "tool-swarm-preview".into())
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(theme.TOOL_TEXT)
-                            .child(if preview.is_empty() {
-                                call.action.clone()
-                            } else {
-                                format!("· {preview}")
-                            }),
-                    )
-                    .children(self.render_tool_clock(index, call_id, done || error.is_some(), cx))
-                    .child(
-                        div()
-                            .flex_none()
-                            .ml_auto()
-                            .px_2()
-                            .py(px(2.))
-                            .rounded_full()
-                            .bg(theme.INLINE_CODE_BG)
-                            .text_size(px(10.))
-                            .text_color(token_color)
-                            .child(token_label),
-                    ),
-            )
+                    })),
+            ))
             .when(expanded, |el| {
                 let scroll = self
                     .swarm_scrolls
