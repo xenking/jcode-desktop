@@ -10,7 +10,7 @@
       "sourceSession": "advisor-lead@kernel", "destinationSession": "human@kernel",
       "summary": "Approve migration", "body": "The migration passed the staging checks. Can it ship?",
       "tsCreated": "2026-11-20T08:00:00.000Z", "tsUpdated": "2026-11-20T08:30:00.000Z",
-      "humanQuestions": [{ "id": "deploy", "question": "Can the migration ship?" }]
+      "humanQuestions": [{ "id": "deploy", "question": "Can the migration ship?", "options": [{ "id": "ship", "label": "Ship" }, { "id": "wait", "label": "Wait" }] }]
     },
     {
       "hostId": "worker-east", "qitemId": "q1", "state": "pending",

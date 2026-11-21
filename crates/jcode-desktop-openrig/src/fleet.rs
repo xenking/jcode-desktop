@@ -23,6 +23,13 @@ pub struct Host {
     pub target: HostTarget,
     pub status: Option<String>,
     pub rigs: Option<Vec<Rig>>,
+    direct: bool,
+}
+
+impl Host {
+    pub(crate) fn queue_host_id(&self) -> &str {
+        if self.direct { "local" } else { &self.id }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -77,6 +84,8 @@ pub(crate) struct SeatAttention {
     pub reason: Option<String>,
     pub evidence: Option<String>,
     pub observed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub clear: Option<inbox::ClearEvidence>,
+    pub class: inbox::SeatReasonClass,
 }
 
 #[derive(Deserialize)]
@@ -112,6 +121,19 @@ struct Node {
     agent_activity: Option<AgentActivity>,
     needs_attention: Option<bool>,
     held_reason: Option<String>,
+    startup_status: Option<String>,
+    latest_error: Option<String>,
+    latest_error_stage: Option<String>,
+    restore_outcome: Option<String>,
+    identity_verdict: Option<IdentityVerdict>,
+}
+
+#[derive(Deserialize)]
+struct IdentityVerdict {
+    verdict: Option<String>,
+    reason: Option<String>,
+    #[serde(rename = "observedAt")]
+    observed_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +156,7 @@ struct AgentActivity {
     evidence: Option<String>,
     event_at: Option<String>,
     stale: Option<bool>,
+    evidence_source: Option<String>,
 }
 
 impl Node {
@@ -161,19 +184,85 @@ impl Node {
                     .filter(|a| a.state.as_deref() == Some("needs_input"))
                     .and_then(|a| a.reason.as_deref())
             });
-        let (kind, reason) = if needs_input {
+        let startup = matches!(
+            self.startup_status.as_deref(),
+            Some("attention_required" | "failed")
+        );
+        let identity = self.identity_verdict.as_ref().filter(|verdict| {
+            matches!(
+                verdict.verdict.as_deref(),
+                Some("pane_missing" | "mismatch")
+            )
+        });
+        let restore = matches!(
+            self.restore_outcome.as_deref(),
+            Some("attention_required" | "failed" | "awaiting-decision")
+        );
+        let hook_wait = observed.is_some_and(|a| {
+            a.evidence_source.as_deref() == Some("runtime_hook")
+                && (a.state.as_deref() == Some("needs_input")
+                    || self.runtime.as_deref() == Some("codex")
+                        && a.reason.as_deref() == Some("permission_request_pending"))
+        });
+        use inbox::SeatReasonClass as Class;
+        let (kind, reason, clear, class) = if startup {
             (
-                if input_reason == Some("permission_prompt") {
+                inbox::Kind::Startup,
+                self.latest_error
+                    .as_deref()
+                    .or(self.latest_error_stage.as_deref()),
+                Some(inbox::ClearEvidence::Reconcile),
+                Class::Startup,
+            )
+        } else if let Some(identity) = identity {
+            (
+                inbox::Kind::SeatAttention,
+                identity.reason.as_deref().or(identity.verdict.as_deref()),
+                Some(inbox::ClearEvidence::Reconcile),
+                Class::Identity,
+            )
+        } else if restore {
+            (
+                inbox::Kind::SeatAttention,
+                self.latest_error
+                    .as_deref()
+                    .or(self.restore_outcome.as_deref()),
+                (self.restore_outcome.as_deref() == Some("attention_required")
+                    || self.restore_outcome.as_deref() == Some("failed")
+                        && self.session_status.as_deref() == Some("running"))
+                .then_some(inbox::ClearEvidence::Reconcile),
+                Class::Restore,
+            )
+        } else if needs_input || hook_wait {
+            (
+                if matches!(
+                    input_reason,
+                    Some("permission_prompt" | "permission_request_pending")
+                ) {
                     inbox::Kind::Permission
                 } else {
                     inbox::Kind::SeatAttention
                 },
                 input_reason,
+                hook_wait.then_some(inbox::ClearEvidence::AttestPromptEnded),
+                Class::Input,
             )
-        } else if let Some(reason) = held {
-            (inbox::Kind::Held, Some(reason.as_str()))
-        } else if self.needs_attention == Some(true) {
-            (inbox::Kind::SeatAttention, None)
+        } else if let Some(reason) = held.filter(|_| self.needs_attention != Some(false)) {
+            (
+                inbox::Kind::SeatAttention,
+                Some(reason.as_str()),
+                None,
+                Class::LaunchHold,
+            )
+        } else if self.needs_attention == Some(true)
+            || self.lifecycle_state.as_deref() == Some("attention_required")
+        {
+            (
+                inbox::Kind::SeatAttention,
+                self.latest_error.as_deref(),
+                None,
+                Class::Reported,
+            )
         } else {
             return None;
         };
@@ -187,7 +276,13 @@ impl Node {
             evidence: observed
                 .and_then(|a| a.evidence.clone())
                 .filter(|text| !text.trim().is_empty()),
-            observed_at: inbox::timestamp(observed.and_then(|a| a.event_at.as_deref())),
+            observed_at: inbox::timestamp(match class {
+                Class::Input => observed.and_then(|a| a.event_at.as_deref()),
+                Class::Identity => identity.and_then(|value| value.observed_at.as_deref()),
+                _ => None,
+            }),
+            clear,
+            class,
         })
     }
 }
@@ -220,7 +315,6 @@ impl From<Node> for Seat {
         Self {
             id: node.node_id,
             logical_id: node.logical_id,
-            canonical_session_name: node.canonical_session_name,
             runtime,
             status: node.lifecycle_state.or(node.session_status),
             jcode_session_id,
@@ -230,6 +324,9 @@ impl From<Node> for Seat {
                 .and_then(|context| context.used_percentage)
                 .filter(|percent| (0.0..=100.0).contains(percent)),
             current_work_count: node.in_progress_work_count,
+            canonical_session_name: node
+                .canonical_session_name
+                .filter(|id| !id.trim().is_empty()),
             attention,
         }
     }
@@ -328,6 +425,7 @@ impl Fleet {
                 },
             );
         let mut local = Host {
+            direct: true,
             id: host_id.into(),
             name: hosts
                 .as_ref()
@@ -347,6 +445,7 @@ impl Fleet {
             }
             let query = format!("?host={}", encode(&entry.id));
             let mut host = Host {
+                direct: false,
                 name: entry.id.clone(),
                 target: HostTarget::Remote {
                     alias: entry.id.clone(),
@@ -463,7 +562,7 @@ mod tests {
             json!({"nodeId":"n1", "logicalId":"dev.one", "heldReason":"waiting for owner"}),
         )
         .unwrap();
-        assert_eq!(held.kind, inbox::Kind::Held);
+        assert_eq!(held.kind, inbox::Kind::SeatAttention);
         assert_eq!(held.observed_at, None);
     }
 

@@ -1,3 +1,4 @@
+pub mod attention;
 pub mod build;
 pub mod connections;
 pub mod cost;
@@ -502,7 +503,6 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         "/api/rigs/summary",
         "/api/scopes?detail=1",
         "/api/terminal/views",
-        "/api/review/fleet",
         "/api/health?limit=200",
         "/api/config?view=browser",
         "/api/gateway/connections",
@@ -551,19 +551,21 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
     let mut sections = vec![make_section(SectionKind::Fleet, "Fleet", Vec::new())];
     for (kind, title, index, keys) in [
         (SectionKind::Scopes, "Scopes", 3, vec!["missions"]),
-        (SectionKind::Needs, "Needs attention", 5, vec![]),
-        (SectionKind::System, "System", 6, vec!["records"]),
-        (SectionKind::Config, "Config", 7, vec!["entries"]),
-        (SectionKind::Connections, "Connections", 8, vec!["humans"]),
-        (SectionKind::Usage, "Usage", 9, vec!["usage"]),
-        (SectionKind::UsageHosts, "Usage hosts", 10, vec!["hosts"]),
-        (SectionKind::Cost, "Cost", 11, vec!["seats"]),
+        (SectionKind::Needs, "Needs attention", 0, vec![]),
+        (SectionKind::System, "System", 5, vec!["records"]),
+        (SectionKind::Config, "Config", 6, vec!["entries"]),
+        (SectionKind::Connections, "Connections", 7, vec!["humans"]),
+        (SectionKind::Usage, "Usage", 8, vec!["usage"]),
+        (SectionKind::UsageHosts, "Usage hosts", 9, vec!["hosts"]),
+        (SectionKind::Cost, "Cost", 10, vec!["seats"]),
     ] {
         let mut rows = Vec::new();
-        if kind == SectionKind::Usage {
+        if kind == SectionKind::Needs {
+            // The typed Inbox/Needs attention views add their reads only while visible.
+        } else if kind == SectionKind::Usage {
             let setting = match &results[index] {
                 Ok(model) if model["usage"].is_array() => usage::SwitchSetting::Absent,
-                _ => usage::switch_setting(val(7)),
+                _ => usage::switch_setting(val(6)),
             };
             rows = usage::usage_rows(&results[index], &setting);
         } else if kind == SectionKind::UsageHosts {
@@ -586,14 +588,6 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                 errors.push("Config: invalid browser contract".into());
             } else if kind == SectionKind::Config {
                 rows = sections::config_rows(v);
-            } else if kind == SectionKind::Needs {
-                let items: util::Items<sections::NeedsItem> =
-                    serde_json::from_value(v["needsYou"]["items"].clone()).unwrap_or_default();
-                rows = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| sections::needs_row(item, i))
-                    .collect();
             } else if kind == SectionKind::Scopes {
                 rows = sections::scopes_rows(v);
             } else if kind == SectionKind::System {
@@ -655,6 +649,18 @@ fn demo_rows(kind: SectionKind) -> Option<Vec<Row>> {
     }
 }
 impl Snapshot {
+    pub fn load_attention(&mut self, base: &str) {
+        if let Some(inbox) = &mut self.inbox
+            && !inbox.waits_loaded()
+        {
+            inbox.load_local_permissions(base);
+            inbox.load_human_actions(base);
+            inbox.locate_queue_items(&self.fleet);
+            attention::load_waits(base, &self.fleet, inbox);
+            inbox.waits_loaded = true;
+        }
+    }
+
     pub fn fixture() -> Self {
         let kinds = [
             (SectionKind::Fleet, "Fleet"),

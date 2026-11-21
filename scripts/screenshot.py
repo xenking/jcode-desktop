@@ -125,6 +125,8 @@ def main():
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "image-prompt", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
+                        help="capture live loopback GETs or the offline inspector/confirmation in OpenRig")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
     parser.add_argument("--queued", type=int, default=0,
@@ -451,6 +453,8 @@ def main():
     native_fleet = (sys.platform == "darwin" and args.transcript in ("openrig", "openrig-inspector")
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
+    if args.openrig_attention and not (native_fleet and args.transcript == "openrig"):
+        parser.error("--openrig-attention requires the isolated macOS --transcript openrig capture")
     if not native_fleet:
         for tool in ("Xvfb", "import", "openbox", "xdotool"):
             if not shutil.which(tool):
@@ -500,6 +504,8 @@ def main():
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "openrig" if args.transcript == "openrig-inspector" else args.transcript
         if args.transcript == "openrig-inspector":
             env["JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR"] = "1"
+        if args.openrig_attention:
+            env["JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION"] = args.openrig_attention
         if args.queued > 0:
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(args.queued)
         if args.panel_transcripts:

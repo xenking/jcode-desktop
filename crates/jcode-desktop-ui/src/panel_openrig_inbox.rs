@@ -4,51 +4,94 @@ use gpui::{Context, FontWeight, MouseButton, ScrollHandle, div, prelude::*, px};
 use jcode_desktop_openrig::inbox::{Inbox, Item, ItemId, Kind};
 
 const UNKNOWN: &str = "–";
-const FILTERS: [Option<Kind>; 6] = [
+const FILTERS: [Option<Kind>; 8] = [
     None,
     Some(Kind::HumanTask),
     Some(Kind::Approval),
     Some(Kind::Permission),
     Some(Kind::Held),
     Some(Kind::SeatAttention),
+    Some(Kind::Parked),
+    Some(Kind::Startup),
 ];
+
+#[derive(Clone, Copy)]
+pub(super) enum Page {
+    Inbox,
+    Attention,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Inbox => "Inbox",
+            Self::Attention => "Needs attention",
+        }
+    }
+    fn view(self, state: &State) -> &InboxView {
+        match self {
+            Self::Inbox => &state.inbox,
+            Self::Attention => &state.attention,
+        }
+    }
+    pub(super) fn view_mut(self, state: &mut State) -> &mut InboxView {
+        match self {
+            Self::Inbox => &mut state.inbox,
+            Self::Attention => &mut state.attention,
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct InboxView {
     filter: Option<Kind>,
     pub(super) selected: Option<ItemId>,
+    pub(super) show_sources: bool,
     scroll: ScrollHandle,
 }
 
 impl InboxView {
-    fn rows<'a>(&self, inbox: &'a Inbox, query: &str) -> Vec<&'a Item> {
+    fn rows<'a>(&self, page: Page, inbox: &'a Inbox, query: &str) -> Vec<&'a Item> {
         let query = query.to_lowercase();
-        inbox
+        let mut rows: Vec<_> = inbox
             .items
             .iter()
             .filter(|item| {
-                self.filter.is_none_or(|kind| kind == item.kind)
+                self.filter.is_none_or(|kind| kind == item.kind())
                     && (query.is_empty()
                         || [
                             Some(item.host.as_str()),
                             item.source.as_deref(),
                             item.title.as_deref(),
                             item.body.as_deref(),
-                            Some(item.kind.label()),
+                            item.rig.as_deref(),
+                            item.seat.as_deref(),
+                            item.reason.as_deref(),
+                            Some(item.kind().label()),
                         ]
                         .into_iter()
                         .flatten()
                         .any(|s| s.to_lowercase().contains(&query)))
             })
-            .collect()
+            .collect();
+        if matches!(page, Page::Attention) {
+            rows.sort_by_key(|row| row.actions().is_empty());
+        }
+        rows
     }
 
-    pub(super) fn key(&mut self, inbox: Option<&Inbox>, query: &str, key: &str) -> bool {
+    pub(super) fn key(
+        &mut self,
+        page: Page,
+        inbox: Option<&Inbox>,
+        query: &str,
+        key: &str,
+    ) -> bool {
         if matches!(key, "escape" | "left") {
             return self.selected.take().is_some();
         }
         let Some(inbox) = inbox else { return false };
-        let rows = self.rows(inbox, query);
+        let rows = self.rows(page, inbox, query);
         if rows.is_empty() || !matches!(key, "j" | "down" | "k" | "up" | "enter" | "right") {
             return false;
         }
@@ -100,7 +143,7 @@ fn one_line(text: Option<&str>) -> String {
 }
 
 fn title(item: &Item) -> &str {
-    item.title.as_deref().unwrap_or_else(|| item.kind.label())
+    item.title.as_deref().unwrap_or_else(|| item.kind().label())
 }
 
 fn field(theme: &Theme, name: &str, value: impl Into<gpui::SharedString>) -> gpui::Div {
@@ -114,11 +157,16 @@ fn field(theme: &Theme, name: &str, value: impl Into<gpui::SharedString>) -> gpu
 }
 
 impl Panel {
-    pub(super) fn render_inbox(&self, state: &State, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn render_inbox(
+        &self,
+        state: &State,
+        page: Page,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let theme = Theme::global();
-        let view = &state.inbox;
+        let view = page.view(state);
         let snapshot = state.snapshot.inbox.as_ref();
-        let rows = snapshot.map_or_else(Vec::new, |inbox| view.rows(inbox, &state.filter));
+        let rows = snapshot.map_or_else(Vec::new, |inbox| view.rows(page, inbox, &state.filter));
         let selected = view
             .selected
             .as_ref()
@@ -137,11 +185,15 @@ impl Panel {
         if rows.is_empty() {
             let (heading, message) = match snapshot {
                 None => (
-                    "Loading Inbox",
+                    "Reading OpenRig",
                     "Reading OpenRig for items that need your attention.",
                 ),
+                Some(inbox) if !inbox.waits_loaded() => (
+                    "Reading OpenRig",
+                    "Checking seats, held messages, and parked work.",
+                ),
                 Some(inbox) if !inbox.issues.is_empty() => (
-                    "Inbox incomplete",
+                    "Some sources are unavailable",
                     "No matching items from the sources that responded.",
                 ),
                 Some(inbox) if inbox.items.is_empty() => {
@@ -171,7 +223,8 @@ impl Panel {
         for (index, item) in rows.into_iter().enumerate() {
             let id = item.id.clone();
             let active = view.selected.as_ref() == Some(&id);
-            let source = item.source.as_deref().unwrap_or(UNKNOWN);
+            let seat = item.seat.as_deref().unwrap_or(UNKNOWN);
+            let rig = item.rig.as_deref().unwrap_or(UNKNOWN);
             list = list.child(
                 div()
                     .id(("inbox-item", index))
@@ -194,7 +247,8 @@ impl Panel {
                         MouseButton::Left,
                         cx.listener(move |panel, _, window, cx| {
                             if let Some(state) = panel.openrig.as_mut() {
-                                state.inbox.selected = Some(id.clone());
+                                state.attention_action.cancel();
+                                page.view_mut(state).selected = Some(id.clone());
                                 state.explorer = false;
                             }
                             window.focus(&panel.focus_handle, cx);
@@ -220,14 +274,16 @@ impl Panel {
                                     .truncate()
                                     .text_size(px(12.))
                                     .text_color(theme.TEXT_DIM)
-                                    .child(one_line(item.body.as_deref())),
+                                    .child(one_line(
+                                        item.reason.as_deref().or(item.body.as_deref()),
+                                    )),
                             )
                             .child(
                                 div()
                                     .truncate()
                                     .text_size(px(11.))
                                     .text_color(theme.TEXT_FAINT)
-                                    .child(format!("{source} · {}", item.host)),
+                                    .child(format!("{} · {rig} · {seat}", item.host)),
                             ),
                     )
                     .child(
@@ -259,8 +315,10 @@ impl Panel {
                     .child(kind.map_or("All", Kind::label))
                     .on_click(cx.listener(move |panel, _, window, cx| {
                         if let Some(state) = panel.openrig.as_mut() {
-                            state.inbox.filter = kind;
-                            state.inbox.selected = None;
+                            state.attention_action.cancel();
+                            let view = page.view_mut(state);
+                            view.filter = kind;
+                            view.selected = None;
                         }
                         window.focus(&panel.focus_handle, cx);
                         cx.notify();
@@ -294,38 +352,54 @@ impl Panel {
                                     div()
                                         .text_size(px(18.))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child("Inbox"),
+                                        .child(page.title()),
                                 )
                                 .child(
                                     div().text_size(px(12.)).text_color(theme.TEXT_DIM).child(
-                                        "Approvals, human tasks, and seats waiting for you.",
+                                        match page {
+                                            Page::Inbox => "Requests, approvals, and seat activity across hosts.",
+                                            Page::Attention => "Seat issues, permissions, held messages, and parked work across hosts.",
+                                        },
                                     ),
                                 ),
                         )
+                        .children(state.attention_action.notice(snapshot).map(|(text, error)| {
+                            div().text_size(px(12.)).text_color(if error { theme.ERROR } else { theme.TEXT_DIM }).child(text.to_owned())
+                        }))
                         .children(
                             snapshot
-                                .filter(|inbox| !inbox.issues.is_empty())
                                 .map(|inbox| {
-                                    div()
-                                        .id("inbox-status")
-                                        .rounded_xl()
-                                        .p_3()
-                                        .bg(theme.HEADER_BG)
-                                        .text_color(theme.WARN)
-                                        .text_size(px(12.))
-                                        .child(inbox.issues.join("\n"))
+                                    let hosts = inbox.hosts.iter().filter(|host| host.status == "ok")
+                                        .map(|host| host.host_id.as_str()).collect::<Vec<_>>().join(", ");
+                                    div().flex().flex_col().gap_1().text_size(px(12.))
+                                        .when(!hosts.is_empty(), |el| el.child(div().text_color(theme.TEXT_DIM).child(format!("Queue read: {hosts}"))))
+                                        .when(!inbox.issues.is_empty(), |el| el.child(div().flex().child(div()
+                                            .id("inbox-show-sources")
+                                            .px_3().py_1().rounded_full().bg(theme.HEADER_BG).text_color(theme.WARN).cursor_pointer()
+                                            .child(if view.show_sources { "Hide source issues".into() } else { format!("Source issues ({})", inbox.issues.len()) })
+                                            .on_click(cx.listener(move |panel, _, _, cx| {
+                                                if let Some(state) = panel.openrig.as_mut() {
+                                                    let view = page.view_mut(state);
+                                                    view.show_sources = !view.show_sources;
+                                                    cx.notify();
+                                                }
+                                            })))))
+                                        .when(view.show_sources && !inbox.issues.is_empty(), |el| el.child(div()
+                                            .id("inbox-status").max_h(px(144.)).overflow_y_scroll().p_2()
+                                            .text_color(theme.WARN).child(inbox.issues.join("\n"))))
                                 }),
                         )
                         .child(filters)
                         .child(list),
                 )
             })
-            .children(selected.map(|item| self.render_inbox_detail(item, state.compact, theme, cx)))
+            .children(selected.map(|item| self.render_inbox_detail(item, page, state.compact, theme, cx)))
     }
 
     fn render_inbox_detail(
         &self,
         item: &Item,
+        page: Page,
         compact: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -365,10 +439,11 @@ impl Panel {
                             .bg(theme.PANEL_BG)
                             .text_size(px(11.))
                             .cursor_pointer()
-                            .child(if compact { "Back to Inbox" } else { "Close" })
-                            .on_click(cx.listener(|panel, _, window, cx| {
+                            .child(if compact { "Back to list" } else { "Close" })
+                            .on_click(cx.listener(move |panel, _, window, cx| {
                                 if let Some(state) = panel.openrig.as_mut() {
-                                    state.inbox.selected = None;
+                                    state.attention_action.cancel();
+                                    page.view_mut(state).selected = None;
                                 }
                                 window.focus(&panel.focus_handle, cx);
                                 cx.notify();
@@ -381,6 +456,7 @@ impl Panel {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title(item).to_owned()),
             )
+            .child(self.render_attention_actions(item, theme, cx))
             .child(field(
                 theme,
                 "Body",
@@ -392,12 +468,20 @@ impl Panel {
                 .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
                 .unwrap_or_else(|| UNKNOWN.into())
         };
-        let (id, rig) = match &item.id {
-            ItemId::Queue { item, .. } => (item.as_str(), None),
-            ItemId::Seat { node, rig, .. } => (node.as_str(), Some(rig.as_str())),
+        let id = match &item.id {
+            ItemId::Queue { item, .. } => item,
+            ItemId::Seat { node, .. } | ItemId::Parked { node, .. } => node,
+            ItemId::HeldMessage { message, .. } => message,
         };
         for (key, value) in [
-            ("Kind", item.kind.label()),
+            ("Kind", item.kind().label()),
+            (
+                "Reason class",
+                item.reason_class.map_or(UNKNOWN, |class| class.label()),
+            ),
+            ("Reason", item.reason.as_deref().unwrap_or(UNKNOWN)),
+            ("Rig", item.rig.as_deref().unwrap_or(UNKNOWN)),
+            ("Seat", item.seat.as_deref().unwrap_or(UNKNOWN)),
             ("Source seat", item.source.as_deref().unwrap_or(UNKNOWN)),
             ("Host", item.host.as_str()),
             (
@@ -410,9 +494,6 @@ impl Panel {
             ("ID", id),
         ] {
             detail = detail.child(field(theme, key, value.to_owned()));
-        }
-        if let Some(rig) = rig {
-            detail = detail.child(field(theme, "Rig", rig.to_owned()));
         }
         detail = detail
             .child(field(theme, "Created", time(item.created_at)))

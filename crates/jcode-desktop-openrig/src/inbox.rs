@@ -1,7 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::{fleet::Fleet, request};
+use crate::{
+    attention::{Action, HeldMessage, HumanVerb, ParkedSeat, Question},
+    encode,
+    fleet::{Fleet, Host, HostTarget, Rig, Seat},
+    get, request,
+};
+
+pub(crate) use crate::attention::ClearEvidence;
 
 const ROUTE: &str = "/api/queue/attention-aggregate";
 
@@ -16,6 +23,17 @@ pub enum ItemId {
         rig: String,
         node: String,
     },
+    Parked {
+        host: String,
+        rig: String,
+        node: String,
+    },
+    HeldMessage {
+        host: String,
+        rig: String,
+        node: String,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +43,8 @@ pub enum Kind {
     Held,
     Permission,
     SeatAttention,
+    Parked,
+    Startup,
 }
 
 impl Kind {
@@ -35,6 +55,31 @@ impl Kind {
             Self::Held => "Held",
             Self::Permission => "Permission",
             Self::SeatAttention => "Seat attention",
+            Self::Parked => "Parked work",
+            Self::Startup => "Startup attention",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SeatReasonClass {
+    Startup,
+    Identity,
+    Restore,
+    Input,
+    LaunchHold,
+    Reported,
+}
+
+impl SeatReasonClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Startup => "Startup",
+            Self::Identity => "Seat identity",
+            Self::Restore => "Restore outcome",
+            Self::Input => "Waiting for input",
+            Self::LaunchHold => "Launch held",
+            Self::Reported => "Unclassified seat attention",
         }
     }
 }
@@ -42,7 +87,7 @@ impl Kind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Item {
     pub id: ItemId,
-    pub kind: Kind,
+    kind: Kind,
     pub host: String,
     pub source: Option<String>,
     pub destination: Option<String>,
@@ -54,6 +99,39 @@ pub struct Item {
     pub blocked_on: Option<String>,
     pub evidence: Option<String>,
     pub questions: Option<Vec<serde_json::Value>>,
+    pub rig: Option<String>,
+    pub seat: Option<String>,
+    pub reason: Option<String>,
+    pub reason_class: Option<SeatReasonClass>,
+    pub session: Option<SessionLink>,
+    actions: Vec<Action>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionLink {
+    pub target: HostTarget,
+    pub native_id: String,
+}
+
+impl Item {
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+    pub fn actions(&self) -> &[Action] {
+        &self.actions
+    }
+
+    fn locate(&mut self, host: &Host, rig: &Rig, seat: &Seat) {
+        self.rig = Some(rig.name.clone());
+        self.seat = seat
+            .canonical_session_name
+            .clone()
+            .or_else(|| Some(seat.logical_id.clone()));
+        self.session = seat.jcode_session_id.as_ref().map(|native_id| SessionLink {
+            target: host.target.clone(),
+            native_id: native_id.clone(),
+        });
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -69,6 +147,7 @@ pub struct Inbox {
     pub hosts: Vec<HostRead>,
     pub items: Vec<Item>,
     pub issues: Vec<String>,
+    pub(crate) waits_loaded: bool,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +159,7 @@ struct Aggregate {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueueItem {
+    #[serde(default)]
     host_id: String,
     qitem_id: String,
     source_session: Option<String>,
@@ -93,6 +173,58 @@ struct QueueItem {
     blocked_on: Option<String>,
     evidence_ref: Option<String>,
     human_questions: Option<Vec<serde_json::Value>>,
+    tags: Option<Vec<String>>,
+    human_intent: Option<String>,
+    handed_off_from: Option<String>,
+}
+
+impl QueueItem {
+    fn permission_origin(&self) -> Option<(&str, &str)> {
+        let tags = self.tags.as_ref()?;
+        if !tags.iter().any(|tag| tag == "runner-permission") {
+            return None;
+        }
+        let value = |prefix| {
+            tags.iter()
+                .find_map(|tag| tag.strip_prefix(prefix).filter(|value| !value.is_empty()))
+        };
+        Some((value("permission-node:")?, value("permission-generation:")?))
+    }
+}
+
+#[derive(Deserialize)]
+struct FeedRead {
+    items: Vec<FeedItem>,
+    sources: Vec<FeedSource>,
+}
+
+#[derive(Deserialize)]
+struct FeedSource {
+    source: String,
+    state: String,
+    detail: String,
+}
+
+#[derive(Deserialize)]
+struct FeedItem {
+    id: String,
+    answer: Option<FeedAnswer>,
+    revision: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FeedAnswer {
+    verb: FeedVerb,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FeedVerb {
+    Approve,
+    Resolve,
+    Answer,
+    #[serde(other)]
+    Unknown,
 }
 
 fn present(value: Option<String>) -> Option<String> {
@@ -105,12 +237,61 @@ pub(crate) fn timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
 
 impl From<QueueItem> for Item {
     fn from(item: QueueItem) -> Self {
+        let is_permission = item.permission_origin().is_some();
+        let questions: Vec<Question> = item
+            .human_questions
+            .iter()
+            .flatten()
+            .filter_map(|question| serde_json::from_value(question.clone()).ok())
+            .collect();
+        let mut actions = Vec::new();
+        if matches!(
+            item.state.as_deref(),
+            Some("pending" | "in-progress" | "blocked")
+        ) && item.human_intent.as_deref() != Some("update")
+        {
+            if is_permission && item.host_id == "local" {
+                if let Some(question) = questions
+                    .iter()
+                    .find(|question| question.id == "permission")
+                {
+                    actions.extend(
+                        question
+                            .options
+                            .iter()
+                            .filter(|option| !option.id.is_empty() && !option.label.is_empty())
+                            .cloned()
+                            .map(|option| Action::decide(&item.qitem_id, option)),
+                    );
+                }
+            } else if !is_permission
+                && item.state.as_deref() == Some("pending")
+                && item.host_id != "local"
+                && item.destination_session.as_deref() == Some("human@host")
+                && item.human_questions.as_ref().is_none_or(Vec::is_empty)
+                && !item
+                    .evidence_ref
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("pair-request:"))
+            {
+                // This actor survives remote forwarding only for the generic terminal address.
+                actions.push(Action::human(
+                    &item.host_id,
+                    &item.qitem_id,
+                    None,
+                    HumanVerb::Approve,
+                ));
+            }
+        }
+        let seat = present(item.source_session.clone());
+        let reason = present(item.blocked_on.clone());
         Self {
             id: ItemId::Queue {
                 host: item.host_id.clone(),
                 item: item.qitem_id,
             },
             kind: match (item.tier.as_deref(), item.state.as_deref()) {
+                _ if is_permission => Kind::Permission,
                 (Some("human-gate"), _) => Kind::Approval,
                 (_, Some("blocked")) => Kind::Held,
                 _ => Kind::HumanTask,
@@ -128,6 +309,12 @@ impl From<QueueItem> for Item {
             questions: item
                 .human_questions
                 .filter(|questions| !questions.is_empty()),
+            rig: None,
+            seat,
+            reason,
+            reason_class: None,
+            session: None,
+            actions,
         }
     }
 }
@@ -163,17 +350,31 @@ impl Inbox {
             hosts,
             items: items.into_iter().map(Item::from).collect(),
             issues,
+            waits_loaded: false,
         };
         inbox.sort();
         Ok(inbox)
     }
 
-    fn sort(&mut self) {
+    pub(crate) fn sort(&mut self) {
         self.items
             .sort_by_key(|item| std::cmp::Reverse(item.updated_at.or(item.created_at)));
     }
 
     pub(crate) fn include_seat_attention(&mut self, fleet: &Fleet) {
+        for host in &fleet.hosts {
+            if !self
+                .hosts
+                .iter()
+                .any(|read| read.host_id == host.queue_host_id())
+            {
+                self.issues.push(format!(
+                    "{} · Queue: not included in the attention aggregate",
+                    host.name
+                ));
+            }
+        }
+        self.locate_queue_items(fleet);
         if fleet.hosts.is_empty() {
             self.issues.push("Seat inventory unavailable".into());
         }
@@ -195,7 +396,7 @@ impl Inbox {
                     let Some(signal) = &seat.attention else {
                         continue;
                     };
-                    self.items.push(Item {
+                    let mut item = Item {
                         id: ItemId::Seat {
                             host: host.id.clone(),
                             rig: rig.id.clone(),
@@ -213,16 +414,317 @@ impl Inbox {
                         blocked_on: None,
                         evidence: signal.evidence.clone(),
                         questions: None,
-                    });
+                        rig: None,
+                        seat: None,
+                        reason: signal.reason.clone(),
+                        reason_class: Some(signal.class),
+                        session: None,
+                        actions: match (
+                            host.queue_host_id(),
+                            seat.canonical_session_name.as_deref(),
+                            signal.clear,
+                        ) {
+                            ("local", Some(session), Some(evidence)) => {
+                                vec![Action::clear(session, evidence, signal.observed_at)]
+                            }
+                            _ => Vec::new(),
+                        },
+                    };
+                    item.locate(host, rig, seat);
+                    self.items.push(item);
                 }
             }
         }
         self.sort();
     }
 
+    pub(crate) fn locate_queue_items(&mut self, fleet: &Fleet) {
+        for item in &mut self.items {
+            let ItemId::Queue { host, .. } = &item.id else {
+                continue;
+            };
+            let Some(host) = fleet
+                .hosts
+                .iter()
+                .find(|entry| entry.queue_host_id() == host)
+            else {
+                continue;
+            };
+            if let Some((rig, seat)) = host.rigs.iter().flatten().find_map(|rig| {
+                let mut seats = rig.pods.iter().flatten().flat_map(|pod| &pod.seats);
+                seats
+                    .find(|seat| {
+                        seat.canonical_session_name.is_some()
+                            && seat.canonical_session_name == item.source
+                    })
+                    .map(|seat| (rig, seat))
+            }) {
+                item.locate(host, rig, seat);
+            }
+        }
+    }
+
+    pub fn waits_loaded(&self) -> bool {
+        self.waits_loaded
+    }
+
+    pub(crate) fn include_parked(&mut self, host: &Host, rig: &Rig, parked: ParkedSeat) {
+        let mut item = Item {
+            id: ItemId::Parked {
+                host: host.id.clone(),
+                rig: rig.id.clone(),
+                node: parked.seat_node_id.clone(),
+            },
+            kind: Kind::Parked,
+            host: host.name.clone(),
+            source: Some(parked.session_name.clone()),
+            destination: None,
+            title: None,
+            body: Some(parked.reason.clone()),
+            reason: Some(parked.reason),
+            reason_class: None,
+            created_at: None,
+            updated_at: timestamp(parked.activity.since.as_deref()),
+            state: Some("parked".into()),
+            blocked_on: None,
+            evidence: None,
+            questions: None,
+            rig: Some(rig.name.clone()),
+            seat: Some(parked.session_name),
+            session: None,
+            actions: Vec::new(),
+        };
+        if let Some(seat) = rig
+            .pods
+            .iter()
+            .flatten()
+            .flat_map(|pod| &pod.seats)
+            .find(|seat| seat.id == parked.seat_node_id)
+        {
+            item.locate(host, rig, seat);
+        }
+        self.items.push(item);
+    }
+
+    pub(crate) fn include_held(
+        &mut self,
+        host: &Host,
+        rig: &Rig,
+        seat: &Seat,
+        session: &str,
+        message: HeldMessage,
+    ) {
+        let reason = message
+            .delivery
+            .as_ref()
+            .and_then(|delivery| present(delivery.reason.clone()));
+        let mut item = Item {
+            id: ItemId::HeldMessage {
+                host: host.id.clone(),
+                rig: rig.id.clone(),
+                node: seat.id.clone(),
+                message: message.outbox_id.clone(),
+            },
+            kind: Kind::Held,
+            host: host.name.clone(),
+            source: present(Some(message.sender_session)),
+            destination: present(Some(message.destination_session)),
+            title: Some("Held message".into()),
+            body: present(Some(message.body)),
+            reason,
+            reason_class: None,
+            created_at: timestamp(Some(&message.ts_dispatched)),
+            updated_at: None,
+            state: Some(message.delivery_state),
+            blocked_on: None,
+            evidence: None,
+            questions: None,
+            rig: None,
+            seat: None,
+            session: None,
+            actions: (host.queue_host_id() == "local")
+                .then(|| Action::retire(session, message.outbox_id))
+                .into_iter()
+                .collect(),
+        };
+        item.locate(host, rig, seat);
+        self.items.push(item);
+    }
+
+    fn apply_feed(&mut self, feed: FeedRead) {
+        self.issues.extend(
+            feed.sources
+                .into_iter()
+                .filter(|source| source.source == "queue" && source.state != "available")
+                .map(|source| format!("Local human actions: {}", source.detail)),
+        );
+        for item in &mut self.items {
+            let ItemId::Queue { host, item: id } = &item.id else {
+                continue;
+            };
+            if host != "local"
+                || item
+                    .evidence
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("pair-request:"))
+            {
+                continue;
+            }
+            let feed_id = format!("queue:{id}");
+            let Some(FeedItem {
+                answer: Some(answer),
+                revision,
+                ..
+            }) = feed.items.iter().find(|row| row.id == feed_id)
+            else {
+                continue;
+            };
+            let action = |verb| Action::human(host, id, revision.as_deref(), verb);
+            match answer.verb {
+                FeedVerb::Approve if item.questions.is_none() => {
+                    item.actions.push(action(HumanVerb::Approve))
+                }
+                FeedVerb::Resolve => item.actions.push(action(HumanVerb::Resolve)),
+                FeedVerb::Answer => {
+                    // A runner's answered-path requests have a dedicated decision control.
+                    if item.kind == Kind::Permission && !item.actions.is_empty() {
+                        continue;
+                    }
+                    for question in item.questions.iter().flatten().filter_map(|question| {
+                        serde_json::from_value::<Question>(question.clone()).ok()
+                    }) {
+                        for option in question.options {
+                            if !question.id.is_empty()
+                                && !option.id.is_empty()
+                                && !option.label.is_empty()
+                            {
+                                item.actions.push(action(HumanVerb::Answer {
+                                    question_id: question.id.clone(),
+                                    question: question.question.clone(),
+                                    option,
+                                }));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn load_human_actions(&mut self, base: &str) {
+        const FEED: &str = "/api/attention?kind=action";
+        match get(base, FEED).and_then(|value| {
+            serde_json::from_value::<FeedRead>(value).map_err(|error| format!("{FEED}: {error}"))
+        }) {
+            Ok(feed) => {
+                let missing: Vec<_> = feed.items.iter().filter_map(|row| row.id.strip_prefix("queue:")).filter(|id| {
+                    !self.items.iter().any(|item| matches!(&item.id, ItemId::Queue {host, item} if host == "local" && item == id))
+                }).collect();
+                if missing.len() > 20 {
+                    self.issues
+                        .push("Showing details for at most 20 additional local requests.".into());
+                }
+                for id in missing.into_iter().take(20) {
+                    let route = format!("/api/queue/{}", encode(id));
+                    match get(base, &route).and_then(|value| {
+                        serde_json::from_value::<QueueItem>(value)
+                            .map_err(|error| format!("{route}: {error}"))
+                    }) {
+                        Ok(mut row)
+                            if row.qitem_id == id
+                                && matches!(
+                                    row.state.as_deref(),
+                                    Some("pending" | "blocked" | "in-progress")
+                                ) =>
+                        {
+                            row.host_id = "local".into();
+                            self.items.push(row.into());
+                        }
+                        Ok(_) => {}
+                        Err(error) => self.issues.push(error),
+                    }
+                }
+                self.apply_feed(feed);
+            }
+            Err(error) => self.issues.push(format!("Local human actions: {error}")),
+        }
+    }
+
+    pub(crate) fn load_local_permissions(&mut self, base: &str) {
+        const ROUTE: &str =
+            "/api/queue/list?tag=runner-permission&state=pending,in-progress,blocked&limit=100";
+        let rows = get(base, ROUTE).and_then(|value| {
+            serde_json::from_value::<Vec<QueueItem>>(value)
+                .map_err(|error| format!("{ROUTE}: {error}"))
+        });
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.issues
+                    .push(format!("Local runner permissions: {error}"));
+                return;
+            }
+        };
+        if rows.len() == 100 {
+            self.issues
+                .push("Showing up to 100 open local runner permissions.".into());
+        }
+        for mut row in rows {
+            let Some((node, generation)) = row.permission_origin() else {
+                continue;
+            };
+            let origin = (node.to_owned(), generation.to_owned());
+            let mut previous = row.handed_off_from.clone();
+            for _ in 0..10 {
+                if row
+                    .human_questions
+                    .as_ref()
+                    .is_some_and(|questions| !questions.is_empty())
+                {
+                    break;
+                }
+                let Some(id) = previous else { break };
+                let route = format!("/api/queue/{}", encode(&id));
+                let parent = get(base, &route).and_then(|value| {
+                    serde_json::from_value::<QueueItem>(value)
+                        .map_err(|error| format!("{route}: {error}"))
+                });
+                match parent {
+                    Ok(parent)
+                        if parent.qitem_id == id
+                            && parent.permission_origin() == Some((&origin.0, &origin.1)) =>
+                    {
+                        row.human_questions = parent.human_questions;
+                        row.source_session = parent.source_session;
+                        previous = parent.handed_off_from;
+                    }
+                    Ok(_) => break,
+                    Err(error) => {
+                        self.issues
+                            .push(format!("Local runner permissions: {error}"));
+                        break;
+                    }
+                }
+            }
+            row.host_id = "local".into();
+            let item = Item::from(row);
+            if let Some(index) = self.items.iter().position(|current| current.id == item.id) {
+                self.items[index] = item;
+            } else {
+                self.items.push(item);
+            }
+        }
+    }
+
     pub fn fixture() -> Self {
-        Self::parse(serde_json::from_str(include_str!("../tests/fixtures/inbox.json")).unwrap())
-            .unwrap()
+        let mut inbox = Self::parse(
+            serde_json::from_str(include_str!("../tests/fixtures/inbox.json")).unwrap(),
+        )
+        .unwrap();
+        inbox.apply_feed(serde_json::from_value(serde_json::json!({"items":[{"id":"queue:q1","answer":{"verb":"answer"},"revision":"fixture-revision"}],"sources":[]})).unwrap());
+        inbox.waits_loaded = true;
+        inbox
     }
 }
 
@@ -235,6 +737,32 @@ pub fn fetch_inbox(base: &str) -> Result<Inbox, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn captured_attention_get_offers_confirmable_acknowledgement() {
+        let mut inbox = Inbox::parse(json!({
+            "hosts":[{"hostId":"local","status":"ok"}],
+            "items":[{"hostId":"local","qitemId":"qitem-desktop-isolated-ack","destinationSession":"human@host","state":"pending"}]
+        })).unwrap();
+        assert!(inbox.items[0].actions().is_empty());
+        let feed = serde_json::from_str(include_str!(
+            "../tests/fixtures/attention_isolated_get.json"
+        ))
+        .unwrap();
+        inbox.apply_feed(feed);
+        let [action] = inbox.items[0].actions() else {
+            panic!("expected the daemon's acknowledgement action")
+        };
+        assert_eq!(
+            action,
+            &Action::human(
+                "local",
+                "qitem-desktop-isolated-ack",
+                Some("dr1-c2c3a05a96be5d8005096e88"),
+                HumanVerb::Approve
+            )
+        );
+    }
 
     #[test]
     fn inbox_preserves_queue_identity_missing_fields_and_partial_host_failure() {

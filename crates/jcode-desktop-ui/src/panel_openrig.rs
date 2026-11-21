@@ -11,6 +11,8 @@ use std::{
     time::Duration,
 };
 
+#[path = "panel_openrig_attention.rs"]
+mod attention;
 #[path = "panel_openrig_build.rs"]
 mod build;
 #[path = "panel_openrig_fleet.rs"]
@@ -101,6 +103,8 @@ pub(super) struct State {
     work: work::WorkView,
     build: build::BuildView,
     destination_fixture: bool,
+    attention: inbox::InboxView,
+    attention_action: attention::ActionState,
     compact: bool,
     show_sections: bool,
     section: usize,
@@ -117,6 +121,12 @@ pub(super) struct State {
     _events: Option<Task<()>>,
 }
 impl State {
+    pub(super) fn screenshot_fixture() -> Self {
+        let mut state = Self::fixture();
+        state.configure_attention_capture();
+        state
+    }
+
     pub(super) fn fixture() -> Self {
         let snapshot = Snapshot::fixture();
         let mut work = work::WorkView::default();
@@ -133,6 +143,8 @@ impl State {
             work,
             build,
             destination_fixture,
+            attention: inbox::InboxView::default(),
+            attention_action: attention::ActionState::default(),
             compact: false,
             show_sections: false,
             section: 0,
@@ -160,11 +172,15 @@ impl State {
             .get(self.section)
             .is_none_or(|section| section.kind == SectionKind::Fleet)
     }
-    fn is_inbox(&self) -> bool {
+    fn attention_page(&self) -> Option<inbox::Page> {
         self.snapshot
             .sections
             .get(self.section)
-            .is_some_and(|section| section.kind == SectionKind::Inbox)
+            .and_then(|section| match section.kind {
+                SectionKind::Inbox => Some(inbox::Page::Inbox),
+                SectionKind::Needs => Some(inbox::Page::Attention),
+                _ => None,
+            })
     }
     fn kind(&self) -> Option<SectionKind> {
         self.snapshot
@@ -440,16 +456,41 @@ impl Panel {
             state.snapshot = Snapshot::default();
             state._poll = Some(cx.spawn(async move |this, cx| {
                 loop {
+                    let Ok((read_attention, writing, revision)) = this.update(cx, |panel, _| {
+                        panel.openrig.as_ref().map_or((false, false, 0), |state| {
+                            (
+                                state.attention_page().is_some(),
+                                state.attention_action.running(),
+                                state.attention_action.revision,
+                            )
+                        })
+                    }) else {
+                        break;
+                    };
                     let (snapshot, tail) = cx
                         .background_executor()
-                        .spawn(async {
+                        .spawn(async move {
                             let base = default_base_url();
-                            (fetch_snapshot(&base), fetch_stream_tail(&base, 5))
+                            let mut snapshot = fetch_snapshot(&base);
+                            if read_attention && !writing {
+                                snapshot.load_attention(&base);
+                            }
+                            (snapshot, fetch_stream_tail(&base, 5))
                         })
                         .await;
                     if this
                         .update(cx, |panel, cx| {
                             if let Some(state) = panel.openrig.as_mut() {
+                                let mut snapshot = snapshot;
+                                if state.attention_action.running()
+                                    || writing
+                                    || state.attention_action.revision != revision
+                                {
+                                    snapshot.inbox = state.snapshot.inbox.take().or(snapshot.inbox);
+                                }
+                                state
+                                    .attention_action
+                                    .keep_confirmation_for(snapshot.inbox.as_ref());
                                 state.snapshot = snapshot;
                                 if let Ok(tail) = tail {
                                     state.events = tail.into();
@@ -481,9 +522,9 @@ impl Panel {
         let state = self.openrig.as_ref().expect("openrig state");
         let theme = Theme::global();
         let is_fleet = state.is_fleet();
-        let is_inbox = state.is_inbox();
         let is_work = state.kind() == Some(SectionKind::Work);
         let is_build = state.kind() == Some(SectionKind::Build);
+        let attention_page = state.attention_page();
         let compact = state.compact;
         let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
         explorer = if compact {
@@ -517,6 +558,7 @@ impl Panel {
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             if let Some(state) = this.openrig.as_mut() {
+                                state.attention_action.cancel();
                                 state.select(index);
                             }
                             this.load_openrig_destination(false, cx);
@@ -655,7 +697,7 @@ impl Panel {
                 }
             }
         }
-        let status = (!is_inbox && !is_work && !is_build)
+        let status = (attention_page.is_none() && !is_work && !is_build)
             .then_some(state.snapshot.error.as_ref())
             .flatten()
             .cloned()
@@ -663,7 +705,13 @@ impl Panel {
                 if (is_work || is_build) && !state.destination_fixture {
                     "Read-only · Refresh to check for changes".into()
                 } else if crate::harness::screenshot_mode() {
-                    "Fixture data".into()
+                    if std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION").as_deref()
+                        == Ok("live")
+                    {
+                        "Live OpenRig · read-only capture".into()
+                    } else {
+                        "Fixture data".into()
+                    }
                 } else {
                     "Live · polling every 2s".into()
                 }
@@ -705,16 +753,25 @@ impl Panel {
                         cx.stop_propagation();
                         return;
                     }
-                    if state.is_inbox()
-                        && !state.explorer
-                        && state.command.is_none()
-                        && state
-                            .inbox
-                            .key(state.snapshot.inbox.as_ref(), &state.filter, key)
-                    {
+                    if state.attention_page().is_some() && state.attention_action.handle_key(key) {
+                        window.focus(&this.focus_handle, cx);
                         cx.notify();
                         cx.stop_propagation();
                         return;
+                    }
+                    if let Some(page) = state.attention_page()
+                        && !state.explorer
+                        && state.command.is_none()
+                    {
+                        let view = match page {
+                            inbox::Page::Inbox => &mut state.inbox,
+                            inbox::Page::Attention => &mut state.attention,
+                        };
+                        if view.key(page, state.snapshot.inbox.as_ref(), &state.filter, key) {
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
                     }
                     if !state.explorer && state.command.is_none() {
                         if state.kind() == Some(SectionKind::Work)
@@ -815,12 +872,15 @@ impl Panel {
                     .flex()
                     .children(side_sections)
                     .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
-                    .when(is_inbox, |el| el.child(self.render_inbox(state, cx)))
                     .when(is_work, |el| el.child(self.render_work(state, cx)))
                     .when(is_build, |el| el.child(self.render_build(state, cx)))
-                    .when(!is_fleet && !is_inbox && !is_work && !is_build, |el| {
-                        el.child(list).child(detail)
-                    }),
+                    .when_some(attention_page, |el, page| {
+                        el.child(self.render_inbox(state, page, cx))
+                    })
+                    .when(
+                        !is_fleet && attention_page.is_none() && !is_work && !is_build,
+                        |el| el.child(list).child(detail),
+                    ),
             )
             .child(
                 div()

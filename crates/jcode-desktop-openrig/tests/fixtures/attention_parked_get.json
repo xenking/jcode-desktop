@@ -1,0 +1,20 @@
+{
+  "rig": {
+    "seats": [
+      {
+        "seatNodeId": "01M7DM5B69NJGMT0K7WHY9ES11",
+        "sessionName": "advisor-lead@kernel",
+        "parked": false,
+        "reason": "stopped but the board is clean",
+        "activity": { "since": "2026-11-21T08:42:12.495Z" }
+      },
+      {
+        "seatNodeId": "01M7DM5FWCE1MZPPC9XVB1ERWE",
+        "sessionName": "operator-human@kernel",
+        "parked": "indeterminate",
+        "reason": "activity is unknown for operator-human@kernel — the oracle cannot support a parked verdict (obligation face read anyway: 0 open, 0 held)",
+        "activity": { "since": "2026-11-21T08:42:05.608Z" }
+      }
+    ]
+  }
+}

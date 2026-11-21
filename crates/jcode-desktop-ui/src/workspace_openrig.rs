@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn inbox_filters_and_opens_a_read_only_inspector(cx: &mut gpui::TestAppContext) {
+    fn inbox_and_attention_confirm_cancel_and_render_failure(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -209,9 +209,26 @@ mod tests {
         assert!(vcx.debug_bounds(remote).is_none());
         click(vcx, local);
         assert!(vcx.debug_bounds("inbox-inspector").is_some());
+        click(vcx, "openrig-attention-action:0");
+        assert!(vcx.debug_bounds("openrig-attention-confirmation").is_some());
+        assert!(vcx.debug_bounds("openrig-attention-action-error").is_none());
+        click(vcx, "openrig-attention-cancel");
+        assert!(vcx.debug_bounds("openrig-attention-confirmation").is_none());
+        assert!(vcx.debug_bounds("openrig-attention-action-error").is_none());
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("inbox-inspector").is_none());
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Needs attention");
+        click(vcx, local);
+        click(vcx, "openrig-attention-action:1");
+        assert!(vcx.debug_bounds("openrig-attention-confirmation").is_some());
+        click(vcx, "openrig-attention-confirm");
+        assert!(vcx.debug_bounds("openrig-attention-confirmation").is_none());
+        assert!(vcx.debug_bounds("openrig-attention-action-error").is_some());
+        assert!(vcx.debug_bounds("inbox-inspector").is_some());
         assert!(!commands.try_iter().any(|command| matches!(
             command,
             Command::CreateSession { .. } | Command::Watch { .. }

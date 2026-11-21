@@ -1733,7 +1733,7 @@ impl Panel {
             todoist: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos"))
                 .then(|| TodoistPanelState::fixture(80)),
             openrig: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("openrig"))
-                .then(openrig::State::fixture),
+                .then(openrig::State::screenshot_fixture),
             orchestration: (crate::harness::screenshot_mode()
                 && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
