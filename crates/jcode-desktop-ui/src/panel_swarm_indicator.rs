@@ -1299,6 +1299,32 @@ mod tests {
         assert!(vcx.debug_bounds("composer-activity-idle").is_some());
     }
 
+    #[gpui::test]
+    fn an_expired_await_cannot_keep_an_idle_tab_waiting(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let requested_ids = vec!["session_hog_1_a".into(), "session_dromedary_2_b".into()];
+        let mode = |panel: &Panel| panel.tab_ring().map(|ring| ring.mode.label());
+        panel.update(vcx, |panel, cx| {
+            panel.set_pending_awaits(
+                vec![jcode_sdk::PendingAwait {
+                    requested_ids: requested_ids.clone(),
+                    deadline_unix_ms: u64::MAX,
+                }],
+                cx,
+            );
+            assert_eq!(mode(panel), Some("waiting"));
+            panel.set_pending_awaits(
+                vec![jcode_sdk::PendingAwait {
+                    requested_ids,
+                    deadline_unix_ms: 1,
+                }],
+                cx,
+            );
+            assert_eq!(mode(panel), None, "an elapsed registration is not a wait");
+            assert!(panel.awaiting_ids().is_empty());
+        });
+    }
+
     /// "Waiting for kangaroo, hedgehog, calf, sunflower" kept naming kangaroo
     /// and hedgehog after both had finished and stopped. A finished member
     /// drops out of the wait at once; when every member is finished, the
