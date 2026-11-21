@@ -54,7 +54,7 @@ pub enum Access<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Recipient {
-    host: HostTarget,
+    host: Box<HostTarget>,
     rig_id: String,
     node_id: String,
     logical_id: String,
@@ -288,7 +288,7 @@ fn seat_access<'a>(
     Ok(Access::Relay {
         reason,
         recipient: Recipient {
-            host: host.target.clone(),
+            host: Box::new(host.target.clone()),
             rig_id: rig.id.clone(),
             node_id: seat.id.clone(),
             logical_id: seat.logical_id.clone(),
