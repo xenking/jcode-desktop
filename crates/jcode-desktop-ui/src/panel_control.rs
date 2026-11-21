@@ -256,6 +256,8 @@ impl Panel {
             "composer": self.input.read(cx).snapshot().content,
             "composer_fixture": crate::fixture_control_targets::transcript_scroll_fixture()
                 .then(|| self.input.read(cx).composer_proof_state()),
+            "soniox_fixture": crate::fixture_control_targets::voice_soniox()
+                .then(|| self.input.read(cx).dictation_proof_state()),
             "fixture_side_question": crate::fixture_control_targets::draft_session().then(|| {
                 self.side_question_card_opt().map(|card| serde_json::json!({
                     "question": card.question, "answer": card.answer, "working": card.is_working(),

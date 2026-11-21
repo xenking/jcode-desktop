@@ -36,6 +36,29 @@ pub(crate) fn voice_recording() -> bool {
     enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("voice-rt")
 }
 
+pub(crate) fn voice_soniox() -> bool {
+    cfg!(debug_assertions)
+        && enabled()
+        && std::env::var("JCODE_TEST_SESSION").as_deref() == Ok("1")
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("soniox-rt")
+}
+
+pub(crate) fn allow_soniox_recording() -> bool {
+    if !voice_soniox() {
+        return false;
+    }
+    let config = &jcode_base::config::config().dictation;
+    config.backend == jcode_base::config::DictationBackend::Soniox
+        && !config.recorder.trim().is_empty()
+        && config
+            .base_url
+            .strip_prefix("ws://")
+            .and_then(|url| url.strip_suffix("/transcribe-websocket"))
+            .and_then(|address| address.parse::<std::net::SocketAddr>().ok())
+            .is_some_and(|address| address.ip().is_loopback())
+        && std::env::var("SONIOX_API_KEY").as_deref() == Ok("desktop-loopback-fixture")
+}
+
 struct Capture {
     selector: String,
     session: String,
@@ -95,7 +118,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
         || selector.starts_with("background-job:")
-        || (voice_recording() && selector == "composer.voice")
+        || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
         || (draft_session()
             && (selector.starts_with("draft-model-row:")
                 || matches!(

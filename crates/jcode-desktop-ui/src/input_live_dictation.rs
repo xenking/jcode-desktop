@@ -2,6 +2,14 @@ use super::*;
 use std::borrow::Cow;
 
 impl PromptInput {
+    pub(crate) fn dictation_proof_state(&self) -> serde_json::Value {
+        serde_json::json!({
+            "text": self.content.as_ref(),
+            "caret_byte": self.cursor_offset(),
+            "provisional": self.live_dictation.is_some(),
+        })
+    }
+
     pub(crate) fn begin_live_dictation(&mut self, cx: &mut Context<Self>) {
         let caret = self
             .clamp_byte_range(self.cursor_offset()..self.cursor_offset())

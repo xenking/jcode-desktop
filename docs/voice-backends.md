@@ -24,6 +24,21 @@ In the chat composer, Nari, Soniox, and Scribe show live text at the caret in `i
 mode. Stop voice (square button or Ctrl+Shift+V) finishes the recording and
 keeps the result in the draft. Other delivery modes keep their existing behavior.
 
+### Verify Soniox on macOS
+
+With the Milena system voice installed, run from the Desktop checkout:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+justrust build --local="Soniox acceptance requires macOS" -p jcode-desktop --target-dir target/verify-soniox
+python3 scripts/accept-soniox-rt.py target/verify-soniox/debug/jcode-desktop target/soniox-proof
+```
+
+The runner sends a Russian PCM recording to a local WebSocket fixture through
+Desktop's Soniox client. It saves native screenshots and timings for the first
+word, a revision, and the final draft. It does not use the live API, a microphone,
+or the installed daemon. Choose a new output directory for each run.
+
 ## SuperWhisper
 
 Desktop does not reuse SuperWhisper credentials. You can use an ElevenLabs key

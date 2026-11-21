@@ -12570,7 +12570,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && matches!(
             fixture.as_deref(),
-            Some("empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt")
+            Some("empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt" | "soniox-rt")
         )
     {
         return Vec::new();

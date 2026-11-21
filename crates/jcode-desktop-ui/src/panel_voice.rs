@@ -410,7 +410,11 @@ impl Panel {
         global_capture: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.preview_state.is_some() || crate::harness::screenshot_mode() {
+        if self.preview_state.is_some()
+            || (crate::harness::screenshot_mode()
+                && !(self.session_id == "screenshot-fixture"
+                    && crate::fixture_control_targets::allow_soniox_recording()))
+        {
             self.voice.error = Some("Microphone access is disabled in offline previews.".into());
             cx.notify();
             return;
@@ -1255,6 +1259,7 @@ impl Panel {
         let size = VOICE_BUTTON_SIZE;
         let button = crate::keyboard::button(div().id("voice-toggle"))
             .debug_selector(|| "voice-toggle".into())
+            .occlude()
             .relative()
             .flex_none()
             .h(px(size))
@@ -1282,7 +1287,8 @@ impl Panel {
                 cx.stop_propagation();
             }))
             .children(
-                crate::fixture_control_targets::voice_recording()
+                (crate::fixture_control_targets::voice_recording()
+                    || crate::fixture_control_targets::voice_soniox())
                     .then(|| {
                         crate::fixture_control_targets::marker(
                             || "composer.voice".into(),
