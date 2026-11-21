@@ -367,9 +367,19 @@ impl Workspace {
                     Ok(index) => index,
                     Err(error) => return error,
                 };
-                let panel = self.slots[index].panel.read(cx);
+                let slot = &self.slots[index];
+                let panel = slot.panel.read(cx);
+                let input = panel.input.read(cx);
+                let draft = input.snapshot();
+                let mut state = panel.control_state(window, cx);
+                state["agent_owned_draft"] = json!(
+                    self.control_drafts.get(&slot.panel.entity_id())
+                        == Some(&(draft.content, input.control_revision()))
+                        && draft.attachments.is_empty()
+                        && draft.stashed_prompt.is_none()
+                );
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":self.slots[index].panel.entity_id().as_u64(), "panel":panel.control_state(window, cx), "search_open":self.resume_open(), "search":self.control_search_state(window, cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": crate::fixture_control_targets::draft_session().then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
+                    json!({"window_id":target.window_id, "panel_id":slot.panel.entity_id().as_u64(), "panel":state, "search_open":self.resume_open(), "search":self.control_search_state(window, cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": crate::fixture_control_targets::draft_session().then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
                 )
             }
             DesktopAction::Search {
@@ -400,6 +410,12 @@ impl Workspace {
                         allow_user_window,
                     }
                 } else if let Some(ask) = selector.strip_prefix("ask:") {
+                    if ask.starts_with("ask-cold-wake-") {
+                        return error(
+                            "human_approval_required",
+                            "answer the cold-session wake confirmation directly in the chat",
+                        );
+                    }
                     if !allow_user_window {
                         return error(
                             "user_window_protected",
