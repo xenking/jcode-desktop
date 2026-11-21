@@ -316,7 +316,13 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     click(vcx, "sidebar-project-worktree-0");
     vcx.simulate_keystrokes("f e a t u r e - a enter");
     vcx.run_until_parked();
-    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
+    assert!(
+        commands.try_recv().is_err(),
+        "a new worktree opens a local draft"
+    );
+    vcx.simulate_input("Inspect the new branch");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
     let created = match commands.try_recv().unwrap() {
         Command::CreateSession {
             working_dir: Some(directory),
