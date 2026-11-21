@@ -130,6 +130,7 @@ fn read(path: &Path) -> Option<Checkpoint> {
 struct CheckpointOwner {
     owner: String,
     pid: u32,
+    updated_at_ms: u64,
     #[serde(default)]
     clean: bool,
 }
@@ -235,13 +236,25 @@ pub(super) fn remember_reload_snapshot(snapshot: &WorkspaceSnapshot, window: &Wi
 impl Writer {
     fn begin(path: PathBuf, snapshot: WorkspaceSnapshot) -> anyhow::Result<Self> {
         let _lock = lock(&path)?;
+        let now = now_ms();
         if let Some(previous) = read_owner(&path) {
+            let same_process = previous.pid == std::process::id();
             anyhow::ensure!(
-                previous.clean
-                    || previous.pid == std::process::id()
-                    || !process_alive(previous.pid),
+                previous.clean || same_process || !process_alive(previous.pid),
                 "another desktop process owns the crash checkpoint"
             );
+            // An expired snapshot must not reopen at startup, but overwriting
+            // it would also lose the list of sessions the user could reopen.
+            if !previous.clean
+                && !same_process
+                && now
+                    .checked_sub(previous.updated_at_ms)
+                    .is_some_and(|age| age > RECOVERY_WINDOW_MS)
+                && let Some(missed) = read(&path)
+                && !missed.snapshot.slots.is_empty()
+            {
+                write(&path.with_extension("missed.json"), &missed)?;
+            }
         }
         let owner = format!(
             "{}-{}",
@@ -249,7 +262,7 @@ impl Writer {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         );
         let writer = Self { path, owner };
-        write(&writer.path, &writer.checkpoint(snapshot, now_ms()))?;
+        write(&writer.path, &writer.checkpoint(snapshot, now))?;
         Ok(writer)
     }
 
@@ -626,7 +639,7 @@ mod tests {
         let mut file = BufWriter::new(File::create(&path).unwrap());
         write!(
             file,
-            "{{\"owner\":\"generation\",\"pid\":42,\"snapshot\":{{\"large_document\":\""
+            "{{\"owner\":\"generation\",\"pid\":42,\"updated_at_ms\":100,\"snapshot\":{{\"large_document\":\""
         )
         .unwrap();
         for _ in 0..1024 {
@@ -684,6 +697,56 @@ mod tests {
         assert!(!eligible(&record, 100_001, true));
         assert!(process_alive(std::process::id()));
         assert!(process_alive(0));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn delayed_relaunch_keeps_crashed_tabs_for_manual_recovery(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("crash-recovery.json");
+        let missed = root.path().join("crash-recovery.missed.json");
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-keep", cx);
+            workspace.push_test_panel("session-suspect", cx);
+            workspace.active = 1;
+            workspace.row_focus[0] = Some(workspace.slots[1].panel.entity_id());
+            workspace
+        });
+        let crashed = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        let writer = Writer::begin(path.clone(), crashed.clone()).unwrap();
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        let old_pid = exited.id();
+        assert!(exited.wait().unwrap().success());
+        let now = now_ms();
+        let mut record = writer.checkpoint(crashed, now - 278_000);
+        record.pid = old_pid;
+        write(&path, &record).unwrap();
+
+        assert!(restore(&record, now, process_alive(old_pid)).is_none());
+        assert!(!missed.exists());
+        let fresh = Writer::begin(path.clone(), snapshot()).unwrap();
+        assert!(read(&path).unwrap().snapshot.slots.is_empty());
+        let saved = read(&missed).expect("a delayed launch must not discard the crashed tabs");
+        let ids: Vec<_> = saved
+            .snapshot
+            .slots
+            .iter()
+            .map(|slot| slot.panel.session_id.as_str())
+            .collect();
+        assert_eq!(ids, ["session-keep", "session-suspect"]);
+        assert_eq!(saved.snapshot.active, 1);
+        assert_eq!(saved.updated_at_ms, record.updated_at_ms);
+        assert_eq!(
+            fs::metadata(&missed).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fresh.clean_quit(None).unwrap();
+        Writer::begin(path, snapshot()).unwrap();
+        assert_eq!(read(&missed).unwrap().pid, old_pid);
     }
 
     #[test]
