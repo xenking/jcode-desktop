@@ -8,28 +8,26 @@ Settings > "Voice backend · all Jcode clients" edits the shared jcode config
 | Auto | `backend = "auto"` | Nari key if present, else Soniox key |
 | Nari | `backend = "nari"` | `NariRecording::start_configured`, Nari realtime |
 | Soniox | `backend = "soniox"` | same handle, Soniox realtime (`run_nari_events`) |
+| ElevenLabs Scribe | `backend = "elevenlabs"` | same handle, Scribe V2 Realtime with an ElevenLabs API key |
 | Jcode subscription | `backend = "subscription"` | not streamed yet in Desktop, shows an explanatory error. Endpoint is `JCODE_API_BASE` / `jcode-subscription.env` |
 | External command | `backend = "command"`, `command = "..."` | runs the command, its stdout is the transcript |
 
-"Custom endpoint" sets `[dictation] base_url` (a `wss://` override, or `ws://`
-to a loopback IP for a local proxy). "Set API key" uses a masked input and
-`StreamingBackend::save_api_key`, which writes `NARI_API_KEY` to
-`~/.config/jcode/nari.env` or `SONIOX_API_KEY` to `~/.config/jcode/soniox.env`
-with owner-only permissions. Those are the same places jcode-voice reads.
+Nari and Soniox support a custom endpoint via `[dictation] base_url` (`wss://`,
+or `ws://` on loopback). Scribe connects only to the official ElevenLabs endpoint.
+**Set API key** saves the selected provider key with owner-only permissions in
+`~/.config/jcode/nari.env`, `soniox.env`, or `elevenlabs.env`. You can also set
+`NARI_API_KEY`, `SONIOX_API_KEY`, or `ELEVENLABS_API_KEY` in the Jcode process
+environment. A SuperWhisper
+subscription is not an ElevenLabs API credential. Auto does not select Scribe.
 
-In the chat composer, Nari and Soniox show live text at the caret in `insert`
+In the chat composer, Nari, Soniox, and Scribe show live text at the caret in `insert`
 mode. Stop voice (square button or Ctrl+Shift+V) finishes the recording and
 keeps the result in the draft. Other delivery modes keep their existing behavior.
 
 ## SuperWhisper
 
-Orca's `superwhisper-importer.ts` extracts SuperWhisper's license and request
-signing key from one specific app build (byte offsets in the binary plus the
-keychain) and then calls `api.superwhisper.com` directly. We did not port that:
-it breaks on every SuperWhisper update, needs a keychain prompt, and uses a
-private API.
-
-Instead, Desktop uses a running SuperWhisper as an external transcriber.
+Desktop does not reuse SuperWhisper credentials. You can use an ElevenLabs key
+for live text, or run SuperWhisper as an external transcriber for the final transcript.
 "Use SuperWhisper" (macOS, shown only when `/Applications/superwhisper.app`
 exists) installs `~/.jcode/bin/superwhisper-dictate.sh` and selects it as the
 command backend. The script opens `superwhisper://record/start`, waits for the next

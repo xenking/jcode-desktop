@@ -16,10 +16,15 @@ pub(super) struct VoiceSettings {
     text_input: Option<(&'static str, Entity<PromptInput>)>,
 }
 
-pub(super) const BACKENDS: [(DictationBackend, &str, &str); 5] = [
+pub(super) const BACKENDS: [(DictationBackend, &str, &str); 6] = [
     (DictationBackend::Auto, "auto", "Auto"),
     (DictationBackend::Nari, "nari", "Nari"),
     (DictationBackend::Soniox, "soniox", "Soniox"),
+    (
+        DictationBackend::ElevenLabs,
+        "elevenlabs",
+        "ElevenLabs Scribe",
+    ),
     (
         DictationBackend::Subscription,
         "subscription",
@@ -72,6 +77,7 @@ fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
     match backend {
         DictationBackend::Nari => Some(StreamingBackend::Nari),
         DictationBackend::Soniox => Some(StreamingBackend::Soniox),
+        DictationBackend::ElevenLabs => Some(StreamingBackend::ElevenLabs),
         _ => None,
     }
 }
@@ -213,7 +219,8 @@ impl Workspace {
                     && self.save_dictation("backend", "command", cx)
                 {
                     self.voice_settings = VoiceSettings::default();
-                    self.status = "Voice uses SuperWhisper. Use Stop voice to finish recording.".into();
+                    self.status =
+                        "Voice uses SuperWhisper. Use Stop voice to finish recording.".into();
                 }
             }
             Err(error) => self.status = format!("Could not install SuperWhisper bridge: {error}"),
@@ -231,6 +238,7 @@ impl Workspace {
                 "auto" => "settings-voice-auto",
                 "nari" => "settings-voice-nari",
                 "soniox" => "settings-voice-soniox",
+                "elevenlabs" => "settings-voice-elevenlabs",
                 "subscription" => "settings-voice-subscription",
                 _ => "settings-voice-command",
             };
@@ -245,6 +253,13 @@ impl Workspace {
         }
         let detail: String = match selected {
             DictationBackend::Auto => "Uses a Nari key if present, else a Soniox key.".into(),
+            DictationBackend::ElevenLabs => {
+                if StreamingBackend::ElevenLabs.api_key().is_some() {
+                    "Uses your own ElevenLabs key. SuperWhisper is not needed.".into()
+                } else {
+                    "Set an ElevenLabs API key. A SuperWhisper Pro license does not grant API access.".into()
+                }
+            }
             DictationBackend::Nari | DictationBackend::Soniox => {
                 let b = streaming(selected).expect("streaming");
                 let (var, file) = b.key_location();
@@ -288,16 +303,16 @@ impl Workspace {
             );
         }
         if let Some(b) = streaming(selected) {
-            actions = actions
-                .child(
-                    pill("settings-voice-key", false)
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx)),
-                        )
-                        .child("Set API key"),
-                )
-                .child(
+            actions = actions.child(
+                pill("settings-voice-key", false)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx)),
+                    )
+                    .child("Set API key"),
+            );
+            if b != StreamingBackend::ElevenLabs {
+                actions = actions.child(
                     pill("settings-voice-base-url", false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -311,6 +326,7 @@ impl Workspace {
                             format!("Endpoint: {}", dictation.base_url.trim())
                         }),
                 );
+            }
         }
         if selected == DictationBackend::Command {
             actions = actions.child(
@@ -420,7 +436,10 @@ mod tests {
             assert_eq!(mode_slug(mode), slug);
         }
         // The row leads with the mode a fresh install uses.
-        assert_eq!(MODES[0].0, jcode_base::config::Config::default().dictation.mode);
+        assert_eq!(
+            MODES[0].0,
+            jcode_base::config::Config::default().dictation.mode
+        );
     }
 
     #[test]
