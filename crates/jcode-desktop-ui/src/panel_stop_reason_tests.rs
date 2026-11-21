@@ -71,6 +71,55 @@ fn assert_settled_partial_output(panel: &Panel) {
 }
 
 #[gpui::test]
+fn guardrail_retries_update_one_visible_row_without_stopping_turn(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("stop-test", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.history_loaded = true;
+        panel.apply(
+            &ApiEvent::TextDelta {
+                session_id: "stop-test".into(),
+                message_id: None,
+                text: "Partial answer".into(),
+            },
+            cx,
+        );
+        for attempt in 1..=3 {
+            panel.apply(
+                &ApiEvent::ProviderGuardrailRetry {
+                    session_id: "stop-test".into(),
+                    turn_id: "turn-1".into(),
+                    attempt,
+                    max_attempts: 3,
+                },
+                cx,
+            );
+        }
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |panel, _| {
+        let rows: Vec<_> = panel
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::ProviderGuardrailRetry { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("attempt 3 of 3"));
+        assert!(panel.activity_active());
+        assert!(notices(panel).is_empty());
+    });
+    assert!(vcx.debug_bounds("provider-guardrail-retry").is_some());
+}
+
+#[gpui::test]
 fn unconfirmed_stop_shows_force_stop_button_and_click_escalates(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| {

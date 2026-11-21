@@ -4240,6 +4240,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
+        | ApiEvent::ProviderGuardrailRetry { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
@@ -4312,6 +4313,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
+        | ApiEvent::ProviderGuardrailRetry { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }

@@ -408,6 +408,10 @@ pub enum Item {
         message: String,
     },
     Stopped(stop_reason::StopNotice),
+    ProviderGuardrailRetry {
+        turn_id: String,
+        text: String,
+    },
     /// A completed or in-progress context compaction: one full-width rule with a
     /// centered label that expands to the summary and elided-message detail.
     Compaction(compaction::CompactionRow),
@@ -4269,6 +4273,30 @@ impl Panel {
                 self.reconcile_reconnect_response();
                 self.finish_response();
             }
+            ApiEvent::ProviderGuardrailRetry {
+                turn_id,
+                attempt,
+                max_attempts,
+                ..
+            } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                let text = format!(
+                    "Provider stopped the response. Jcode retried the request (attempt {attempt} of {max_attempts})."
+                );
+                if let Some(Item::ProviderGuardrailRetry { text: current, .. }) =
+                    self.items.iter_mut().rev().find(|item| {
+                        matches!(item, Item::ProviderGuardrailRetry { turn_id: id, .. } if id == turn_id)
+                    })
+                {
+                    *current = text;
+                } else {
+                    self.items.push(Item::ProviderGuardrailRetry {
+                        turn_id: turn_id.clone(),
+                        text,
+                    });
+                }
+            }
             ApiEvent::TurnStopped {
                 reason,
                 message,
@@ -5284,6 +5312,22 @@ impl Panel {
                     .unwrap_or_else(|| div().into_any_element())
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::ProviderGuardrailRetry { text, .. } => div()
+                .debug_selector(|| "provider-guardrail-retry".into())
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .truncate()
+                .text_size(px(11.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(text_selection::plain(
+                    self.transcript_selection.clone(),
+                    format!("{index}-provider-guardrail-retry"),
+                    text.clone(),
+                    window,
+                    cx,
+                ))
+                .into_any_element(),
             Item::Compaction(row) => self.render_compaction_divider(index, row, window, cx),
             Item::Memory(row) => self.render_memory_divider(index, row, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
@@ -7579,6 +7623,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::ProviderGuardrailRetry { .. }
         | Item::Compaction(_)
         | Item::Memory(_)
         | Item::CacheMiss(_)
