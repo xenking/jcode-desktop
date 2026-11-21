@@ -821,8 +821,9 @@ mod tests {
                 vcx.run_until_parked();
                 if phase == Phase::Recording {
                     assert!(vcx.debug_bounds("voice-overlay").is_none());
-                    assert!(vcx.debug_bounds("voice-microphone-icon").is_some());
+                    assert!(vcx.debug_bounds("voice-stop-icon").is_some());
                     assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), original_input);
+                    assert_eq!(vcx.debug_bounds("panel-meta").unwrap(), footer);
                     continue;
                 }
                 let card = vcx
@@ -840,10 +841,7 @@ mod tests {
                 assert!(card.top() >= px(0.));
                 assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), original_input);
                 assert!(vcx.debug_bounds("voice-live-transcript").is_none());
-                assert_eq!(
-                    vcx.debug_bounds("voice-waveform").is_some(),
-                    phase == Phase::Recording
-                );
+                assert!(vcx.debug_bounds("voice-waveform").is_none());
                 assert!(card.size.width <= px(196.));
                 assert!(card.size.height <= px(48.));
                 assert_eq!(
@@ -851,19 +849,9 @@ mod tests {
                     footer,
                     "overlay must not reflow the composer"
                 );
-                // While listening, the overlay's single control stops and
-                // sends. Other phases keep the dismiss button.
-                let recording = phase == Phase::Recording;
-                let control = vcx
-                    .debug_bounds(if recording {
-                        "voice-stop"
-                    } else {
-                        "voice-cancel"
-                    })
-                    .unwrap();
+                let control = vcx.debug_bounds("voice-cancel").unwrap();
                 assert!(control.bottom() <= card.bottom());
-                assert_eq!(vcx.debug_bounds("voice-cancel").is_some(), !recording);
-                assert_eq!(vcx.debug_bounds("voice-stop").is_some(), recording);
+                assert!(vcx.debug_bounds("voice-stop").is_none());
             }
         }
     }
