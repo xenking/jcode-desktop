@@ -1,7 +1,7 @@
 //! Native controls and actual workspace commands, without a live runtime.
 use super::*;
 
-fn session(id: &str) -> jcode_sdk::SessionInfo {
+pub(super) fn session(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
         user_connected: false,
         session_id: id.into(),
@@ -23,7 +23,7 @@ fn session(id: &str) -> jcode_sdk::SessionInfo {
     }
 }
 
-fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+pub(super) fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     // Selector bounds can exist offscreen while Machines slides back into view.
     // Settle the test clock before exercising the real native click target.
@@ -630,13 +630,18 @@ fn remote_identity_survives_snapshot_and_local_files_are_not_shown(cx: &mut gpui
 
 #[test]
 fn remote_history_never_becomes_a_local_pinned_folder() {
-    let mut remote = session("ssh://desktop/remote-1");
-    remote.working_dir = Some("/not/a/local/directory".into());
-    assert_eq!(most_used_working_dir(&[remote.clone()]), None);
-    assert_eq!(
-        sidebar_session_directory(&remote).as_deref(),
-        Some("desktop · /not/a/local/directory")
-    );
+    for (id, machine) in [
+        ("ssh://desktop/remote-1", "desktop"),
+        ("cloud://ai-core/remote-1", "ai-core"),
+    ] {
+        let mut remote = session(id);
+        remote.working_dir = Some("/not/a/local/directory".into());
+        assert_eq!(most_used_working_dir(&[remote.clone()]), None);
+        assert_eq!(
+            sidebar_session_directory(&remote).unwrap(),
+            format!("{machine} · /not/a/local/directory")
+        );
+    }
 }
 
 #[gpui::test]

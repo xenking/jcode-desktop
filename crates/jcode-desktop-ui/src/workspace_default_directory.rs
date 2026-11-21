@@ -216,8 +216,8 @@ impl Workspace {
             ),
             Some(host) if remotes::managed_destination(host) => (
                 include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                "Cloud · ~".into(),
-                "Cloud · ~ (remote home)".into(),
+                format!("{} · ~", remotes::machine_label(host)),
+                format!("{} · ~ (remote home)", remotes::machine_label(host)),
             ),
             Some(host) => (
                 include_bytes!("../../../assets/icons/ssh.svg"),
@@ -328,7 +328,7 @@ pub(super) fn ranked_directories(
 ) -> Vec<(PathBuf, String)> {
     let mut usage = HashMap::<PathBuf, (usize, usize)>::new();
     for (recency, session) in sessions.iter().rev().enumerate() {
-        if session.session_id.starts_with("ssh://") {
+        if harness::is_remote_session(&session.session_id) {
             continue;
         }
         let Some(path) = session.working_dir.as_deref().map(PathBuf::from) else {

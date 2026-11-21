@@ -84,11 +84,9 @@ impl Panel {
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
             .map(|host| {
-                if host == crate::managed_cloud::HOST {
-                    "Jcode Cloud".to_string()
-                } else {
-                    host
-                }
+                crate::managed_cloud::Destination::parse(&host)
+                    .map(|target| target.label().to_owned())
+                    .unwrap_or(host)
             });
         let location = self
             .working_dir

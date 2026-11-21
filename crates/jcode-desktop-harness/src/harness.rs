@@ -40,24 +40,28 @@ mod transport {
     impl RemoteTransports {
         pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
             self.connect_with_progress(host, &mut |_| {})
+                .map(|(client, _)| client)
         }
 
         pub(super) fn connect_with_progress(
             &self,
             host: &str,
             progress: &mut dyn FnMut(&str),
-        ) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
-            if host == crate::managed_cloud::HOST {
-                return crate::managed_cloud::connect(
+        ) -> jcode_sdk::Result<(jcode_sdk::JcodeClient, bool)> {
+            if let Some(destination) = crate::managed_cloud::Destination::parse(host) {
+                return crate::managed_cloud::connect_with_sync_status(
                     progress,
                     format!("jcode-desktop-remote/{}", crate::client_version()),
-                    crate::managed_cloud::request_connect,
-                    jcode_sdk::JcodeClient::connect_ssh,
+                    |account, key| crate::managed_cloud::request_connect(account, destination, key),
+                    |options, _, _| jcode_sdk::JcodeClient::connect_ssh(options),
                 )
                 .map_err(|message| {
                     jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
                 });
             }
+            let host = crate::remote_targets::validate_host(host).map_err(|message| {
+                jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
+            })?;
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
                 // Temporarily disabled until inline tool responses have broader testing.
                 supports_user_response: false,
@@ -66,6 +70,7 @@ mod transport {
                 request_timeout: Some(std::time::Duration::from_secs(30)),
                 ..jcode_sdk::SshConnectOptions::new(host)
             })
+            .map(|client| (client, false))
         }
     }
 }
@@ -80,7 +85,12 @@ mod recovery;
 mod search;
 mod tab_wait;
 
-/// Decode the host carried by a persisted remote panel ID.
+/// Test whether an ID belongs to a remote namespace, even if malformed.
+pub fn is_remote_session(session_id: &str) -> bool {
+    remote::is_remote(session_id)
+}
+
+/// Decode the destination carried by a persisted remote panel ID.
 pub fn remote_host(session_id: &str) -> Option<String> {
     remote::SessionAddress::parse(session_id).ok()?.host
 }
@@ -108,6 +118,10 @@ pub enum Update {
         message: String,
         request_id: Option<String>,
         failed: bool,
+    },
+    RemoteSessions {
+        request_id: u64,
+        result: Result<Vec<SessionInfo>, String>,
     },
     /// The runtime is up and reachable.
     Connected,
@@ -305,6 +319,10 @@ pub enum Command {
         host: String,
         working_dir: Option<String>,
         request_id: Option<String>,
+    },
+    ListRemoteSessions {
+        host: String,
+        request_id: u64,
     },
     /// Open a dedicated connection for this session (attach + stream).
     Watch {
@@ -1418,6 +1436,14 @@ fn run_with_transports(
                     })
                     .expect("spawn create thread");
             }
+            Command::ListRemoteSessions { host, request_id } => {
+                let transports = transports.clone();
+                let updates = updates.clone();
+                std::thread::spawn(move || {
+                    let result = list_remote_sessions(&host, |host| transports.connect(host));
+                    let _ = updates.send(Update::RemoteSessions { request_id, result });
+                });
+            }
             Command::CreateRemoteSession {
                 host,
                 working_dir,
@@ -1906,6 +1932,23 @@ fn stop_session_workers(workers: HashMap<String, Sender<SessionCommand>>) {
     }
 }
 
+fn list_remote_sessions(
+    host: &str,
+    connect: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
+) -> Result<Vec<SessionInfo>, String> {
+    let host = crate::remote_targets::validate_destination(host)?;
+    let client = connect(&host).map_err(|error| error.to_string())?;
+    let address = remote::SessionAddress {
+        host: Some(host),
+        session_id: String::new(),
+    };
+    let sessions = client.list_sessions().map_err(|error| error.to_string())?;
+    Ok(sessions
+        .into_iter()
+        .map(|session| address.session_info(session))
+        .collect())
+}
+
 /// A create is deliberately single-attempt, even for a startup request. An
 /// ambiguous timeout must not produce extra sessions on a recovered host.
 fn create_remote_session(
@@ -1914,10 +1957,10 @@ fn create_remote_session(
     request_id: Option<String>,
     updates: UpdateSender,
     internal: Sender<Command>,
-    connector: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
+    connector: impl FnOnce(&str) -> jcode_sdk::Result<(JcodeClient, bool)>,
 ) {
-    let result = crate::remote_targets::validate_host(&host).and_then(|host| {
-        let managed = host == crate::managed_cloud::HOST;
+    let result = crate::remote_targets::validate_destination(&host).and_then(|host| {
+        let managed = crate::managed_cloud::Destination::parse(&host).is_some();
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed {
@@ -1928,7 +1971,7 @@ fn create_remote_session(
             request_id: request_id.clone(),
             failed: false,
         });
-        let client = connector(&host).map_err(|error| error.to_string())?;
+        let (client, self_hosted) = connector(&host).map_err(|error| error.to_string())?;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed {
@@ -1943,9 +1986,7 @@ fn create_remote_session(
             // The managed bootstrap creates this persistent workspace. Naming
             // it explicitly also lets older cloud bridges report the directory.
             // A self-hosted machine has no such folder and starts in its home.
-            managed
-                .then(crate::managed_cloud::default_workspace)
-                .flatten()
+            (managed && !self_hosted).then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
         });
         let mut session = client
             .create_session(working_dir.clone())
@@ -1953,7 +1994,11 @@ fn create_remote_session(
         if session.working_dir.as_deref().is_none_or(str::is_empty) {
             session.working_dir = working_dir;
         }
-        if managed && !screenshot_mode() && !cfg!(any(test, feature = "test-support")) {
+        if managed
+            && !self_hosted
+            && !screenshot_mode()
+            && !cfg!(any(test, feature = "test-support"))
+        {
             // Start on this computer's default model and effort, not the
             // cloud daemon's. A failure keeps the session on its current model.
             let defaults = crate::managed_cloud_parity::Snapshot::session_defaults();

@@ -4,6 +4,7 @@
 //! the original remote ID, never its desktop namespace.
 
 const PREFIX: &str = "ssh://";
+const CLOUD_PREFIX: &str = "cloud://";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SessionAddress {
@@ -13,7 +14,11 @@ pub(super) struct SessionAddress {
 
 impl SessionAddress {
     pub fn parse(id: &str) -> Result<Self, String> {
-        let Some(remote) = id.strip_prefix(PREFIX) else {
+        let (is_cloud, remote) = if let Some(remote) = id.strip_prefix(CLOUD_PREFIX) {
+            (true, remote)
+        } else if let Some(remote) = id.strip_prefix(PREFIX) {
+            (false, remote)
+        } else {
             return Ok(Self {
                 host: None,
                 session_id: id.to_owned(),
@@ -22,11 +27,17 @@ impl SessionAddress {
         let (host, session_id) = remote
             .split_once('/')
             .ok_or("Invalid remote session address")?;
-        let host = decode(host)?;
-        let validated = crate::remote_targets::validate_host(&host)?;
-        if host != validated {
-            return Err("Invalid remote session host".into());
-        }
+        let host = if is_cloud {
+            crate::managed_cloud::Destination::named(host)
+                .ok_or("Invalid Cloud machine name")?
+                .preference()
+        } else {
+            let host = decode(host)?;
+            if host != crate::remote_targets::validate_host(&host)? {
+                return Err("Invalid remote session host".into());
+            }
+            host
+        };
         let session_id = decode(session_id)?;
         if session_id.is_empty() || session_id.chars().any(char::is_control) {
             return Err("Invalid remote session ID".into());
@@ -52,11 +63,14 @@ impl SessionAddress {
 }
 
 pub(super) fn is_remote(id: &str) -> bool {
-    id.starts_with(PREFIX)
+    id.starts_with(PREFIX) || id.starts_with(CLOUD_PREFIX)
 }
 
 pub(super) fn namespace(host: &str, session_id: &str) -> String {
-    format!("{PREFIX}{}/{}", encode(host), encode(session_id))
+    match crate::managed_cloud::Destination::parse(host).and_then(|target| target.name()) {
+        Some(name) => format!("{CLOUD_PREFIX}{name}/{}", encode(session_id)),
+        None => format!("{PREFIX}{}/{}", encode(host), encode(session_id)),
+    }
 }
 
 fn encode(value: &str) -> String {
@@ -161,6 +175,14 @@ mod tests {
     #[test]
     fn malformed_remote_ids_never_fall_back_to_local() {
         for id in [
+            "cloud://",
+            "cloud://ai-core/",
+            "cloud://-ai-core/id",
+            "cloud://user@ai-core/id",
+            "cloud://ai-core.example/id",
+            "cloud://%61i-core/id",
+            "cloud://ai-core/%00",
+            "ssh://cloud%3Aai-core/id",
             "ssh://",
             "ssh://host",
             "ssh:///id",
@@ -176,5 +198,23 @@ mod tests {
             assert!(SessionAddress::parse(id).is_err(), "accepted {id}");
             assert!(is_remote(id));
         }
+    }
+
+    #[test]
+    fn cloud_session_addresses_keep_named_default_and_ssh_routes_distinct() {
+        for (destination, id) in [
+            ("cloud:ai-core", "cloud://ai-core/a%2Fb"),
+            ("ai-core", "ssh://ai-core/a%2Fb"),
+            ("jcode-cloud", "ssh://jcode-cloud/a%2Fb"),
+            ("cloud:jcode-cloud", "cloud://jcode-cloud/a%2Fb"),
+        ] {
+            assert_eq!(namespace(destination, "a/b"), id);
+            assert!(is_remote(id));
+            let restored = SessionAddress::parse(id).unwrap();
+            assert_eq!(restored.host.as_deref(), Some(destination));
+            assert_eq!(restored.session_id, "a/b");
+            assert_eq!(restored.ui_id("a/b"), id);
+        }
+        assert!(crate::remote_targets::validate_host("cloud:ai-core").is_err());
     }
 }

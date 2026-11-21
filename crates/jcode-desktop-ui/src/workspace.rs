@@ -1271,6 +1271,10 @@ impl Workspace {
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
         } else if harness::screenshot_mode()
+            && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CLOUD_PICKER").is_some()
+        {
+            workspace.show_cloud_picker_fixture(cx);
+        } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
         {
             if let Ok(state) = std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE")
@@ -2099,8 +2103,8 @@ impl Workspace {
             {
                 panel.update(cx, |panel, cx| {
                     panel.status = match pending::remote_draft_host(&panel.session_id) {
-                        Some(remotes::MANAGED_CLOUD_HOST) => {
-                            panel.title = "Jcode Cloud".into();
+                        Some(host) if remotes::managed_destination(host) => {
+                            panel.title = remotes::machine_label(host).to_owned().into();
                             format!("{} Your queued prompts are preserved.", remotes::MANAGED_CLOUD_STARTING)
                         }
                         Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
@@ -2196,6 +2200,9 @@ impl Workspace {
             self.folder_search = Some(search);
         }
         self.restore_workspace_live_views(cx);
+        if self.machines_panel_index(cx).is_some() {
+            self.refresh_cloud_registry(cx);
+        }
     }
 
     fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
@@ -2398,6 +2405,7 @@ impl Workspace {
                 if failed {
                     self.invalidate_cloud_connection(&host);
                 }
+                let host = remotes::machine_label(&host);
                 self.update_pending_remote_status(
                     request_id.as_deref(),
                     &format!("{host}: {message}"),
@@ -2406,6 +2414,9 @@ impl Workspace {
                 );
                 self.remotes.failed = failed;
                 self.remotes.status = Some(format!("{host}: {message}"));
+            }
+            Update::RemoteSessions { request_id, result } => {
+                self.apply_machine_sessions(request_id, result);
             }
             Update::SessionSearch {
                 query,
@@ -5971,7 +5982,7 @@ impl Workspace {
     fn file_browser_root(&self, cx: &App) -> PathBuf {
         self.slots
             .get(self.active)
-            .filter(|slot| !slot.panel.read(cx).session_id.starts_with("ssh://"))
+            .filter(|slot| !harness::is_remote_session(&slot.panel.read(cx).session_id))
             .and_then(|slot| {
                 slot.panel
                     .read(cx)
@@ -6150,7 +6161,7 @@ impl Workspace {
         if self
             .slots
             .get(self.active)
-            .is_some_and(|slot| slot.panel.read(cx).session_id.starts_with("ssh://"))
+            .is_some_and(|slot| harness::is_remote_session(&slot.panel.read(cx).session_id))
         {
             return div().debug_selector(|| "remote-file-browser-notice".into()).p_3().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM)
                 .child("This panel runs on a remote machine. Ask Jcode to inspect its files in chat. The local file browser is available on local panels.")
@@ -6313,7 +6324,7 @@ impl Workspace {
         let duplicate_catalog_ids = known.len() != catalog.len();
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
             let panel = &sidebar_panels[&slot.panel.entity_id()];
-            if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
+            if (panel.supports_voice() || harness::is_remote_session(&panel.session_id))
                 && slot.panel.read(cx).listable_conversation(cx)
                 && known.insert(panel.session_id.clone())
             {
@@ -10019,7 +10030,7 @@ fn most_used_working_dir(sessions: &[jcode_sdk::SessionInfo]) -> Option<String> 
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for directory in sessions
         .iter()
-        .filter(|session| !session.session_id.starts_with("ssh://"))
+        .filter(|session| !harness::is_remote_session(&session.session_id))
         .filter_map(|session| session.working_dir.as_deref())
     {
         if Path::new(directory).is_absolute() && Path::new(directory).is_dir() {
@@ -10284,6 +10295,7 @@ fn unix_now_ms() -> i64 {
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     if let Some(host) = harness::remote_host(&session.session_id) {
+        let host = remotes::machine_label(&host);
         return Some(
             match session
                 .working_dir
@@ -10291,7 +10303,7 @@ fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String>
                 .filter(|dir| !dir.trim().is_empty())
             {
                 Some(dir) => format!("{host} · {dir}"),
-                None => host,
+                None => host.to_owned(),
             },
         );
     }

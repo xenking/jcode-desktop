@@ -7146,10 +7146,11 @@ impl Render for Panel {
                 }
             }))
             .children(crate::harness::remote_host(&self.session_id).map(|host| {
-                let machine = if host == crate::managed_cloud::HOST {
-                    "Jcode Cloud".to_string()
-                } else {
-                    format!("SSH · {host}")
+                let machine = match crate::managed_cloud::Destination::parse(&host) {
+                    Some(target) => target
+                        .name()
+                        .map_or_else(|| "Jcode Cloud".into(), |name| format!("Cloud · {name}")),
+                    None => format!("SSH · {host}"),
                 };
                 let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
                     Some(dir) => format!("Running on {machine} · {dir}"),

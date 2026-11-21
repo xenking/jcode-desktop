@@ -195,7 +195,9 @@ impl DesktopConfig {
             .workspace
             .default_remote_host
             .as_deref()
-            .and_then(|host| jcode_desktop_harness::remote_targets::validate_host(host).ok());
+            .and_then(|host| {
+                jcode_desktop_harness::remote_targets::validate_destination(host).ok()
+            });
         self.workspace.remote_hosts = normalized_remote_hosts(&self.workspace.remote_hosts);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
         self.models.hidden = normalized_hidden_models(&self.models.hidden);
@@ -629,7 +631,7 @@ pub fn persist_remote_hosts(_hosts: &[String]) -> std::io::Result<()> {
 
 fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
     match host.filter(|host| !host.trim().is_empty()) {
-        Some(host) => jcode_desktop_harness::remote_targets::validate_host(host)
+        Some(host) => jcode_desktop_harness::remote_targets::validate_destination(host)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
         None => Ok(String::new()),
     }
@@ -1209,6 +1211,15 @@ mod tests {
             assert_eq!(
                 config.workspace.default_remote_host.as_deref(),
                 Some("user@desktop")
+            );
+            assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
+            persist_default_remote_host_at(&path, standalone, Some("cloud:ai-core")).unwrap();
+            let config = parse(&fs::read_to_string(&path).unwrap(), standalone)
+                .unwrap()
+                .normalize();
+            assert_eq!(
+                config.workspace.default_remote_host.as_deref(),
+                Some("cloud:ai-core")
             );
             assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
             for local in [None, Some(""), Some("   ")] {

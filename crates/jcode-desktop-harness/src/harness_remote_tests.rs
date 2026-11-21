@@ -75,6 +75,10 @@ impl Server {
                         capabilities: vec!["runtime_commands".into()],
                     },
                     ApiRequest::Ping => ApiEvent::Pong,
+                    ApiRequest::ListSessions { .. } => ApiEvent::Sessions {
+                        sessions: vec![info("same-id")],
+                        workers: Default::default(),
+                    },
                     ApiRequest::AttachSession { .. } if attach_failures > 0 => {
                         attach_failures -= 1;
                         ApiEvent::Error {
@@ -529,7 +533,7 @@ fn remote_create_preserves_request_id_and_sends_working_dir_only_as_json() {
         internal,
         |host| {
             assert_eq!(host, "user@desktop");
-            Ok(client)
+            Ok((client, false))
         },
     );
     assert!(
@@ -609,6 +613,55 @@ fn invalid_remote_create_host_never_starts_a_transport() {
 }
 
 #[test]
+fn named_cloud_catalog_lists_and_reattaches_the_original_remote_id() {
+    let (client, server) = Server::new();
+    let sessions = list_remote_sessions("cloud:ai-core", |host| {
+        assert_eq!(host, "cloud:ai-core");
+        Ok(client.clone())
+    })
+    .unwrap();
+    assert!(matches!(server.next(), ApiRequest::ListSessions { .. }));
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "cloud://ai-core/same-id");
+    let address = remote::SessionAddress::parse(&sessions[0].session_id).unwrap();
+    assert_eq!(address.host.as_deref(), Some("cloud:ai-core"));
+    assert_eq!(
+        client
+            .attach_session(&address.session_id)
+            .unwrap()
+            .session_id,
+        "same-id"
+    );
+    assert!(
+        matches!(server.next(), ApiRequest::AttachSession { session_id } if session_id == "same-id")
+    );
+}
+
+#[test]
+fn self_hosted_creation_uses_remote_home_without_the_cloud_bootstrap_path() {
+    for (host, self_hosted) in [
+        ("cloud:ai-core", true),
+        ("jcode-cloud", true),
+        ("jcode-cloud", false),
+    ] {
+        let (client, server) = Server::new();
+        let (internal, created) = channel();
+        let (tx, _updates) = update_channel();
+        create_remote_session(host.into(), None, None, tx, internal, |_| {
+            Ok((client, self_hosted))
+        });
+        assert!(
+            matches!(server.next(), ApiRequest::CreateSession { working_dir, .. }
+            if working_dir.as_deref() == (!self_hosted).then_some(crate::managed_cloud::DEFAULT_WORKSPACE))
+        );
+        assert!(
+            matches!(created.recv_timeout(Duration::from_secs(2)), Ok(Command::CreatedInternal { session, .. })
+            if session.session_id == remote::namespace(host, "same-id"))
+        );
+    }
+}
+
+#[test]
 fn last_bridge_handle_stops_its_coordinator_for_ssh_cleanup() {
     let (bridge, commands) = spawn_recording();
     let second = bridge.clone();
@@ -684,6 +737,37 @@ fn managed_cloud_live_warm_panels_use_distinct_sessions() {
     assert_ne!(
         ids[0], ids[1],
         "panels must never share an attached API client"
+    );
+}
+
+#[test]
+#[ignore = "live: lists a registered Cloud machine's sessions via pinned SSH"]
+fn managed_cloud_live_named_machine_lists_sessions() {
+    let name = std::env::var("JCODE_CLOUD_TEST_HOST").unwrap_or_else(|_| "ai-core".into());
+    let destination = crate::managed_cloud::Destination::named(&name).expect("valid machine name");
+    let account = crate::managed_cloud::account().expect("configured Jcode account");
+    let machines = crate::managed_cloud::list_machines(&account).expect("Cloud registry");
+    assert!(
+        machines.iter().any(|machine| machine.name == name),
+        "machine not in account registry: {name}"
+    );
+    let transports = transport::RemoteTransports::default();
+    let host = destination.preference();
+    let sessions = list_remote_sessions(&host, |host| {
+        let (client, self_hosted) = transports
+            .connect_with_progress(host, &mut |message| eprintln!("[{name}] {message}"))?;
+        assert!(self_hosted, "named machine must be self-hosted");
+        Ok(client)
+    })
+    .expect("remote session catalog");
+    assert!(
+        sessions
+            .iter()
+            .all(|session| remote_host(&session.session_id).as_deref() == Some(&host))
+    );
+    eprintln!(
+        "[{name}] Registry confirmed, pinned SSH handshake succeeded, listed {} sessions",
+        sessions.len()
     );
 }
 
