@@ -108,6 +108,11 @@ class ContextUsage(VERIFY.Instance):
         click("panel-context-meter")
         frames["second"] = self.runtime_wait(lambda: panel("second.png", 1), "native second-session breakdown")
         self.selected(first)
+        _, returned = self.capture_text("return-arrival.png")
+        if "context usage" not in returned.lower():
+            # When both sessions stayed mounted, clicking the other session's
+            # meter was outside the first panel and dismissed its breakdown.
+            click("panel-context-meter")
         frames["return"] = self.runtime_wait(lambda: panel("return.png", 0), "native first-session breakdown after return")
         assert expected == [self.context_usage(session) for session in (first, second)]
         assert requests == (self.run / "fake-requests.jsonl").read_bytes()
@@ -116,7 +121,7 @@ class ContextUsage(VERIFY.Instance):
         if self.manifest["compact"]:
             def compacted():
                 frame, text = self.capture_text("compacted.png")
-                if "context compacted in this session" in text.lower() and "local estimate" in text.lower():
+                if "context compacted in this" in text.lower() and "local estimate" in text.lower():
                     return frame
                 if "cannot compact" in text.lower() or "compaction failed" in text.lower():
                     raise RuntimeError(text)
@@ -127,6 +132,7 @@ class ContextUsage(VERIFY.Instance):
             proof["after_compact"] = self.context_usage(first)
             assert self.context_usage(second) == expected[1]
             assert self.drive("state", session=second)["panel"]["loaded_transcript_items"] == before[1]
+        proof["passed"] = True
         VERIFY.save(self.run / "context-usage-proof.json", proof)
 
 

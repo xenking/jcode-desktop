@@ -126,7 +126,7 @@ class ShakeAcceptance(ContextUsage):
         repeated = self.runtime_wait(lambda: visible("repeated", "no eligible tool outputs"), "native repeated Shake no-op")
         assert self.context_usage(FIRST) == after[FIRST]
         assert not fake_requests.exists() or not fake_requests.read_bytes(), "a provider request escaped the Shake workflow"
-        VERIFY.save(self.run / "shake-proof.json", dict(before=before, after=after, preview=preview, applied=applied, repeated=repeated, provider_requests=0))
+        VERIFY.save(self.run / "shake-proof.json", dict(passed=True, before=before, after=after, preview=preview, applied=applied, repeated=repeated, provider_requests=0))
 
 
 if __name__ == "__main__":
