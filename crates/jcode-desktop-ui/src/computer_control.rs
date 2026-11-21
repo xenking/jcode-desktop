@@ -63,7 +63,7 @@ pub(super) fn validate_target(
     cx: &App,
 ) -> Result<(), DesktopResponse> {
     workspace.control_target(target, window, cx)?;
-    if crate::harness::remote_host(&target.session_id).is_some() {
+    if crate::harness::is_remote_session(&target.session_id) {
         return Err(error(
             "desktop_unavailable",
             "computer use requires a local Jcode session",
@@ -111,15 +111,23 @@ pub(super) fn handle(workspace: &Entity<Workspace>, pending: Pending, cx: &mut A
                     PromptLevel::Warning,
                     "Computer use",
                     Some(&detail),
-                    &[PromptButton::new("Deny"), PromptButton::new("Allow for this session")],
+                    &[
+                        PromptButton::new("Not now"),
+                        PromptButton::new("Allow for this session"),
+                        PromptButton::new("Deny"),
+                    ],
                     cx,
                 )).map_err(|_| error("desktop_unavailable", "Desktop window closed"))?;
-                let allow = matches!(answer.await, Ok(1));
+                let answer = answer.await;
                 if !alive() {
                     return Err(expired());
                 }
                 validate(cx)?;
-                let decision = if allow { Decision::Allow(Arc::default()) } else { Decision::Deny };
+                let decision = match answer {
+                    Ok(1) => Decision::Allow(Arc::default()),
+                    Ok(2) => Decision::Deny,
+                    _ => return Err(error("consent_required", "Computer use was not approved")),
+                };
                 lease.remember(target.session_id.clone(), decision.clone());
                 decision
             };

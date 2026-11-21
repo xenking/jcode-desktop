@@ -350,10 +350,7 @@ mod unix {
                         if matches!(
                             e.kind(),
                             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        ()
-                    }
+                        ) => {}
                     _ => {
                         cancelled.store(true, Ordering::Release);
                         return Ok(());
