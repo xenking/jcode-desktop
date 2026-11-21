@@ -156,6 +156,11 @@ pub enum Update {
         session_id: String,
         page: BoundedHistoryPage,
     },
+    RewoundHistory {
+        session_id: String,
+        page: BoundedHistoryPage,
+        bounded: bool,
+    },
     BoundedHistoryPage {
         session_id: String,
         result: Result<BoundedHistoryPage, String>,
@@ -495,6 +500,7 @@ pub enum SessionOperation {
     /// Bookmark (`true`) or unbookmark. A label also becomes the title.
     SetSaved(bool, Option<String>),
     Rewind(usize),
+    RewindTranscript(jcode_sdk::api::RewindAnchor),
     RewindUndo,
     /// The user acted on an agent applet instance.
     AppletAction {
@@ -3802,7 +3808,8 @@ fn session_worker_with_connector(
                             }
                             continue;
                         }
-                        let result = match operation {
+                        let rewinds = matches!(&operation, SessionOperation::Rewind(_) | SessionOperation::RewindTranscript(_) | SessionOperation::RewindUndo);
+                        let mut result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => client.compact(real_id).map(|message| {
                                 let _ = updates.send(Update::Event {
@@ -3831,8 +3838,22 @@ fn session_worker_with_connector(
                                 client.rename_session(real_id, title)
                             }
                             SessionOperation::Rewind(index) => client.rewind(real_id, index),
+                            SessionOperation::RewindTranscript(target) => client.rewind_transcript(real_id, target),
                             SessionOperation::RewindUndo => client.rewind_undo(real_id),
                         };
+                        if rewinds && result.is_ok() {
+                            let bounded = client.supports("bounded_history_v1");
+                            let page = if bounded {
+                                client.get_history_page(real_id, None)
+                            } else {
+                                client.get_history_with_images(real_id).map(|(messages, images)| BoundedHistoryPage {
+                                    messages, images, before: None, prompt_offset: None,
+                                })
+                            };
+                            result = page.map(|page| {
+                                let _ = updates.send(Update::RewoundHistory { session_id: session_id.clone(), page, bounded });
+                            });
+                        }
                         if let Err(error) = result {
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),

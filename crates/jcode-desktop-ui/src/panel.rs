@@ -51,6 +51,13 @@ mod command_workflow_tests;
 mod slash_send_tests;
 
 #[cfg(test)]
+#[path = "panel_rewind_tests.rs"]
+mod rewind_tests;
+
+#[path = "panel_rewind.rs"]
+mod rewind;
+
+#[cfg(test)]
 #[path = "panel_display_tests.rs"]
 mod display_tests;
 
@@ -733,6 +740,7 @@ pub struct Panel {
     image_preview_drag: Option<gpui::Point<gpui::Pixels>>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
+    rewind_selection: Option<rewind::Selection>,
     expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
     transcript_measurements: TranscriptMeasurements,
@@ -1574,6 +1582,7 @@ impl Panel {
             image_preview_scroll: gpui::ScrollHandle::new(),
             image_preview_drag: None,
             focus_handle: cx.focus_handle(),
+            rewind_selection: None,
             transcript_list,
             expandable_viewport_height: px(0.),
             transcript_row_count: 0,
@@ -2775,6 +2784,9 @@ impl Panel {
             self.request_session_saved(true, label);
         } else if trimmed == "/unsave" {
             self.request_session_saved(false, None);
+        } else if trimmed == "/rewind" {
+            self.start_rewind(cx);
+            return true;
         } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
             if target == "undo" {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
@@ -2784,7 +2796,7 @@ impl Panel {
                         .push(Item::Error("Rewind numbering starts at 1.".into()));
                 } else {
                     self.run_session_operation(
-                        SessionOperation::Rewind(index - 1),
+                        SessionOperation::Rewind(index),
                         format!("Rewound to message {index}."),
                     );
                 }
@@ -2890,9 +2902,6 @@ impl Panel {
                 }
                 "/rename" => self.items.push(Item::Error(
                     "Usage: `/rename <session name>` or `/rename --clear`.".into(),
-                )),
-                "/rewind" => self.items.push(Item::Assistant(
-                    "Use `/rewind <message number>` to rewind, or `/rewind undo` to restore.".into(),
                 )),
                 "/commit" => self.submit_command_prompt(
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
@@ -6603,6 +6612,7 @@ impl Render for Panel {
         } else {
             self.tail_glide.reset();
         }
+        self.reveal_rewind_selection(&rows, window, cx);
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -6741,7 +6751,7 @@ impl Render for Panel {
                                         cx,
                                     )
                                 });
-                                div()
+                                let padded = div()
                                     .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
                                     .px_3()
@@ -6796,8 +6806,13 @@ impl Render for Panel {
                                         prompt::is_pinnable_prompt(item),
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
-                                    ))
-                                    .into_any_element()
+                                    ));
+                                match &row.source {
+                                    TranscriptRowSource::Settled(_) => {
+                                        panel.render_rewind_row(row.index, item, padded, cx)
+                                    }
+                                    TranscriptRowSource::Owned(_) => padded.into_any_element(),
+                                }
                             })
                         },
                     )
@@ -6984,7 +6999,8 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.handle_queue_card_key(event, window, cx)
+                if this.handle_rewind_key(event, window, cx)
+                    || this.handle_queue_card_key(event, window, cx)
                     || this.handle_ask_key(event, window, cx)
                     || this.resume_composer_typing(event, false, window, cx)
                 {
@@ -7034,6 +7050,7 @@ impl Render for Panel {
                     .child(label)
             }))
             .children(publish_tracker)
+            .children(self.render_rewind_hint())
             .children(pinned_todo.map(|payload| {
                 div()
                     .id("pinned-todo-scroll")

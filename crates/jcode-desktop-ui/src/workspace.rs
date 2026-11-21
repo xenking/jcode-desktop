@@ -2669,6 +2669,14 @@ impl Workspace {
                     }
                 }
             }
+            Update::RewoundHistory { session_id, page, bounded } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| panel.replace_rewound_history(page, bounded, cx));
+                        break;
+                    }
+                }
+            }
             Update::BoundedHistoryPage { session_id, result } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {

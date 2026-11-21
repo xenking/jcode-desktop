@@ -367,6 +367,7 @@ impl Panel {
         self.transcript_measurements.dirty = true;
         let new_rows = self.transcript_render_rows().len();
         let added_rows = new_rows.saturating_sub(old_rows);
+        self.shift_rewind_selection(prefix_len, added_rows);
         // Inserting into ListState, rather than appending the count during
         // render, keeps the previously visible row at the same pixel offset.
         if self.transcript_row_count == old_rows + usize::from(self.activity_active()) {

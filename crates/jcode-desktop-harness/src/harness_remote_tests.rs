@@ -346,6 +346,15 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Operation(SessionOperation::Rewind(2)))
         .unwrap();
     commands
+        .send(SessionCommand::Operation(SessionOperation::RewindTranscript(
+            jcode_sdk::api::RewindAnchor {
+                selected: jcode_sdk::api::RewindMessageKey::new("user", "remote prompt").unwrap(),
+                before: None,
+                after: None,
+            },
+        )))
+        .unwrap();
+    commands
         .send(SessionCommand::Operation(SessionOperation::RewindUndo))
         .unwrap();
     commands.send(SessionCommand::Fork).unwrap();
@@ -357,7 +366,11 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         "set_reasoning_effort",
         "rename_session",
         "rewind",
+        "get_history",
+        "rewind_transcript",
+        "get_history",
         "rewind_undo",
+        "get_history",
         "fork_session",
         "transfer_session",
     ] {
@@ -369,6 +382,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(u, Update::Event { session_id, event: ApiEvent::Compacted { message, .. } }
             if session_id == &ui_id && message == "scheduled")
     });
+    wait_update(&updates, |u| matches!(u, Update::RewoundHistory { session_id, bounded: false, .. } if session_id == &ui_id));
     wait_update(
         &updates,
         |u| matches!(u, Update::SessionForked { session, .. } if session.session_id == remote::namespace("user@desktop", "fork-id")),

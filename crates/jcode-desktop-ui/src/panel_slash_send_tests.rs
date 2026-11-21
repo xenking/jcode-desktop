@@ -160,7 +160,7 @@ fn selected_rewind_retains_its_argument(cx: &mut TestAppContext) {
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::SessionOperation {
-            operation: SessionOperation::Rewind(0),
+            operation: SessionOperation::Rewind(1),
             ..
         })
     ));
