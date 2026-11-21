@@ -33,12 +33,7 @@ serde_json = "1.0.151"
 tempfile = "3"
 toml = "0.8"
 
-# Keep jcode-base features identical to jcode-desktop-ui's so feature
-# unification never differs between the host and the plugin builds.
-[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
-jcode-base = { path = "../../../jcode/crates/jcode-base" }
-
-[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+# Desktop uses foundation helpers. The separate harness daemon owns provider I/O.
 jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false }
 
 [dev-dependencies]
