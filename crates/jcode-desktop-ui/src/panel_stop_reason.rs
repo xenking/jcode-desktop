@@ -255,6 +255,7 @@ impl Panel {
     }
 
     pub(crate) fn connection_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
+        self.lose_context_action();
         // A reconnect is not evidence that the turn stopped. Keep streaming
         // state and tool rows intact until the runtime confirms an outcome.
         self.status = format!("lost: {}", crate::friendly_error::summarize(reason));

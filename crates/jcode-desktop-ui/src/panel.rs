@@ -130,6 +130,8 @@ mod cache_miss;
 pub(crate) mod cache_timer;
 #[path = "panel_composer.rs"]
 mod composer;
+#[path = "panel_context_usage.rs"]
+mod context_usage;
 #[path = "panel_decision.rs"]
 mod decision;
 #[path = "panel_decision_tests.rs"]
@@ -695,6 +697,7 @@ pub struct Panel {
     pending_save_requests: usize,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
+    context_usage: context_usage::State,
     /// Memory pipeline activity for the session, when something is running.
     /// Display-only: it feeds the composer status line, never the transcript.
     memory_activity: Option<jcode_sdk::api::MemoryActivitySnapshot>,
@@ -1620,6 +1623,7 @@ impl Panel {
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
+            context_usage: context_usage::State::default(),
             memory_activity: None,
             response_stats: response_stats::Tracker::default(),
             cache_telemetry: cache_card::CacheTelemetry::default(),
@@ -4201,6 +4205,7 @@ impl Panel {
                 }
             }
             ApiEvent::Compacted { message, .. } => {
+                self.context_usage.compacting = true;
                 // Older daemons include a multi-line context report in the acknowledgement.
                 let label = if message.lines().count() == 1 {
                     message.as_str()
@@ -4233,8 +4238,10 @@ impl Panel {
                 content,
                 running,
                 post_tokens,
+                trigger,
                 ..
             } => {
+                self.context_usage.compacting = *running;
                 if *running {
                     self.show_compaction_running(content.clone());
                 } else {
@@ -4244,6 +4251,16 @@ impl Panel {
                     // daemon's measured post-compaction size now.
                     if let Some(post_tokens) = post_tokens {
                         self.context_tokens = Some(*post_tokens);
+                    }
+                    if matches!(trigger.as_deref(), None | Some("manual")) {
+                        self.settle_context_action(
+                            context_usage::Action::Compact,
+                            "Context compacted in this session.".into(),
+                            false,
+                            cx,
+                        );
+                    } else {
+                        self.refresh_context_usage(cx);
                     }
                 }
             }
@@ -4257,7 +4274,14 @@ impl Panel {
                 done: true,
                 ..
             } if task_id == "context-compaction" => {
+                self.context_usage.compacting = false;
                 self.fail_compaction(summary);
+                self.settle_context_action(
+                    context_usage::Action::Compact,
+                    summary.clone(),
+                    true,
+                    cx,
+                );
             }
             ApiEvent::BackgroundProgress {
                 task_id,
@@ -4302,6 +4326,7 @@ impl Panel {
                 }
             }
             ApiEvent::TurnDone { .. } => {
+                self.refresh_context_usage(cx);
                 self.reconcile_reconnect_response();
                 self.finish_response();
             }
@@ -4391,6 +4416,7 @@ impl Panel {
                 // current model and must not wipe a still-correct label.
                 if model.is_some() && *model != self.model {
                     self.model = model.clone();
+                    self.refresh_context_usage(cx);
                     self.auth_method = None;
                     self.account_label = None;
                     self.input.update(cx, |input, cx| {

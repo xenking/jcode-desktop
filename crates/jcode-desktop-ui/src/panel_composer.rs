@@ -220,7 +220,7 @@ impl Panel {
                             }))
                     }))
                     .child(self.render_model_control(model_label, effort, cx))
-                    .children(self.render_context_meter()),
+                    .children(self.render_context_meter(cx)),
             )
             .child(
                 div()
@@ -308,6 +308,7 @@ impl Panel {
             .min_w_0()
             .flex()
             .flex_col()
+            .children(self.render_context_usage(cx))
             .children(self.render_swarm_list(window, cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))

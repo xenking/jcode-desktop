@@ -473,6 +473,10 @@ pub enum Command {
         session_id: String,
         reply: async_channel::Sender<Option<jcode_sdk::todo::TodoSnapshot>>,
     },
+    ReadContextBreakdown {
+        target: ContextBreakdownTarget,
+        reply: async_channel::Sender<Option<jcode_sdk::api::ContextBreakdown>>,
+    },
     /// Apply the persistent effects of a follow-up decision.
     AckTodoFollowUp {
         session_id: String,
@@ -516,6 +520,15 @@ pub enum Command {
         session: SessionInfo,
         client: JcodeClient,
         request_id: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub enum ContextBreakdownTarget {
+    Session(String),
+    Draft {
+        model: Option<String>,
+        cwd: Option<String>,
     },
 }
 
@@ -633,6 +646,15 @@ impl Bridge {
     ) -> Option<jcode_sdk::todo::TodoSnapshot> {
         let (reply, result) = async_channel::bounded(1);
         self.send(Command::ReadTodoSnapshot { session_id, reply });
+        result.recv().await.ok().flatten()
+    }
+
+    pub async fn read_context_breakdown(
+        &self,
+        target: ContextBreakdownTarget,
+    ) -> Option<jcode_sdk::api::ContextBreakdown> {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ReadContextBreakdown { target, reply });
         result.recv().await.ok().flatten()
     }
 
@@ -1866,6 +1888,15 @@ fn run_with_transports(
                         let _ = reply.try_send(snapshot);
                     });
             }
+            Command::ReadContextBreakdown { target, reply } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-context".into())
+                    .spawn(move || {
+                        let breakdown = read_context_breakdown(target, &transports);
+                        let _ = reply.try_send(breakdown);
+                    });
+            }
             Command::AckTodoFollowUp {
                 session_id,
                 effects,
@@ -2840,6 +2871,40 @@ fn session_worker(
         initial_client,
         transport::RemoteTransports::default(),
     );
+}
+
+fn read_context_breakdown(
+    target: ContextBreakdownTarget,
+    transports: &transport::RemoteTransports,
+) -> Option<jcode_sdk::api::ContextBreakdown> {
+    let (host, session_id, model, cwd) = match target {
+        ContextBreakdownTarget::Session(session_id) => {
+            let address = remote::SessionAddress::parse(&session_id).ok()?;
+            (address.host, Some(address.session_id), None, None)
+        }
+        ContextBreakdownTarget::Draft { model, cwd } => (None, None, model, cwd),
+    };
+    let client = match host {
+        Some(host) => transports.connect(&host),
+        None => connect("context-view"),
+    }
+    .ok()?;
+    if !client.supports(jcode_sdk::api::CONTEXT_BREAKDOWN_CAPABILITY) {
+        return None;
+    }
+    let frame = client
+        .request(jcode_sdk::api::ApiRequest::SessionContextBreakdown {
+            session_id: session_id.clone(),
+            model,
+            cwd,
+        })
+        .ok()?;
+    match frame.event {
+        ApiEvent::ContextBreakdown { breakdown } if breakdown.session_id == session_id => {
+            Some(breakdown)
+        }
+        _ => None,
+    }
 }
 
 /// Pin or unpin a session that has no live panel. The daemon applies saves to
@@ -3935,15 +4000,28 @@ fn session_worker_with_connector(
                         let rewinds = matches!(&operation, SessionOperation::Rewind(_) | SessionOperation::RewindTranscript(_) | SessionOperation::RewindUndo);
                         let mut result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
-                            SessionOperation::Compact => client.compact(real_id).map(|message| {
-                                let _ = updates.send(Update::Event {
-                                    session_id: session_id.clone(),
-                                    event: ApiEvent::Compacted {
+                            SessionOperation::Compact => {
+                                let event = match client.compact(real_id) {
+                                    Ok(message) => ApiEvent::Compacted {
                                         session_id: session_id.clone(),
                                         message,
                                     },
+                                    Err(error) => ApiEvent::BackgroundProgress {
+                                        session_id: session_id.clone(),
+                                        task_id: "context-compaction".into(),
+                                        label: "Context compaction".into(),
+                                        percent: None,
+                                        summary: format!("Compaction failed: {error}"),
+                                        detail: None,
+                                        done: true,
+                                    },
+                                };
+                                let _ = updates.send(Update::Event {
+                                    session_id: session_id.clone(),
+                                    event,
                                 });
-                            }),
+                                Ok(())
+                            }
                             SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }

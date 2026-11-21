@@ -140,6 +140,13 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                         | "draft-effort-high"
                 )))
         || selector.starts_with("proof-pointer:")
+        || matches!(
+            selector,
+            "panel-context-meter"
+                | "context-usage-close"
+                | "context-usage-compact"
+                | "context-usage-shake"
+        )
         || (background_tasks() && selector.starts_with("task:"))
         || (resume_preview()
             && (selector.starts_with("resume-row:")

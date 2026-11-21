@@ -820,9 +820,7 @@ impl Panel {
         Some((total, turns))
     }
 
-    /// Context window ring plus percentage. Sits in the composer's bottom row
-    /// right after the credential method pill.
-    pub(super) fn render_context_meter(&self) -> Option<gpui::AnyElement> {
+    pub(super) fn render_context_meter(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
         }
@@ -845,9 +843,13 @@ impl Panel {
         // Unknown usage shows only the empty ring, never a placeholder dash.
         let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
         Some(
-            div()
-                .id("panel-context-meter")
+            crate::keyboard::button(div().id("panel-context-meter"))
                 .debug_selector(|| "panel-context-meter".into())
+                .relative()
+                .children(crate::fixture_control_targets::marker(
+                    || "panel-context-meter".into(),
+                    || Some(self.session_id.clone()),
+                ))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -857,17 +859,29 @@ impl Panel {
                 .text_size(px(10.5))
                 .font_family(theme.FONT_MONO)
                 .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| {
-                    cx.new(|_| ContextTooltip {
-                        used,
-                        threshold: window,
-                        window: capacity,
-                        percent,
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.chip_background()))
+                .when(self.context_usage.is_open(), |el| {
+                    el.bg(theme.chip_active_background())
+                })
+                .when(!self.context_usage.is_open(), |el| {
+                    el.tooltip(move |_, cx| {
+                        cx.new(|_| ContextTooltip {
+                            used,
+                            threshold: window,
+                            window: capacity,
+                            percent,
+                        })
+                        .into()
                     })
-                    .into()
                 })
                 .child(context_ring(percent))
                 .children(label)
+                .on_click(cx.listener(|panel, _, _, cx| {
+                    panel.toggle_context_usage(cx);
+                    cx.stop_propagation();
+                }))
                 .into_any_element(),
         )
     }
@@ -1080,6 +1094,122 @@ mod tests {
         // Unreported windows are never fabricated.
         accounts[1].limits[0].usage_percent = f32::NAN;
         assert_eq!(quota_chips(&accounts).len(), 1);
+    }
+
+    #[gpui::test]
+    fn context_meter_opens_read_only_usage_and_can_reopen(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("usage-session".into(), None, None, bridge, cx));
+        vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-sonnet-4-6".into());
+            panel.provider = Some("anthropic".into());
+            panel.apply(
+                &ApiEvent::ContextOccupancy {
+                    session_id: "usage-session".into(),
+                    prompt_tokens: 41_000,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let item_count = panel.read_with(vcx, |panel, _| panel.items.len());
+        assert!(vcx.debug_bounds("context-usage").is_none());
+        let meter = vcx.debug_bounds("panel-context-meter").unwrap();
+        vcx.simulate_click(meter.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage").is_some());
+        assert!(vcx.debug_bounds("context-usage-compact").is_some());
+        assert!(vcx.debug_bounds("context-usage-shake").is_some());
+        let Ok(Command::ReadContextBreakdown { target, reply }) = commands.try_recv() else {
+            panic!("Context Usage did not inspect the session");
+        };
+        assert!(
+            matches!(target, crate::harness::ContextBreakdownTarget::Session(id) if id == "usage-session")
+        );
+        reply
+            .try_send(Some(jcode_sdk::api::ContextBreakdown {
+                session_id: Some("usage-session".into()),
+                model: Some("claude-sonnet-4-6".into()),
+                total_tokens: Some(41_000),
+                limit_tokens: Some(200_000),
+                estimated: true,
+                categories: vec![jcode_sdk::api::ContextBreakdownCategory {
+                    kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
+                    tokens: Some(41_000),
+                }],
+            }))
+            .unwrap();
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-breakdown").is_some());
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.items.len()),
+            item_count
+        );
+        assert!(commands.try_recv().is_err());
+        let close = vcx.debug_bounds("context-usage-close").unwrap();
+        let viewport = vcx.update(|window, _| window.viewport_size());
+        assert!(close.right() <= viewport.width);
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage").is_none());
+        let meter = vcx.debug_bounds("panel-context-meter").unwrap();
+        vcx.simulate_click(meter.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage").is_some());
+        assert!(vcx.debug_bounds("context-usage-breakdown").is_none());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::ReadContextBreakdown { .. })
+        ));
+
+        let compact = vcx.debug_bounds("context-usage-compact").unwrap();
+        vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SessionOperation { session_id, operation: SessionOperation::Compact })
+                if session_id == "usage-session"
+        ));
+        let compact = vcx.debug_bounds("context-usage-compact").unwrap();
+        vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "a pending action cannot run twice"
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::Compacted {
+                    session_id: "usage-session".into(),
+                    message: "Context compaction queued.".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-result").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::CompactionDivider {
+                    session_id: "usage-session".into(),
+                    content: "compacted · 41k→10k".into(),
+                    running: false,
+                    method: Some("summary".into()),
+                    trigger: Some("manual".into()),
+                    pre_tokens: Some(41_000),
+                    post_tokens: Some(10_000),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-result").is_some());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::ReadContextBreakdown { .. })
+        ));
     }
 
     #[gpui::test]
