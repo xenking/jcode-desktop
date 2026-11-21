@@ -1942,7 +1942,10 @@ fn create_remote_session(
         let working_dir = working_dir.or_else(|| {
             // The managed bootstrap creates this persistent workspace. Naming
             // it explicitly also lets older cloud bridges report the directory.
-            managed.then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
+            // A self-hosted machine has no such folder and starts in its home.
+            managed
+                .then(crate::managed_cloud::default_workspace)
+                .flatten()
         });
         let mut session = client
             .create_session(working_dir.clone())

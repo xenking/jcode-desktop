@@ -63,6 +63,20 @@ sequenceDiagram
   entitlement denial, cross-account isolation, allowance exhaustion, host-key
   pinning, failed boots, and key revocation.
 
+## Self-hosted control plane
+
+When `JCODE_API_BASE` points at a self-hosted backend (xenking/jcode-cloud), the
+Cloud destination reaches a machine the account registered there, not an EC2
+host. The connect reply carries `self_hosted: true`. Desktop then skips the
+model and login sync, because that machine's daemon is shared with other
+clients and keeps its own logins, and it starts sessions in the login's home
+directory, because the bootstrap workspace does not exist there. Key
+authorization, host-key pinning and the SSH transport are unchanged.
+
+Checked on 2026-11-21 against ai-core:
+`justrust test -p jcode-desktop-harness managed_cloud_live_session_answers_a_prompt -- --ignored --nocapture`
+created a session in 0.6 s and received the reply in 3.5 s.
+
 ## Known limits
 
 - One region (us-east-1) and one instance type (m7i.large).

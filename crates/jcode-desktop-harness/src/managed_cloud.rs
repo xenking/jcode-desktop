@@ -36,6 +36,24 @@ pub struct ConnectReply {
     pub user: Option<String>,
     #[serde(default)]
     pub host_keys: Vec<String>,
+    /// Set by a self-hosted control plane, whose machines the account
+    /// registered itself: they keep their own logins and have no bootstrap
+    /// workspace.
+    #[serde(default)]
+    pub self_hosted: bool,
+}
+
+/// Whether the machine behind [`HOST`] was last reported as self-hosted.
+static SELF_HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn record_host_kind(reply: &ConnectReply) {
+    SELF_HOSTED.store(reply.self_hosted, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where a new Cloud session starts when the user named no folder. `None`
+/// leaves the choice to the machine, which uses the login's home directory.
+pub fn default_workspace() -> Option<String> {
+    (!SELF_HOSTED.load(std::sync::atomic::Ordering::Relaxed)).then(|| DEFAULT_WORKSPACE.to_owned())
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +260,7 @@ pub(crate) fn connect_with_sync_status(
         }
         std::thread::sleep(POLL_INTERVAL);
     };
+    record_host_kind(&reply);
     let (address, port, user, host_keys) = validated_target(&reply)?;
     write_private(
         &key.known_hosts(),
@@ -263,9 +282,11 @@ pub(crate) fn connect_with_sync_status(
     };
     // Mirror this computer's default model and logins before the daemon
     // serves the new session. A failure is shown but never blocks the session.
+    // A self-hosted machine is the user's own: its daemon also serves other
+    // clients, so its provider defaults and logins are left alone.
     let snapshot = crate::managed_cloud_parity::Snapshot::collect();
     let mut synchronized = true;
-    if !snapshot.is_empty() {
+    if !reply.self_hosted && !snapshot.is_empty() {
         progress("Syncing your models and logins…");
         if let Err(message) = sync(&options, &snapshot) {
             synchronized = false;
@@ -366,6 +387,16 @@ mod tests {
         }
         drop(first);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn only_a_managed_machine_starts_in_the_bootstrap_workspace() {
+        let managed = reply(serde_json::json!({"ready": true}));
+        let own = reply(serde_json::json!({"ready": true, "self_hosted": true}));
+        record_host_kind(&own);
+        assert_eq!(default_workspace(), None);
+        record_host_kind(&managed);
+        assert_eq!(default_workspace().as_deref(), Some(DEFAULT_WORKSPACE));
     }
 
     #[test]
