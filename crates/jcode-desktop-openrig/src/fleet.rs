@@ -414,6 +414,47 @@ mod tests {
         );
     }
 
+    /// Contract check against a running daemon:
+    /// `OPENRIG_LIVE_BASE=http://127.0.0.1:7433 cargo test -p jcode-desktop-openrig live_daemon -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a running OpenRig daemon"]
+    fn live_daemon_links_jcode_seats_to_sessions() {
+        let base = std::env::var("OPENRIG_LIVE_BASE").expect("set OPENRIG_LIVE_BASE");
+        let fetch = |route: &str| get(&base, route).ok();
+        let (health, hosts, rigs) = (
+            fetch("/healthz"),
+            fetch("/api/hosts"),
+            fetch("/api/rigs/summary"),
+        );
+        let mut errors = Vec::new();
+        let fleet = Fleet::fetch(
+            &base,
+            health.as_ref(),
+            hosts.as_ref(),
+            rigs.as_ref(),
+            &mut errors,
+        );
+        let mut linked = 0;
+        for host in &fleet.hosts {
+            for rig in host.rigs.iter().flatten() {
+                for seat in rig.pods.iter().flatten().flat_map(|pod| &pod.seats) {
+                    println!(
+                        "{} {:?} {} {} {:?} session={:?}",
+                        host.name,
+                        host.target,
+                        rig.name,
+                        seat.logical_id,
+                        seat.status,
+                        seat.jcode_session_id
+                    );
+                    linked += usize::from(seat.jcode_session_id.is_some());
+                }
+            }
+        }
+        println!("errors={errors:?}");
+        assert!(linked > 0, "no jcode seat reported a native session");
+    }
+
     #[test]
     fn an_unavailable_inventory_is_not_an_empty_inventory() {
         let health = json!({"selfHostId":"remote-daemon"});
