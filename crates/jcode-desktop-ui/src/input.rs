@@ -279,6 +279,7 @@ pub struct PromptInput {
     editor_resize: resize::EditorResize,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>, bool)>,
     submission_enabled: bool,
+    host_handles_submission: bool,
     empty_submit: bool,
     pending_session: bool,
     spacious: bool,
@@ -1232,6 +1233,7 @@ impl PromptInput {
             editor_resize: Default::default(),
             revealed_caret: None,
             submission_enabled: true,
+            host_handles_submission: false,
             empty_submit: false,
             pending_session: false,
             spacious: false,
@@ -1753,6 +1755,15 @@ impl PromptInput {
     pub(crate) fn with_compact_padding(mut self) -> Self {
         self.compact_padding = true;
         self
+    }
+
+    pub(crate) fn embedded_editor(cx: &mut Context<Self>, placeholder: &'static str) -> Self {
+        let mut editor = Self::new(cx, placeholder, |_, _, _, _| {})
+            .without_command_completion()
+            .without_chrome()
+            .with_compact_padding();
+        editor.host_handles_submission = true;
+        editor
     }
 
     /// Plain metadata editors should not interpret titles as slash commands.
@@ -4745,8 +4756,10 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
-            .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(Self::queue))
+            .when(!self.host_handles_submission, |el| {
+                el.on_action(cx.listener(Self::submit))
+                    .on_action(cx.listener(Self::queue))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

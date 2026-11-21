@@ -7134,32 +7134,12 @@ impl Render for Panel {
             .capture_action(cx.listener(|this, _: &crate::input::Submit, window, cx| {
                 if this.queue_editor_focused(window, cx) {
                     this.save_queued_prompt_edit(window, cx);
-                    cx.stop_propagation();
-                } else if this.ask_editor_focused(window, cx) {
-                    if let Some(card) = this.ask_card.as_mut() {
-                        card.switch_tab(card.cursor_question + 1);
-                    }
-                    window.focus(&this.focus_handle, cx);
-                    cx.notify();
-                    cx.stop_propagation();
-                } else {
+                } else if !this.handle_ask_editor_submit(window, cx) {
                     cx.propagate();
+                    return;
                 }
+                cx.stop_propagation();
             }))
-            .capture_action(
-                cx.listener(|this, _: &crate::input::AcceptCompletion, window, cx| {
-                    if this.ask_editor_focused(window, cx) {
-                        if let Some(card) = this.ask_card.as_mut() {
-                            card.switch_tab(card.cursor_question + 1);
-                        }
-                        window.focus(&this.focus_handle, cx);
-                        cx.notify();
-                        cx.stop_propagation();
-                    } else {
-                        cx.propagate();
-                    }
-                }),
-            )
             // Files dragged in from the file manager: images attach like a
             // paste, other files are referenced by path in the prompt.
             .when(!self.transcript_only && !self.demo, |el| {
