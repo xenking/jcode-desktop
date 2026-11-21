@@ -1940,6 +1940,60 @@ fn daemon_row_edit_opens_in_place_and_leaves_the_composer_alone(cx: &mut gpui::T
 }
 
 #[gpui::test]
+fn after_yield_edit_types_space_without_sending(cx: &mut gpui::TestAppContext) {
+    use jcode_sdk::api::QueuedPromptMode::AfterYield;
+    cx.update(crate::bind_workspace_keys);
+    let (panel, vcx, commands) = queue_edit_panel(
+        cx,
+        vec![editing_test_prompt("p1", "Проверь", AfterYield)],
+    );
+    let click_edit = |vcx: &mut gpui::VisualTestContext| {
+        let edit = vcx.debug_bounds("remote-queue-edit-0").expect("Edit");
+        vcx.simulate_click(edit.center(), Default::default());
+        vcx.run_until_parked();
+    };
+
+    click_edit(vcx);
+    vcx.simulate_keystrokes("space");
+    vcx.simulate_input("очередь");
+    let input = edit_input(&panel, vcx);
+    assert_eq!(
+        input.read_with(vcx, |input, _| input.content.to_string()),
+        "Проверь очередь",
+    );
+    assert!(matches!(commands.try_recv(), Ok(Command::SetQueuedPromptEditing {
+        prompt_id, editing: true, ..
+    }) if prompt_id == "p1"));
+    assert!(commands.try_recv().is_err(), "typing must not send or save");
+
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(matches!(commands.try_recv(), Ok(Command::SetQueuedPromptEditing {
+        prompt_id, editing: false, ..
+    }) if prompt_id == "p1"));
+    vcx.simulate_input("Несохранённый черновик");
+
+    click_edit(vcx);
+    vcx.simulate_keystrokes("space");
+    vcx.simulate_input("текст");
+    vcx.simulate_keystrokes("shift-space");
+    vcx.simulate_input("ещё");
+    assert!(matches!(commands.try_recv(), Ok(Command::SetQueuedPromptEditing {
+        prompt_id, editing: true, ..
+    }) if prompt_id == "p1"));
+    assert!(commands.try_recv().is_err(), "typing must not send or save");
+    vcx.simulate_keystrokes("enter");
+    assert!(matches!(commands.try_recv(), Ok(Command::EditQueuedPrompt {
+        prompt_id, content, ..
+    }) if prompt_id == "p1" && content == "Проверь текст ещё"));
+    assert!(commands.try_recv().is_err(), "Enter must only save in place");
+    panel.read_with(vcx, |panel, cx| {
+        assert_eq!(panel.input.read(cx).content, "Несохранённый черновик");
+        assert_eq!(panel.prompt_queue.remote[0].mode, AfterYield);
+    });
+}
+
+#[gpui::test]
 fn up_in_an_empty_composer_edits_the_newest_row_in_place(cx: &mut gpui::TestAppContext) {
     use jcode_sdk::api::QueuedPromptMode;
     let (panel, vcx, commands) = queue_edit_panel(
