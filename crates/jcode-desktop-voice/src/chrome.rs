@@ -152,7 +152,7 @@ pub fn voice_shortcut_face(color: gpui::Hsla) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .child(voice_shortcut_keycap(color, &Theme::global()))
+        .child(voice_shortcut_keycap(color, Theme::global()))
 }
 
 /// The voice button's two faces, alternating on their own clock, so a

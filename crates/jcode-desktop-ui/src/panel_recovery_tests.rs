@@ -45,6 +45,97 @@ fn error(message: &str) -> ApiEvent {
     }
 }
 
+#[gpui::test]
+fn tool_output_timeout_does_not_create_a_recovery_card(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("tool-test".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.apply(&ApiEvent::ToolStart { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into() }, cx);
+        panel.apply(&ApiEvent::ToolDone { session_id: "tool-test".into(), call_id: "call".into(), name: "bg".into(), output: "grep: previous request timed out".into(), error: None }, cx);
+        assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { output, error: None, done: true, .. } if output.contains("timed out"))));
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::Stopped(_))));
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("tool-inline").is_some());
+    assert!(vcx.debug_bounds("recovery-error").is_none());
+}
+
+#[gpui::test]
+fn local_error_text_is_not_reclassified_as_a_request_failure(cx: &mut gpui::TestAppContext) {
+    let message = "Could not save a file named timed out.txt";
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("local-error".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.items.push(Item::Error(message.into()));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-error").is_some());
+    let segments = super::super::text_document::segments_with_display(
+        &Item::Error(message.into()),
+        0,
+        expandable::Open::default(),
+        &crate::config::display(),
+    );
+    assert!(segments.iter().any(|(_, text)| text.as_ref() == message));
+}
+
+#[gpui::test]
+fn structured_runtime_failure_still_gets_friendly_summary(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("runtime-error".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.apply(&error("provider request timed out"), cx);
+        let item = panel
+            .items
+            .iter()
+            .find(|item| matches!(item, Item::RuntimeError { .. }))
+            .unwrap();
+        assert!(matches!(
+            item,
+            Item::RuntimeError {
+                code: jcode_sdk::api::ErrorCode::Internal,
+                ..
+            }
+        ));
+        let segments = super::super::text_document::segments_with_display(
+            item,
+            0,
+            expandable::Open::default(),
+            &crate::config::display(),
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|(_, text)| text.as_ref() == "The request timed out.")
+        );
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-error").is_some());
+}
+
+#[gpui::test]
+fn failed_tool_stays_in_its_row(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("tool-failure".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.apply(&ApiEvent::ToolDone { session_id: "tool-failure".into(), call_id: "call".into(), name: "bash".into(), output: "output".into(), error: Some("command timed out".into()) }, cx);
+        assert!(matches!(panel.items.last(), Some(Item::Tool { error: Some(error), .. }) if error == "command timed out"));
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::RuntimeError { .. } | Item::Stopped(_))));
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("tool-inline").is_some());
+    assert!(vcx.debug_bounds("recovery-error").is_none());
+}
+
 fn failed_turn(panel: &mut Panel, message: &str, cx: &mut Context<Panel>) {
     panel.apply(
         &ApiEvent::TurnStopped {
@@ -82,6 +173,7 @@ fn recovery_resume_click_sends_one_fresh_continuation_and_preserves_draft(
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new("resume-test".into(), None, None, bridge, cx));
         panel.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
             panel
                 .items
                 .push(Item::User("Original request must not be replayed".into()));

@@ -1,4 +1,4 @@
-//! A window-sized image lightbox. The transcript stays mounted behind it, so
+//! An image lightbox. The transcript stays mounted behind it, so
 //! closing the preview preserves the user's scroll position and draft.
 use super::*;
 
@@ -12,6 +12,24 @@ pub(super) fn fixture_image() -> TranscriptImage {
 }
 
 impl Panel {
+    pub(super) fn request_history_thumbnail(&self, image: &TranscriptImage, retry: bool) {
+        let Some(key) = image.data.strip_prefix("jcode-lazy:") else {
+            return;
+        };
+        let mut requests = self.history_image_requests.borrow_mut();
+        if requests
+            .get(key)
+            .is_some_and(|in_flight| *in_flight || !retry)
+        {
+            return;
+        }
+        requests.insert(key.to_owned(), true);
+        self.bridge.send(Command::GetHistoryImage {
+            session_id: self.session_id.clone(),
+            key: key.to_owned(),
+        });
+    }
+
     pub(super) fn media_preview_handler(
         &self,
         cx: &Context<Self>,
@@ -48,8 +66,14 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         if image.preview.is_none() {
+            if let Some(key) = image.data.strip_prefix("jcode-lazy:") {
+                self.pending_history_image = Some(key.to_string());
+                self.request_history_thumbnail(&image, true);
+            }
             return;
         }
+        self.pending_history_image = None;
+        self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
         self.image_preview = Some(image);
         self.image_preview_zoom = 1.0;
         self.image_preview_scroll = gpui::ScrollHandle::new();
@@ -58,7 +82,75 @@ impl Panel {
         cx.notify();
     }
 
+    pub(crate) fn load_history_image(
+        &mut self,
+        key: String,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if key == crate::harness::SESSION_IMAGE_LIST_KEY {
+            self.session_image_gallery.receive(result);
+            cx.notify();
+            return;
+        }
+        if self.history_image_requests.borrow().get(&key) != Some(&true) {
+            return;
+        }
+        let open = self.pending_history_image.as_deref() == Some(key.as_str());
+        if open {
+            self.pending_history_image = None;
+        }
+        let data = match result {
+            Ok(data) => data,
+            Err(error) => {
+                self.history_image_requests.borrow_mut().insert(key, false);
+                eprintln!("jcode desktop: image load failed: {error}");
+                return;
+            }
+        };
+        self.history_image_requests.borrow_mut().remove(&key);
+        let marker = format!("jcode-lazy:{key}");
+        let mut selected = None;
+        for item in self.items.iter_mut() {
+            if let Item::Image(image) = item
+                && image.data == marker
+            {
+                image.data = data.clone();
+                if key.starts_with("img_") {
+                    let id_marker = format!("[#{key}]");
+                    let label = image.label.get_or_insert_with(String::new);
+                    if !label.contains(&id_marker) {
+                        if !label.is_empty() {
+                            label.push(' ');
+                        }
+                        label.push_str(&id_marker);
+                    }
+                }
+                image.preview = TranscriptImage::new(
+                    image.media_type.clone(),
+                    data.clone(),
+                    image.label.clone(),
+                )
+                .preview;
+                if selected.is_none() {
+                    selected = Some(image.clone());
+                }
+            }
+        }
+        let selected = selected
+            .or_else(|| self.session_image_gallery.loaded_image(&key, &data));
+        if let Some(image) = selected.filter(|image| open && image.preview.is_some()) {
+            self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
+            self.image_preview = Some(image);
+            self.image_preview_zoom = 1.0;
+            self.image_preview_scroll = gpui::ScrollHandle::new();
+            self.image_preview_drag = None;
+        }
+        cx.notify();
+    }
+
     pub(super) fn close_image_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_history_image = None;
         self.image_preview = None;
         self.image_preview_drag = None;
         self.focus_input(window, cx);
@@ -106,22 +198,25 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let image = self.image_preview.as_ref()?;
         let preview = image.preview.clone()?;
-        let overlay = div()
-                .id("image-preview")
-                .debug_selector(|| "image-preview".into())
-                .w(window.viewport_size().width)
-                .h(window.viewport_size().height)
+        let dialog_size =
+            crate::image_modal::dialog_size(window.viewport_size(), self.image_preview_dimensions);
+        let dialog = div()
+                .id("image-preview-dialog")
+                .debug_selector(|| "image-preview-dialog".into())
+                .w(dialog_size.width)
+                .h(dialog_size.height)
                 .flex()
                 .flex_col()
                 .gap_3()
                 .p_4()
                 .bg(Theme::global().PANEL_BG)
+                .rounded_lg()
+                .border_1()
+                .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                .shadow_lg()
                 .occlude()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_image_preview(window, cx);
-                    cx.stop_propagation();
-                }))
+                .on_click(|_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .on_pinch(|_, _, cx| cx.stop_propagation())
                 .child(
@@ -284,6 +379,22 @@ impl Panel {
                         .child("Pinch or Ctrl+scroll to zoom · Drag or scroll to pan · Click image to close"),
                 )
                 .into_any_element();
+        let overlay = div()
+            .id("image-preview")
+            .debug_selector(|| "image-preview".into())
+            .w(window.viewport_size().width)
+            .h(window.viewport_size().height)
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::black().opacity(0.6))
+            .occlude()
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_image_preview(window, cx);
+                cx.stop_propagation();
+            }))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(dialog);
         // Defer beyond panel clipping and anchor in window coordinates so the
         // viewer covers the sidebar and neighboring panels as well.
         Some(
@@ -303,10 +414,40 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn image_preview_is_centered_and_capped(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "modal-geometry".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(800.), px(600.)));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_image_preview(fixture_image(), window, cx)
+            })
+        });
+        vcx.run_until_parked();
+        let modal = vcx
+            .debug_bounds("image-preview-dialog")
+            .expect("modal dialog");
+        assert!(modal.size.width <= px(640.) && modal.size.height <= px(480.));
+        assert!((modal.center().x - px(400.)).abs() < px(1.));
+        assert!((modal.center().y - px(300.)).abs() < px(1.));
+        vcx.simulate_click(gpui::point(px(5.), px(5.)), Default::default());
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+    }
+
+    #[gpui::test]
     fn inline_image_panel_hover_gestures_preserve_composer_and_route_scroll(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -321,7 +462,11 @@ mod tests {
                 *panel.items = (0..40)
                     .map(|i| Item::User(format!("earlier message {i}")))
                     .collect();
-                panel.items.push(Item::Image(fixture_image()));
+                let mut image = fixture_image();
+                image.source = jcode_sdk::RenderedImageSource::ToolResult {
+                    tool_name: "read".into(),
+                };
+                panel.items.push(Item::Image(image));
                 panel
                     .input
                     .update(cx, |input, cx| input.set_content("draft".into(), cx));
@@ -471,7 +616,7 @@ mod tests {
 
     #[gpui::test]
     fn image_click_expands_inline_and_preserves_draft(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -483,7 +628,11 @@ mod tests {
             .unwrap();
         vcx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                *panel.items = vec![Item::Image(fixture_image())];
+                let mut image = fixture_image();
+                image.source = jcode_sdk::RenderedImageSource::ToolResult {
+                    tool_name: "read".into(),
+                };
+                *panel.items = vec![Item::Image(image)];
                 panel
                     .input
                     .update(cx, |input, cx| input.set_content("draft".into(), cx));
@@ -517,7 +666,7 @@ mod tests {
 
     #[gpui::test]
     fn image_preview_pinch_wheel_drag_and_click_to_close(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);

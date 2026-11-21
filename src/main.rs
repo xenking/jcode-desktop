@@ -226,7 +226,8 @@ fn titlebar_options() -> TitlebarOptions {
         appears_transparent: true,
         traffic_light_position: Some(Point {
             x: px(16.0),
-            y: px(16.0),
+            // AppKit's 14pt buttons center at 20pt, like the workspace row.
+            y: px(13.0),
         }),
     }
 }
@@ -268,8 +269,8 @@ fn restore_window(
     current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    if let Some(window) = *current_window.borrow() {
-        if window
+    if let Some(window) = *current_window.borrow()
+        && window
             .update(cx, |_, window, cx| {
                 window.activate_window();
                 cx.activate(true);
@@ -278,7 +279,6 @@ fn restore_window(
         {
             return Ok(());
         }
-    }
 
     let bounds = initial_window_bounds(
         LaunchMode::from_args(env::args_os()).initial_window_size(),
@@ -396,18 +396,17 @@ fn dispatch_instance_command(
     cx: &mut App,
 ) -> anyhow::Result<()> {
     if let InstanceCommand::OpenWindow(launch) = command {
-        return open_shared_window(manager, launch, cx);
+        return open_shared_window(manager, launch, true, true, cx).map(|_| ());
     }
     // Releasing a global chord must not pull focus back from another app or
     // reopen a closed surface. Suspending the UI cancels its recording.
     if command != InstanceCommand::VoiceRelease {
         restore_window(manager, current_window, cx)?;
     }
-    if let Some(action) = voice_action(command.clone()) {
-        if let Some(window) = *current_window.borrow() {
+    if let Some(action) = voice_action(command.clone())
+        && let Some(window) = *current_window.borrow() {
             dispatch_ui_action(window, action, cx)?;
         }
-    }
     Ok(())
 }
 
@@ -459,8 +458,10 @@ fn dispatch_global_voice(
 fn open_shared_window(
     manager: &Rc<RefCell<ReloadManager>>,
     launch: jcode_desktop_api::WindowLaunch,
+    show: bool,
+    focus: bool,
     cx: &mut App,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let bounds = initial_window_bounds(LaunchMode::SinglePanel.initial_window_size(), cx);
     let window = cx.open_window(
         WindowOptions {
@@ -468,6 +469,8 @@ fn open_shared_window(
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(titlebar_options()),
             app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            show,
+            focus,
             ..Default::default()
         },
         |_, cx| cx.new(|_| HostFallback),
@@ -479,9 +482,11 @@ fn open_shared_window(
         let _ = handle.update(cx, |_, window, _| window.remove_window());
         return Err(error);
     }
-    let _ = handle.update(cx, |_, window, _| window.activate_window());
-    cx.activate(true);
-    Ok(())
+    if focus {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        cx.activate(true);
+    }
+    Ok(handle.window_id().as_u64())
 }
 
 /// The request a single-panel launch forwards to the shared host.
@@ -553,6 +558,11 @@ fn detach_console() {
 #[cfg(not(windows))]
 fn detach_console() {}
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn jcode_ime_log_start();
+}
+
 fn main() {
     attach_parent_console();
     if let Some(code) = jcode_desktop_ui::run_restart_worker_if_requested() {
@@ -582,6 +592,9 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+    #[cfg(target_os = "macos")]
+    // The host owns these hooks for the entire process, including UI reloads.
+    unsafe { jcode_ime_log_start() };
     // Single-panel windows share one host unless `--new-process` isolates them.
     let shared_single_panel = LaunchMode::shared_single_panel(env::args_os());
     let instance_name =
@@ -620,6 +633,10 @@ fn main() {
             Instance::Secondary => return,
         };
     let instance_socket = Rc::new(instance_socket);
+    // Isolated acceptance instances must never activate or expose a window on
+    // the user's desktop. Only the offline fixture may request this mode.
+    let control_fixture = env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
+        && env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1");
     let plugin_path = host::reload_config::plugin_path();
     let app = application().with_quit_mode(launch_quit_mode(
         launch_mode,
@@ -631,17 +648,17 @@ fn main() {
     // does through the instance socket. GPUI only fires this when no window is
     // visible, which also covers a window hidden by the yellow minimize button.
     type ReopenState = Rc<RefCell<Option<gpui::AnyWindowHandle>>>;
+    #[allow(clippy::type_complexity)]
     let reopen_state: Rc<RefCell<Option<(Rc<RefCell<ReloadManager>>, ReopenState)>>> =
         Rc::new(RefCell::new(None));
     app.on_reopen({
         let reopen_state = reopen_state.clone();
         move |cx| {
             let state = reopen_state.borrow().clone();
-            if let Some((manager, current_window)) = state {
-                if let Err(error) = restore_window(&manager, &current_window, cx) {
+            if let Some((manager, current_window)) = state
+                && let Err(error) = restore_window(&manager, &current_window, cx) {
                     eprintln!("failed to reopen desktop window from the Dock: {error:#}");
                 }
-            }
         }
     });
     app.run(move |cx: &mut App| {
@@ -659,10 +676,22 @@ fn main() {
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
-        let bounds = initial_window_bounds(launch_mode.initial_window_size(), cx);
+        let (width, height) = launch_mode.initial_window_size();
+        let width = if control_fixture {
+            env::var("JCODE_DESKTOP_CONTROL_WINDOW_WIDTH")
+                .ok()
+                .and_then(|width| width.parse::<u32>().ok())
+                .filter(|width| (360..=1600).contains(width))
+                .unwrap_or(width)
+        } else {
+            width
+        };
+        let bounds = initial_window_bounds((width, height), cx);
         let window = cx
             .open_window(
                 WindowOptions {
+                    focus: !control_fixture,
+                    show: !control_fixture,
                     app_id: Some(jcode_desktop_ui::APP_ID.into()),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(titlebar_options()),
@@ -690,6 +719,13 @@ fn main() {
             // register their own launch arguments under their window ID.
             jcode_desktop_api::WindowLaunches::install(cx);
         }
+        jcode_desktop_api::WindowLaunches::set_background_opener(cx, {
+            let manager = manager.clone();
+            move |launch, cx| {
+                open_shared_window(&manager, launch, !control_fixture, false, cx)
+                    .map_err(|error| error.to_string())
+            }
+        });
         cx.on_window_closed({
             let manager = manager.clone();
             move |cx, closed| {
@@ -708,8 +744,8 @@ fn main() {
         // Only the main desktop owns the global shortcut. Auxiliary workspace
         // instances must not steal it or report a spurious registration conflict.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if instance_name.is_none() {
-            if let Err(error) = host::global_shortcut::install(cx, {
+        if instance_name.is_none() && !control_fixture
+            && let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |event, cx| {
@@ -738,7 +774,6 @@ fn main() {
             }) {
                 eprintln!("could not register global desktop shortcuts: {error:#}");
             }
-        }
         // A shared single-panel host closes windows outright, like separate
         // processes did. Suspending would keep an invisible chat alive.
         if !shared_single_panel {
@@ -860,7 +895,9 @@ fn main() {
                 );
             }
         }
-        cx.activate(true);
+        if !control_fixture {
+            cx.activate(true);
+        }
     });
 }
 

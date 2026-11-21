@@ -168,6 +168,7 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
         w.remotes.default_host = Some("elsewhere".into())
     });
     click(vcx, "sidebar-project-new-0");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.main)
     );
@@ -182,6 +183,7 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
             .unwrap()
     });
     click(vcx, &format!("sidebar-checkout-new-{search_header}"));
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.search)
     );
@@ -205,6 +207,7 @@ fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppCont
     );
     workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
     click(vcx, "sidebar-new-thread");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -222,6 +225,7 @@ fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
     helper.swarm_status = Some("working".into());
     let mut isolated = session("isolated", &f.search);
     isolated.parent_session_id = Some("lead".into());
+    isolated.swarm_status = Some("running".into());
     let (workspace, vcx, _) = setup(cx, vec![lead, helper, isolated]);
     let ids = workspace.read_with(vcx, |w, _| {
         w.sidebar_session_layout
@@ -235,6 +239,14 @@ fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
         "the coordinator counts its same-checkout agent"
     );
     assert!(!text(vcx, "sidebar-agents-1"));
+    assert!(
+        text(vcx, "sidebar-worker-0-0"),
+        "live worktree worker must appear under its coordinator"
+    );
+    assert!(
+        text(vcx, "sidebar-worker-0-1"),
+        "both live workers must remain visible"
+    );
     assert!(
         text(vcx, "sidebar-checkout-1"),
         "the worktree agent sits under its own branch"
@@ -303,6 +315,13 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     let (workspace, vcx, commands) = setup(cx, vec![session("main-chat", &directory)]);
     click(vcx, "sidebar-project-worktree-0");
     vcx.simulate_keystrokes("f e a t u r e - a enter");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "a new worktree opens a local draft"
+    );
+    vcx.simulate_input("Inspect the new branch");
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     let created = match commands.try_recv().unwrap() {
         Command::CreateSession {

@@ -122,28 +122,194 @@ pub(super) fn current_spec<'a>(
         .map(String::as_str)
 }
 
-/// Order routes by usage, then recommendation, then spec.
+/// How one model id sorts inside its provider group.
+///
+/// Splits a catalog id such as `anthropic/claude-opus-5.5:batch` into the
+/// vendor namespace, the family (`claude-opus`), the version (`[5, 5]`), and
+/// whether it is a `~...-latest` alias or a `:tag` variant of a base model.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ModelKey {
+    vendor: String,
+    family: String,
+    version: Vec<u64>,
+    alias: bool,
+    variant: String,
+}
+
+fn model_key(raw: &str) -> ModelKey {
+    let bare = jcode_provider_core::explicit_model_provider_prefix(raw)
+        .map_or(raw, |(_, _, bare)| bare)
+        .to_ascii_lowercase();
+    let (bare, mut alias) = match bare.strip_prefix('~') {
+        Some(rest) => (rest.to_string(), true),
+        None => (bare, false),
+    };
+    let (vendor, name) = bare.rsplit_once('/').unwrap_or(("", bare.as_str()));
+    let vendor = vendor.trim_start_matches('~').to_string();
+    let mut variant = String::new();
+    let mut name = name.to_string();
+    if let Some(index) = name.find('[') {
+        variant = name.split_off(index);
+    }
+    if let Some((head, tag)) = name.split_once(':') {
+        variant = format!("{tag}{variant}");
+        name = head.to_string();
+    }
+    let mut family = Vec::new();
+    let mut version = Vec::new();
+    for token in name.split(['-', '_']).filter(|token| !token.is_empty()) {
+        let numeric = token.strip_prefix('v').unwrap_or(token);
+        if token == "latest" {
+            alias = true;
+        } else if !numeric.is_empty()
+            && numeric.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && numeric.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            // Date stamps (`20251001`) tie-break nothing a reader can see.
+            version.extend(
+                numeric
+                    .split('.')
+                    .filter(|part| (1..6).contains(&part.len()))
+                    .filter_map(|part| part.parse::<u64>().ok()),
+            );
+        } else {
+            family.push(token);
+        }
+    }
+    ModelKey {
+        vendor,
+        family: family.join("-"),
+        version,
+        alias,
+        variant,
+    }
+}
+
+impl ModelKey {
+    /// A base release, not an alias or a `:batch`-style variant. Collapsed
+    /// groups lead with these.
+    fn primary(&self) -> bool {
+        !self.alias && self.variant.is_empty()
+    }
+}
+
+fn model_raw_name<'a>(spec: &'a str, details: &'a HashMap<String, ModelDetails>) -> &'a str {
+    details
+        .get(spec)
+        .map_or(spec, |detail| detail.model.as_str())
+}
+
+/// Whether the collapsed picker should lead with this route.
+pub(super) fn is_primary(spec: &str, details: &HashMap<String, ModelDetails>) -> bool {
+    model_key(model_raw_name(spec, details)).primary()
+}
+
+type GroupSortKey = (bool, std::cmp::Reverse<(u64, u64)>, String, u8, String);
+
+/// Usage weight of one route: tracked turns, then how recently it ran.
+fn usage_weight(model: &str, details: &HashMap<String, ModelDetails>) -> (u64, u64) {
+    details
+        .get(model)
+        .and_then(|detail| detail.usage.as_ref())
+        .map_or((0, 0), |usage| {
+            (usage.count, usage.last_used_unix_secs.unwrap_or(0))
+        })
+}
+
+/// Provider groups sort by how much they are used (turns summed over the
+/// group, then the most recent use), then by provider name, account before
+/// key, then id. Unused groups keep the alphabetical order. Routes without
+/// metadata trail everything.
+fn group_sort_keys(
+    models: &[String],
+    details: &HashMap<String, ModelDetails>,
+) -> HashMap<String, GroupSortKey> {
+    let mut weights: HashMap<String, (u64, u64)> = HashMap::new();
+    for model in models {
+        let (count, last) = usage_weight(model, details);
+        let entry = weights.entry(group_key(model, details)).or_default();
+        entry.0 += count;
+        entry.1 = entry.1.max(last);
+    }
+    models
+        .iter()
+        .map(|model| {
+            let group = group_key(model, details);
+            let weight = weights.get(&group).copied().unwrap_or_default();
+            (model.clone(), group_sort_key(model, details, weight))
+        })
+        .collect()
+}
+
+fn group_sort_key(
+    model: &str,
+    details: &HashMap<String, ModelDetails>,
+    weight: (u64, u64),
+) -> GroupSortKey {
+    if !details.contains_key(model) {
+        return (
+            true,
+            std::cmp::Reverse((0, 0)),
+            String::new(),
+            0,
+            String::new(),
+        );
+    }
+    let parts = header_parts(model, details);
+    let auth = match parts.auth {
+        AuthKind::Account => 0,
+        AuthKind::Subscription => 1,
+        AuthKind::ApiKey => 2,
+        AuthKind::CloudCredentials => 3,
+        AuthKind::Other => 4,
+    };
+    (
+        false,
+        std::cmp::Reverse(weight),
+        parts.provider.to_ascii_lowercase(),
+        auth,
+        group_key(model, details).to_ascii_lowercase(),
+    )
+}
+
+/// Picker order: provider groups by usage, then inside a group the models
+/// used most (turns, then recency) first. Unused models fall back to the
+/// deterministic catalog order: vendor namespace, releases newest first (ties
+/// by family name), then `~latest` aliases, with `:batch`-style variants right
+/// behind their base model.
 ///
 /// Every usage tick rebroadcasts the whole catalog to every panel, so this
-/// runs often on the UI thread. Looking each route up once, instead of four
-/// SipHash lookups per comparison, took it from the top live-profile hotspot
-/// to noise.
+/// runs often on the UI thread. Keys are derived once per route, not once per
+/// comparison.
 pub(super) fn rank(models: &mut Vec<String>, details: &HashMap<String, ModelDetails>) {
-    let mut keyed: Vec<_> = std::mem::take(models)
+    let groups = group_sort_keys(models, details);
+    let mut keyed: Vec<(GroupSortKey, (u64, u64), ModelKey, bool, String)> = std::mem::take(models)
         .into_iter()
-        .map(|model| {
-            let detail = details.get(&model);
-            let usage = detail.and_then(|detail| detail.usage.as_ref());
-            let recommended = detail.is_some_and(|detail| detail.recommended);
-            (usage, recommended, model)
+        .map(|spec| {
+            (
+                groups[&spec].clone(),
+                usage_weight(&spec, details),
+                model_key(model_raw_name(&spec, details)),
+                details.get(&spec).is_some_and(|detail| detail.recommended),
+                spec,
+            )
         })
         .collect();
-    keyed.sort_by(|(a_usage, a_rec, a), (b_usage, b_rec, b)| {
-        compare_model_usage(*a_usage, *b_usage)
-            .then_with(|| b_rec.cmp(a_rec))
-            .then_with(|| a.cmp(b))
-    });
-    models.extend(keyed.into_iter().map(|(_, _, model)| model));
+    keyed.sort_by(
+        |(a_group, a_use, a, a_rec, a_spec), (b_group, b_use, b, b_rec, b_spec)| {
+            a_group
+                .cmp(b_group)
+                .then_with(|| b_use.0.cmp(&a_use.0))
+                .then_with(|| a.vendor.cmp(&b.vendor))
+                .then_with(|| a.alias.cmp(&b.alias))
+                .then_with(|| b.version.cmp(&a.version))
+                .then_with(|| a.family.cmp(&b.family))
+                .then_with(|| a.variant.cmp(&b.variant))
+                .then_with(|| b_rec.cmp(a_rec))
+                .then_with(|| a_spec.cmp(b_spec))
+        },
+    );
+    models.extend(keyed.into_iter().map(|(_, _, _, _, spec)| spec));
 }
 
 pub(super) fn now_unix_secs() -> u64 {
@@ -245,27 +411,6 @@ impl AuthKind {
             M::RemoteCatalog | M::Current => Self::Other,
         }
     }
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Account => "Signed in",
-            Self::ApiKey => "API key",
-            Self::Subscription => "Subscription",
-            Self::CloudCredentials => "Cloud credentials",
-            Self::Other => "Connected",
-        }
-    }
-
-    pub(super) fn icon(self) -> &'static [u8] {
-        match self {
-            Self::Account => include_bytes!("../../../assets/icons/account.svg"),
-            Self::ApiKey | Self::CloudCredentials => {
-                include_bytes!("../../../assets/icons/key.svg")
-            }
-            Self::Subscription => include_bytes!("../../../assets/icons/subscription.svg"),
-            Self::Other => include_bytes!("../../../assets/icons/plug.svg"),
-        }
-    }
 }
 
 /// Group header parts: provider brand, its logo id, and the auth method.
@@ -273,6 +418,142 @@ pub(super) struct HeaderParts {
     pub provider: String,
     pub logo: &'static str,
     pub auth: AuthKind,
+}
+
+/// The credential a route bills against, as `accounts` ids it (`claude`,
+/// `openai-api`, `opencode-go`), plus the saved OAuth login it is pinned to.
+/// The picker header shows that credential's quota.
+pub(crate) fn route_credential(provider: &str, api_method: &str) -> (String, Option<String>) {
+    use jcode_provider_core::ModelRouteApiMethod as M;
+    let login = jcode_provider_core::oauth_account_label(api_method).map(str::to_owned);
+    let id = match M::parse(api_method) {
+        M::ClaudeOAuth => "claude".to_owned(),
+        M::AnthropicApiKey => "anthropic-api".to_owned(),
+        M::OpenAIOAuth => "openai".to_owned(),
+        M::OpenAIApiKey => "openai-api".to_owned(),
+        M::OpenRouter => "openrouter".to_owned(),
+        M::Copilot => "copilot".to_owned(),
+        M::Cursor => "cursor".to_owned(),
+        M::JcodeSubscription => "jcode".to_owned(),
+        M::OpenAiCompatible {
+            profile_id: Some(profile),
+        } => profile,
+        _ => {
+            let provider = provider
+                .trim()
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-");
+            let auth = (AuthKind::of(api_method) == AuthKind::ApiKey).then_some("api key");
+            crate::accounts::credential_id(&provider, auth)
+        }
+    };
+    (id, login)
+}
+
+/// One quota window for a picker header bar.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuotaWindow {
+    /// Short window name: `5h`, `7d`, or the provider's first word.
+    pub name: String,
+    /// Percent consumed, 0 to 100.
+    pub used: f32,
+    pub reset_in: Option<String>,
+}
+
+/// What a provider header shows beside its name: one bar per quota window,
+/// banked resets, or a money figure when the credential has no quota API.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RouteQuota {
+    pub windows: Vec<QuotaWindow>,
+    pub banked_resets: u64,
+    /// `$12.34` balance or spend, only when no window is reported.
+    pub money: Option<String>,
+}
+
+impl RouteQuota {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.windows.is_empty() && self.banked_resets == 0 && self.money.is_none()
+    }
+}
+
+fn short_window_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    if lower.starts_with("5-hour") || lower.starts_with("5 hour") {
+        "5h".into()
+    } else if lower.starts_with("7-day") || lower.starts_with("7 day") || lower.contains("week") {
+        "7d".into()
+    } else {
+        name.split_whitespace().next().unwrap_or(name).to_owned()
+    }
+}
+
+fn first_usd(text: &str) -> Option<String> {
+    let start = text.find('$')?;
+    let amount: String = text[start + 1..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let value: f64 = amount.parse().ok()?;
+    Some(format!("${value:.2}"))
+}
+
+/// The quota of the credential `provider`/`api_method` bills against. A route
+/// pinned to one OAuth login shows that login's report, never another's.
+pub(crate) fn route_quota(
+    accounts: &[crate::accounts::Account],
+    provider: &str,
+    api_method: &str,
+) -> RouteQuota {
+    let (id, login) = route_credential(provider, api_method);
+    let Some(account) = accounts
+        .iter()
+        .find(|account| account.id == id && account.available())
+    else {
+        return RouteQuota::default();
+    };
+    let report = match &login {
+        Some(login) => account
+            .usage_reports
+            .iter()
+            .find(|report| report.account_label.as_deref() == Some(login.as_str())),
+        None => account.active_report(),
+    };
+    let limits = match (&login, report) {
+        (_, Some(report)) => report.limits.as_slice(),
+        (None, None) => account.active_limits().unwrap_or_default(),
+        (Some(_), None) => &[],
+    };
+    let windows: Vec<QuotaWindow> = limits
+        .iter()
+        .filter(|limit| limit.usage_percent.is_finite())
+        .map(|limit| QuotaWindow {
+            name: short_window_name(&limit.name),
+            used: limit.usage_percent.clamp(0., 100.),
+            reset_in: limit.reset_in.clone(),
+        })
+        .collect();
+    let banked_resets = report
+        .and_then(|report| report.banked_reset.as_ref())
+        .map_or(0, |reset| reset.available_count);
+    let money = if windows.is_empty() {
+        let info = report.map_or(&[][..], |report| report.extra_info.as_slice());
+        ["Balance", "Local spend (this machine)", "Today"]
+            .iter()
+            .find_map(|key| {
+                info.iter()
+                    .find(|(name, _)| name == key)
+                    .and_then(|(_, value)| first_usd(value))
+            })
+    } else {
+        None
+    };
+    RouteQuota {
+        windows,
+        banked_resets,
+        money,
+    }
 }
 
 pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>) -> HeaderParts {
@@ -296,7 +577,7 @@ pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>)
 }
 
 /// Logo id (see `accounts::logo`) for the service a route goes through.
-fn provider_logo(provider: &str, api_method: &str) -> &'static str {
+pub(crate) fn provider_logo(provider: &str, api_method: &str) -> &'static str {
     let haystack = format!("{provider} {api_method}").to_ascii_lowercase();
     for (needle, logo) in [
         ("openrouter", "openrouter"),
@@ -562,6 +843,115 @@ mod tests {
         assert_eq!(model_logo(spec, &details), "openrouter");
     }
 
+    fn account(id: &str, reports: Vec<crate::accounts::UsageReport>) -> crate::accounts::Account {
+        crate::accounts::Account {
+            id: id.into(),
+            display_name: id.into(),
+            status: "available".into(),
+            auth_kind: "OAuth".into(),
+            method: String::new(),
+            limits: Vec::new(),
+            usage_reports: reports,
+        }
+    }
+
+    fn report(
+        name: &str,
+        label: Option<&str>,
+        limits: &[(&str, f32, &str)],
+        info: &[(&str, &str)],
+    ) -> crate::accounts::UsageReport {
+        crate::accounts::UsageReport {
+            provider_name: name.into(),
+            account_label: label.map(str::to_owned),
+            limits: limits
+                .iter()
+                .map(|(name, used, reset)| crate::accounts::UsageLimit {
+                    name: (*name).into(),
+                    usage_percent: *used,
+                    reset_in: Some((*reset).into()),
+                })
+                .collect(),
+            extra_info: info
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
+            banked_reset: None,
+        }
+    }
+
+    #[test]
+    fn routes_map_to_the_credential_they_bill() {
+        for (provider, method, id) in [
+            ("Anthropic", "claude-oauth", "claude"),
+            ("Anthropic", "oauth", "claude"),
+            ("Anthropic", "anthropic-api-key", "anthropic-api"),
+            ("Anthropic", "api key", "anthropic-api"),
+            ("OpenAI", "openai-oauth", "openai"),
+            ("OpenAI", "openai-api-key", "openai-api"),
+            ("OpenRouter", "openrouter", "openrouter"),
+            ("OpenCode Go", "api key", "opencode-go"),
+        ] {
+            assert_eq!(
+                route_credential(provider, method).0,
+                id,
+                "{provider} {method}"
+            );
+        }
+        assert_eq!(
+            route_credential("OpenAI", "openai-oauth@openai-otter"),
+            ("openai".into(), Some("openai-otter".into()))
+        );
+    }
+
+    #[test]
+    fn header_quota_comes_from_the_routes_own_login() {
+        let accounts = [
+            account(
+                "openai",
+                vec![
+                    report(
+                        "OpenAI (ChatGPT) (a@x) ✦",
+                        Some("openai-fox"),
+                        &[("5-hour window", 20., "2h")],
+                        &[],
+                    ),
+                    report(
+                        "OpenAI (ChatGPT) (b@x)",
+                        Some("openai-otter"),
+                        &[("7-day window", 100., "2d 20h")],
+                        &[],
+                    ),
+                ],
+            ),
+            account(
+                "opencode-go",
+                vec![report(
+                    "OpenCode Go (API key)",
+                    None,
+                    &[],
+                    &[("Today", "1.2 Mil in · $3.456 est.")],
+                )],
+            ),
+        ];
+        let active = route_quota(&accounts, "OpenAI", "openai-oauth");
+        assert_eq!(
+            active.windows,
+            [QuotaWindow {
+                name: "5h".into(),
+                used: 20.,
+                reset_in: Some("2h".into())
+            }]
+        );
+        let pinned = route_quota(&accounts, "OpenAI", "openai-oauth@openai-otter");
+        assert_eq!(pinned.windows[0].name, "7d");
+        assert_eq!(pinned.windows[0].used, 100.);
+        let key = route_quota(&accounts, "OpenCode Go", "api key");
+        assert!(key.windows.is_empty());
+        assert_eq!(key.money.as_deref(), Some("$3.46"));
+        assert!(route_quota(&accounts, "Anthropic", "claude-oauth").is_empty());
+    }
+
     #[test]
     fn detail_line_is_usage_only() {
         let detail =
@@ -570,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_uses_usage_then_stable_names_and_retains_every_model() {
+    fn rank_puts_used_models_first_and_retains_every_model() {
         let mut models = vec![
             "unknown-z".into(),
             "frequent".into(),
@@ -600,7 +990,7 @@ mod tests {
         rank(&mut models, &details);
         assert_eq!(
             models,
-            ["recent", "frequent", "legacy", "unknown-a", "unknown-z"]
+            ["frequent", "recent", "legacy", "unknown-a", "unknown-z"]
         );
     }
 }
@@ -625,7 +1015,14 @@ fn group_label(model: &str, details: &HashMap<String, ModelDetails>) -> String {
     if details.get(model).is_none() {
         return parts.provider;
     }
-    format!("{} · {}", parts.provider, parts.auth.label())
+    // The header shows the credential's quota, not a word for how it signs
+    // in. Only a key route says so, to tell it apart from the same
+    // provider's account route.
+    match parts.auth {
+        AuthKind::ApiKey => format!("{} · API key", parts.provider),
+        AuthKind::CloudCredentials => format!("{} · Cloud", parts.provider),
+        _ => parts.provider,
+    }
 }
 
 /// Friendly picker title for a route spec (`claude-oauth:claude-opus-4-8`
@@ -640,6 +1037,34 @@ pub(super) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>)
     } else {
         pretty
     }
+}
+
+/// The three rows a closed group shows, still in ranked order: the current
+/// model, then base releases, and only then aliases and variants.
+fn collapsed_members(
+    members: Vec<String>,
+    current: Option<&str>,
+    details: &HashMap<String, ModelDetails>,
+) -> Vec<String> {
+    let mut chosen: Vec<bool> = members
+        .iter()
+        .map(|model| current == Some(model.as_str()))
+        .collect();
+    for primary_only in [true, false] {
+        for (index, model) in members.iter().enumerate() {
+            if chosen.iter().filter(|chosen| **chosen).count() >= 3 {
+                break;
+            }
+            if !chosen[index] && (!primary_only || is_primary(model, details)) {
+                chosen[index] = true;
+            }
+        }
+    }
+    members
+        .into_iter()
+        .zip(chosen)
+        .filter_map(|(model, chosen)| chosen.then_some(model))
+        .collect()
 }
 
 pub(super) fn grouped_rows(
@@ -720,11 +1145,12 @@ pub(super) fn grouped_rows(
     for (key, matching) in groups {
         let count = matching.len();
         let open = expanded.contains(&key);
-        for (index, model) in matching
-            .into_iter()
-            .take(if open { usize::MAX } else { 3 })
-            .enumerate()
-        {
+        let visible = if open {
+            matching
+        } else {
+            collapsed_members(matching, current.as_deref(), details)
+        };
+        for (index, model) in visible.into_iter().enumerate() {
             rows.push(GroupRow {
                 header: (index == 0).then(|| group_label(&model, details)),
                 value: format!("/model {model}"),

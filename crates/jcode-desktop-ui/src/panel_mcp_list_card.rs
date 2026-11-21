@@ -149,6 +149,7 @@ fn plural(count: usize, word: &str) -> String {
     format!("{count} {word}{}", if count == 1 { "" } else { "s" })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render(
     index: usize,
     view: &View,

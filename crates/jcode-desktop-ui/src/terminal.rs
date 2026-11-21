@@ -219,8 +219,8 @@ impl TerminalPanel {
         // replay/reset, and a Desktop theme change.
         sync_terminal_colors(&mut self.terminal, Theme::global(), self.surface_focused);
         self.terminal.process(output);
-        if let Some(responses) = self.terminal.drain_responses() {
-            if reply {
+        if let Some(responses) = self.terminal.drain_responses()
+            && reply {
                 if self.engine_replies {
                     self.send(&responses);
                 } else {
@@ -229,7 +229,6 @@ impl TerminalPanel {
                     self.send(&keys::without_legacy_host_replies(&responses));
                 }
             }
-        }
         // These are notifications, not another history buffer. Images are already
         // decoded by the engine. Do not retain raw APC uploads or honor remote
         // clipboard writes without an explicit user gesture.
@@ -252,19 +251,17 @@ impl TerminalPanel {
     }
 
     fn send(&self, bytes: &[u8]) {
-        if !bytes.is_empty() && !self.exited {
-            if let Some(id) = self.resource_id {
+        if !bytes.is_empty() && !self.exited
+            && let Some(id) = self.resource_id {
                 let _ = self.host.terminal_write(id, bytes);
             }
-        }
     }
 
     fn send_text(&mut self, text: &str) {
-        if let Some((sent, at)) = self.ime_key_text.take() {
-            if sent == text && at.elapsed() < Duration::from_millis(100) {
+        if let Some((sent, at)) = self.ime_key_text.take()
+            && sent == text && at.elapsed() < Duration::from_millis(100) {
                 return;
             }
-        }
         self.terminal.grid.scroll_offset = 0;
         self.terminal.grid.selection = None;
         self.send(text.replace("\r\n", "\r").replace('\n', "\r").as_bytes());

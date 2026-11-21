@@ -1,6 +1,7 @@
 //! Real SDK socket-pair tests for the native SSH address routing boundary.
 use super::*;
 include!("harness_recovery_reconnect_tests.rs");
+include!("harness_recovery_acceptance_tests.rs");
 include!("harness_history_recovery_tests.rs");
 include!("harness_protocol_recovery_tests.rs");
 include!("harness_turn_retry_tests.rs");
@@ -38,6 +39,7 @@ fn info(id: &str) -> SessionInfo {
         agent_label: None,
         swarm_status: None,
         edit_stats: None,
+        context: None,
     }
 }
 
@@ -50,7 +52,14 @@ impl Server {
         Self::with_history_failures(0)
     }
 
-    fn with_history_failures(mut history_failures: usize) -> (JcodeClient, Self) {
+    fn with_history_failures(history_failures: usize) -> (JcodeClient, Self) {
+        Self::with_failures(history_failures, 0)
+    }
+
+    fn with_failures(
+        mut history_failures: usize,
+        mut attach_failures: usize,
+    ) -> (JcodeClient, Self) {
         let (socket, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         let writer = Arc::new(Mutex::new(server));
@@ -60,11 +69,23 @@ impl Server {
             while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                 let event = match &frame.request {
                     ApiRequest::Hello { .. } => ApiEvent::HelloOk {
+                        runtime_identity: None,
                         version: jcode_sdk::api::API_VERSION_MAJOR,
                         server: "remote-test".into(),
                         capabilities: vec!["runtime_commands".into()],
                     },
                     ApiRequest::Ping => ApiEvent::Pong,
+                    ApiRequest::ListSessions { .. } => ApiEvent::Sessions {
+                        sessions: vec![info("same-id")],
+                        workers: Default::default(),
+                    },
+                    ApiRequest::AttachSession { .. } if attach_failures > 0 => {
+                        attach_failures -= 1;
+                        ApiEvent::Error {
+                            code: jcode_sdk::api::ErrorCode::Internal,
+                            message: "Failed to restore session: Session same-id still has a runtime owner".into(),
+                        }
+                    }
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
                         ApiEvent::Attached {
                             session: info("same-id"),
@@ -158,11 +179,18 @@ impl Server {
         .unwrap();
     }
     fn disconnect(&self) {
-        self.writer
+        // A worker that stopped on a fatal protocol error closes its side first,
+        // so the server's own shutdown then reports NotConnected. That is the
+        // state these tests assert, not a fixture failure; anything else is.
+        if let Err(error) = self
+            .writer
             .lock()
             .unwrap()
             .shutdown(std::net::Shutdown::Both)
-            .unwrap();
+            && error.kind() != std::io::ErrorKind::NotConnected
+        {
+            panic!("server disconnect failed: {error}");
+        }
     }
 }
 
@@ -188,6 +216,57 @@ fn wait_update(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) ->
 }
 
 #[test]
+fn live_runtime_owner_is_attaching_not_lost() {
+    let (commands, rx) = channel();
+    let (tx, updates) = update_channel();
+    let mut attempts = 0;
+    let worker = std::thread::spawn(move || {
+        session_worker_with_connector("same-id".into(), rx, tx, None, move |_| {
+            attempts += 1;
+            let (client, _server) = Server::with_failures(0, usize::from(attempts == 1));
+            Ok(client)
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut lost = false;
+    let mut connected = false;
+    while Instant::now() < deadline && !connected {
+        if let Ok(update) = updates.try_recv() {
+            lost |= matches!(update, Update::SessionLost { .. });
+            connected |= matches!(update, Update::SessionConnected { .. });
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    commands.send(SessionCommand::Stop).unwrap();
+    worker.join().unwrap();
+    assert!(connected, "the worker should reconnect");
+    assert!(!lost, "a live runtime owner is not a lost session");
+}
+
+#[test]
+fn restoring_session_reads_last_model_and_effort_before_attach() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join("sessions")).unwrap();
+    std::fs::write(
+        home.path().join("sessions/same-id.json"),
+        r#"{"model":"old-model","reasoning_effort":"low","messages":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("sessions/same-id.journal.jsonl"),
+        "{\"meta\":{\"model\":\"gpt-5.6\",\"reasoning_effort\":\"high\"}}\n",
+    )
+    .unwrap();
+    let update = saved_session_identity(home.path(), "same-id", "same-id").unwrap();
+    assert!(
+        matches!(update, Update::Event { session_id, event: ApiEvent::ModelInfo { model: Some(model), reasoning_effort: Some(effort), .. } }
+        if session_id == "same-id" && model == "gpt-5.6" && effort == "high")
+    );
+    assert!(saved_session_identity(home.path(), "../escape", "ignored").is_none());
+}
+
+#[test]
 fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     let ui_id = remote::namespace("user@desktop", "same-id");
     let (client, server) = Server::new();
@@ -210,6 +289,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Send {
             content: "remote prompt".into(),
             images: vec![("image/png".into(), "bytes".into())],
+            attachments: vec![],
         })
         .unwrap();
     assert!(
@@ -224,6 +304,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Send {
             content: "steering".into(),
             images: vec![],
+            attachments: vec![],
         })
         .unwrap();
     assert!(
@@ -246,6 +327,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     });
 
     commands.send(SessionCommand::Cancel).unwrap();
+    assert!(matches!(server.next(), ApiRequest::Cancel { session_id } if session_id == "same-id"));
     commands
         .send(SessionCommand::SetModel("model".into()))
         .unwrap();
@@ -269,19 +351,31 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Operation(SessionOperation::Rewind(2)))
         .unwrap();
     commands
+        .send(SessionCommand::Operation(SessionOperation::RewindTranscript(
+            jcode_sdk::api::RewindAnchor {
+                selected: jcode_sdk::api::RewindMessageKey::new("user", "remote prompt").unwrap(),
+                before: None,
+                after: None,
+            },
+        )))
+        .unwrap();
+    commands
         .send(SessionCommand::Operation(SessionOperation::RewindUndo))
         .unwrap();
     commands.send(SessionCommand::Fork).unwrap();
     commands.send(SessionCommand::Transfer).unwrap();
     for expected in [
-        "cancel",
         "set_model",
         "clear",
         "compact",
         "set_reasoning_effort",
         "rename_session",
         "rewind",
+        "get_history",
+        "rewind_transcript",
+        "get_history",
         "rewind_undo",
+        "get_history",
         "fork_session",
         "transfer_session",
     ] {
@@ -293,12 +387,13 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(u, Update::Event { session_id, event: ApiEvent::Compacted { message, .. } }
             if session_id == &ui_id && message == "scheduled")
     });
+    wait_update(&updates, |u| matches!(u, Update::RewoundHistory { session_id, bounded: false, .. } if session_id == &ui_id));
     wait_update(
         &updates,
-        |u| matches!(u, Update::SessionForked { session } if session.session_id == remote::namespace("user@desktop", "fork-id")),
+        |u| matches!(u, Update::SessionForked { session, .. } if session.session_id == remote::namespace("user@desktop", "fork-id")),
     );
     wait_update(&updates, |u| {
-        matches!(u, Update::SessionForked { session }
+        matches!(u, Update::SessionForked { session, .. }
         if session.session_id == remote::namespace("user@desktop", "transfer-id"))
     });
     // A different remote session must not leak into this panel, even for images.
@@ -371,6 +466,9 @@ fn restored_remote_address_reconnects_to_same_host_without_blocking_local_worker
         &updates,
         |u| matches!(u, Update::SessionLost { session_id, .. } if session_id == &ui_id),
     );
+    wait_update(&updates, |u| matches!(u,
+        Update::OpenrigHostIdentity { session_id, self_host_id: None } if session_id == &ui_id
+    ));
 
     // The same raw ID on the local host remains independent and responsive.
     let (local_client, local_server) = Server::new();
@@ -438,7 +536,7 @@ fn remote_create_preserves_request_id_and_sends_working_dir_only_as_json() {
         internal,
         |host| {
             assert_eq!(host, "user@desktop");
-            Ok(client)
+            Ok((client, false))
         },
     );
     assert!(
@@ -518,6 +616,55 @@ fn invalid_remote_create_host_never_starts_a_transport() {
 }
 
 #[test]
+fn named_cloud_catalog_lists_and_reattaches_the_original_remote_id() {
+    let (client, server) = Server::new();
+    let sessions = list_remote_sessions("cloud:ai-core", |host| {
+        assert_eq!(host, "cloud:ai-core");
+        Ok(client.clone())
+    })
+    .unwrap();
+    assert!(matches!(server.next(), ApiRequest::ListSessions { .. }));
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "cloud://ai-core/same-id");
+    let address = remote::SessionAddress::parse(&sessions[0].session_id).unwrap();
+    assert_eq!(address.host.as_deref(), Some("cloud:ai-core"));
+    assert_eq!(
+        client
+            .attach_session(&address.session_id)
+            .unwrap()
+            .session_id,
+        "same-id"
+    );
+    assert!(
+        matches!(server.next(), ApiRequest::AttachSession { session_id } if session_id == "same-id")
+    );
+}
+
+#[test]
+fn self_hosted_creation_uses_remote_home_without_the_cloud_bootstrap_path() {
+    for (host, self_hosted) in [
+        ("cloud:ai-core", true),
+        ("jcode-cloud", true),
+        ("jcode-cloud", false),
+    ] {
+        let (client, server) = Server::new();
+        let (internal, created) = channel();
+        let (tx, _updates) = update_channel();
+        create_remote_session(host.into(), None, None, tx, internal, |_| {
+            Ok((client, self_hosted))
+        });
+        assert!(
+            matches!(server.next(), ApiRequest::CreateSession { working_dir, .. }
+            if working_dir.as_deref() == (!self_hosted).then_some(crate::managed_cloud::DEFAULT_WORKSPACE))
+        );
+        assert!(
+            matches!(created.recv_timeout(Duration::from_secs(2)), Ok(Command::CreatedInternal { session, .. })
+            if session.session_id == remote::namespace(host, "same-id"))
+        );
+    }
+}
+
+#[test]
 fn last_bridge_handle_stops_its_coordinator_for_ssh_cleanup() {
     let (bridge, commands) = spawn_recording();
     let second = bridge.clone();
@@ -593,6 +740,37 @@ fn managed_cloud_live_warm_panels_use_distinct_sessions() {
     assert_ne!(
         ids[0], ids[1],
         "panels must never share an attached API client"
+    );
+}
+
+#[test]
+#[ignore = "live: lists a registered Cloud machine's sessions via pinned SSH"]
+fn managed_cloud_live_named_machine_lists_sessions() {
+    let name = std::env::var("JCODE_CLOUD_TEST_HOST").unwrap_or_else(|_| "ai-core".into());
+    let destination = crate::managed_cloud::Destination::named(&name).expect("valid machine name");
+    let account = crate::managed_cloud::account().expect("configured Jcode account");
+    let machines = crate::managed_cloud::list_machines(&account).expect("Cloud registry");
+    assert!(
+        machines.iter().any(|machine| machine.name == name),
+        "machine not in account registry: {name}"
+    );
+    let transports = transport::RemoteTransports::default();
+    let host = destination.preference();
+    let sessions = list_remote_sessions(&host, |host| {
+        let (client, self_hosted) = transports
+            .connect_with_progress(host, &mut |message| eprintln!("[{name}] {message}"))?;
+        assert!(self_hosted, "named machine must be self-hosted");
+        Ok(client)
+    })
+    .expect("remote session catalog");
+    assert!(
+        sessions
+            .iter()
+            .all(|session| remote_host(&session.session_id).as_deref() == Some(&host))
+    );
+    eprintln!(
+        "[{name}] Registry confirmed, pinned SSH handshake succeeded, listed {} sessions",
+        sessions.len()
     );
 }
 

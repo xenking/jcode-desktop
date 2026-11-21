@@ -184,6 +184,7 @@ mod tests {
         assert!(vcx.debug_bounds("tool-summary").is_none());
         assert!(vcx.debug_bounds("tool-type-icon").is_some());
         assert!(vcx.debug_bounds("tool-icon-running").is_some());
+        assert!(vcx.debug_bounds("tool-elapsed").is_some());
         panel.read_with(vcx, |panel, _| {
             assert!(matches!(&panel.items[0], Item::Reasoning(text) if text == "Check first."));
             assert!(
@@ -257,7 +258,17 @@ mod tests {
             let arguments: serde_json::Value = serde_json::from_str(input).unwrap();
             assert_eq!(arguments["command"], "cargo test");
             assert_eq!(tool_summary(input), "Check the build");
+            let (start, finish) = panel.tool_wall_times.get("early").unwrap();
+            assert!(start.is_some() && finish.is_some());
+            assert!(panel.tool_durations.contains_key("early"));
         });
+        assert!(vcx.debug_bounds("tool-elapsed").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.expanded_regions.insert("early".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-timing-detail").is_some());
     }
 
     #[gpui::test]

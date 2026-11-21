@@ -70,6 +70,8 @@ pub(super) struct AccountRow {
     pub reset_status: Option<String>,
     /// The auth report says a credential is stored, whatever its health.
     pub configured: bool,
+    /// Why the last usage probe failed, for a rejected credential.
+    pub error: Option<String>,
     /// First row of its provider keeps the stable `login-provider-{id}` selector.
     pub first_of_provider: bool,
 }
@@ -229,6 +231,12 @@ pub(super) fn build_rows(
         if status == ConnectionStatus::Unverified && account.is_some_and(proven_by_usage) {
             status = ConnectionStatus::Connected;
         }
+        // A rejected credential is a failure we already know without spending
+        // a model request, so the row says "Needs attention" instead of
+        // "Untested" and carries the provider's reason.
+        if status == ConnectionStatus::Unverified && account.is_some_and(rejected_by_usage) {
+            status = ConnectionStatus::Failed;
+        }
         if status != ConnectionStatus::NotConnected && testing(provider.id) {
             status = ConnectionStatus::Testing;
         }
@@ -248,23 +256,20 @@ pub(super) fn build_rows(
                 _ => Vec::new(),
             };
             let (usage, plan) = report.map(usage_summary).unwrap_or_default();
+            let error = report.and_then(|report| report.usage_error());
             // A confirmed zero is useful information. Only missing provider
             // data is unknown, not an empty reset bank.
             let banked = report.and_then(|r| r.banked_reset.clone());
+            // Only a known answer earns a chip. "Unavailable" when nothing is
+            // known is noise next to every Claude row.
             let reset_status = (provider.id == "claude"
                 && banked.is_none()
-                && (label.is_some() || account.is_some_and(|a| a.status != "not_configured")))
-            .then(|| {
-                if report.is_some_and(|r| {
+                && report.is_some_and(|r| {
                     r.extra_info
                         .iter()
                         .any(|(key, value)| key == "Session resets" && value == "Not eligible")
-                }) {
-                    "Resets not eligible".to_owned()
-                } else {
-                    "Reset availability unavailable".to_owned()
-                }
-            });
+                }))
+            .then(|| "Resets not eligible".to_owned());
             AccountRow {
                 key: account_key(provider.id, label),
                 provider: *provider,
@@ -278,6 +283,7 @@ pub(super) fn build_rows(
                 banked,
                 reset_status,
                 configured: account.is_some_and(|a| a.status != "not_configured"),
+                error,
                 first_of_provider: first,
             }
         };
@@ -315,9 +321,44 @@ fn proven_by_usage(account: &Account) -> bool {
             .any(|limit| limit.usage_percent.is_finite())
 }
 
+/// The provider answered a fresh usage probe by rejecting the credential. That
+/// is proof the key does not work, without spending a model request.
+fn rejected_by_usage(account: &Account) -> bool {
+    let Some(report) = account.active_report() else {
+        return false;
+    };
+    let cached = report
+        .extra_info
+        .iter()
+        .any(|(key, value)| key == "Last updated" && value.contains("cached"));
+    !cached && report.auth_failure()
+}
+
 /// Providers offered only once configured. The Jcode subscription is sold
 /// separately, so an unconfigured entry is noise in the Connect list.
 const HIDDEN_UNTIL_CONFIGURED: [&str; 1] = ["jcode"];
+
+/// Rows the composer's provider picker lists: connected credentials only,
+/// narrowed by the search box. Shared by the picker and its tests so "which
+/// providers can I switch to" has one answer.
+pub(super) fn picker_rows(rows: Vec<AccountRow>, query: &str) -> Vec<AccountRow> {
+    let query = query.trim().to_lowercase();
+    rows.into_iter()
+        .filter(AccountRow::connected)
+        .filter(|row| {
+            format!(
+                "{} {} {} {} {}",
+                row.provider.display_name,
+                row.provider.id,
+                row.provider.detail,
+                jcode_desktop_accounts_ui::catalog::method_label(row.provider.method),
+                row.label.as_deref().unwrap_or(""),
+            )
+            .to_lowercase()
+            .contains(&query)
+        })
+        .collect()
+}
 
 pub(super) fn group_rows(rows: Vec<AccountRow>, pool: &AccountPool) -> Groups {
     let (connected, available): (Vec<_>, Vec<_>) =
@@ -387,6 +428,10 @@ pub(super) fn offline_data() -> AccountsData {
             provider,
             account_label: Some(label.into()),
             available_count: count,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached,
             next_available_at: next,
         })
@@ -466,6 +511,25 @@ pub(super) fn offline_data() -> AccountsData {
                     extra_info: vec![("Plan".into(), "max".into())],
                 }],
             ),
+            Account {
+                id: "opencode-go".into(),
+                display_name: "OpenCode Go".into(),
+                status: "available".into(),
+                auth_kind: "API key".into(),
+                method: "API key (`OPENCODE_GO_API_KEY`)".into(),
+                limits: Vec::new(),
+                usage_reports: vec![UsageReport {
+                    provider_name: "OpenCode Go (API key)".into(),
+                    account_label: None,
+                    limits: vec![
+                        limit("Rolling window", 38., "2h 56m"),
+                        limit("Weekly window", 15., "15h 48m"),
+                        limit("Monthly window", 7., "29d 21h"),
+                    ],
+                    banked_reset: None,
+                    extra_info: vec![("Key status".into(), "valid".into())],
+                }],
+            },
             Account {
                 id: "openai-api".into(),
                 display_name: "OpenAI API".into(),
@@ -606,18 +670,7 @@ fn icon_reset(color: gpui::Rgba) -> gpui::Div {
 
 /// Caption for a login's banked resets, e.g. "2 resets banked".
 pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
-    match (reset.provider, reset.available_count) {
-        (ResetProvider::OpenAi, 1) => "1 reset banked".into(),
-        (ResetProvider::OpenAi, n) if n > 1 => format!("{n} resets banked"),
-        (ResetProvider::Claude, n) if n > 0 => "Session reset ready".into(),
-        _ => match reset.next_available_at.as_deref() {
-            Some(at) => format!(
-                "0 banked resets · next in {}",
-                jcode_base::usage::format_reset_time(at)
-            ),
-            None => "0 banked resets".into(),
-        },
-    }
+    super::super::usage::banked_reset_label(reset)
 }
 
 fn status_chip(label: &'static str, color: gpui::Rgba) -> gpui::Div {
@@ -646,8 +699,28 @@ pub(super) enum PickerChoice {
     Current,
     /// Switches the session to the provider.
     Switch,
-    /// No model in this session's catalog routes through the provider.
-    Unavailable,
+    /// The row cannot take the session, with the reason shown on it.
+    Unavailable(&'static str),
+}
+
+/// The picker's decision for one row: active wins, then a credential that is
+/// known not to work, then whether the session catalog has a route at all.
+/// Pure so the A -> B -> A switch cycle is testable without a window.
+pub(super) fn picker_choice_for(
+    session_provider: Option<&str>,
+    row_provider: &str,
+    status: ConnectionStatus,
+    has_route: bool,
+) -> PickerChoice {
+    if session_provider == Some(row_provider) {
+        return PickerChoice::Current;
+    }
+    match status {
+        ConnectionStatus::NotConnected => PickerChoice::Unavailable("Not connected"),
+        ConnectionStatus::Failed => PickerChoice::Unavailable("Key rejected"),
+        _ if !has_route => PickerChoice::Unavailable("No model for this session"),
+        _ => PickerChoice::Switch,
+    }
 }
 
 /// Login provider id for the session's serving route.
@@ -662,27 +735,19 @@ pub(super) fn session_provider_id(provider: Option<&str>, auth: Option<&str>) ->
         ("claude" | "anthropic", true) => "anthropic-api".into(),
         ("openai" | "chatgpt", false) => "openai".into(),
         ("openai" | "chatgpt", true) => "openai-api".into(),
-        (other, _) => other.into(),
+        (other, _) => other.replace(' ', "-"),
     })
 }
 
 impl Panel {
-    fn picker_choice(&self, provider: LoginProvider, cx: &App) -> PickerChoice {
-        if session_provider_id(self.provider.as_deref(), self.auth_method.as_deref()).as_deref()
-            == Some(provider.id)
-        {
-            return PickerChoice::Current;
-        }
-        if self
+    fn picker_choice(&self, row: &AccountRow, cx: &App) -> PickerChoice {
+        let session = session_provider_id(self.provider.as_deref(), self.auth_method.as_deref());
+        let has_route = self
             .input
             .read(cx)
-            .provider_route_spec(provider.id, self.model.as_deref())
-            .is_some()
-        {
-            PickerChoice::Switch
-        } else {
-            PickerChoice::Unavailable
-        }
+            .provider_route_spec(row.provider.id, self.model.as_deref())
+            .is_some();
+        picker_choice_for(session.as_deref(), row.provider.id, row.status, has_route)
     }
 }
 
@@ -917,7 +982,12 @@ impl Panel {
             .filter(|_| {
                 status == ConnectionStatus::Failed || status == ConnectionStatus::Unverified
             });
-        if let Some(error) = live_error {
+        // A provider that rejected the key says why on the row itself, so the
+        // user does not have to press Test to learn what went wrong.
+        let usage_error = (status == ConnectionStatus::Failed)
+            .then(|| row.error.clone())
+            .flatten();
+        if let Some(error) = live_error.cloned().or(usage_error) {
             text = text.child(
                 div()
                     .text_size(px(11.))
@@ -925,14 +995,17 @@ impl Panel {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(first_line(error)),
+                    .child(first_line(&error)),
             );
         }
         // Meters sit on their own line inside the text column. Beside the
         // name they overlapped the plan and reset chips on narrow panels.
         if !row.limits.is_empty() {
             let mut meters = div().flex().items_center().gap_4().w_full().pt(px(2.));
-            for limit in row.limits.iter().take(2) {
+            // OpenCode reports three windows (rolling, weekly, monthly); every
+            // reported one stays visible rather than silently dropping the
+            // monthly cap.
+            for limit in row.limits.iter().take(3) {
                 meters = meters.child(limit_meter(limit));
             }
             text = text.child(meters);
@@ -942,13 +1015,19 @@ impl Panel {
             .debug_selector(move || provider_selector.clone())
             .flex()
             .items_center()
-            .gap_3()
-            .pl(px(10.))
-            .pr(px(10.))
-            .py_1p5()
-            .min_h(px(if connected { 56. } else { 44. }))
-            .rounded_xl()
-            .bg(if connected {
+            .gap(px(if selecting { 8. } else { 12. }))
+            .pl(px(if selecting { 8. } else { 10. }))
+            .pr(px(if selecting { 8. } else { 10. }))
+            .py(px(if selecting { 4. } else { 6. }))
+            .min_h(px(match (selecting, connected) {
+                (true, _) => 36.,
+                (false, true) => 56.,
+                (false, false) => 44.,
+            }))
+            .rounded(px(if selecting { 8. } else { 12. }))
+            // Picker rows are all connected credentials: full strength unless
+            // the picker marks one unavailable below.
+            .bg(if connected || selecting {
                 theme.HEADER_BG
             } else {
                 theme.HEADER_BG.opacity(0.55)
@@ -1129,7 +1208,7 @@ impl Panel {
                     .tooltip(|_, cx| {
                         cx.new(|_| {
                             super::usage::MeterTooltip(
-                                "Send one small live request through this account to confirm it works. Uses a little quota or credit.".into(),
+                                "Test account · Uses quota or credit".into(),
                             )
                         })
                         .into()
@@ -1142,15 +1221,32 @@ impl Panel {
             );
         }
         let label = row.label.clone();
-        let pick = selecting.then(|| self.picker_choice(provider, cx));
+        let pick = selecting.then(|| self.picker_choice(row, cx));
         match pick {
             Some(PickerChoice::Current) => {
-                element = element.child(chip("In use", theme.ACCENT));
+                // The active account stands out: accent outline and fill.
+                element = element
+                    .border_1()
+                    .border_color(theme.ACCENT)
+                    .bg(theme.ACCENT.opacity(0.14))
+                    .cursor_default()
+                    .child(
+                        chip("In use", theme.ACCENT)
+                            .debug_selector(move || format!("picker-active-{}", provider.id)),
+                    );
             }
-            Some(PickerChoice::Unavailable) => {
-                element = element.opacity(0.55).cursor_default();
+            Some(PickerChoice::Unavailable(reason)) => {
+                element = element.opacity(0.5).cursor_default().child(
+                    chip(reason, theme.TEXT_DIM)
+                        .debug_selector(move || format!("picker-unavailable-{}", provider.id)),
+                );
             }
-            Some(PickerChoice::Switch) | None => {}
+            Some(PickerChoice::Switch) => {
+                element = element.child(
+                    div().debug_selector(move || format!("picker-available-{}", provider.id)),
+                );
+            }
+            None => {}
         }
         if pick.is_some_and(|pick| pick != PickerChoice::Switch) {
             // Nothing to do: the row is already in use or has no route.
@@ -1185,6 +1281,7 @@ impl Panel {
         element.into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_account_group(
         &self,
         id: &'static str,
@@ -1372,6 +1469,124 @@ mod tests {
     }
 
     #[test]
+    fn live_usage_probes_resolve_untested_keys_without_spending_a_request() {
+        let providers = [
+            provider("opencode-go", LoginMethod::ApiKey),
+            provider("openrouter", LoginMethod::ApiKey),
+        ];
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[
+                {"id":"opencode-go","status":"available","auth_kind":"API key"},
+                {"id":"openrouter","status":"available","auth_kind":"API key"}
+            ]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenCode Go (API key)","limits":[
+                    {"name":"Rolling window","usage_percent":38.0,"reset_in":"2h 56m"}
+                ],"extra_info":[],"error":null},
+                {"provider_name":"OpenRouter","limits":[],
+                 "extra_info":[],"error":"OpenRouter rejected the API key (401 Unauthorized)"}
+            ]}"#,
+        );
+        let data = AccountsData {
+            accounts: Some(accounts),
+            ..Default::default()
+        };
+        // Both are saved credentials with no recent live test.
+        let statuses = ConnectionStatuses::from([
+            ("opencode-go".into(), ConnectionStatus::Unverified),
+            ("openrouter".into(), ConnectionStatus::Unverified),
+        ]);
+        let rows = build_rows(&providers, Some(&statuses), false, &|_| false, &data);
+        let go = rows
+            .iter()
+            .find(|row| row.provider.id == "opencode-go")
+            .unwrap();
+        assert_eq!(
+            go.status,
+            ConnectionStatus::Connected,
+            "a live quota answer proves the key"
+        );
+        assert_eq!(go.limits.len(), 1);
+        let router = rows
+            .iter()
+            .find(|row| row.provider.id == "openrouter")
+            .unwrap();
+        assert_eq!(
+            router.status,
+            ConnectionStatus::Failed,
+            "a rejected key is not merely untested"
+        );
+        let reason = router.error.as_deref().unwrap_or_default();
+        assert!(reason.contains("Sign in again"), "{reason}");
+    }
+
+    #[test]
+    fn rate_limits_do_not_masquerade_as_a_rejected_key() {
+        let providers = [provider("openrouter", LoginMethod::ApiKey)];
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"openrouter","status":"available","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenRouter","limits":[],
+                "extra_info":[],"error":"429 Too Many Requests"}]}"#,
+        );
+        let data = AccountsData {
+            accounts: Some(accounts),
+            ..Default::default()
+        };
+        let statuses =
+            ConnectionStatuses::from([("openrouter".into(), ConnectionStatus::Unverified)]);
+        let rows = build_rows(&providers, Some(&statuses), false, &|_| false, &data);
+        assert_eq!(rows[0].status, ConnectionStatus::Unverified);
+    }
+
+    #[test]
+    fn provider_picker_lists_configured_opencode_go_with_its_quota() {
+        let providers = [LoginProvider {
+            id: "opencode-go",
+            display_name: "OpenCode Go",
+            detail: "API key",
+            method: LoginMethod::ApiKey,
+        }];
+        let mut accounts = crate::accounts::parse(
+            r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available",
+                "method":"API key (`OPENCODE_GO_API_KEY`)","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        crate::accounts::merge_usage_for_tests(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenCode Go (API key)","limits":[
+                {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"},
+                {"name":"Monthly window","usage_percent":4.0,"reset_in":"30d"}
+            ],"extra_info":[],"error":null}]}"#,
+        );
+        let data = AccountsData {
+            accounts: Some(accounts),
+            ..Default::default()
+        };
+        let rows = build_rows(&providers, None, false, &|_| false, &data);
+        let listed = picker_rows(rows, "");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].connected());
+        assert_eq!(listed[0].provider.id, "opencode-go");
+        assert_eq!(listed[0].limits.len(), 3);
+        assert!(crate::accounts::logo(listed[0].provider.id).is_some());
+        // The search field matches the provider by name, id and method.
+        let providers = [providers[0]];
+        for query in ["opencode", "OPENCODE-GO", "api key"] {
+            let rows = build_rows(&providers, None, false, &|_| false, &data);
+            assert_eq!(picker_rows(rows, query).len(), 1, "query {query}");
+        }
+    }
+
+    #[test]
     fn live_quota_proves_auth_and_unconfigured_jcode_is_hidden() {
         let providers = [
             provider("claude", LoginMethod::OAuth),
@@ -1402,8 +1617,9 @@ mod tests {
         let rows = build_rows(&providers, Some(&statuses), false, &|_| false, &data);
         let status = |id: &str| rows.iter().find(|r| r.provider.id == id).unwrap().status;
         assert_eq!(status("claude"), ConnectionStatus::Connected);
-        // A failed quota fetch is not proof. It stays untested.
-        assert_eq!(status("openai"), ConnectionStatus::Unverified);
+        // A rejected credential is not merely untested: the provider answered
+        // the probe by refusing it, so the row asks for attention.
+        assert_eq!(status("openai"), ConnectionStatus::Failed);
         let groups = group_rows(rows, &AccountPool::default());
         assert!(
             groups
@@ -1715,6 +1931,45 @@ mod tests {
     }
 
     #[test]
+    fn picker_switches_a_to_b_to_a_and_blocks_providers_without_a_working_key() {
+        use ConnectionStatus::*;
+        // The session's provider id follows each completed switch, as the
+        // daemon's ModelInfo does. Every other connected row stays clickable.
+        let mut session = "claude";
+        for target in ["opencode-go", "openai", "claude", "opencode-go", "claude"] {
+            assert_eq!(
+                picker_choice_for(Some(session), target, Connected, true),
+                PickerChoice::Switch,
+                "{session} -> {target}"
+            );
+            assert_eq!(
+                picker_choice_for(Some(session), session, Connected, true),
+                PickerChoice::Current
+            );
+            session = target;
+        }
+        // A credential that is known not to work cannot take the session.
+        for (status, reason) in [(NotConnected, "Not connected"), (Failed, "Key rejected")] {
+            assert_eq!(
+                picker_choice_for(Some("claude"), "openrouter", status, true),
+                PickerChoice::Unavailable(reason)
+            );
+        }
+        // Untested keys and expired OAuth (refreshed on use) stay selectable.
+        for status in [Unverified, Expired] {
+            assert_eq!(
+                picker_choice_for(Some("claude"), "opencode-go", status, true),
+                PickerChoice::Switch
+            );
+        }
+        // Session provider labels map onto login row ids.
+        assert_eq!(
+            session_provider_id(Some("OpenCode Go"), Some("API key")).as_deref(),
+            Some("opencode-go")
+        );
+    }
+
+    #[test]
     fn confirmed_zero_resets_are_retained_but_missing_counts_are_not_invented() {
         let providers = [provider("claude", LoginMethod::OAuth)];
         let mut data = offline_data();
@@ -1732,6 +1987,10 @@ mod tests {
             provider: ResetProvider::Claude,
             account_label: Some("claude-otter".into()),
             available_count: 0,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: None,
         });
@@ -1749,10 +2008,8 @@ mod tests {
             .banked_reset = None;
         let rows = build_rows(&providers, None, false, &|_| false, &data);
         assert!(rows[0].banked.is_none());
-        assert_eq!(
-            rows[0].reset_status.as_deref(),
-            Some("Reset availability unavailable")
-        );
+        // Nothing known about resets: no chip at all, not "unavailable" noise.
+        assert_eq!(rows[0].reset_status, None);
         data.accounts
             .as_mut()
             .unwrap()
@@ -1773,9 +2030,28 @@ mod tests {
             provider,
             account_label: None,
             available_count: count,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: next.map(str::to_owned),
         };
+        let partial = BankedReset {
+            usable_count: Some(1),
+            expires_at: Some("2099-01-01T00:00:00Z".into()),
+            ..reset(ResetProvider::Claude, 2, None)
+        };
+        let label = banked_reset_label(&partial);
+        assert!(
+            label.contains("1 usable / 2") && label.contains("expires"),
+            "{label}"
+        );
+        let session = BankedReset {
+            session_reset_available: Some(true),
+            ..reset(ResetProvider::Claude, 1, None)
+        };
+        assert_eq!(banked_reset_label(&session), "1 session reset available");
         assert_eq!(
             banked_reset_label(&reset(ResetProvider::OpenAi, 1, None)),
             "1 reset banked"
@@ -1785,8 +2061,8 @@ mod tests {
             "3 resets banked"
         );
         assert_eq!(
-            banked_reset_label(&reset(ResetProvider::Claude, 1, None)),
-            "Session reset ready"
+            banked_reset_label(&reset(ResetProvider::Claude, 2, None)),
+            "2 resets banked"
         );
         assert!(
             banked_reset_label(&reset(

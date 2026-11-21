@@ -262,6 +262,7 @@ impl Workspace {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_side_panel_windows(
         &mut self,
         owner: &str,

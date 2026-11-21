@@ -322,11 +322,10 @@ unsafe extern "C-unwind" fn terminal_release(context: *mut c_void, id: u64) {
         resource.attachments = resource.attachments.saturating_sub(1);
         resource.attachments == 0
     });
-    if remove {
-        if let Some(mut resource) = terminals.resources.remove(&id) {
+    if remove
+        && let Some(mut resource) = terminals.resources.remove(&id) {
             let _ = resource.killer.kill();
         }
-    }
 }
 
 fn default_shell() -> String {
@@ -407,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn terminal_eof_waits_for_descendants_and_buffered_tail() {
         let state = HostState::default();
         let api = state.api();
@@ -419,6 +418,24 @@ mod tests {
         let bytes = collect_until_closed(host, id, 3);
         host.terminal_release(id);
         assert_eq!(bytes, b"trailing-output-after-shell-exit");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn terminal_eof_waits_for_descendants_and_buffered_tail() {
+        let state = HostState::default();
+        let api = state.api();
+        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        // Darwin revokes the controlling terminal when its session leader exits,
+        // even if a descendant still has the slave open. Keep the leader alive
+        // while exercising the descendant's output and the buffered tail.
+        let id = scripted_terminal(
+            &state,
+            "(sleep 0.3; printf trailing-output-from-descendant) & wait",
+        );
+        let bytes = collect_until_closed(host, id, 3);
+        host.terminal_release(id);
+        assert_eq!(bytes, b"trailing-output-from-descendant");
     }
 
     #[test]

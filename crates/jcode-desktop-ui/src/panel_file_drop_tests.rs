@@ -48,10 +48,10 @@ fn files_dropped_from_the_file_manager_attach_images_and_reference_paths(
         let input = panel.input.read(cx).snapshot();
         assert_eq!(input.attachments.len(), 1, "the PNG attaches like a paste");
         assert_eq!(input.attachments[0].media_type, "image/png");
-        assert_eq!(input.attachments[0].label, "4×3");
+        assert_eq!(input.attachments[0].label, "[#image 1]");
         assert_eq!(
             input.content,
-            format!("look at \"{}\" ", notes.display()),
+            format!("look at[#image 1] \"{}\" ", notes.display()),
             "other files are referenced by quoted path"
         );
     });

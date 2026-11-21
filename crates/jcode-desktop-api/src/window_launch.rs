@@ -8,7 +8,7 @@
 //! This Global lives in the shared API crate for the same reason as
 //! [`crate::ImageIds`]: a UI-local Global would get a different TypeId in the
 //! hot-reloaded cdylib and silently split host and UI state.
-use std::{collections::HashMap, ffi::OsString};
+use std::{collections::HashMap, ffi::OsString, rc::Rc};
 
 use gpui::{App, Global};
 
@@ -89,32 +89,41 @@ impl WindowLaunch {
     }
 }
 
-/// Launches keyed by `WindowId::as_u64`. Its presence marks a shared host.
+type BackgroundWindowOpener = Rc<dyn Fn(WindowLaunch, &mut App) -> Result<u64, String>>;
+
+/// Window-scoped launches and their host's native window factory.
 #[derive(Default)]
-pub struct WindowLaunches(HashMap<u64, WindowLaunch>);
+pub struct WindowLaunches {
+    launches: HashMap<u64, WindowLaunch>,
+    shared: bool,
+    background_opener: Option<BackgroundWindowOpener>,
+}
 
 impl Global for WindowLaunches {}
 
 impl WindowLaunches {
     /// Mark this App as a shared single-panel host.
     pub fn install(cx: &mut App) {
-        if !cx.has_global::<Self>() {
-            cx.set_global(Self::default());
-        }
+        cx.default_global::<Self>().shared = true;
     }
 
     pub fn shared(cx: &App) -> bool {
-        cx.has_global::<Self>()
+        cx.try_global::<Self>().is_some_and(|state| state.shared)
+    }
+
+    /// Forwarded launches are separate, intentionally fresh windows.
+    pub fn is_forwarded(cx: &App, window: u64) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|state| state.launches.contains_key(&window))
     }
 
     pub fn insert(cx: &mut App, window: u64, launch: WindowLaunch) {
-        Self::install(cx);
-        cx.global_mut::<Self>().0.insert(window, launch);
+        cx.default_global::<Self>().launches.insert(window, launch);
     }
 
     pub fn remove(cx: &mut App, window: u64) {
         if cx.has_global::<Self>() {
-            cx.global_mut::<Self>().0.remove(&window);
+            cx.global_mut::<Self>().launches.remove(&window);
         }
     }
 
@@ -122,8 +131,23 @@ impl WindowLaunches {
     /// did not register (the first window, or an older host).
     pub fn get(cx: &App, window: u64) -> WindowLaunch {
         cx.try_global::<Self>()
-            .and_then(|launches| launches.0.get(&window).cloned())
+            .and_then(|state| state.launches.get(&window).cloned())
             .unwrap_or_else(WindowLaunch::current_process)
+    }
+
+    pub fn set_background_opener(
+        cx: &mut App,
+        open: impl Fn(WindowLaunch, &mut App) -> Result<u64, String> + 'static,
+    ) {
+        cx.default_global::<Self>().background_opener = Some(Rc::new(open));
+    }
+
+    pub fn open_in_background(cx: &mut App, launch: WindowLaunch) -> Result<u64, String> {
+        let open = cx
+            .try_global::<Self>()
+            .and_then(|state| state.background_opener.clone())
+            .ok_or_else(|| "host does not support opening a window".to_owned())?;
+        open(launch, cx)
     }
 }
 

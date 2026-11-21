@@ -9,6 +9,13 @@ pub struct ResponseStats {
     pub cache_read_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
     pub tool_calls: Option<u64>,
+    /// Unix epoch milliseconds when the response arrived (live: when the turn
+    /// finished, restored: the stored message's record time). Never render time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<i64>,
+    /// Last observed model-usage event, distinct from the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_at_ms: Option<i64>,
 }
 
 impl From<jcode_sdk::ResponseStats> for ResponseStats {
@@ -19,7 +26,9 @@ impl From<jcode_sdk::ResponseStats> for ResponseStats {
             output_tokens: stats.output_tokens,
             cache_read_tokens: stats.cache_read_tokens,
             cache_creation_tokens: stats.cache_creation_tokens,
-            tool_calls: None,
+            tool_calls: stats.tool_calls,
+            at_ms: None,
+            cache_at_ms: None,
         }
     }
 }
@@ -32,6 +41,8 @@ pub(super) fn fixture() -> ResponseStats {
         cache_read_tokens: Some(18_200),
         cache_creation_tokens: None,
         tool_calls: Some(5),
+        at_ms: None,
+        cache_at_ms: None,
     }
 }
 
@@ -41,6 +52,7 @@ pub(super) struct Tracker {
     active: bool,
     stats: ResponseStats,
     tools: HashSet<String>,
+    cache_touch: Option<(i64, Option<u64>)>,
 }
 
 impl Tracker {
@@ -66,8 +78,8 @@ impl Tracker {
                     *self.stats.tool_calls.get_or_insert(0) += 1;
                 }
             }
-            // The harness emits one usage event per completed model request.
-            // Sum tool rounds, never session totals or latest context occupancy.
+            // Legacy response-footer counters. Prompt cache request accounting
+            // uses RequestUsage instead, since these snapshots can repeat.
             ApiEvent::TokenUsage {
                 input,
                 output,
@@ -76,6 +88,13 @@ impl Tracker {
                 ..
             } => {
                 self.active = true;
+                if let Some(tokens) = cache_read_input
+                    .filter(|tokens| *tokens > 0)
+                    .or(cache_creation_input.filter(|tokens| *tokens > 0))
+                    && let Some(at) = now_ms()
+                {
+                    self.cache_touch = Some((at, Some(tokens)));
+                }
                 add(&mut self.stats.input_tokens, *input);
                 add(&mut self.stats.output_tokens, *output);
                 if let Some(read) = cache_read_input {
@@ -89,14 +108,47 @@ impl Tracker {
         }
     }
 
+    pub(super) fn cache_touch(&self) -> Option<(i64, Option<u64>)> {
+        self.cache_touch
+    }
+
     pub(super) fn finish(&mut self) -> Option<ResponseStats> {
         let mut finished = std::mem::take(self);
         if !finished.active {
             return None;
         }
         finished.stats.duration_secs = finished.started.map(|at| at.elapsed().as_secs_f64());
-        (!finished.stats.labels().is_empty()).then_some(finished.stats)
+        finished.stats.cache_at_ms = finished.cache_touch.map(|(at, _)| at);
+        finished.stats.at_ms = now_ms();
+        (!finished.stats.stat_labels().is_empty()).then_some(finished.stats)
     }
+}
+
+/// Wall-clock time as Unix epoch milliseconds, for stamping live messages.
+pub(super) fn now_ms() -> Option<i64> {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_millis()).ok()
+}
+
+/// `HH:MM` for an epoch-millisecond timestamp in the given zone.
+pub(super) fn clock_label_in<Tz: chrono::TimeZone>(ms: i64, zone: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    Some(
+        zone.timestamp_millis_opt(ms)
+            .single()?
+            .format("%H:%M")
+            .to_string(),
+    )
+}
+
+/// `HH:MM` in the viewer's local zone. Derived from the message's own
+/// timestamp, never from render time.
+pub(super) fn clock_label(ms: i64) -> Option<String> {
+    clock_label_in(ms, &chrono::Local)
 }
 
 fn add(total: &mut Option<u64>, value: u64) {
@@ -129,29 +181,61 @@ fn tokens(value: u64) -> String {
     }
 }
 
-struct StatsTooltip(String);
+struct StatsTooltip(Vec<(&'static str, String)>);
 impl Render for StatsTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("StatsTooltip");
         div()
+            .debug_selector(|| "stats-tooltip".into())
+            .flex()
+            .flex_col()
+            .gap_1()
             .px_3()
             .py_2()
-            .max_w(px(380.))
-            .rounded_md()
+            .min_w(px(190.))
+            .rounded_xl()
             .bg(Theme::global().HEADER_BG)
             .border_1()
             .border_color(Theme::global().PANEL_BORDER)
             .text_size(px(11.))
             .text_color(Theme::global().TEXT_DIM)
-            .child(self.0.clone())
+            .child(
+                div()
+                    .text_color(Theme::global().TEXT)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Response tokens"),
+            )
+            .children(self.0.iter().enumerate().map(|(index, (label, value))| {
+                div()
+                    .debug_selector(move || format!("stats-tooltip-row-{index}"))
+                    .flex()
+                    .flex_none()
+                    .justify_between()
+                    .gap_4()
+                    .child(*label)
+                    .child(
+                        div()
+                            .text_color(Theme::global().TEXT)
+                            .font_family(Theme::global().FONT_MONO)
+                            .child(value.clone()),
+                    )
+            }))
     }
 }
 
 impl ResponseStats {
     pub(super) fn is_empty(&self) -> bool {
-        self.labels().is_empty()
+        self.stat_labels().is_empty()
     }
+
+    /// The meta line: arrival time first, then the response accounting.
     fn labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self.at_ms.and_then(clock_label).into_iter().collect();
+        labels.extend(self.stat_labels());
+        labels
+    }
+
+    fn stat_labels(&self) -> Vec<String> {
         let mut labels = Vec::new();
         if let Some(duration) = self.duration_secs.and_then(duration_label) {
             labels.push(format!("Worked {duration}"));
@@ -171,24 +255,24 @@ impl ResponseStats {
         labels
     }
 
-    fn detail(&self) -> String {
-        let mut details = vec!["Provider-reported totals for this response across model requests. Input includes cache for OpenAI, but excludes cache reads/writes for Anthropic. Elapsed time includes tool work observed by Desktop.".to_string()];
+    fn detail(&self) -> Vec<(&'static str, String)> {
+        let mut details = Vec::new();
         if let Some(input) = self.input_tokens {
-            details.push(format!("Input: {input} tokens."));
+            details.push(("Input", input.to_string()));
         }
         if let Some(output) = self.output_tokens {
-            details.push(format!("Output: {output} tokens."));
+            details.push(("Output", output.to_string()));
         }
         if let Some(read) = self.cache_read_tokens {
-            details.push(format!("Cache read: {read} tokens."));
+            details.push(("Cache read", read.to_string()));
         }
         if let Some(created) = self.cache_creation_tokens {
-            details.push(format!("Cache write: {created} tokens."));
+            details.push(("Cache write", created.to_string()));
         }
-        if self.input_tokens.is_none() {
-            details.push("Token usage was not reported.".into());
+        if details.is_empty() {
+            details.push(("Usage", "Not reported".into()));
         }
-        details.join(" ")
+        details
     }
 
     pub(super) fn render(&self, index: usize) -> gpui::Stateful<gpui::Div> {
@@ -221,6 +305,39 @@ impl ResponseStats {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn response_tooltip_renders_separate_token_rows(cx: &mut gpui::TestAppContext) {
+        let stats = ResponseStats {
+            input_tokens: Some(135_000),
+            output_tokens: Some(500),
+            cache_read_tokens: Some(42),
+            cache_creation_tokens: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            stats.detail(),
+            [
+                ("Input", "135000".into()),
+                ("Output", "500".into()),
+                ("Cache read", "42".into()),
+                ("Cache write", "10".into())
+            ]
+        );
+        let (_, vcx) = cx.add_window_view(|_, _| StatsTooltip(stats.detail()));
+        vcx.run_until_parked();
+        let mut bottom = vcx.debug_bounds("stats-tooltip").unwrap().top();
+        for selector in [
+            "stats-tooltip-row-0",
+            "stats-tooltip-row-1",
+            "stats-tooltip-row-2",
+            "stats-tooltip-row-3",
+        ] {
+            let row = vcx.debug_bounds(selector).unwrap();
+            assert!(row.top() >= bottom);
+            bottom = row.bottom();
+        }
+    }
+
     fn usage(input: u64, output: u64, cache: Option<u64>) -> ApiEvent {
         ApiEvent::TokenUsage {
             session_id: "stats".into(),
@@ -230,6 +347,70 @@ mod tests {
             cache_creation_input: None,
             effective_budget: None,
         }
+    }
+
+    #[test]
+    fn meta_line_starts_with_the_arrival_time_from_the_message_record() {
+        // 2026-11-15T05:21:14Z rendered in a fixed +11:00 zone.
+        let zone = chrono::FixedOffset::east_opt(11 * 3600).unwrap();
+        assert_eq!(
+            clock_label_in(1_794_720_074_000, &zone).as_deref(),
+            Some("16:21")
+        );
+        let mut stats = fixture();
+        stats.at_ms = Some(1_794_720_074_000);
+        let labels = stats.labels();
+        assert_eq!(labels[0], clock_label(1_794_720_074_000).unwrap());
+        assert_eq!(labels[1], "Worked 1m 24s");
+        stats.at_ms = None;
+        assert_eq!(stats.labels()[0], "Worked 1m 24s");
+    }
+
+    #[gpui::test]
+    fn history_timestamps_survive_loading_and_shift_with_prepended_history(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("stats-time", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.history_loaded = false;
+            let message =
+                |role: &str, content: &str, at: i64, stats: bool| jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
+                    role: role.into(),
+                    content: content.into(),
+                    timestamp_ms: Some(at),
+                    tool: None,
+                    response_stats: stats.then(|| jcode_sdk::ResponseStats {
+                        input_tokens: Some(1_000),
+                        ..Default::default()
+                    }),
+                };
+            panel.load_history(
+                vec![
+                    message("user", "Question", 1_794_720_060_000, false),
+                    message("assistant", "Answer", 1_794_720_074_000, true),
+                ],
+                vec![],
+                cx,
+            );
+            assert_eq!(
+                panel.user_clock(0),
+                clock_label(1_794_720_060_000),
+                "prompt shows its stored time, not render time"
+            );
+            let Item::ResponseStats(stats) = &panel.items[2] else {
+                panic!("missing stats")
+            };
+            assert_eq!(stats.at_ms, Some(1_794_720_074_000));
+            assert_eq!(stats.labels()[0], clock_label(1_794_720_074_000).unwrap());
+        });
     }
 
     #[gpui::test]
@@ -307,7 +488,7 @@ mod tests {
                 panic!("missing footer")
             };
             assert_eq!(
-                stats.labels(),
+                stats.labels()[1..],
                 ["Worked 1m 24s", "↑ 24.6k in", "↓ 1.8k out"]
             );
         });
@@ -335,9 +516,10 @@ mod tests {
             );
         }
         let stats = tracker.finish().unwrap();
-        assert_eq!(stats.labels(), ["2 tools"]);
+        assert_eq!(stats.stat_labels(), ["2 tools"]);
+        assert!(stats.at_ms.is_some(), "a finished live response is stamped");
         assert_eq!(stats.input_tokens, None);
-        assert!(stats.detail().contains("not reported"));
+        assert_eq!(stats.detail(), [("Usage", "Not reported".into())]);
         assert!(tracker.finish().is_none());
     }
 
@@ -355,18 +537,23 @@ mod tests {
         let history = || {
             vec![
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     role: "user".into(),
                     content: "Question".into(),
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                 },
                 jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
+                    timestamp_ms: None,
                     role: "assistant".into(),
                     content: "Answer".into(),
                     tool: None,
                     response_stats: Some(jcode_sdk::ResponseStats {
                         input_tokens: Some(12_000),
                         output_tokens: Some(500),
+                        tool_calls: Some(1),
                         ..Default::default()
                     }),
                 },
@@ -380,7 +567,7 @@ mod tests {
             let Item::ResponseStats(stats) = &panel.items[2] else {
                 panic!("missing saved stats")
             };
-            assert_eq!(stats.labels(), ["↑ 12.0k in", "↓ 500 out"]);
+            assert_eq!(stats.labels(), ["↑ 12.0k in", "↓ 500 out", "1 tool"]);
             for _ in 0..2 {
                 panel.load_history(history(), vec![], cx);
                 panel.apply(
@@ -425,21 +612,23 @@ mod tests {
                 "authoritative history replaces partial telemetry"
             );
             assert_eq!(stats.output_tokens, Some(500));
-            assert_eq!(stats.labels()[0], "Worked 1m 24s");
+            assert_eq!(stats.stat_labels()[0], "Worked 1m 24s");
         });
     }
 
     #[test]
     fn response_stats_sum_rounds_and_reset_without_double_counting_cache() {
-        let mut tracker = Tracker::default();
-        tracker.started = Some(Instant::now() - Duration::from_secs(84));
+        let mut tracker = Tracker {
+            started: Some(Instant::now() - Duration::from_secs(84)),
+            ..Tracker::default()
+        };
         tracker.observe(&usage(12_000, 500, Some(8_000)), Some("openai"));
         tracker.observe(&usage(15_000, 900, Some(10_000)), Some("openai"));
         let stats = tracker.finish().unwrap();
         assert_eq!(stats.input_tokens, Some(27_000));
         assert_eq!(stats.output_tokens, Some(1_400));
         assert_eq!(stats.cache_read_tokens, Some(18_000));
-        assert_eq!(stats.labels()[0], "Worked 1m 24s");
+        assert_eq!(stats.stat_labels()[0], "Worked 1m 24s");
         assert!(tracker.finish().is_none());
         tracker.observe(&usage(100, 20, None), Some("openai"));
         assert_eq!(tracker.finish().unwrap().input_tokens, Some(100));

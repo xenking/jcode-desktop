@@ -117,7 +117,7 @@ fn format_tokens(tokens: u64) -> String {
     let digits = tokens.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(digit);
@@ -203,8 +203,7 @@ impl Panel {
         let tooltip = lines
             .iter()
             .map(|(label, detail, cost)| format!("{label}: {detail} {cost}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
         div().child(
             div()
                 .id("voice-costs")
@@ -214,7 +213,10 @@ impl Panel {
                 .font_family(theme.FONT_MONO)
                 .text_size(px(10.))
                 .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
+                .tooltip(move |_, cx| cx.new(|_| super::usage::RowsTooltip {
+                    title: "Voice cost estimate".into(),
+                    rows: tooltip.clone(),
+                }).into())
                 .child(cost_summary(trace, waiting)),
         )
     }
@@ -245,11 +247,7 @@ impl Panel {
                 index + 1,
                 pill.label,
                 pill.score,
-                match (&decision, pill.winner) {
-                    (Some(decision), true) => format!("\n{decision}"),
-                    (None, true) => " · Selected route".into(),
-                    _ => String::new(),
-                }
+                if pill.winner { " · Selected route" } else { "" }
             );
             let winner = pill.winner;
             div()
@@ -443,6 +441,7 @@ impl Panel {
     }
 }
 
+#[allow(dead_code)]
 const RANKING_MAX_HEIGHT: f32 = 72.;
 
 #[cfg(test)]

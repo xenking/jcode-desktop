@@ -173,6 +173,9 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        let row = vcx.debug_bounds("tool-header").expect("compact edit row");
+        vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
         let header = vcx
             .debug_bounds("edit-change-counts-0")

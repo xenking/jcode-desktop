@@ -1,5 +1,223 @@
 # Interaction latency profile
 
+## Sidebar invalidation follow-up, 2026-11-15
+
+A passive generation-6 capture (`target/live-profile/render-cleanup-gen6/`)
+showed 221 sidebar renders across 243 draws. Its 18 animation intervals are
+not enough to establish sustained frame rate. This was a reason to keep
+investigating after the first allocation cleanup, not evidence of 120 fps.
+
+Two independent dependencies made text-only panel updates rebuild the list:
+
+- The sidebar read full panel entities for identity, title, activity and todo
+  progress. Workspace now publishes a small metadata entity bounded to its
+  current slots, only when those visible fields change. It does not retain
+  transcripts, panels, or old generations of metadata.
+- The sidebar spinner's `Context::observe` callback leased its spinner entity
+  on every panel notification, even if activity had not changed. GPUI records
+  that lease as a write. Its observer now compares before updating, and the
+  initialized sidebar spinner uses the observed activity rather than reading
+  the entire panel again during every render.
+
+The integrated regression sends five real text-delta events to a working
+panel and checks that both the session-list render count and metadata
+allocation stay unchanged. Title, todo progress, working directory, session
+identity, focus, and turn completion still invalidate the relevant sidebar
+state. The full workspace suite passes 1,949 tests, with 17 ignored.
+
+Sidebar construction also sorts its already-owned session catalog in place,
+reuses the non-closing-panel lookup for membership, indexes project groups,
+and borrows existing repository-cache keys on hits. Stable ordering and
+cached negative repository results have dedicated regressions. Duplicate
+session IDs keep the original first-record lookup behavior.
+
+Three alternating 10-second steady-stream runs per frozen binary are saved
+under `target/perf/sidebar-stream-{baseline,candidate}-{1,2,3}/`. They use
+three half-width panels on the private 2880×1800, scale-1.6, 120 Hz GPU output.
+Medians across all three runs:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Sidebar list builds/s | 82.05 | 30.06 |
+| Sidebar render CPU ms/s | 5.06 | 2.00 |
+| Mean draw time | 1.286 ms | 1.092 ms |
+| UI-thread CPU | 28.80% | 25.50% |
+| RSS | 135.58 MiB | 135.83 MiB |
+| Animation FPS | 122.22 | 121.90 |
+
+This establishes less sidebar reconstruction (63%) and lower median work,
+not an FPS gain. Sample-window p95 maxima did not improve (2.86 to 3.32 ms),
+and one baseline run had a 42.9 ms outlier. Shared system load remains a
+confounder. The first unpaired baseline was much slower and is deliberately
+excluded from these comparisons. The remaining roughly 30 sidebar builds/s
+are consistent with the fixture's real workspace bridge-update cadence, which
+also advances catalog recency. That state must not be frozen just to improve
+a benchmark.
+
+Offline visual review: `target/sidebar-stream-review.png` shows three live
+panels, activity marks and todo progress. The measured visible-sidebar path
+is unchanged by the final guard that skips metadata preparation when the
+sidebar is hidden.
+
+A separate six-panel camera-pan check is saved under
+`target/perf/sidebar-nav-{baseline,candidate}-{1,2}/`. All runs traversed four
+camera targets over 2,362 px, confirming actual camera movement. Candidate
+runs reached 122.35/122.27 animation fps with 2.71/3.30 ms mean draw time;
+baselines were 122.17/107.39 fps and 2.89/5.40 ms. The loaded second baseline
+makes a pooled speedup claim inappropriate. Candidate maxima were still
+10.45/10.49 ms, above the 8.33 ms budget, so this does not prove every frame
+meets 120 Hz.
+
+The final running host activated UI generation 8 without a restart. Passive
+verification at `target/live-profile/sidebar-projection-gen8/` captured only
+14 draws and no input or animation intervals. It verifies the updated app
+is running, not sustained performance of the user's full live workspace.
+
+## Rendering allocation and synchronization cleanup, 2026-11-15
+
+A fresh real-GPU half-width camera-pan profile is saved at
+`target/perf/render-next-profile/`. Under panel-render stacks, markdown document
+construction accounted for roughly half the inclusive samples. The large
+`libc.so.6!fun_176380` bucket is `__memcpy_avx_unaligned_erms` (confirmed by
+local objdump), not an event-loop timer hotspot. GPUI style/layout and scene
+replay are substantial remaining costs.
+
+This pass removes work rather than adding a larger render cache:
+
+- Stable theme lookups read the existing palette/status atomic instead of
+  taking the transition mutex. Animated transitions still use the lock and
+  preserve their interpolated palettes. Concurrent selection publishes the
+  target and transition flag together.
+- Prompt-row indices and the existing latest-todo snapshot are shared with
+  `Arc` rather than deep-cloned per panel frame. Their chrome fingerprint is
+  computed only when settled items change. Streaming/disclosure changes reuse
+  these snapshots; replacement drops old snapshots, covered by a weak-reference
+  regression. This is bounded sharing, not an accumulating cache.
+- Strip geometry uses one buffer instead of four parallel buffers per frame.
+  Applet scope strings are borrowed instead of copied.
+- Ordered, disjoint highlight ranges use a linear pass instead of endpoint
+  sorting and a quadratic range scan. Nested/overlapping ranges keep the
+  original merge algorithm. Exhaustive small-range equivalence checks cover
+  empty, reversed, adjacent, overlapping and nested inputs.
+- Markdown transfers paragraph/highlight/link buffers rather than discarding
+  copies, skips inactive fade-vector allocation, and avoids dozens of no-op
+  string replacement allocations in inline math.
+- Panel activity and minimap queries borrow already-lowercase status strings
+  rather than allocating a fresh lowercase copy several times per frame.
+  Mixed-case errors, lost sessions and live activity keep the same behavior.
+- Inline math skips command substitutions entirely when no backslash remains,
+  and copies ordinary formula text in runs instead of testing six command
+  prefixes for every character.
+- Non-avatar markdown leaves no longer have a redundant outer div. An exact
+  glyph-position and wrapping regression compares the old and new structure at
+  three widths, including Unicode, inline code, bold text and links.
+
+Same-process release highlight benchmark, 10,000 iterations:
+
+| Disjoint spans | Previous | Linear path |
+| --- | ---: | ---: |
+| 8 | 1.881 ms | 0.265 ms |
+| 64 | 33.750 ms | 1.659 ms |
+| 256 | 449.984 ms | 6.750 ms |
+
+The theme benchmark uses nine alternating rounds of one million calls in the
+**default dev/test profile**, not release: median 31.21 ns/call for the previous
+mutex path and 14.27 ns/call for stable lookup. These are isolated operation
+benchmarks, not whole-frame speedup claims.
+
+Three alternating 10-second real-GPU comparisons of the first cleanup build
+(before the final wrapper removal) versus the saved baseline produced median
+animation FPS **112.78 versus 113.08**, and mean draw time **4.519 versus
+4.556 ms**. Median RSS was 144.76 versus 143.09 MiB. There is **no established
+whole-frame improvement** in those samples. Binary baseline is
+`target/nav120/render-next-baseline`; data is
+`target/perf/render-efficiency-{baseline,candidate}-{1,2,3}/`.
+A separate CPU pan run recorded 265 frames, p50/p95/max 1.93/3.25/8.84 ms,
+including one frame above 8.33 ms. Separate hosted runs under changing load
+cannot establish a regression or gain against earlier CPU profiles.
+
+The final wrapper-removal profile at `target/perf/render-efficiency-final-profile/`
+recorded 111.5 animation FPS, 4.68 ms mean draw and 142 MiB RSS. It still shows
+GPUI style/layout memory movement, bounds-tree insertion and scene sprite
+sorting as prominent costs. These engine costs are not proof of a safe generic
+translated-subtree cache: moving views also need correct clipping, mouse
+geometry and live-child invalidation. Such a cache was not introduced.
+
+Validation includes 45 markdown tests (selection/link/geometry included),
+79 UI-core tests, panel snapshot/cache/status regressions and a final full
+workspace run with **1,946 passed, zero failed, 17 ignored**. The earlier two
+failures were assertions in concurrent destination-picker changes; that owner
+subsequently fixed and committed them independently. Offline screenshots and
+live generation activation are checked separately from build success. The
+sustained physical-display 120 FPS target remains unproven.
+
+## Panel camera navigation, 2026-11-15
+
+Camera frames previously rebuilt the stationary sidebar along with Workspace.
+The sidebar now has its own retained view. A camera-only notification can replay
+that view, while changes to workspace selection, panel metadata, globals and
+hover state still invalidate it. A regression test checks both replay and model
+invalidation, and the live render attribution names this boundary `SidebarChrome`.
+
+The release CPU-only navigation test uses six half-width panels, each with 120
+conversation items, and delivers every animation frame rather than measuring
+only the first frame after a keypress:
+
+```sh
+justrust test --release -p jcode-desktop-ui --lib navigation_frame_profile -- --ignored --nocapture
+```
+
+On the warmed horizontal-pan workload, baseline p50/p95/max were
+2.11/3.50/6.07 ms over 264 frames. With sidebar isolation they were
+1.96/2.73/5.70 ms over 264 frames, with zero CPU-only samples above 8.33 ms in
+either run. These are separate hosted runs, not proof of live 120 FPS or GPU
+presentation latency. An explicit cached-panel layout boundary was also tried
+and reverted: its small difference did not justify losing the ordinary view's
+fine-grained nested invalidation.
+
+The performance suite can now use a private headless Wayland compositor and the
+real GPU, without driving the user's desktop:
+
+```sh
+python3 scripts/perf-suite.py target/perf/navigation-gpu \
+  --display wayland --sway-prefix target/headless-sway-tools \
+  --scenario navigate --retention on --panels 6 --panel-width 0.5 \
+  --seconds 12 --repeats 3
+```
+
+The default private output is 2880x1800 at 120 Hz, scale 1.6. Metadata records
+the output, scale, renderer and binary hash. Use `PERF_SUITE_MODE` and
+`PERF_SUITE_SCALE` to choose another setup. Hardware rendering is distinct from
+the default Xvfb/lavapipe CPU fixture. A private headless compositor is still not
+the user's physical display and does not prove physical scanout cadence.
+
+Two measurement pitfalls were found and corrected: repeated short-lived virtual
+keyboards made the native window inactive between keys, triggering GPUI's
+inactive-window throttle, and fixture widths of `1 / panel_count` did not
+necessarily produce horizontal camera motion. The Wayland measurement now keeps
+one keyboard attached throughout the sampling interval. `--panel-width` applies
+native width presets, and wide-panel navigation must record changing camera
+targets. Do not compare the earlier narrow-panel focus-only numbers as if they
+were sustained camera-pan results. Samply capture failures now fail visibly with
+a diagnostic log rather than silently producing a timing-only run.
+
+The earlier live capture at `target/live-profile/nav-before-1114` recorded 984
+animation intervals averaging 15.00 ms, or 66.65 FPS, with 5.57 ms average CPU
+draw time. CPU draw timing excludes renderer submission/present and does not
+explain the entire presentation interval. No claim that all navigation frames
+meet the 8.33 ms budget is made from these measurements.
+
+Three alternating eight-second private-GPU runs per binary, with six half-width
+panels in FolderTabs mode, verified four distinct camera targets spanning
+2362.26 logical pixels. Median animation FPS was 72.13 before versus 84.90
+after, and median mean-draw time was 9.06 versus 8.02 ms. UI-thread utilization
+was 57.63% versus 61.95%, consistent with drawing more frames, not an idle-CPU
+saving claim. Results varied substantially: concurrent work drove the 16-core
+machine's load average above 48 and CPU pressure to 46% during comparison.
+These results support further investigation but do not isolate the sidebar's
+effect from scheduling contention and do not meet the 120 FPS goal. Artifacts:
+`target/perf/camera-gpu-compare-{baseline,candidate}-{1,2,3}`.
+
 ## Refresh-rate investigation, 2026-09-21
 
 The production scheduler does **not** have a blanket 120 FPS cap. The current

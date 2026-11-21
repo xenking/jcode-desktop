@@ -251,14 +251,13 @@ fn node(
                 .flex()
                 .flex_col()
                 .gap(space(Space::Sm, cx.compact))
-                .overflow_y_scroll()
                 .min_h_0();
             if let Some(height) = max_height {
                 el = el.max_h(px((*height).clamp(40, 4000) as f32));
             } else {
                 el = el.flex_1();
             }
-            el.children(children(cx, kids, path, window, app))
+            crate::transcript_scroll::vertical(el.children(children(cx, kids, path, window, app)))
                 .into_any_element()
         }
         NodeKind::Card {
@@ -448,7 +447,6 @@ fn node(
                 .id(id(cx, path, node_ref))
                 .flex()
                 .flex_col()
-                .overflow_x_scroll()
                 .rounded_xl()
                 .bg(theme.TOOL_BG)
                 .py_1()
@@ -467,7 +465,7 @@ fn node(
                         .children(row.iter().map(|c| cell(c.clone(), false))),
                 );
             }
-            table.into_any_element()
+            crate::transcript_scroll::horizontal(table).into_any_element()
         }
         NodeKind::Progress { value, label } => {
             let fraction = value.unwrap_or(0.35).clamp(0.0, 1.0);

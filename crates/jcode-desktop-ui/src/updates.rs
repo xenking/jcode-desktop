@@ -314,6 +314,7 @@ fn report_active() {
 
 /// Forget the cached release result so the next render checks again.
 /// An in-flight check is left alone.
+#[allow(dead_code)]
 pub fn recheck_release() {
     let mut state = release_state()
         .lock()
@@ -395,6 +396,7 @@ pub fn set(next: UpdateState) {
 
 /// Numeric mirror of [`UpdateState`], shared with `updater_bootstrap.m`.
 /// Keep these values in sync with the `JcodeUpdate*` constants there.
+#[allow(dead_code)]
 pub const STATE_IDLE: u32 = 0;
 pub const STATE_CHECKING: u32 = 1;
 pub const STATE_AVAILABLE: u32 = 2;
@@ -512,6 +514,18 @@ pub fn request_now() -> UpdateRequest {
     }
     set(previous);
     UpdateRequest::Unavailable
+}
+
+/// Whether this build can install an update itself (Sparkle registered on
+/// macOS, or the packaged self-updater elsewhere). Without one, a newer
+/// release is offered as a download link instead of a failing install.
+pub fn installer_available() -> bool {
+    !CHECK_NOW.load(Ordering::Acquire).is_null() || (!cfg!(test) && packaged::supported())
+}
+
+/// The fork's release page for a published desktop version.
+pub fn release_page(version: &str) -> String {
+    format!("https://github.com/xenking/jcode-desktop/releases/tag/desktop-v{version}")
 }
 
 /// Ask the platform updater to install the staged build and relaunch.

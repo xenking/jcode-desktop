@@ -67,12 +67,12 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
     let mut hard_break = false;
 
     let flush = |paragraph: &mut String, blocks: &mut Vec<Block>| {
-        if !paragraph.trim().is_empty() {
-            blocks.push(Block::Paragraph(
-                std::mem::take(paragraph).trim().to_string(),
-            ));
-        } else {
-            paragraph.clear();
+        // Each line was trim_start'ed before insertion, so only the end
+        // needs trimming. Transfer its buffer instead of allocating and
+        // copying every paragraph again during every visible-row render.
+        paragraph.truncate(paragraph.trim_end().len());
+        if !paragraph.is_empty() {
+            blocks.push(Block::Paragraph(std::mem::take(paragraph)));
         }
     };
 
@@ -119,12 +119,10 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
                 body.push_str(math_line.trim());
             }
             blocks.push(Block::Math(body));
-        } else if trimmed.starts_with("$$") && trimmed.ends_with("$$") && trimmed.len() > 4 {
-            flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Math(
-                trimmed[2..trimmed.len() - 2].trim().to_string(),
-            ));
-        } else if trimmed.starts_with("\\[") && trimmed.ends_with("\\]") && trimmed.len() > 4 {
+        } else if (trimmed.starts_with("$$") && trimmed.ends_with("$$")
+            || trimmed.starts_with("\\[") && trimmed.ends_with("\\]"))
+            && trimmed.len() > 4
+        {
             flush(&mut paragraph, &mut blocks);
             blocks.push(Block::Math(
                 trimmed[2..trimmed.len() - 2].trim().to_string(),
@@ -372,8 +370,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         }
         // Inline math delimiters \( ... \) come before the generic escape
         // rule, which would otherwise eat the opening parenthesis.
-        if source[i..].starts_with("\\(") {
-            if let Some(end) = source[i + 2..].find("\\)") {
+        if source[i..].starts_with("\\(")
+            && let Some(end) = source[i + 2..].find("\\)") {
                 let content = latex_to_text(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&content);
@@ -387,7 +385,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 4;
                 continue;
             }
-        }
         // Escapes: \* keeps the literal character.
         if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_punctuation() {
             plain.push(bytes[i + 1] as char);
@@ -407,8 +404,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 continue;
             }
         }
-        if bytes[i] == b'$' && !bytes[i..].starts_with(b"$$") {
-            if let Some(end) = source[i + 1..].find('$') {
+        if bytes[i] == b'$' && !bytes[i..].starts_with(b"$$")
+            && let Some(end) = source[i + 1..].find('$') {
                 let content = latex_to_text(&source[i + 1..i + 1 + end]);
                 let start = plain.len();
                 plain.push_str(&content);
@@ -422,10 +419,22 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 2;
                 continue;
             }
+        // An attachment marker is literal text, never a markdown link label,
+        // even when prose in parentheses follows it directly: `[#image 1](see
+        // above)` made the marker a link to "see above", hid its chip and sent
+        // the OS an invalid URL on click (Finder error -50).
+        if bytes[i] == b'['
+            && let Some(marker) = crate::input::image_marker_ranges(&source[i..])
+                .into_iter()
+                .find(|range| range.start == 0)
+        {
+            plain.push_str(&source[i..i + marker.end]);
+            i += marker.end;
+            continue;
         }
         // Links: [label](url) and bare <url>.
-        if bytes[i] == b'[' {
-            if let Some(close) = source[i..].find("](") {
+        if bytes[i] == b'['
+            && let Some(close) = source[i..].find("](") {
                 let label_end = i + close;
                 if let Some(paren) = source[label_end + 2..].find(')') {
                     let label = &source[i + 1..label_end];
@@ -449,9 +458,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     continue;
                 }
             }
-        }
-        if bytes[i] == b'<' {
-            if let Some(close) = source[i..].find('>') {
+        if bytes[i] == b'<'
+            && let Some(close) = source[i..].find('>') {
                 let inner = &source[i + 1..i + close];
                 if inner.starts_with("http://") || inner.starts_with("https://") {
                     let start = plain.len();
@@ -463,7 +471,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     continue;
                 }
             }
-        }
         if source[i..].starts_with("http://") || source[i..].starts_with("https://") {
             let end = source[i..]
                 .find(|c: char| c.is_whitespace())
@@ -477,8 +484,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
             i += url.len();
             continue;
         }
-        if bytes[i..].starts_with(b"~~") {
-            if let Some(end) = source[i + 2..].find("~~") {
+        if bytes[i..].starts_with(b"~~")
+            && let Some(end) = source[i + 2..].find("~~") {
                 let nested = inline_spans_impl::<BULK_TEXT>(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&nested.plain);
@@ -508,7 +515,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 i += end + 4;
                 continue;
             }
-        }
         let strong_markers: [(&str, HighlightStyle); 3] = [
             (
                 "***",
@@ -578,8 +584,8 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_alphanumeric());
-            if boundary_ok {
-                if let Some(end) = source[i + 1..].find(marker) {
+            if boundary_ok
+                && let Some(end) = source[i + 1..].find(marker) {
                     let inner = &source[i + 1..i + 1 + end];
                     if !inner.is_empty() && !inner.starts_with(' ') {
                         let nested = inline_spans_impl::<BULK_TEXT>(inner);
@@ -608,7 +614,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                         continue;
                     }
                 }
-            }
         }
         // Advance one full UTF-8 character.
         let ch_len = source[i..].chars().next().map_or(1, char::len_utf8);
@@ -621,6 +626,20 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         highlights,
         links,
     }
+}
+
+/// Only a URL with a scheme is handed to the OS. A link target such as
+/// `сессия и TLDR видео` or `crates/foo.rs` is not openable, and macOS answers
+/// it with a modal "The application can't be opened. -50".
+fn openable_url(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let (scheme, rest) = url.split_once(':')?;
+    let valid_scheme = scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    (valid_scheme && !rest.is_empty() && !url.chars().any(char::is_whitespace)).then_some(url)
 }
 
 fn link_style() -> HighlightStyle {
@@ -643,6 +662,36 @@ fn link_style() -> HighlightStyle {
 /// styles of every range covering each segment (inner spans first, so an
 /// outer wrapper refines rather than replaces them).
 pub(crate) fn flatten_highlights(
+    highlights: &[(std::ops::Range<usize>, HighlightStyle)],
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    // Most inline emphasis and syntax tokens are already ordered and disjoint.
+    // Avoid sorting endpoints and rescanning every range for every segment.
+    if highlights.iter().all(|(range, _)| range.start <= range.end)
+        && highlights
+            .windows(2)
+            .all(|pair| pair[0].0.end <= pair[1].0.start)
+    {
+        let mut flattened: Vec<(std::ops::Range<usize>, HighlightStyle)> =
+            Vec::with_capacity(highlights.len());
+        for (range, style) in highlights {
+            if range.is_empty() {
+                continue;
+            }
+            if let Some((last_range, last_style)) = flattened.last_mut()
+                && last_range.end == range.start
+                && last_style == style
+            {
+                last_range.end = range.end;
+            } else {
+                flattened.push((range.clone(), *style));
+            }
+        }
+        return flattened;
+    }
+    flatten_overlapping_highlights(highlights)
+}
+
+fn flatten_overlapping_highlights(
     highlights: &[(std::ops::Range<usize>, HighlightStyle)],
 ) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
     let mut bounds: Vec<usize> = highlights
@@ -728,16 +777,37 @@ fn latex_to_text(source: &str) -> String {
     // Layout-only commands have no useful textual representation. Models
     // commonly put `\displaystyle` at the start of inline formulas, and
     // leaving it intact is especially distracting in transcript output.
-    for command in ["\\displaystyle", "\\textstyle", "\\scriptstyle"] {
-        text = text.replace(command, "");
+    // Most commands are absent in any one formula. String::replace still
+    // allocates and copies the entire expression on a miss, so avoid dozens
+    // of discarded buffers while preserving the ordered substitution rules.
+    if text.contains('\\') {
+        for (from, to) in [
+            ("\\displaystyle", ""),
+            ("\\textstyle", ""),
+            ("\\scriptstyle", ""),
+        ]
+        .into_iter()
+        .chain(REPLACEMENTS.iter().copied())
+        .chain([("\\left", ""), ("\\right", "")])
+        {
+            if text.contains(from) {
+                text = text.replace(from, to);
+            }
+        }
     }
-    for (from, to) in REPLACEMENTS {
-        text = text.replace(from, to);
+    if text.contains('^') {
+        text = convert_scripts(&text, '^');
     }
-    text = text.replace("\\left", "").replace("\\right", "");
-    text = convert_scripts(&text, '^');
-    text = convert_scripts(&text, '_');
-    text.replace(['{', '}'], "").trim().to_string()
+    if text.contains('_') {
+        text = convert_scripts(&text, '_');
+    }
+    text.retain(|ch| ch != '{' && ch != '}');
+    text.truncate(text.trim_end().len());
+    let leading = text.len() - text.trim_start().len();
+    if leading > 0 {
+        text.drain(..leading);
+    }
+    text
 }
 
 /// Expand the small set of braced TeX commands that affect how an expression
@@ -748,6 +818,14 @@ fn expand_latex_groups(source: &str) -> String {
     let mut i = 0;
     while i < source.len() {
         let rest = &source[i..];
+        // Group syntax can only start with an ASCII backslash. Copy ordinary
+        // formula text in one run instead of probing six commands per glyph.
+        if !rest.starts_with('\\') {
+            let end = rest.find('\\').unwrap_or(rest.len());
+            output.push_str(&rest[..end]);
+            i += end;
+            continue;
+        }
         if let Some(after_command) = rest.strip_prefix("\\frac") {
             let offset = i + rest.len() - after_command.len();
             if let Some((numerator, after_numerator)) = braced_group(source, offset)
@@ -942,6 +1020,86 @@ thread_local! {
     /// The fade handed to the next inline text leaf.
     static LEAF_FADE: std::cell::Cell<StreamFade> =
         const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
+    static PROMPT_IMAGES: std::cell::RefCell<Option<PromptImages>> =
+        const { std::cell::RefCell::new(None) };
+    /// Search terms to mark in the document being rendered: the picker's
+    /// query, so the words that matched stand out in its preview and in the
+    /// session it opened.
+    static SEARCH_TERMS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static PAINTED_PROMPT_TEXT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_rendered_prompt_text() -> Vec<String> {
+    PAINTED_PROMPT_TEXT.with(|text| std::mem::take(&mut *text.borrow_mut()))
+}
+
+#[derive(Clone)]
+pub(crate) struct PromptImages {
+    pub labels: Vec<String>,
+    pub previews: Vec<Option<Arc<gpui::Image>>>,
+    pub on_click: PromptImageClick,
+}
+
+type PromptImageClick = std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>;
+
+#[cfg(test)]
+pub(crate) fn take_painted_prompt_thumbnails() -> Vec<gpui::Bounds<gpui::Pixels>> {
+    crate::image_chip::take_painted_thumbnails()
+}
+
+/// Scope marker callbacks to this synchronous document render, restoring even
+/// when rendering panics or nests another prompt.
+pub(crate) fn with_prompt_images<R>(images: PromptImages, render: impl FnOnce() -> R) -> R {
+    struct Restore(Option<PromptImages>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROMPT_IMAGES.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = PROMPT_IMAGES.with(|slot| slot.replace(Some(images)));
+    let _restore = Restore(previous);
+    render()
+}
+
+/// Render `f` with every occurrence of `terms` marked as a search match.
+pub(crate) fn with_search_terms<R>(terms: &[String], render: impl FnOnce() -> R) -> R {
+    if terms.is_empty() {
+        return render();
+    }
+    struct Restore(Vec<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SEARCH_TERMS.with(|slot| *slot.borrow_mut() = std::mem::take(&mut self.0));
+        }
+    }
+    let previous = SEARCH_TERMS.with(|slot| slot.replace(terms.to_vec()));
+    let _restore = Restore(previous);
+    render()
+}
+
+/// The match style: a tinted background under the word, readable on both
+/// prose and code, and distinct from the text selection colour.
+pub(crate) fn search_match_style() -> HighlightStyle {
+    let accent = Theme::global().ACCENT;
+    HighlightStyle {
+        background_color: Some(to_hsla(gpui::Rgba { a: 0.32, ..accent })),
+        ..Default::default()
+    }
+}
+
+fn search_highlights(text: &str) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    SEARCH_TERMS.with(|terms| {
+        let terms = terms.borrow();
+        crate::global_search::term_ranges(text, &terms)
+            .into_iter()
+            .map(|range| (range, search_match_style()))
+            .collect()
+    })
 }
 
 /// Render `f` with the trailing block of its markdown fading in.
@@ -1020,16 +1178,45 @@ fn styled_line_layout(
     cx: &gpui::App,
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
-    let inline = inline_spans(source);
-    let mut highlights = inline.highlights.clone();
+    let mut inline = inline_spans(source);
+    enum Target {
+        Url(String),
+        Image(usize),
+    }
+    let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+    let mut chips = Vec::new();
+    let mut targets: Vec<_> = inline.links.drain(..)
+        .map(|(range, url)| (range, Target::Url(url)))
+        .collect();
+    if let Some(images) = &images {
+        for (index, label) in images.labels.iter().enumerate() {
+            for (start, _) in inline.plain.match_indices(label) {
+                let range = start..start + label.len();
+                if targets.iter().any(|(link, _)| link.start < range.end && range.start < link.end)
+                {
+                    continue;
+                }
+                chips.push((range.clone(), label.clone(), images.previews.get(index).cloned().flatten()));
+                targets.push((range, Target::Image(index)));
+            }
+        }
+    }
+    let mut highlights = std::mem::take(&mut inline.highlights);
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
+    highlights.extend(search_highlights(&inline.plain));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
+    highlights.extend(chips.iter().map(|(range, _, _)| (range.clone(), crate::image_chip::hidden_marker())));
     let prefix = if avatar { AVATAR_PREFIX } else { "" };
     let shift =
         |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
-    let display: SharedString = format!("{prefix}{}", inline.plain).into();
+    let display = crate::image_chip::mask_transcript_markers(&format!("{prefix}{}", inline.plain), chips.iter().map(|(range, _, _)| shift(range.clone())));
+    #[cfg(test)]
+    if images.is_some() {
+        PAINTED_PROMPT_TEXT.with(|text| text.borrow_mut().push(display.clone()));
+    }
+    let display: SharedString = display.into();
     // Resolve the base style during layout, inside the surrounding element.
     // Capturing window.text_style() here bypasses the dimmed reasoning color
     // (and heading weight), since the parent has not been laid out yet.
@@ -1055,20 +1242,28 @@ fn styled_line_layout(
             ),
         );
     let layout = text.layout().clone();
-    let child = if inline.links.is_empty() {
+    let child = if targets.is_empty() {
         text.into_any_element()
     } else {
-        let ranges: Vec<_> = inline
-            .links
-            .iter()
-            .map(|(range, _)| shift(range.clone()))
-            .collect();
-        let urls: Vec<String> = inline.links.iter().map(|(_, url)| url.clone()).collect();
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
+        let (ranges, targets): (Vec<_>, Vec<_>) = targets
+            .into_iter()
+            .map(|(range, target)| (shift(range), target))
+            .unzip();
         InteractiveText::new(id, text)
-            .on_click(ranges, move |index, _window, cx| {
-                if let Some(url) = urls.get(index) {
-                    cx.open_url(url);
+            .on_click(ranges, move |index, window, cx| {
+                match targets.get(index) {
+                    Some(Target::Url(url)) => {
+                        if let Some(url) = openable_url(url) {
+                            cx.open_url(url);
+                        }
+                    }
+                    Some(Target::Image(image)) => {
+                        if let Some(images) = &images {
+                            (images.on_click)(*image, window, cx);
+                        }
+                    }
+                    None => {}
                 }
             })
             .into_any_element()
@@ -1087,13 +1282,25 @@ fn styled_line_layout(
         prefix.len(),
         cx,
     );
-    let element = div()
-        .relative()
-        .child(selectable)
-        .when(avatar, |el| {
-            el.child(div().absolute().top_0().left_0().child(assistant_avatar()))
-        })
-        .into_any_element();
+    // The selectable leaf already establishes a relative containing block.
+    // Only an avatar needs another one for its absolutely positioned overlay.
+    // Ordinary paragraphs, list items and table cells avoid a redundant div's
+    // style refinement, layout node, prepaint and paint on every frame.
+    let element = if !chips.is_empty() {
+        let chips = chips.into_iter().map(|(range, label, preview)| (shift(range), label, preview)).collect();
+        div().relative().child(selectable)
+            .child(crate::image_chip::PositionedChips::new(layout.clone(), chips))
+            .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
+            .into_any_element()
+    } else if avatar {
+        div()
+            .relative()
+            .child(selectable)
+            .child(div().absolute().top_0().left_0().child(assistant_avatar()))
+            .into_any_element()
+    } else {
+        selectable
+    };
     (element, layout)
 }
 
@@ -1241,18 +1448,45 @@ fn code_block_with_selection(
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::global().CODE_TEXT);
     let mut highlights = highlights;
-    if let Some((model, key, cx)) = &selection {
-        if let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
+    let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+    let markers: Vec<_> = images.as_ref().into_iter().flat_map(|images| {
+        images.labels.iter().enumerate().flat_map(|(index, label)| {
+            plain.match_indices(label)
+                .map(move |(start, _)| (start..start + label.len(), index))
+        })
+    }).collect();
+    if let Some((model, key, cx)) = &selection
+        && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
             highlights.push(highlight);
         }
-    }
-    let styled = StyledText::new(plain.clone())
+    highlights.extend(markers.iter().map(|(range, _)| (range.clone(), crate::image_chip::hidden_marker())));
+    let display = crate::image_chip::mask_markers(&plain, markers.iter().map(|(range, _)| range.clone()));
+    let positioned = images.as_ref().map(|images| markers.iter().map(|(range, index)| {
+        (range.clone(), plain[range.clone()].to_string(), images.previews.get(*index).cloned().flatten())
+    }).collect::<Vec<_>>()).unwrap_or_default();
+    let styled = StyledText::new(display)
         .with_default_highlights(&style, flatten_highlights(&highlights));
-    let code = if let Some((model, key, cx)) = selection {
-        let layout = styled.layout().clone();
-        text_selection::selectable(model.clone(), key, plain, layout, styled, cx)
+    let layout = styled.layout().clone();
+    let has_markers = !markers.is_empty();
+    let child = if let Some(images) = images.filter(|_| has_markers) {
+        let (ranges, indices): (Vec<_>, Vec<_>) = markers.into_iter().unzip();
+        InteractiveText::new(format!("code-image-{:x}", hash(&plain)), styled)
+            .on_click(ranges, move |index, window, cx| {
+                if let Some(index) = indices.get(index) {
+                    (images.on_click)(*index, window, cx);
+                }
+            })
+            .into_any_element()
     } else {
         styled.into_any_element()
+    };
+    let code = if let Some((model, key, cx)) = selection {
+        text_selection::selectable(model.clone(), key, plain, layout.clone(), child, cx)
+    } else {
+        child
+    };
+    let code = if positioned.is_empty() { code } else {
+        div().relative().child(code).child(crate::image_chip::PositionedChips::new(layout, positioned)).into_any_element()
     };
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.
@@ -1343,6 +1577,7 @@ fn code_block_with_selection(
                     div()
                         .flex_1()
                         .min_w_0()
+                        .when(has_markers, |el| el.debug_selector(|| "prompt-image-code".into()))
                         .line_height(relative(1.5))
                         .child(code),
                 ),
@@ -1604,7 +1839,7 @@ pub(crate) fn selection_segments(
 fn collect_selection_segments(
     source: &str,
     key_prefix: &str,
-    reasoning: bool,
+    _reasoning: bool,
     prompt: bool,
     segments: &mut Vec<(SharedString, SharedString)>,
 ) {
@@ -1615,12 +1850,7 @@ fn collect_selection_segments(
         let key = format!("{key_prefix}-{block_index}");
         match block {
             Block::Paragraph(text) => {
-                let text = if reasoning {
-                    reasoning_section_title(&text).unwrap_or(&text)
-                } else {
-                    &text
-                };
-                segments.push((key.into(), inline_spans(text).plain.into()));
+                segments.push((key.into(), inline_spans(&text).plain.into()));
             }
             Block::Heading(_, text) | Block::Bullet { text, .. } | Block::Numbered { text, .. } => {
                 segments.push((key.into(), inline_spans(&text).plain.into()));
@@ -1686,6 +1916,7 @@ pub fn render(
 }
 
 /// Render user prose with preserved newlines and a rounded, line-fitting fill.
+#[allow(dead_code, reason = "kept for callers that render prompts by hand")]
 pub(crate) fn render_prompt(
     source: &str,
     row: usize,
@@ -1709,6 +1940,7 @@ pub(crate) fn render_prompt(
 
 /// Render a duplicate prompt in its own selection namespace. Pinned overlays
 /// must not reuse the transcript's logical row keys or replace its text leaves.
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_prompt_with_prefix(
     source: &str,
     row: usize,
@@ -1748,6 +1980,7 @@ pub(crate) fn render_interactive(
     )
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_interactive_with_avatar(
     source: &str,
     row: usize,
@@ -1793,6 +2026,7 @@ fn render_with_style(
     )
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document(
     source: &str,
     row: usize,
@@ -1809,18 +2043,7 @@ fn render_document(
     )
 }
 
-// Providers often send reasoning section titles as standalone bold paragraphs
-// rather than ATX headings. Do not promote ordinary prose or partial emphasis.
-fn reasoning_section_title(text: &str) -> Option<&str> {
-    let text = text.trim();
-    let title = text.strip_prefix("**")?.strip_suffix("**")?;
-    (!title.trim().is_empty()
-        && !title.contains('\n')
-        && !title.contains("**")
-        && title.chars().count() <= 100)
-        .then_some(title)
-}
-
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document_with_prompt_background(
     source: &str,
     row: usize,
@@ -1840,17 +2063,16 @@ fn render_document_with_prompt_background(
     };
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
-    let fades = block_fades(&blocks, STREAM_FADE.take());
+    let fade = STREAM_FADE.take();
+    let fades = if fade.active() {
+        block_fades(&blocks, fade)
+    } else {
+        Vec::new()
+    };
 
     for (block_index, block) in blocks.into_iter().enumerate() {
         // Only prose leaves fade. Table cells and code keep full contrast.
-        LEAF_FADE.set(fades[block_index]);
-        let block = match block {
-            Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
-                .map(|title| Block::Heading(3, title.to_owned()))
-                .unwrap_or(block),
-            block => block,
-        };
+        LEAF_FADE.set(fades.get(block_index).copied().unwrap_or_default());
         let text_key = || -> SharedString { format!("{key_prefix}-{block_index}").into() };
         let is_list = matches!(block, Block::Bullet { .. } | Block::Numbered { .. });
         let tight = is_list && previous_was_list;
@@ -1891,7 +2113,7 @@ fn render_document_with_prompt_background(
         let element = match block {
             Block::Heading(level, text) => {
                 let (size, weight) = match level {
-                    _ if reasoning => (px(16.5), FontWeight::SEMIBOLD),
+                    _ if reasoning => (px(12.0), FontWeight::SEMIBOLD),
                     1 => (px(19.0), FontWeight::BOLD),
                     2 => (px(16.5), FontWeight::BOLD),
                     3 => (px(14.5), FontWeight::SEMIBOLD),
@@ -2101,8 +2323,10 @@ fn render_document_with_prompt_background(
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn list_row(
     depth: usize,
+    #[allow(clippy::too_many_arguments)]
     marker: String,
     marker_color: gpui::Rgba,
     text: &str,
@@ -2753,6 +2977,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_leaf_without_extra_wrapper_preserves_geometry(cx: &mut gpui::TestAppContext) {
+        struct Fixture {
+            selection: gpui::Entity<TextSelection>,
+            width: f32,
+            layouts: Vec<gpui::TextLayout>,
+        }
+        impl gpui::Render for Fixture {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                let source = "Unicode café🙂 **bold** with `inline code` and [a link](https://example.com), wrapping across several lines.";
+                let (direct, a) =
+                    styled_line_layout(source, &self.selection, "direct".into(), window, cx, false);
+                let (wrapped, b) = styled_line_layout(
+                    source,
+                    &self.selection,
+                    "wrapped".into(),
+                    window,
+                    cx,
+                    false,
+                );
+                self.layouts = vec![a, b];
+                div()
+                    .w(px(self.width))
+                    .flex()
+                    .flex_col()
+                    .text_size(px(14.))
+                    .line_height(px(22.))
+                    .child(direct)
+                    .child(div().relative().child(wrapped))
+            }
+        }
+        let (view, vcx) = cx.add_window_view(|_, cx| Fixture {
+            selection: cx.new(TextSelection::new),
+            width: 150.,
+            layouts: Vec::new(),
+        });
+        for width in [150., 280., 520.] {
+            view.update(vcx, |view, cx| {
+                view.width = width;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            view.read_with(vcx, |view, _| {
+                let a = &view.layouts[0];
+                let b = &view.layouts[1];
+                assert_eq!(a.bounds().size, b.bounds().size);
+                for index in 0..a.len() {
+                    if let (Some(a_pos), Some(b_pos)) =
+                        (a.position_for_index(index), b.position_for_index(index))
+                    {
+                        assert_eq!(a_pos - a.bounds().origin, b_pos - b.bounds().origin);
+                    }
+                }
+            });
+            assert_eq!(
+                vcx.debug_bounds("selectable-text-direct").unwrap().size,
+                vcx.debug_bounds("selectable-text-wrapped").unwrap().size
+            );
+        }
+    }
+
+    #[gpui::test]
     fn avatar_markdown_blocks_keep_their_normal_left_margin(cx: &mut gpui::TestAppContext) {
         struct Document {
             selection: gpui::Entity<TextSelection>,
@@ -2928,7 +3217,7 @@ mod tests {
         assert!(vcx.debug_bounds("restored-reasoning").is_some());
         let heading = vcx.debug_bounds("selectable-text-0-0-0").unwrap();
         let body = vcx.debug_bounds("selectable-text-0-0-1").unwrap();
-        assert!(heading.size.height > body.size.height);
+        assert_eq!(heading.size.height, body.size.height, "reasoning titles must use body-sized text");
         let answer = vcx.debug_bounds("selectable-text-0-1").unwrap();
         assert!(answer.top() >= heading.bottom());
         for (bounds, expected) in [(heading, "Checking top live tabs"), (answer, "The answer.")] {
@@ -2946,28 +3235,6 @@ mod tests {
                 .and_then(|item| item.text());
             assert_eq!(copied.as_deref(), Some(expected));
         }
-    }
-
-    #[test]
-    fn reasoning_section_titles_only_promote_short_standalone_emphasis() {
-        assert_eq!(
-            reasoning_section_title("**Classifying voice support**"),
-            Some("Classifying voice support")
-        );
-        for source in [
-            "ordinary text",
-            "**bold** and prose",
-            "**one** and **two**",
-            "****",
-            "**two\nlines**",
-            "**unfinished",
-        ] {
-            assert_eq!(reasoning_section_title(source), None, "{source}");
-        }
-        assert_eq!(
-            reasoning_section_title(&format!("**{}**", "x".repeat(101))),
-            None
-        );
     }
 
     /// Nested inline spans produce overlapping highlight ranges. GPUI aborts
@@ -3155,6 +3422,60 @@ mod tests {
     }
 
     #[test]
+    fn highlight_fast_path_matches_overlap_algorithm() {
+        let styles = [
+            HighlightStyle::default(),
+            HighlightStyle {
+                font_weight: Some(FontWeight::BOLD),
+                ..Default::default()
+            },
+        ];
+        // Empty, reversed, nested, disjoint and adjacent ranges in either order.
+        let ranges: Vec<_> = (0..=4)
+            .flat_map(|start| (0..=4).map(move |end| start..end))
+            .collect();
+        for first in &ranges {
+            for second in &ranges {
+                for style in styles {
+                    let input = [(first.clone(), styles[0]), (second.clone(), style)];
+                    assert_eq!(
+                        flatten_highlights(&input),
+                        flatten_overlapping_highlights(&input),
+                        "{input:?}"
+                    );
+                }
+            }
+        }
+        let input = [(0..2, styles[0]), (2..2, styles[1]), (2..4, styles[0])];
+        assert_eq!(flatten_highlights(&input), vec![(0..4, styles[0])]);
+        assert!(flatten_highlights(&[]).is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual highlight throughput benchmark"]
+    fn highlight_flatten_profile() {
+        use std::hint::black_box;
+        let style = HighlightStyle::default();
+        for count in [8, 64, 256] {
+            let input: Vec<_> = (0..count).map(|i| (i * 4..i * 4 + 2, style)).collect();
+            let iterations = 10_000;
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                black_box(flatten_overlapping_highlights(black_box(&input)));
+            }
+            let original = started.elapsed();
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                black_box(flatten_highlights(black_box(&input)));
+            }
+            println!(
+                "HIGHLIGHTS spans={count} iterations={iterations} original={original:?} fast={:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
     fn inline_code_and_bold() {
         let inline = inline_spans("use `cargo` and **run** it");
         assert_eq!(inline.plain, "use cargo and run it");
@@ -3309,6 +3630,25 @@ mod tests {
         assert_eq!(inline.links.len(), 1);
         assert_eq!(inline.links[0].1, "https://example.com");
         assert_eq!(inline.links[0].0, 4..8);
+    }
+
+    #[test]
+    fn image_marker_before_parenthesis_stays_a_marker() {
+        for marker in ["[#image 1]", "[#img_64ab0e4a8c467a9f70900b407050b140]"] {
+            let source = format!("see {marker}(сессия и TLDR видео) now");
+            let inline = inline_spans(&source);
+            assert_eq!(inline.plain, source);
+            assert!(inline.links.is_empty(), "{marker} must not start a link");
+        }
+    }
+
+    #[test]
+    fn only_urls_with_a_scheme_are_opened() {
+        assert_eq!(openable_url("https://example.com"), Some("https://example.com"));
+        assert_eq!(openable_url("mailto:a@b.c"), Some("mailto:a@b.c"));
+        assert_eq!(openable_url("сессия транскрипция и TLDR видео"), None);
+        assert_eq!(openable_url("crates/foo.rs"), None);
+        assert_eq!(openable_url(""), None);
     }
 
     #[test]

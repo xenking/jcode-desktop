@@ -1,6 +1,7 @@
 //! Quiet, consistently styled transient feedback. Only explicit controls dismiss
 //! a tip, so clicking its text never unexpectedly changes the workspace below.
 use super::*;
+use crate::panel::expandable;
 
 const SHOWCASE_PRESS: Duration = Duration::from_millis(160);
 pub(super) const SHOWCASE_FADE: Duration = Duration::from_millis(280);
@@ -265,12 +266,7 @@ impl Render for CoachDetails {
             .flex_col()
             .gap_2()
             .child(self.0.label)
-            .child(shortcut_keys(&self.0.keys))
-            .child(
-                div()
-                    .text_color(theme.TEXT_DIM)
-                    .child(self.0.because.clone()),
-            )
+            .child(shortcut_keys(self.0.keys))
     }
 }
 
@@ -313,6 +309,12 @@ impl Workspace {
         } else {
             -6.0 * (1.0 - progress)
         };
+        // The chip shows one line of the hint. Clicking it wraps the whole
+        // sentence in place instead of leaving the rest to the tooltip.
+        let key = expandable::key::toast(hint.skill_id);
+        let expanded = self.expanded_lines.contains(&key);
+        let truncated = expandable::preview(label, expandable::NOTICE).is_some();
+        let toggle_key = key;
         div()
             .id("coach-toast")
             .debug_selector(|| "coach-toast".into())
@@ -320,18 +322,30 @@ impl Workspace {
             .left(px(left))
             .top(px(2.0 + slide))
             .w(px(COACH_CHIP_WIDTH))
-            .h(px(28.0))
+            .when(expanded, |el| el.min_h(px(28.0)))
+            .when(!expanded, |el| el.h(px(28.0)))
             .rounded_md()
             .bg(theme.PANEL_BG.opacity(0.65))
             .opacity(progress)
             .occlude()
             .px(px(8.0))
             .flex()
-            .items_center()
+            .when(expanded, |el| el.items_start().py(px(6.0)))
+            .when(!expanded, |el| el.items_center())
             .gap(px(8.0))
             .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
+            })
+            .when(truncated, |el| {
+                el.cursor_pointer()
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        if !this.expanded_lines.remove(&toggle_key) {
+                            this.expanded_lines.insert(toggle_key.clone());
+                        }
+                        cx.notify();
+                    }))
             })
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.coach.hover_hint(*hovered, learning::now());
@@ -346,7 +360,7 @@ impl Workspace {
                     .debug_selector(|| "coach-title".into())
                     .flex_1()
                     .min_w_0()
-                    .truncate()
+                    .when(!expanded, |el| el.truncate())
                     .text_size(px(11.0))
                     .text_color(theme.TEXT_DIM)
                     .child(label),

@@ -4,7 +4,7 @@ use super::*;
 const DRAFT: &str = "Keep my unfinished image question";
 
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
-    cx.update(|cx| crate::input::bind_keys(cx));
+    cx.update(crate::input::bind_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =
             crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -31,6 +31,9 @@ fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTest
 fn fixture(label: &str) -> TranscriptImage {
     let mut image = image_preview::fixture_image();
     image.label = Some(label.into());
+    image.source = jcode_sdk::RenderedImageSource::ToolResult {
+        tool_name: "read".into(),
+    };
     image
 }
 
@@ -62,7 +65,28 @@ fn assert_draft(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) {
 }
 
 #[gpui::test]
-fn image_pane_button_only_appears_when_transcript_has_images(cx: &mut gpui::TestAppContext) {
+fn session_image_marker_labels_the_user_chip(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = setup(cx);
+    let marker = "[#img_0123456789abcdef0123456789abcdef]";
+    panel.update(vcx, |panel, cx| {
+        let mut image = image_preview::fixture_image();
+        image.source = jcode_sdk::RenderedImageSource::UserInput;
+        *panel.items = vec![Item::User(format!("Inspect {marker}(then continue)")), Item::Image(image)];
+        assert_eq!(panel.user_image_markers(0), vec![(1, marker.to_string())]);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let chip = vcx.debug_bounds("transcript-image-chip").expect("session ID chip");
+    assert!(chip.size.width < px(100.), "storage ID reserved excess inline space: {chip:?}");
+    let label = vcx.debug_bounds("transcript-image-label").expect("label");
+    assert!(chip.right() - label.right() <= px(16.), "chip leaves a gap after its label: {chip:?} {label:?}");
+    vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
+fn image_pane_button_hides_when_the_last_image_is_removed(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = setup(cx);
     assert!(vcx.debug_bounds("panel-images").is_some());
     panel.update(vcx, |panel, cx| {
@@ -344,10 +368,7 @@ fn image_pane_empty_session_accepts_first_image(cx: &mut gpui::TestAppContext) {
     assert!(vcx.debug_bounds("panel-images").is_none());
     panel.update(vcx, |panel, cx| panel.set_image_pane_open(true, cx));
     vcx.run_until_parked();
-    assert!(
-        vcx.debug_bounds("panel-images").is_some(),
-        "open pane keeps its toggle"
-    );
+    assert!(vcx.debug_bounds("panel-images").is_none());
     assert!(vcx.debug_bounds("session-image-pane").is_some());
     assert!(vcx.debug_bounds("session-image-main").is_none());
     panel.update(vcx, |panel, cx| {

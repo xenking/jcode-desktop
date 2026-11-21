@@ -20,6 +20,9 @@ pub(super) struct PendingEffort {
 impl Panel {
     /// Levels the serving model accepts.
     pub(super) fn effort_ladder(&self) -> Vec<&'static str> {
+        if let Some(model) = &self.draft_config.model {
+            return effort::ladder(None, Some(model));
+        }
         effort::ladder(self.provider.as_deref(), self.model.as_deref())
     }
 
@@ -37,10 +40,41 @@ impl Panel {
     /// Validate and send one effort change. Returns false, after reporting
     /// why in the transcript, when the level is not offered.
     pub(super) fn request_effort(&mut self, level: &str, cx: &mut Context<Self>) -> bool {
+        let ladder = self.effort_ladder();
+        self.request_effort_on(&ladder, level, cx)
+    }
+
+    /// Switch model and effort together, from the picker's second step. The
+    /// level is checked against the new model's ladder, not the serving one.
+    pub(super) fn switch_model_with_effort(
+        &mut self,
+        model: &str,
+        level: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let ladder = effort::ladder(None, Some(model));
+        if self.is_pending_session() {
+            self.pick_draft_model(model, cx);
+        } else {
+            self.bridge.send(Command::SetModel {
+                session_id: self.session_id.clone(),
+                model: model.to_string(),
+            });
+            self.items
+                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        }
+        self.request_effort_on(&ladder, level, cx);
+    }
+
+    pub(super) fn request_effort_on(
+        &mut self,
+        ladder: &[&'static str],
+        level: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.is_side_document() || self.preview_state.is_some() {
             return false;
         }
-        let ladder = self.effort_ladder();
         if ladder.is_empty() {
             self.items.push(Item::Error(format!(
                 "Reasoning effort is not available for {}.",
@@ -55,6 +89,16 @@ impl Panel {
             )));
             return false;
         };
+        if self.is_pending_session() {
+            // A draft has no session to tell: keep the choice for its first
+            // prompt.
+            self.draft_config.effort = Some(level.to_string());
+            self.reasoning_effort = Some(level.to_string());
+            self.remember_draft_model(cx);
+            self.sync_effort_menu(cx);
+            cx.notify();
+            return true;
+        }
         let pending = self.pending_effort.get_or_insert_with(|| PendingEffort {
             previous: self.reasoning_effort.clone(),
             requested: VecDeque::new(),
@@ -80,15 +124,15 @@ impl Panel {
         match effort::step(&ladder, self.reasoning_effort.as_deref(), direction) {
             Some(next) => {
                 if self.request_effort(next, cx) {
-                    self.effort_notice(format!("Effort: {}", effort::label(next)), cx);
+                    self.effort_notice(format!("Effort: {}", effort::spoken(next)), cx);
                 }
             }
             None => {
                 let current = self
                     .reasoning_effort
                     .as_deref()
-                    .map(effort::label)
-                    .unwrap_or("default");
+                    .map(effort::spoken)
+                    .unwrap_or_else(|| "default".to_string());
                 let end = if direction > 0 {
                     "strongest"
                 } else {
@@ -100,7 +144,7 @@ impl Panel {
     }
 
     /// A quiet confirmation under the composer, like the TUI status notice.
-    fn effort_notice(&mut self, notice: String, cx: &mut Context<Self>) {
+    pub(super) fn effort_notice(&mut self, notice: String, cx: &mut Context<Self>) {
         let input = self.input.clone();
         cx.defer(move |cx| input.update(cx, |input, cx| input.set_transient_notice(notice, cx)));
     }
@@ -221,6 +265,137 @@ mod tests {
 
     fn effort_of(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> Option<String> {
         panel.read_with(vcx, |panel, _| panel.reasoning_effort.clone())
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_reaches_opus_55_from_enter(cx: &mut gpui::TestAppContext) {
+        typed_medium(cx, "claude-oauth", "claude-opus-5-5");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_reaches_sol_from_enter(cx: &mut gpui::TestAppContext) {
+        typed_medium(cx, "openai", "gpt-6.1-sol");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_after_pill_click_reaches_opus_55(cx: &mut gpui::TestAppContext) {
+        typed_medium_after_pill(cx, "claude-oauth", "claude-opus-5-5");
+    }
+
+    #[gpui::test]
+    fn typed_effort_medium_after_pill_click_reaches_sol(cx: &mut gpui::TestAppContext) {
+        typed_medium_after_pill(cx, "openai", "gpt-6.1-sol");
+    }
+
+    fn typed_medium_after_pill(cx: &mut gpui::TestAppContext, provider: &str, model: &str) {
+        let (panel, vcx, commands) = setup(cx, provider, model, Some("high"));
+        let pill = vcx
+            .debug_bounds("panel-model-effort")
+            .expect("effort pill painted");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_some());
+        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m");
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("voice-toggle").is_none(),
+            "empty main composer must not advertise example prompts under the picker"
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert!(
+            vcx.debug_bounds("effort-icon-medium").is_some(),
+            "footer draws medium, not a stale effort"
+        );
+        assert!(
+            vcx.debug_bounds("picker-search").is_none(),
+            "picker closes after submission"
+        );
+    }
+
+    fn typed_medium(cx: &mut gpui::TestAppContext, provider: &str, model: &str) {
+        let (panel, vcx, commands) = setup(cx, provider, model, Some("high"));
+        vcx.simulate_keystrokes("/ e f f o r t space m e d i u m");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "/effort medium"
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.composer_identity().1),
+            Some("medium".into())
+        );
+        assert!(
+            vcx.debug_bounds("panel-model-effort").is_some(),
+            "footer effort pill is painted"
+        );
+        assert!(
+            vcx.debug_bounds("effort-icon-medium").is_some(),
+            "footer draws medium"
+        );
+    }
+
+    #[gpui::test]
+    fn effort_medium_row_click_reaches_opus_55(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, commands) = setup(cx, "claude-oauth", "claude-opus-5-5", Some("high"));
+        let pill = vcx.debug_bounds("panel-model-effort").unwrap();
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let medium = vcx
+            .debug_bounds("slash-command-row-2")
+            .expect("Claude medium row");
+        vcx.simulate_click(medium.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["medium"]);
+        assert_eq!(effort_of(&panel, vcx).as_deref(), Some("medium"));
+        assert!(vcx.debug_bounds("effort-icon-medium").is_some());
+    }
+
+    #[gpui::test]
+    fn model_second_step_accepts_full_effort_command(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-6.1-sol", Some("high"));
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::RuntimeInfo {
+                    session_id: "session-a".into(),
+                    provider: Some("openai".into()),
+                    model: Some("gpt-6.1-sol".into()),
+                    reasoning_effort: Some("high".into()),
+                    auth_method: None,
+                    account_label: None,
+                    routes: vec![jcode_sdk::ModelRouteInfo {
+                        model: "claude-opus-5-5".into(),
+                        provider: "anthropic".into(),
+                        api_method: "claude-oauth".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    }],
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let model = vcx.debug_bounds("panel-model").unwrap();
+        vcx.simulate_click(model.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        // Pick the level on the model row with the arrows, then one Enter
+        // switches model and effort together.
+        vcx.simulate_keystrokes("/ m o d e l space c l a u d e - o p u s - 5 - 5");
+        vcx.run_until_parked();
+        // The session runs at high, so one step left is medium.
+        vcx.simulate_keystrokes("left enter");
+        vcx.run_until_parked();
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(sent.iter().any(|command| matches!(command, Command::SetModel { model, .. } if model == "claude-oauth:claude-opus-5-5")), "selected model reaches bridge");
+        assert!(sent.iter().any(|command| matches!(command, Command::SessionOperation { operation: SessionOperation::SetEffort(effort), .. } if effort == "medium")), "selected effort reaches bridge");
+        assert!(vcx.debug_bounds("effort-icon-medium").is_some());
     }
 
     /// The configured chords (Alt+Left/Right by default) step one rung at a
@@ -353,9 +528,48 @@ mod tests {
         });
         vcx.simulate_input("/effort Low");
         vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert_eq!(sent_efforts(&commands), ["low"]);
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("low"));
+    }
+
+    /// The `/effort` picker rows (None … Max, Swarm) each lead with a drawn
+    /// level mark, never a `◔◑◕●` text glyph: the row label is the name alone
+    /// and the shape is a canvas element beside it.
+    #[gpui::test]
+    fn effort_picker_rows_draw_their_level_marks(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, _commands) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.toggle_effort_picker(window, cx))
+        });
+        vcx.run_until_parked();
+        let rows = panel.read_with(vcx, |panel, _| {
+            panel
+                .effort_ladder()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+        assert!(rows.len() >= 5, "{rows:?}");
+        let mut drawn = 0;
+        for (index, level) in rows.iter().enumerate() {
+            let label = crate::effort::spoken(level);
+            assert!(
+                label.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                "{level} row label carries a text glyph: {label:?}"
+            );
+            let selector: &'static str =
+                Box::leak(format!("effort-row-icon-{index}").into_boxed_str());
+            if vcx.debug_bounds(selector).is_some() {
+                drawn += 1;
+            }
+            assert!(
+                crate::effort_icon::shape(level).is_some(),
+                "{level} has a shape"
+            );
+        }
+        assert!(drawn > 0, "visible rows draw their marks");
     }
 
     /// The pill menu opens on the current level, so Enter keeps it.
@@ -373,6 +587,101 @@ mod tests {
             panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
             "",
             "the menu closes after choosing"
+        );
+    }
+
+    #[gpui::test]
+    fn keyboard_can_open_effort_and_escape_returns_to_its_trigger(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx, _) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        let composer = vcx.update(|window, cx| window.focused(cx));
+        vcx.simulate_keystrokes("tab");
+        assert_ne!(vcx.update(|window, cx| window.focused(cx)), composer);
+        let trigger = panel.read_with(vcx, |p, _| {
+            p.picker_triggers[PickerKind::Effort as usize].clone()
+        });
+        for _ in 0..24 {
+            if vcx.update(|window, _| trigger.is_focused(window)) {
+                break;
+            }
+            vcx.simulate_keystrokes("tab");
+        }
+        assert!(
+            vcx.update(|window, _| trigger.is_focused(window)),
+            "Tab never reached effort"
+        );
+        vcx.simulate_keystrokes("enter");
+        vcx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |p, _| {
+            p.picker_search
+                .as_ref()
+                .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+        }));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_none());
+        assert!(vcx.update(|window, _| trigger.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn effort_picker_dismisses_on_focus_change_without_stealing_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-5.6-sol", Some("high"));
+        vcx.update(|window, _| window.activate_window());
+        vcx.run_until_parked();
+        vcx.simulate_input("valuable draft");
+        let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("picker-search").is_some());
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let outside = vcx.update(|window, cx| {
+            let outside = panel.read(cx).transcript_selection.read(cx).focus_handle();
+            window.focus(&outside, cx);
+            window.draw(cx).clear(cx);
+            outside
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+
+        assert!(vcx.debug_bounds("picker-search").is_none());
+        assert!(vcx.update(|window, _| outside.is_focused(window)));
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        assert!(sent_efforts(&commands).is_empty());
+    }
+
+    #[gpui::test]
+    fn effort_picker_keeps_draft_while_searching_selecting_and_cancelling(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx, commands) = setup(cx, "openai", "gpt-5.6-sol", Some("xhigh"));
+        vcx.simulate_input("valuable draft");
+        vcx.update(|window, cx| panel.update(cx, |p, cx| p.toggle_effort_picker(window, cx)));
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
+        );
+        vcx.update(|window, cx| panel.update(cx, |p, cx| p.toggle_effort_picker(window, cx)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("down enter");
+        vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["max"]);
+        assert_eq!(
+            panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+            "valuable draft"
         );
     }
 }

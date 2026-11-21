@@ -711,11 +711,10 @@ impl Coach {
             if self.active_hint(now).is_some() && self.hint_paused_at.is_none() {
                 self.hint_paused_at = Some(now);
             }
-        } else if let Some(paused_at) = self.hint_paused_at.take() {
-            if let Some(hint) = &mut self.active {
+        } else if let Some(paused_at) = self.hint_paused_at.take()
+            && let Some(hint) = &mut self.active {
                 hint.shown_at += now.saturating_sub(paused_at);
             }
-        }
     }
 
     /// The skill currently being taught, without touching expiry. For

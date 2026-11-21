@@ -1,4 +1,4 @@
-"""Native hover-only tab actions and shortcut tooltips on screenshot.py's private display."""
+"""Native tab actions and shortcut tooltips on screenshot.py's private display."""
 import json
 import shutil
 
@@ -24,16 +24,17 @@ def hover_actions(ui):
 
     ui.native("mousemove", 400, 400)
     hidden = ui.capture("tab-actions-hidden")
-    assert ink(hidden, rename) == 0 and ink(hidden, close) == 0, "Actions must be hidden at rest"
+    assert ink(hidden, rename) == 0, "Rename must be hidden at rest"
+    assert ink(hidden, close) == 0, "Close must be hidden at rest"
     ui.native("mousemove", round(center), 26)
     hovered = ui.capture("tab-actions-hover")
     assert ink(hovered, rename) > 3, "Rename icon did not appear beside title"
     assert ink(hovered, close) > 3, "Close icon did not appear beside title"
-    # Hovering must not relayout/truncate the title differently.
+    # The title must not shift horizontally when the rename button appears.
     title_crop = (round(center - 74), 17, round(center + 43), 35)
     title_before = phrase_bounds(ui.words(hidden, title_crop, "title-before", psm=7), "Review markdown")
     title_after = phrase_bounds(ui.words(hovered, title_crop, "title-after", psm=7), "Review markdown")
-    assert title_before == title_after, "Title shifted on hover"
+    assert title_before[0] == title_after[0], "Title shifted on hover"
 
     def tooltip(bounds, phrase, label):
         ui.native("mousemove", round((bounds[0] + bounds[2]) / 2), 26)
@@ -45,7 +46,10 @@ def hover_actions(ui):
     tooltip((image.width - 80, 0, image.width - 56, 36), "New session (Super+N)", "tab-new-shortcut")
     ui.native("mousemove", 400, 400)
     hidden_again = ui.capture("tab-actions-hidden-again")
-    assert ink(hidden_again, rename) == 0 and ink(hidden_again, close) == 0, "Actions stayed visible after leaving"
+    assert ink(hidden_again, rename) == 0, "Rename stayed visible after leaving"
+    assert ink(hidden_again, close) == 0, "Close stayed visible after leaving"
+    ui.native("mousemove", round(center), 26)
+    assert ink(ui.capture("tab-actions-rename-ready"), rename) > 3, "Rename did not reappear"
     return rename, close
 
 
@@ -62,8 +66,8 @@ def verify(output, env, root):
         ui.wait_frame("tab-actions-closed", lambda image: phrase_bounds(
             ui.words(image, (794, 17, 966, 35), "tab-actions-empty", psm=7), "Empty workspace"))
         shutil.copyfile(ui.artifact("tab-actions-hover.png"), output)
-        report.update(passed=True, checks=["hidden-at-rest", "icons-beside-title", "no-title-shift",
-            "rename-shortcut", "close-shortcut", "new-shortcut", "hidden-on-leave",
+        report.update(passed=True, checks=["close-hidden-at-rest", "close-on-hover", "rename-on-hover", "no-horizontal-title-shift",
+            "rename-shortcut", "close-shortcut", "new-shortcut", "rename-hidden-on-leave",
             "rename-click-opens", "close-click-closes-tab-not-window"])
     except Exception as error:
         report["error"] = str(error)

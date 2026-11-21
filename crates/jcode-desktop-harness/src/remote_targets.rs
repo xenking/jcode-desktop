@@ -18,6 +18,16 @@ const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 const MAX_HOSTS: usize = 512;
 
+/// Validate a saved Desktop destination without admitting it as an SSH alias.
+pub fn validate_destination(value: &str) -> Result<String, String> {
+    if !value.chars().any(char::is_control)
+        && crate::managed_cloud::Destination::parse(value.trim()).is_some()
+    {
+        return Ok(value.trim().to_owned());
+    }
+    validate_host(value)
+}
+
 /// Validate a single SSH destination, not an SSH command or URL.
 ///
 /// Surrounding spaces are trimmed. Control characters, non-ASCII characters,
@@ -179,11 +189,10 @@ impl Discovery<'_> {
                     if self.hosts.len() >= MAX_HOSTS {
                         return;
                     }
-                    if let Ok(host) = validate_host(word) {
-                        if !self.hosts.contains(&host) {
+                    if let Ok(host) = validate_host(word)
+                        && !self.hosts.contains(&host) {
                             self.hosts.push(host);
                         }
-                    }
                 }
             } else if key.eq_ignore_ascii_case("include") {
                 for pattern in &words[1..] {

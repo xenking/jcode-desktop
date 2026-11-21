@@ -7,12 +7,11 @@ pub(crate) use crate::ui_actions::{BackgroundRunningTool, JumpToLatest, JumpToLa
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("shift-space", JumpToLatest, Some("ChatPanel")),
-        // Plain space jumps only while the composer is empty. With a draft the
-        // handler propagates so the space is typed normally.
+        // The inline queue editor shares editing bindings, not this composer shortcut.
         gpui::KeyBinding::new(
             "space",
             JumpToLatestIfEmpty,
-            Some("ChatPanel > PromptInput"),
+            Some("ChatPanel > (PromptInput && !QueueEditor)"),
         ),
     ]);
 }
@@ -50,7 +49,7 @@ impl Panel {
     }
 
     pub(super) fn jump_to_latest_if_empty(&mut self, cx: &mut Context<Self>) {
-        if self.input.read(cx).content.is_empty() {
+        if self.ask_card.is_none() && self.input.read(cx).content.is_empty() {
             self.jump_to_latest(cx);
         } else {
             cx.propagate();
@@ -126,8 +125,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            *panel.items = vec![Item::User("A long prompt line\n".repeat(1000))];
-            panel.expanded_prompts.insert((0, false));
+            *panel.items = (0..40).map(|n| Item::User(format!("Prompt {n}"))).collect();
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             cx.notify();
@@ -245,6 +243,9 @@ mod tests {
             vcx.run_until_parked();
             assert_eq!(drain(&commands), 1, "{chord}");
         }
+        let header = vcx.debug_bounds("tool-header").expect("running tool row");
+        vcx.simulate_click(header.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
         let pill = vcx
             .debug_bounds("tool-background")
             .expect("running tool shows a Background pill");

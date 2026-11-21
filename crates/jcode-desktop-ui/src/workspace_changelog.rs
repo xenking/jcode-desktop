@@ -413,6 +413,7 @@ mod tests {
         vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
         vcx.simulate_input("/changelog");
         vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("desktop-changelog").is_some());
         assert!(commands.try_recv().is_err());

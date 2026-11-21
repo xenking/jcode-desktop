@@ -15,6 +15,7 @@ const CUTOFF: &str = "Two-hour continuous cutoff, including active work. Monthly
 // Full-policy receipts are bounded proofs, never VM lease renewals.
 // Only read-only background checks may renew the proof while a panel is live.
 const READY_TTL: Duration = Duration::from_secs(30);
+#[allow(dead_code)]
 const REUSING_READY: &str = "Reusing recently verified cloud VM...";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,12 +61,14 @@ struct Boot {
 }
 
 struct Ready {
+    #[allow(dead_code)]
     verified_at: Instant,
     expires_at: Instant,
     checked_wall: SystemTime,
     expires_wall: SystemTime,
     identity: LocalIdentity,
     boot: Boot,
+    #[allow(dead_code)]
     model_sync_supported: bool,
 }
 
@@ -155,6 +158,7 @@ impl State {
         self.ready_generation = self.ready_generation.wrapping_add(1);
     }
 
+    #[allow(dead_code)]
     fn recently_ready(&self, identity: Option<&LocalIdentity>, now: Instant) -> bool {
         self.recently_ready_at(identity, now, SystemTime::now())
     }
@@ -297,6 +301,7 @@ pub(super) struct Lifecycle {
     state: Arc<Mutex<State>>,
     // Concurrent new-panel requests retain their individual request IDs, but
     // never race two wake operations against the configured instance.
+    #[allow(dead_code)]
     wake_lock: Arc<Mutex<()>>,
 }
 
@@ -517,6 +522,7 @@ fn run_platform_helper(
     Ok(output)
 }
 
+#[allow(dead_code)]
 fn wake_then_connect(
     bridge: &harness::Bridge,
     request_id: Option<String>,
@@ -546,6 +552,7 @@ impl Lifecycle {
         self.state.lock().unwrap().invalidate_ready();
     }
 
+    #[allow(dead_code)]
     fn sync_reused_ready(
         &self,
         reused: bool,
@@ -569,6 +576,7 @@ impl Lifecycle {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn ensure_ready(
         &self,
         identity: impl Fn() -> Option<LocalIdentity>,
@@ -642,6 +650,7 @@ impl Lifecycle {
         });
     }
 
+    #[allow(dead_code)]
     pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
         let update_request_id = request_id.clone();
@@ -830,12 +839,14 @@ mod tests {
     }
 
     fn active_state(now: Instant) -> State {
-        let mut state = State::default();
-        state.ready = Some(
-            receipt_at(1000)
-                .into_ready(test_identity(), now, now, wall(1000))
-                .unwrap(),
-        );
+        let mut state = State {
+            ready: Some(
+                receipt_at(1000)
+                    .into_ready(test_identity(), now, now, wall(1000))
+                    .unwrap(),
+            ),
+            ..State::default()
+        };
         state.set_active(vec!["ssh://jcode-cloud-alpha/one".into()]);
         state
     }

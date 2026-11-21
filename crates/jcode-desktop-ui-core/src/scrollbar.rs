@@ -94,6 +94,7 @@ struct InteractiveListScrollbar {
     selector: &'static str,
     bottom_inset: f32,
     on_scroll_start: ScrollStart,
+    #[allow(clippy::type_complexity)]
     on_scroll_finished: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
@@ -345,6 +346,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn scrollbar_dimensions_stay_thin_and_touch_friendly() {
         assert!(WIDTH <= 4.0);
         assert!(MIN_THUMB_HEIGHT >= 24.0);

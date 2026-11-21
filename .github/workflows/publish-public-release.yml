@@ -111,27 +111,3 @@ jobs:
           fi
           cp legacy-appcast.xml appcast.xml
           gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber appcast.xml
-      - name: Trigger public macOS install and Gatekeeper acceptance
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run macos-public-release-verify.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
-      - name: Trigger legacy macOS auto-update matrix against the new appcast
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run macos-update-matrix.yml --repo "$GITHUB_REPOSITORY" --ref main
-      - name: Trigger Linux and Windows auto-update matrix against the new release
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run update-matrix.yml --repo "$GITHUB_REPOSITORY" --ref main
-      - name: Dispatch verified public Desktop Discord announcement
-        id: discord_dispatch
-        if: ${{ !cancelled() && steps.website_verification.outcome == 'success' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run discord-release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
-      - name: Warn when Discord dispatch failed
-        if: ${{ !cancelled() && steps.discord_dispatch.outcome == 'failure' }}
-        run: echo '::warning::Public Desktop release succeeded, but Discord dispatch failed. Rerun discord-release.yml manually after checking the public website.'

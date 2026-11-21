@@ -2,6 +2,93 @@ use super::*;
 use gpui::EntityInputHandler;
 
 #[gpui::test]
+fn model_search_never_replaces_the_composer_draft(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("draft-search".into(), None, None, bridge, cx));
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| {
+            p.available_models = vec!["openai:test".into(), "anthropic:test".into()];
+            p.input.update(cx, |input, cx| {
+                input.set_command_models(p.available_models.clone(), cx)
+            });
+            p.focus_input(window, cx);
+        });
+    });
+    vcx.simulate_input("a valuable draft");
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    vcx.simulate_input("anthropic");
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p
+            .picker_search
+            .as_ref()
+            .unwrap()
+            .1
+            .read(cx)
+            .content
+            .to_string()),
+        "anthropic"
+    );
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    vcx.simulate_input("anthropic");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "a valuable draft"
+    );
+}
+
+#[gpui::test]
+fn model_button_preserves_a_partially_typed_model_command(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("draft-command".into(), None, None, bridge, cx));
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        panel.update(cx, |p, cx| {
+            p.available_models = vec!["openai:test".into()];
+            p.input.update(cx, |input, cx| {
+                input.set_command_models(p.available_models.clone(), cx)
+            });
+            p.focus_input(window, cx);
+        });
+    });
+    vcx.simulate_input("/model unfinished");
+    vcx.run_until_parked();
+    let button = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).content.to_string()),
+        "/model unfinished"
+    );
+}
+
+#[gpui::test]
 fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
@@ -22,10 +109,10 @@ fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui:
     });
     vcx.run_until_parked();
     let model = vcx.debug_bounds("panel-model").unwrap();
-    let account = vcx.debug_bounds("panel-login").unwrap();
+    let context = vcx.debug_bounds("panel-context-meter").unwrap();
     assert!(
-        model.right() <= account.left(),
-        "account method follows model"
+        model.right() <= context.left(),
+        "the context ring follows model"
     );
     vcx.simulate_click(model.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
@@ -102,7 +189,9 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
-            for selector in ["panel-model", "panel-login"] {
+            // A fresh panel has no effort yet, so the model pill is the one
+            // identity control every width must keep.
+            for selector in ["panel-model"] {
                 let bounds = vcx.debug_bounds(selector).unwrap();
                 assert!(
                     bounds.left() >= footer.left() && bounds.right() <= footer.right(),
@@ -112,23 +201,30 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             }
             let identity = vcx.debug_bounds("panel-identity").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
-            let login = vcx.debug_bounds("panel-login").unwrap();
             assert!(
-                model.left() >= identity.left() && login.right() <= identity.right(),
-                "{width}x{height} fresh={fresh}: {model:?} {login:?} {identity:?}"
+                model.left() >= identity.left() && model.right() <= identity.right(),
+                "{width}x{height} fresh={fresh}: {model:?} {identity:?}"
+            );
+            if let Some(effort) = vcx.debug_bounds("panel-model-effort") {
+                let control = vcx.debug_bounds("panel-model-control").unwrap();
+                assert_eq!(model.right(), effort.left());
+                assert_eq!(effort.right(), control.right());
+                assert!(control.right() <= identity.right());
+            }
+            let location = vcx
+                .debug_bounds("composer-location")
+                .expect("the directory label stays in the footer");
+            assert!(
+                location.top() >= input.bottom(),
+                "the directory label shares the pill row: {location:?} {input:?}"
             );
             assert!(
-                model.right() <= login.left(),
-                "identity controls must not overlap"
-            );
-            let build = vcx.debug_bounds("panel-build").unwrap();
-            assert!(
-                login.right() <= build.left() && build.top() >= input.bottom(),
-                "build metadata shares the pill row after the identity pills: {login:?} {build:?} {input:?} {footer:?}"
+                vcx.debug_bounds("panel-build").is_none(),
+                "the footer never shows a version or build label"
             );
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
-                    input.set_content("long draft ".repeat(300).into(), cx)
+                    input.set_content("long draft ".repeat(300), cx)
                 });
             });
             vcx.run_until_parked();

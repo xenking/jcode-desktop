@@ -1,6 +1,7 @@
 //! Bridge-run-scoped SSH master reuse with one short-lived unattached cloud client.
+use crate::managed_cloud::{self, Destination};
 use jcode_sdk::{JcodeClient, SharedSshTransport, SshConnectOptions, WeakSharedSshTransport};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::{fs::MetadataExt, process::CommandExt};
@@ -19,9 +20,9 @@ const CONFIG_LIMIT: u64 = 1024 * 1024;
 #[derive(Clone, Default)]
 pub(super) struct RemoteTransports {
     pool: Arc<Mutex<Pool<WeakSharedSshTransport>>>,
-    // Provisioning is serialized independently of ordinary SSH selection.
-    cloud: Arc<Mutex<CloudTransport<WeakSharedSshTransport, JcodeClient>>>,
+    cloud: Arc<Mutex<CloudPool<WeakSharedSshTransport>>>,
     #[cfg(test)]
+    #[allow(clippy::type_complexity)]
     connector: Option<Arc<dyn Fn(&str) -> jcode_sdk::Result<JcodeClient> + Send + Sync>>,
 }
 
@@ -38,6 +39,7 @@ impl RemoteTransports {
 
     pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<JcodeClient> {
         self.connect_with_progress(host, &mut |_| {})
+            .map(|(client, _)| client)
     }
 
     /// Connect, reporting managed-cloud provisioning phases as they happen.
@@ -45,13 +47,13 @@ impl RemoteTransports {
         &self,
         host: &str,
         progress: &mut dyn FnMut(&str),
-    ) -> jcode_sdk::Result<JcodeClient> {
+    ) -> jcode_sdk::Result<(JcodeClient, bool)> {
         #[cfg(test)]
         if let Some(connector) = &self.connector {
-            return connector(host);
+            return connector(host).map(|client| (client, false));
         }
-        if host == crate::managed_cloud::HOST {
-            return self.connect_cloud(progress);
+        if let Some(destination) = Destination::parse(host) {
+            return self.connect_cloud(destination, progress);
         }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
@@ -76,7 +78,7 @@ impl RemoteTransports {
         let Some(identity) = identity else {
             // Preserve arbitrary SSH configurations whose file expansions we
             // cannot fingerprint, without weakening authentication policy.
-            return JcodeClient::connect_ssh(options);
+            return JcodeClient::connect_ssh(options).map(|client| (client, false));
         };
         let key = Target { host, identity };
         let (owner, generation) = self.pool.lock().unwrap().acquire(
@@ -106,12 +108,17 @@ impl RemoteTransports {
             // Never retry a create, including ambiguous API handshake failures.
             self.pool.lock().unwrap().remove(&key, generation);
         }
-        result
+        result.map(|client| (client, false))
     }
 
     #[cfg(test)]
     pub(super) fn cloud_spare_ready(&self) -> bool {
-        self.cloud
+        let state = self
+            .cloud
+            .lock()
+            .unwrap()
+            .target(Destination::parse(managed_cloud::HOST).unwrap());
+        state
             .lock()
             .unwrap()
             .spare
@@ -119,10 +126,15 @@ impl RemoteTransports {
             .is_some_and(|(client, deadline)| Instant::now() < *deadline && !client.is_closed())
     }
 
-    fn connect_cloud(&self, progress: &mut dyn FnMut(&str)) -> jcode_sdk::Result<JcodeClient> {
+    fn connect_cloud(
+        &self,
+        destination: Destination<'_>,
+        progress: &mut dyn FnMut(&str),
+    ) -> jcode_sdk::Result<(JcodeClient, bool)> {
         let error = |message| jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message);
-        // This lock serializes cloud initialization only, never the global pool.
-        let mut cloud = self.cloud.lock().unwrap();
+        // Only connections to this destination wait for its provisioning.
+        let state = self.cloud.lock().unwrap().target(destination);
+        let mut cloud = state.lock().unwrap();
         let account = crate::managed_cloud::account();
         let fingerprint = crate::managed_cloud_parity::Snapshot::collect().fingerprint();
         cloud.select_account(account.as_ref().ok(), fingerprint);
@@ -132,10 +144,10 @@ impl RemoteTransports {
             .filter(|client| !client.is_closed())
         {
             progress("Reusing ready Jcode Cloud connection…");
-            Ok(client)
+            Ok((client, cloud.self_hosted))
         } else if let Some(owner) = cloud.reserve(WeakSharedSshTransport::upgrade) {
             progress("Reusing your Jcode Cloud connection…");
-            owner.connect()
+            owner.connect().map(|client| (client, cloud.self_hosted))
         } else {
             crate::managed_cloud::connect_with_sync_status(
                 progress,
@@ -148,15 +160,16 @@ impl RemoteTransports {
                             "Jcode account changed while connecting; reconnect explicitly".into(),
                         );
                     }
-                    crate::managed_cloud::request_connect(current, key)
+                    managed_cloud::request_connect(current, destination, key)
                 },
-                |options, synchronized| {
+                |options, synchronized, self_hosted| {
                     let owner = SharedSshTransport::new(options)?;
                     // Startup must finish inside this closure, while connect
                     // still owns the ephemeral private key and pinned hosts.
                     let client = owner.connect()?;
                     if synchronized {
                         cloud.publish(owner.downgrade());
+                        cloud.self_hosted = self_hosted;
                     }
                     Ok(client)
                 },
@@ -183,7 +196,6 @@ impl RemoteTransports {
             .and_then(|_| cloud.begin_prepare(WeakSharedSshTransport::upgrade, Instant::now()));
         drop(cloud);
         if let Some((generation, owner)) = prepare {
-            let state = Arc::clone(&self.cloud);
             std::thread::spawn(move || {
                 // No cloud lock during the API handshake. Foreground clicks can
                 // select another channel without waiting for this preparation.
@@ -222,11 +234,35 @@ fn same_cloud_account(
     a.api_base == b.api_base && a.api_key == b.api_key
 }
 
+type CloudState<W, S> = Arc<Mutex<CloudTransport<W, S>>>;
+
+struct CloudPool<W, S = JcodeClient> {
+    targets: HashMap<String, CloudState<W, S>>,
+}
+
+impl<W, S> Default for CloudPool<W, S> {
+    fn default() -> Self {
+        Self {
+            targets: HashMap::new(),
+        }
+    }
+}
+
+impl<W, S> CloudPool<W, S> {
+    fn target(&mut self, destination: Destination<'_>) -> CloudState<W, S> {
+        self.targets
+            .entry(destination.preference())
+            .or_default()
+            .clone()
+    }
+}
+
 // Exact account matching avoids hash collisions. Never derive Debug for this
 // state, which contains credentials, and never include credentials in errors.
 struct CloudTransport<W, S = JcodeClient> {
     account: Option<crate::managed_cloud::Account>,
     fingerprint: u64,
+    self_hosted: bool,
     owner: Option<W>,
     reservations: usize,
     generation: u64,
@@ -239,6 +275,7 @@ impl<W, S> Default for CloudTransport<W, S> {
         Self {
             account: None,
             fingerprint: 0,
+            self_hosted: false,
             owner: None,
             reservations: 0,
             generation: 0,
@@ -502,13 +539,12 @@ fn fingerprint_with_environment(
     }
     // The managed proxy reads this JSON at runtime, so ssh -G alone cannot
     // observe instance/account retargeting behind an unchanged ProxyCommand.
-    if host.rsplit('@').next() == Some("jcode-cloud-alpha") {
-        if let Some(home) = &home {
+    if host.rsplit('@').next() == Some("jcode-cloud-alpha")
+        && let Some(home) = &home {
             let home = std::path::Path::new(home);
             hash_file(&home.join(".config/jcode/cloud-alpha.json"), &mut hash);
             hash_file(&home.join(".local/bin/jcode-cloud-alpha"), &mut hash);
         }
-    }
     for line in config.lines() {
         let Some((name, value)) = line.split_once(' ') else {
             continue;

@@ -1,6 +1,50 @@
 //! Clipboard image extraction, preferring the compositor's encoded bytes.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
+
+pub(crate) enum ClipboardContent {
+    Files(Vec<PathBuf>),
+    Image(ClipboardImage),
+    Empty,
+}
+
+fn classify_paste(
+    files: Vec<PathBuf>,
+    image: impl FnOnce() -> Result<Option<ClipboardImage>, String>,
+) -> Result<ClipboardContent, String> {
+    if !files.is_empty() {
+        return Ok(ClipboardContent::Files(files));
+    }
+    Ok(image()?.map_or(ClipboardContent::Empty, ClipboardContent::Image))
+}
+
+pub(crate) fn read_paste() -> Result<ClipboardContent, String> {
+    let files = arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get().file_list())
+        .unwrap_or_default();
+    classify_paste(files, read)
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn no_files_allows_bitmap_fallback() {
+        let result = classify_paste(Vec::new(), || Ok(None));
+        assert!(matches!(result, Ok(ClipboardContent::Empty)));
+    }
+
+    #[test]
+    fn finder_files_take_precedence_without_reading_their_preview_bitmap() {
+        let files = vec![
+            PathBuf::from("/tmp/notes.txt"),
+            PathBuf::from("/tmp/image.png"),
+        ];
+        let result = classify_paste(files.clone(), || panic!("Finder preview was read"));
+        assert!(matches!(result, Ok(ClipboardContent::Files(actual)) if actual == files));
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ClipboardImage {

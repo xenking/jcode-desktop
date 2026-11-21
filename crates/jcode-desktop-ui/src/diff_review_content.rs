@@ -51,6 +51,7 @@ impl ReviewContent {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn scroll(&self) -> Option<&ScrollHandle> {
         self.views.get(&self.selected).map(|(_, scroll)| scroll)
     }

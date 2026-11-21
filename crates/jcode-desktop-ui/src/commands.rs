@@ -56,7 +56,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/todo", "Alias for /todos"),
     RegisteredCommand::public("/splitview", "Mirror the current chat in the side panel"),
     RegisteredCommand::public("/split-view", "Alias for /splitview"),
-    RegisteredCommand::public("/btw", "Ask a side question in the side panel"),
+    RegisteredCommand::public("/btw", "Ask a side question here, answered in a card"),
     RegisteredCommand::public("/ssh", "Connect to a remote machine using system SSH"),
     RegisteredCommand::public("/git", "Show git status for the session working directory"),
     RegisteredCommand::public("/colors", "List or change Desktop color themes"),
@@ -74,7 +74,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/commit-and-push", "Alias for /commit-push"),
     RegisteredCommand::public(
         "/publish",
-        "Desktop selfdev: commit, push, release, and publish, tracked in a new panel",
+        "Commit, push, and publish Jcode Desktop from a local Desktop checkout",
     ),
     RegisteredCommand::public(
         "/fast-release",
@@ -146,13 +146,17 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show current session goals and explain retired legacy initiatives",
     ),
     RegisteredCommand::public("/goals", "Legacy alias for /initiatives"),
-    RegisteredCommand::public("/swarm", "Toggle swarm feature"),
+    RegisteredCommand::public(
+        "/swarm",
+        "Show whether swarm tools are on (effort Swarm is the auto-fan-out mode)",
+    ),
     RegisteredCommand::public("/overnight", "Run a supervised overnight coordinator"),
     RegisteredCommand::public("/context", "Show the full session context snapshot"),
     RegisteredCommand::public(
         "/skills",
         "Show loaded skills and jcode-endorsed recommendations",
     ),
+    RegisteredCommand::public("/mode", "Toggle the skills pinned as session modes"),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),
     RegisteredCommand::public("/applets", "Open the applet component showcase"),
@@ -198,7 +202,6 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Restart the server and every Desktop window, restoring all windows and sessions",
     ),
     RegisteredCommand::public("/rebuild", "Background rebuild and auto reload"),
-    RegisteredCommand::public("/selfdev", "Open a new self-dev jcode session"),
     RegisteredCommand::public("/update", "Background update and auto reload"),
     RegisteredCommand::public("/resume", "Open session picker"),
     RegisteredCommand::public("/sessions", "Alias for /resume"),
@@ -263,7 +266,9 @@ pub(crate) fn registered_command(name: &str) -> Option<RegisteredCommand> {
 }
 
 pub(crate) fn help_markdown() -> String {
-    let mut help = String::from("**Commands**\n\n");
+    let mut help = String::from(
+        "**Composer shortcuts**\n\n- `Ctrl+S` to stash or restore the prompt.\n\n**Commands**\n\n",
+    );
     for (name, description) in registered_command_entries() {
         help.push_str(&format!("- `{name}` — {description}\n"));
     }

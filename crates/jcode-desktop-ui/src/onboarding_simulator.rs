@@ -56,7 +56,6 @@ impl Workspace {
         {
             self.onboarding_launch.requests.push(script);
             let _ = cx;
-            return;
         }
         #[cfg(not(test))]
         {
@@ -172,6 +171,7 @@ mod tests {
         let mut before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
         for command in ["/onboarding-sim", "/onboarding-preview"] {
             vcx.simulate_input(command);
+            vcx.simulate_keystrokes("enter");
             vcx.simulate_keystrokes("enter");
             vcx.run_until_parked();
         }

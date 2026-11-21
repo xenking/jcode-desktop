@@ -54,6 +54,11 @@ pub struct BankedReset {
     /// Login the reset is pinned to. `None` is the default login.
     pub account_label: Option<String>,
     pub available_count: u64,
+    /// Number currently usable, absent for older CLI versions.
+    pub usable_count: Option<u64>,
+    pub expires_at: Option<String>,
+    pub cached_source: Option<String>,
+    pub session_reset_available: Option<bool>,
     /// The limit is actually enforced, so a reset helps right now.
     pub limit_reached: bool,
     /// RFC3339 time the next reset becomes available when none is left.
@@ -95,6 +100,12 @@ impl BankedReset {
             provider,
             account_label: text("account_label"),
             available_count: value.get("available_count")?.as_u64()?,
+            usable_count: value.get("usable_count").and_then(|v| v.as_u64()),
+            expires_at: text("expires_at"),
+            cached_source: text("cached_source"),
+            session_reset_available: value
+                .get("session_reset_available")
+                .and_then(|v| v.as_bool()),
             limit_reached: value
                 .get("limit_reached")
                 .and_then(|v| v.as_bool())
@@ -106,7 +117,9 @@ impl BankedReset {
     /// Worth offering: redeemable now. Availability can be inspected before
     /// limits bind, but neither provider's reset should be offered early.
     pub fn offerable(&self) -> bool {
-        self.available_count > 0 && self.limit_reached
+        self.session_reset_available
+            .unwrap_or(self.available_count > 0)
+            && self.limit_reached
     }
 
     /// Compact pill caption.
@@ -177,6 +190,32 @@ impl UsageReport {
                 .take(160)
                 .collect()
         })
+    }
+
+    /// The provider refused the credential itself (401/403, revoked or expired
+    /// key). A rate limit or a network failure is not a credential problem and
+    /// must never tell the user to sign in again.
+    pub fn auth_failure(&self) -> bool {
+        let Some((_, error)) = self
+            .extra_info
+            .iter()
+            .find(|(key, _)| key == USAGE_ERROR_KEY)
+        else {
+            return false;
+        };
+        let lower = error.to_ascii_lowercase();
+        [
+            "401",
+            "403",
+            "unauthorized",
+            "unauthenticated",
+            "invalid api key",
+            "invalid_api_key",
+            "revoked",
+            "expired",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     }
 }
 
@@ -343,6 +382,7 @@ pub fn spawn() -> Feed {
             ("openai", "OpenAI", "available", "OAuth"),
             ("claude", "Claude", "available", "OAuth"),
             ("jcode", "Jcode", "available", "API key"),
+            ("opencode-go", "OpenCode Go", "available", "API key"),
             ("gemini", "Gemini", "not_configured", "OAuth"),
             ("openrouter", "OpenRouter", "not_configured", "API key"),
             ("copilot", "Copilot", "expired", "device code"),
@@ -364,6 +404,10 @@ pub fn spawn() -> Feed {
                         provider: ResetProvider::Claude,
                         account_label: None,
                         available_count: 1,
+                        usable_count: None,
+                        expires_at: None,
+                        cached_source: None,
+                        session_reset_available: None,
                         limit_reached: true,
                         next_available_at: None,
                     }),
@@ -378,6 +422,30 @@ pub fn spawn() -> Feed {
                         ("Today".into(), "120000 input / 8000 output tokens (90000 cached input), $0.4200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
                         ("Lifetime".into(), "2400000 input / 160000 output tokens (1800000 cached input), $8.4000 known + unknown cost (2 unpriced responses) API-equivalent estimate, not a bill; recorded only; partial token counts; since 2026-09-01 10:00 -07:00".into()),
                     ],
+                }]
+            } else if id == "opencode-go" {
+                vec![UsageReport {
+                    provider_name: "OpenCode Go (API key)".into(),
+                    account_label: None,
+                    limits: vec![
+                        UsageLimit {
+                            name: "Rolling window".into(),
+                            usage_percent: 38.,
+                            reset_in: Some("2h 56m".into()),
+                        },
+                        UsageLimit {
+                            name: "Weekly window".into(),
+                            usage_percent: 15.,
+                            reset_in: Some("15h 48m".into()),
+                        },
+                        UsageLimit {
+                            name: "Monthly window".into(),
+                            usage_percent: 7.,
+                            reset_in: Some("29d 21h".into()),
+                        },
+                    ],
+                    banked_reset: None,
+                    extra_info: vec![("Key status".into(), "valid".into())],
                 }]
             } else {
                 Vec::new()
@@ -401,28 +469,35 @@ pub fn spawn() -> Feed {
 }
 
 /// Process-wide account poller with fan-out to every window's feed.
+#[derive(Default)]
 struct Poller {
-    subscribers: Mutex<Vec<Sender<Vec<Account>>>>,
-    latest: Mutex<Option<Vec<Account>>>,
+    state: Mutex<PollerState>,
+}
+
+#[derive(Default)]
+struct PollerState {
+    subscribers: Vec<Sender<Vec<Account>>>,
+    latest: Option<Vec<Account>>,
 }
 
 impl Poller {
     fn subscribe(&self, tx: Sender<Vec<Account>>) {
         // A new window gets the current snapshot immediately instead of
         // waiting up to a minute for the next poll.
-        if let Some(latest) = self.latest.lock().unwrap().clone() {
+        let mut state = self.state.lock().unwrap();
+        if let Some(latest) = state.latest.clone() {
             let _ = tx.send(latest);
         }
-        self.subscribers.lock().unwrap().push(tx);
+        state.subscribers.push(tx);
     }
 
     /// Deliver to live subscribers and drop closed windows' senders.
     fn publish(&self, accounts: Vec<Account>) {
-        self.subscribers
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state
+            .subscribers
             .retain(|subscriber| subscriber.send(accounts.clone()).is_ok());
-        *self.latest.lock().unwrap() = Some(accounts);
+        state.latest = Some(accounts);
     }
 }
 
@@ -445,10 +520,7 @@ fn shared_poller() -> &'static Poller {
                 }
             })
             .expect("spawn accounts thread");
-        Poller {
-            subscribers: Mutex::new(Vec::new()),
-            latest: Mutex::new(None),
-        }
+        Poller::default()
     })
 }
 
@@ -620,6 +692,7 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
         "google" => icon!("google"),
         "copilot" => icon!("githubcopilot"),
         "openrouter" => icon!("openrouter"),
+        "opencode" | "opencode-go" => icon!("opencode"),
         "bedrock" => icon!("bedrock"),
         "azure" => icon!("azure"),
         "cursor" => icon!("cursor"),
@@ -665,6 +738,8 @@ pub fn pretty_provider_name(provider: &str) -> String {
         "anthropic" | "claude" => "Anthropic".into(),
         "openai" | "chatgpt" => "OpenAI".into(),
         "openrouter" => "OpenRouter".into(),
+        "opencode" | "opencode-zen" | "zen" => "OpenCode Zen".into(),
+        "opencode-go" | "opencodego" => "OpenCode Go".into(),
         "copilot" | "github copilot" | "github-copilot" => "Copilot".into(),
         "gemini" | "google" | "code-assist" => "Gemini".into(),
         "antigravity" => "Antigravity".into(),
@@ -697,6 +772,38 @@ pub fn lettermark(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_is_a_full_account_with_a_logo_and_quota_windows() {
+        assert!(
+            logo("opencode-go").is_some(),
+            "OpenCode Go has a brand mark"
+        );
+        assert!(logo("opencode").is_some(), "OpenCode Zen shares the mark");
+        let mut accounts = parse(
+            r#"{"providers":[{"id":"opencode-go","display_name":"OpenCode Go","status":"available",
+                "method":"API key (`OPENCODE_GO_API_KEY`)","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenCode Go (API key)","limits":[
+                {"name":"Rolling window","usage_percent":23.0,"reset_in":"4h"},
+                {"name":"Weekly window","usage_percent":9.0,"reset_in":"1d"},
+                {"name":"Monthly window","usage_percent":4.0,"reset_in":"30d"}
+            ],"extra_info":[["Key status","valid"]],"error":null}]}"#,
+        );
+        let account = &accounts[0];
+        assert_eq!(account.id, "opencode-go");
+        assert!(account.available());
+        assert_eq!(account.status_label(), "Connected");
+        assert_eq!(account.usage_reports.len(), 1);
+        let limits = account.active_limits().expect("quota windows attach");
+        assert_eq!(limits.len(), 3);
+        assert_eq!(limits[0].name, "Rolling window");
+        assert_eq!(limits[0].usage_percent, 23.0);
+        assert_eq!(limits[0].reset_in.as_deref(), Some("4h"));
+    }
 
     #[test]
     fn recent_accounts_are_bounded_unique_and_stable() {
@@ -927,6 +1034,10 @@ mod tests {
             provider: ResetProvider::Claude,
             account_label: Some("work".into()),
             available_count: 1,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: None,
         };
@@ -935,6 +1046,19 @@ mod tests {
         assert!(reset.offerable());
         reset.available_count = 0;
         assert!(!reset.offerable());
+        reset.available_count = 2;
+        reset.limit_reached = true;
+        reset.session_reset_available = Some(false);
+        assert!(
+            !reset.offerable(),
+            "saved grants cannot offer a session reset"
+        );
+        reset.available_count = 0;
+        reset.session_reset_available = Some(true);
+        assert!(
+            reset.offerable(),
+            "session offer is independent of saved grants"
+        );
     }
 
     #[test]
@@ -1151,6 +1275,42 @@ mod tests {
         let latest = feed.latest().expect("two snapshots are pending");
         assert_eq!(latest[0].id, "fresh", "the poll skips stale snapshots");
         assert_eq!(feed.latest(), None, "and the queue is now drained");
+    }
+
+    #[test]
+    fn concurrent_subscription_observes_the_latest_published_snapshot() {
+        for attempt in 0..1024 {
+            let poller = Poller {
+                state: Mutex::new(PollerState {
+                    subscribers: Vec::new(),
+                    latest: Some(Vec::new()),
+                }),
+            };
+            let (tx, rx) = channel();
+            let start = std::sync::Barrier::new(2);
+            std::thread::scope(|threads| {
+                threads.spawn(|| {
+                    start.wait();
+                    poller.subscribe(tx);
+                });
+                start.wait();
+                poller.publish(vec![Account {
+                    id: "fresh".into(),
+                    display_name: "Fresh account".into(),
+                    status: "available".into(),
+                    auth_kind: "OAuth".into(),
+                    method: "OAuth".into(),
+                    usage_reports: Vec::new(),
+                    limits: Vec::new(),
+                }]);
+            });
+            let latest = rx.try_iter().last().expect("initial snapshot");
+            assert_eq!(
+                latest.first().map(|account| account.id.as_str()),
+                Some("fresh"),
+                "subscription missed the completed publish at attempt {attempt}"
+            );
+        }
     }
 
     /// Acceptance path: the real CLI's real report must parse and yield the

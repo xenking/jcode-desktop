@@ -607,7 +607,7 @@ mod tests {
             vec!["--single-panel", "--hot-reload", "--resume"]
         );
         assert!(jcode_desktop_api::LaunchMode::shared_single_panel(
-            &strip_transient(&args)
+            strip_transient(&args)
         ));
     }
 

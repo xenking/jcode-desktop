@@ -97,7 +97,11 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
             panel.voice.phase = Phase::Transcribing;
             // This is the production final-transcript boundary. Do NOT inject a
             // VoiceIntent/report or call resolve_voice_for_test here.
-            panel.finish_voice(Ok(transcript.into()), cx);
+            panel.finish_voice_with_mode(
+                Ok(transcript.into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert!(panel.voice.phase == Phase::Routing);
             assert!(panel.voice.task.is_some());
             let trace = panel
@@ -163,7 +167,7 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
                     "mixed coding request must not navigate"
                 );
                 assert!(
-                    matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+                    matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
                     if session_id == "voice-live-recording-only" && content == transcript && images.is_empty()),
                     "recording bridge must receive only the spoken coding request"
                 );

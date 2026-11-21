@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/freebsd-0.2.1-recovery.yml"
+WORKFLOW = ROOT / ".github/workflows/freebsd-release.yml"
 SOURCE = textwrap.dedent(WORKFLOW.read_text().split("python3 - <<'PY'\n", 1)[1].split("            PY\n", 1)[0])
 TREE = ast.parse(SOURCE)
 

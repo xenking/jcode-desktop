@@ -1,0 +1,28 @@
+[
+  {
+    "id": "openrig-managed:process/agent-browser",
+    "name": "agent-browser",
+    "source": "openrig-managed",
+    "files": [
+      {
+        "path": "SKILL.md"
+      },
+      {
+        "path": "LOCAL-INSIGHTS.md"
+      },
+      {
+        "path": "OPENRIG.md"
+      }
+    ]
+  },
+  {
+    "id": "openrig-managed:core/agent-starters",
+    "name": "agent-starters",
+    "source": "openrig-managed",
+    "files": [
+      {
+        "path": "SKILL.md"
+      }
+    ]
+  }
+]

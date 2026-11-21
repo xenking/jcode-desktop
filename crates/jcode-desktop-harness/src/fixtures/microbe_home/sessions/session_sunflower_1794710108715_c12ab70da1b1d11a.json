@@ -1,0 +1,20 @@
+{
+ "id": "session_sunflower_1794710108715_c12ab70da1b1d11a",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Load skill `selfdev`. Ship code in ~/projects/github.com/xen",
+ "created_at": "2026-11-15T02:35:08.715894Z",
+ "updated_at": "2026-11-15T02:37:12.395812Z",
+ "model_usage_turn_id": "session_sunflower_1794710108715_c12ab70da1b1d11a:message_1794710108788_9622000131251234335",
+ "provider_key": "openai-oauth",
+ "model": "gpt-6.1-terra",
+ "route_api_method": "openai-oauth@openai-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking",
+ "short_name": "sunflower",
+ "status": "Closed",
+ "last_pid": 84375,
+ "last_active_at": "2026-11-15T02:35:08.745956Z",
+ "is_debug": true,
+ "saved": false
+}

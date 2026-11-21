@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the real app on a private Xvfb display using offline fixture data."""
+"""Render the real app offline on private Xvfb or an invisible macOS Fleet window."""
 import argparse
 import json
 import os
@@ -7,6 +7,7 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -36,6 +37,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")
+    parser.add_argument("--rig-hud-click", action="store_true", help="click the OpenRig HUD and capture its selected inspector")
     parser.add_argument("--accounts", action="store_true",
                         help="open the Accounts panel with offline multi-account fixtures")
     parser.add_argument("--sign-in-steps", action="store_true",
@@ -63,6 +66,7 @@ def main():
                         help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--pending-interact", action="store_true",
                         help="verify Enter, retry and local fallback for an offline pending startup")
+    parser.add_argument("--cloud-picker", action="store_true", help="show registered Cloud machines in the destination picker")
     parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
                         help="render managed Jcode Cloud unavailability without cloud operations (both modes currently unavailable)")
     parser.add_argument("--onboarding-interact", action="store_true",
@@ -72,7 +76,7 @@ def main():
     parser.add_argument("--rename-interact", action="store_true",
                         help="verify native rename button, F2, validation, dismissal, and preserved composer draft")
     parser.add_argument("--tab-actions-interact", action="store_true",
-                        help="verify hover-only tab actions and shortcut tooltips")
+                        help="verify the tab close button, hover rename action, and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
     parser.add_argument("--collections", nargs="?", const="1", choices=("1", "menu", "form"),
                         help="show user-created collections above project groups (menu: a row's Move menu open, form: the editor)")
@@ -121,10 +125,16 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "image-prompt", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
+                        help="capture live loopback GETs or the offline inspector/confirmation in OpenRig")
+    parser.add_argument("--openrig-live-base", default="http://127.0.0.1:7433",
+                        help="registry daemon URL for the read-only OpenRig attention capture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
+    parser.add_argument("--queued", type=int, default=0,
+                        help="seed N queued prompts above the first panel's composer")
     parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "voice-timeout", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
     parser.add_argument("--preview-interact", action="store_true",
@@ -159,6 +169,8 @@ def main():
     parser.add_argument("--selection-drag", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"),
                         help="drag a native text selection on the private display before capture")
     args = parser.parse_args()
+    if args.rig_hud_click:
+        args.rig_hud = True
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "onboarding_interact")
@@ -444,12 +456,20 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    for tool in ("Xvfb", "import", "openbox", "xdotool"):
-        if not shutil.which(tool):
-            parser.error(f"missing {tool}: install Xvfb, ImageMagick, Openbox, and xdotool")
-    drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
-    if not drivers:
-        parser.error("missing Mesa lavapipe: install vulkan-swrast (Arch) or mesa-vulkan-drivers (Debian/Ubuntu)")
+    native_fleet = (sys.platform == "darwin" and (args.rig_hud or args.transcript in ("openrig", "openrig-inspector"))
+                    and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
+                    and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
+    if args.openrig_attention and not (native_fleet and args.transcript == "openrig"):
+        parser.error("--openrig-attention requires the isolated macOS --transcript openrig capture")
+    if not native_fleet:
+        for tool in ("Xvfb", "import", "openbox", "xdotool"):
+            if not shutil.which(tool):
+                parser.error(f"missing {tool}: install Xvfb, ImageMagick, Openbox, and xdotool")
+        drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
+        if not drivers:
+            parser.error("missing Mesa lavapipe: install vulkan-swrast (Arch) or mesa-vulkan-drivers (Debian/Ubuntu)")
+    elif args.size != "1440x1000":
+        parser.error("native macOS captures use the default window size; use --panels 2 for a narrow split")
     if not args.no_build:
         subprocess.run(["justrust", "build", "-p", "jcode-desktop"], cwd=repo, check=True)
     binary = args.binary.resolve(strict=True)
@@ -462,6 +482,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.rig_hud:
+            env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
+        if args.rig_hud_click:
+            env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD_CLICK"] = "1"
+        if args.fps_header_interact:
+            env["JCODE_DESKTOP_SHOW_FPS"] = "1"
         if args.release_status:
             env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
         if args.update_clicked:
@@ -485,7 +511,15 @@ def main():
         if args.notification:
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
-        env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "openrig" if args.transcript == "openrig-inspector" else args.transcript
+        if args.transcript == "openrig-inspector":
+            env["JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR"] = "1"
+        if args.openrig_attention:
+            env["JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION"] = args.openrig_attention
+        if args.openrig_attention == "live":
+            env["OPENRIG_URL"] = args.openrig_live_base
+        if args.queued > 0:
+            env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(args.queued)
         if args.panel_transcripts:
             env["JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS"] = args.panel_transcripts
         if args.panel_titles:
@@ -496,6 +530,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_PENDING"] = "1"
         if args.cloud_startup:
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP"] = args.cloud_startup
+        if args.cloud_picker:
+            env["JCODE_DESKTOP_SCREENSHOT_CLOUD_PICKER"] = "1"
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.account_sign_in_no_emails:
@@ -517,6 +553,26 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
         if args.history_interact or args.sidebar_workspaces_interact:
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
+        for name in ("home", "runtime", "config", "cache", "data", "jcode"):
+            (root / name).mkdir(mode=0o700)
+        if native_fleet:
+            capture = root / "capture.png"
+            env.update(JCODE_DESKTOP_CONTROL_TEST="1", JCODE_DESKTOP_SCREENSHOT_PNG=str(capture),
+                       JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1",
+                       JCODE_RUNTIME_DIR=str(root / "runtime"), TMPDIR=str(root / "runtime"),
+                       JCODE_DESKTOP_MUTE_SOUNDS="1", JCODE_NO_TELEMETRY="1")
+            result = subprocess.run([str(binary), "--no-hot-reload"], env=env, cwd=root,
+                                    capture_output=True, text=True, timeout=45)
+            if result.returncode or not capture.is_file():
+                raise RuntimeError("Native Fleet capture failed:\n" + result.stdout + result.stderr)
+            if args.rig_hud:
+                print(result.stderr)
+                diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
+                if diagnostics.exists():
+                    print(diagnostics.read_text())
+            shutil.copyfile(capture, output)
+            print(output)
+            return
         env["VK_DRIVER_FILES"] = str(drivers[0])
         wm_config = root / "openbox.xml"
         wm_config.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc">
@@ -524,8 +580,6 @@ def main():
 <maximized>yes</maximized></application></applications></openbox_config>'''.replace(
             "<maximized>yes</maximized>",
             "<maximized>no</maximized>" if args.responsive_interact else "<maximized>yes</maximized>"))
-        for name in ("home", "runtime", "config", "cache", "data", "jcode"):
-            (root / name).mkdir(mode=0o700)
         if args.ai_font:
             fonts = Path.home() / ".local/share/fonts"
             if fonts.is_dir():

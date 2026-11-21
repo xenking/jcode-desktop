@@ -24,6 +24,9 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_control.rs"]
+mod control;
+
 #[path = "panel_workspace_commands.rs"]
 pub(crate) mod workspace_commands;
 
@@ -44,6 +47,17 @@ mod desktop_commands;
 mod command_workflow_tests;
 
 #[cfg(test)]
+#[path = "panel_slash_send_tests.rs"]
+mod slash_send_tests;
+
+#[cfg(test)]
+#[path = "panel_rewind_tests.rs"]
+mod rewind_tests;
+
+#[path = "panel_rewind.rs"]
+mod rewind;
+
+#[cfg(test)]
 #[path = "panel_display_tests.rs"]
 mod display_tests;
 
@@ -56,8 +70,15 @@ mod selection_tests;
 mod file_drop_tests;
 
 #[cfg(test)]
+#[path = "panel_memory_tests.rs"]
+mod memory_tests;
+
+#[cfg(test)]
 #[path = "panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
+
+#[path = "panel_reveal.rs"]
+mod reveal;
 
 #[path = "panel_text_document.rs"]
 mod text_document;
@@ -68,6 +89,17 @@ pub use snapshot::TranscriptSnapshot;
 
 #[path = "panel_background_task.rs"]
 mod background_task;
+
+#[path = "panel_tool_output.rs"]
+mod tool_output;
+
+#[path = "panel_compaction.rs"]
+pub(crate) mod compaction;
+
+#[path = "panel_compaction_render.rs"]
+mod compaction_render;
+#[path = "panel_history_paging.rs"]
+mod history_paging;
 
 #[path = "panel_activity.rs"]
 mod activity;
@@ -80,20 +112,50 @@ mod steady_activity;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
+#[path = "panel_agent_message.rs"]
+mod agent_message;
 #[path = "panel_ask.rs"]
 mod ask;
+#[path = "panel_ask_images.rs"]
+mod ask_images;
+#[path = "panel_background_jobs.rs"]
+mod background_jobs;
+#[path = "panel_cache_card.rs"]
+mod cache_card;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
+#[path = "panel_cache_timer.rs"]
+pub(crate) mod cache_timer;
 #[path = "panel_composer.rs"]
 mod composer;
-#[path = "panel_swarm_strip.rs"]
-mod swarm_strip;
-pub(crate) use swarm_strip::OpenSwarmWorker;
-pub(crate) use swarm_strip::state_color as swarm_state_color;
+#[path = "panel_context_usage.rs"]
+mod context_usage;
+#[path = "panel_decision.rs"]
+mod decision;
+#[path = "panel_decision_tests.rs"]
+#[cfg(test)]
+mod decision_tests;
+#[path = "panel_fork_prompt.rs"]
+mod fork_prompt;
+#[path = "panel_rig_hud.rs"]
+mod rig_hud;
+#[path = "panel_side_question.rs"]
+mod side_question;
+#[path = "panel_swarm_card.rs"]
+mod swarm_card;
+#[path = "panel_swarm_indicator.rs"]
+mod swarm_indicator;
+pub(crate) use swarm_indicator::OpenSwarmWorker;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+#[path = "panel_mode.rs"]
+mod mode_switch;
+// One disclosure model for every truncated line: tool titles, errors, output,
+// prompts, notices, background tasks and swarm lines.
+#[path = "expandable.rs"]
+pub(crate) mod expandable;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -140,6 +202,8 @@ mod gmail_draft_card;
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
 mod mcp_list_card;
+#[path = "panel_openrig.rs"]
+pub(crate) mod openrig;
 #[path = "panel_orchestration.rs"]
 pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
@@ -150,7 +214,7 @@ mod side_document;
 mod tab_outline;
 #[path = "panel_user_response.rs"]
 mod user_response;
-pub(crate) use tab_outline::TabRing;
+pub(crate) use tab_outline::{TabRing, tab_corner_radius};
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
 #[path = "panel_usage.rs"]
@@ -165,6 +229,26 @@ pub(crate) type SessionOpener =
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
+
+// Distance from the composer's pill row to the panel's bottom edge. The docked
+// dock and the welcome-started layout share it, so pill rows line up across
+// panels instead of one sitting flush with the window edge.
+const COMPOSER_BOTTOM_INSET: f32 = 8.0;
+
+/// Opening a panel is not yet a conversation. A local draft asks the runtime
+/// for a session only when the user sends its first prompt, so abandoned
+/// panels never register a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DraftSession {
+    /// Mounted, with no decision yet about when to create its session.
+    Unrequested,
+    /// Waiting for the first prompt.
+    Deferred,
+    /// The create request is in flight, or the session exists.
+    Requested,
+}
+
+pub(crate) const DEFERRED_SESSION_STATUS: &str = "New session";
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -293,6 +377,14 @@ pub enum Item {
     User(String),
     Image(TranscriptImage),
     Assistant(String),
+    AgentMessage {
+        from_session: String,
+        from_name: Option<String>,
+        message: String,
+        /// Local arrival time for notifications, or the stored time for history.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp_ms: Option<i64>,
+    },
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
@@ -311,12 +403,31 @@ pub enum Item {
         task_id: String,
         label: String,
         summary: String,
+        #[serde(default)]
+        detail: Option<String>,
         percent: Option<f32>,
         done: bool,
     },
     Todos(TodoCardPayload),
+    /// A local UI/command failure, whose text is not a provider error.
     Error(String),
+    /// A structured error reported by the runtime API.
+    RuntimeError {
+        code: jcode_sdk::api::ErrorCode,
+        message: String,
+    },
     Stopped(stop_reason::StopNotice),
+    ProviderGuardrailRetry {
+        turn_id: String,
+        text: String,
+    },
+    /// A completed or in-progress context compaction: one full-width rule with a
+    /// centered label that expands to the summary and elided-message detail.
+    Compaction(compaction::CompactionRow),
+    /// An automatic memory injection: one full-width rule labelled
+    /// `auto-recalled N memories` that expands to what was recalled. Live and
+    /// reloaded rows share the body the daemon stores, so they cannot drift.
+    Memory(compaction::CompactionRow),
     /// Daemon-reported KV (prompt) cache miss for a provider request.
     CacheMiss(cache_miss::CacheMissNotice),
     /// An applet instance placed in this transcript that is not anchored to
@@ -340,8 +451,22 @@ enum TranscriptRowSource {
 struct TranscriptDerived {
     key: TranscriptDerivedKey,
     rows: Arc<Vec<TranscriptRenderRow>>,
-    prompt_rows: Vec<(usize, usize)>,
-    latest_todo: Option<TodoCardPayload>,
+    prompt_rows: Arc<Vec<(usize, usize)>>,
+    latest_todo: Option<Arc<TodoCardPayload>>,
+    /// Ordinary and publish-tracker header fingerprints, computed on rebuild.
+    tail_headers: [u64; 2],
+}
+
+fn transcript_tail_headers(payload: Option<&TodoCardPayload>) -> [u64; 2] {
+    use std::hash::{Hash, Hasher};
+    [false, true].map(|publish_tracker| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        publish_tracker.hash(&mut hasher);
+        if !publish_tracker && let Some(payload) = payload.filter(|p| !p.todos.is_empty()) {
+            format!("{payload:?}").hash(&mut hasher);
+        }
+        hasher.finish()
+    })
 }
 
 #[derive(Clone, PartialEq)]
@@ -358,6 +483,7 @@ struct TranscriptDerivedKey {
 struct TranscriptRenderRow {
     index: usize,
     source: TranscriptRowSource,
+    #[allow(dead_code)]
     role: Option<&'static str>,
     show_label: bool,
 }
@@ -373,6 +499,32 @@ pub struct TodoCardPayload {
     goals: Vec<jcode_base::todo::TodoGoal>,
 }
 
+impl From<jcode_sdk::todo::TodoSnapshot> for TodoCardPayload {
+    fn from(snapshot: jcode_sdk::todo::TodoSnapshot) -> Self {
+        Self {
+            todos: snapshot
+                .todos
+                .into_iter()
+                .map(|todo| TodoCardItem {
+                    content: todo.content,
+                    status: todo.status,
+                    group: todo.group,
+                    stage: todo.stage,
+                    assigned_to: todo.assigned_to,
+                    blocked_by: todo.blocked_by,
+                    confidence: todo.confidence,
+                    completion_confidence: todo.completion_confidence,
+                })
+                .collect(),
+            plan: TodoCardPlan {
+                user_intention: snapshot.plan.user_intention,
+                understands_user_intent: snapshot.plan.understands_user_intent,
+            },
+            goals: snapshot.goals,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct TodoCardPlan {
     #[serde(default)]
@@ -385,14 +537,45 @@ struct TodoCardPlan {
 struct TodoCardItem {
     content: String,
     status: String,
-    #[serde(default)]
+    #[serde(default, alias = "lane")]
     group: Option<String>,
+    #[serde(
+        default,
+        alias = "phase",
+        alias = "wave",
+        deserialize_with = "deserialize_todo_stage"
+    )]
+    stage: Option<u32>,
+    #[serde(default)]
+    assigned_to: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
     #[serde(default)]
     confidence: Option<jcode_base::todo::ConfidenceState>,
     #[serde(default)]
     completion_confidence: Option<jcode_base::todo::ConfidenceState>,
+}
+
+fn deserialize_todo_stage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| match value {
+            serde_json::Value::Number(number) => {
+                number.as_u64().and_then(|n| u32::try_from(n).ok())
+            }
+            serde_json::Value::String(text) => text
+                .trim()
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .ok(),
+            _ => None,
+        })
+        .filter(|stage| *stage > 0))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +628,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default, skip_serializing_if = "DraftConfig::is_empty")]
+    pub(crate) draft_config: DraftConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptSnapshot>,
     #[serde(default)]
@@ -457,6 +642,8 @@ pub struct PanelSnapshot {
     pub title: String,
     pub working_dir: Option<String>,
     pub draft: PromptInputSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_draft: Option<ask::AskDraft>,
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub stick_to_bottom: bool,
@@ -479,6 +666,8 @@ impl gpui::EventEmitter<AccountsPanelChooseModel> for Panel {}
 impl gpui::EventEmitter<AccountsPanelClosed> for Panel {}
 
 pub struct Panel {
+    rig_feed: Entity<crate::openrig_feed::Feed>,
+    pub(crate) rig_host_id: Option<String>,
     pub preview_state: Option<PreviewState>,
     /// Scripted onboarding replay: real rendering and motion, never sounds.
     pub(crate) demo: bool,
@@ -496,6 +685,11 @@ pub struct Panel {
     pub account_label: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
+    skills: Vec<(String, String)>,
+    active_skill: Option<String>,
+    pinned_modes: Vec<String>,
+    mode_multiselect: bool,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
     /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
@@ -503,7 +697,12 @@ pub struct Panel {
     pending_save_requests: usize,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
+    context_usage: context_usage::State,
+    /// Memory pipeline activity for the session, when something is running.
+    /// Display-only: it feeds the composer status line, never the transcript.
+    memory_activity: Option<jcode_sdk::api::MemoryActivitySnapshot>,
     response_stats: response_stats::Tracker,
+    cache_telemetry: cache_card::CacheTelemetry,
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -523,15 +722,43 @@ pub struct Panel {
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
     pub input: Entity<PromptInput>,
-    pub(super) show_build_footer: bool,
-    /// Coordinator-only: workers, pending await and last report.
-    swarm_strip: Option<crate::swarm_view::Strip>,
+    /// Coordinator-only: its swarm workers, for the composer indicator.
+    swarm_workers: Vec<crate::swarm_view::Worker>,
+    background_jobs: background_jobs::BackgroundJobs,
+    /// Coordinator-only: background swarm awaits still in flight. The daemon
+    /// persists them, so a reload no longer makes the coordinator look idle.
+    pending_awaits: Vec<jcode_sdk::PendingAwait>,
+    pending_await_refresh: Option<gpui::Task<()>>,
+    tab_dependency_waiting: bool,
+    /// This session's own record, when it is a swarm worker. Headless workers
+    /// answer no model probe on attach, so their model and effort come from
+    /// here instead of reading as unset.
+    worker_record: Option<jcode_sdk::WorkerMeta>,
+    /// The worker list opened from the composer's count is showing.
+    swarm_list_open: bool,
+    swarm_list_focus: FocusHandle,
+    swarm_finished_open: bool,
+    swarm_finished_focus: FocusHandle,
+    swarm_picker_rows: Vec<FocusHandle>,
+    swarm_list_scroll: ScrollHandle,
+    swarm_trigger_focus: FocusHandle,
+    /// Animated status marks (activity icon, worker spinner and rows).
+    swarm_marks: crate::swarm_glyph::Marks,
+    /// Worker spend (model, provider, total tokens) for inline swarm cards.
+    swarm_usage: HashMap<String, jcode_desktop_harness::swarm_usage::WorkerUsage>,
+    swarm_row_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
     voice: voice::VoiceState,
     image_pane_open: bool,
+    session_image_gallery: image_pane::Gallery,
+    draft_has_images: bool,
     image_pane_selected: Option<usize>,
     image_pane_scroll: ScrollHandle,
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
+    pending_history_image: Option<String>,
+    // true while in flight, false after failure (do not retry every frame).
+    history_image_requests: std::cell::RefCell<HashMap<String, bool>>,
+    image_preview_dimensions: Option<(u32, u32)>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
     image_preview_zoom: f32,
@@ -539,18 +766,18 @@ pub struct Panel {
     image_preview_drag: Option<gpui::Point<gpui::Pixels>>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
+    rewind_selection: Option<rewind::Selection>,
+    expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
     transcript_measurements: TranscriptMeasurements,
     flicker_diagnostics: std::rc::Rc<std::cell::RefCell<flicker::Detector>>,
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     offscreen_prompt_clip: Option<gpui::Pixels>,
-    /// Inline and pinned prompts expand independently so the reminder stays compact.
-    expanded_prompts: HashSet<(usize, bool)>,
+    expanded_prompts: HashSet<usize>,
+    swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, ScrollHandle>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
-    /// The Publish button needs a second click within a short window.
-    publish_armed_at: Option<Instant>,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -576,7 +803,12 @@ pub struct Panel {
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
+    /// Whether this draft has asked the runtime for its session yet.
+    draft_session: DraftSession,
+    /// Model and effort picked on a draft, applied once its session exists.
+    draft_config: DraftConfig,
     history_loaded: bool,
+    history_paging: Option<history_paging::HistoryPaging>,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
     restored_transcript: bool,
     /// Leading items painted from the persisted session record while the
@@ -586,13 +818,18 @@ pub struct Panel {
     /// A stored transcript is being read. Suppress the fresh-session empty
     /// state so an established conversation never flashes the new-chat prompt.
     awaiting_persisted: bool,
-    /// Tool rows the user expanded, keyed by call id.
-    expanded_tools: HashSet<String>,
+    /// Regions the user expanded, keyed by tool call id and by row key (see
+    /// `expandable::key`). One flat set, so every disclosure toggles the same
+    /// way and is hashed into the transcript fingerprint the same way.
+    expanded_regions: HashSet<String>,
     /// Retain closing cards until their fade finishes, and allow smooth reversal.
     tool_detail_motion: HashMap<String, crate::transition::AnimatedValue>,
     prompt_queue: queue::PromptQueue,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
+    /// Arrival time (Unix epoch ms) of user prompts, by item index. Taken from
+    /// the stored message record or the moment of sending, never render time.
+    user_times: HashMap<usize, i64>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
     /// Item count when each unanchored inline applet first appeared, so an
@@ -608,9 +845,11 @@ pub struct Panel {
     applet_rows_version: u64,
     /// Transcript-derived data reused while its inputs are unchanged.
     transcript_derived: Option<TranscriptDerived>,
+    control_reveal: Option<reveal::ControlReveal>,
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
+    tool_wall_times: HashMap<String, (Option<i64>, Option<i64>)>,
     /// A running tool's breathing veil and clock, each a leaf view that
     /// ticks on its own, so the transcript is not rebuilt 20 times a second
     /// while a tool runs. Filled while the transcript renders.
@@ -634,16 +873,87 @@ pub struct Panel {
     todoist: Option<TodoistPanelState>,
     /// Live sessions, their run state and todos. Never shows chat content.
     orchestration: Option<orchestration::State>,
+    openrig: Option<openrig::State>,
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
+    /// Questions waiting behind `ask_card`, oldest first.
+    queued_asks: VecDeque<ask::QueuedAsk>,
+    ask_focus_return: Option<FocusHandle>,
+    ask_recovery: Option<gpui::Task<()>>,
+    answered_asks: HashSet<String>,
+    /// Scroll state of the queue card's rows, so an inline queue editor can
+    /// bring its row into view when it opens.
+    queue_items_scroll: gpui::ScrollHandle,
+    queue_edit_anchor: gpui::ScrollAnchor,
+    pending_ask_draft: Option<ask::AskDraft>,
+    /// `/btw` answer streaming from a hidden fork of this conversation.
+    side_question: Option<side_question::SideQuestionCard>,
     model_picker_open: bool,
+    picker_search: Option<(PickerKind, Entity<PromptInput>)>,
+    picker_triggers: [FocusHandle; 3],
+    composer_popover_watch: Option<(FocusHandle, gpui::Subscription, gpui::Subscription)>,
+    composer_popover_trigger: Option<FocusHandle>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
     pub(crate) transcript_only: bool,
+    /// Words from the session search that opened (or is previewing) this
+    /// transcript, marked wherever they occur until the user sends a prompt.
+    pub(crate) search_terms: Vec<String>,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
+}
+
+/// What the user chose for a draft before its session exists. The runtime
+/// hears about it together with the first prompt, never earlier.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DraftConfig {
+    model: Option<String>,
+    effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes: Vec<String>,
+}
+
+impl DraftConfig {
+    fn is_empty(&self) -> bool {
+        self.model.is_none() && self.effort.is_none() && self.modes.is_empty()
+    }
+}
+
+/// Model routes the runtime last reported to any panel of this app. A draft
+/// has no session to ask, so its model picker reads this instead.
+#[derive(Default)]
+struct KnownModelRoutes(Vec<jcode_sdk::ModelRouteInfo>);
+
+impl gpui::Global for KnownModelRoutes {}
+
+#[derive(Clone)]
+struct LocalDraftModels {
+    current: Option<String>,
+    routes: Vec<jcode_sdk::ModelRouteInfo>,
+}
+
+impl gpui::Global for LocalDraftModels {}
+
+struct RememberedDraftModel(crate::config::DraftModelDefaults);
+
+impl gpui::Global for RememberedDraftModel {}
+
+/// `/model` and `/effort` only record a choice, so a draft answers them
+/// without a runtime session.
+pub(crate) fn is_draft_config_command(content: &str) -> bool {
+    matches!(
+        content.split_whitespace().next(),
+        Some("/model" | "/models" | "/effort" | "/mode")
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PickerKind {
+    Model,
+    Effort,
+    Mode,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -779,11 +1089,47 @@ impl Panel {
         // status as work, which would mark merely connected sessions.
         let state = match self.minimap_state() {
             MinimapSessionState::Error => MinimapSessionState::Error,
+            _ if self.ask_card.as_ref().is_some_and(|card| !card.submitting) => {
+                return Some(TabRing::question());
+            }
+            _ if self.activity_active() && self.has_live_wait_tool() => {
+                return Some(TabRing::waiting());
+            }
             _ if self.activity_active() => MinimapSessionState::Working,
+            _ if self.tab_dependency_waiting
+                || self.agent_activity() == crate::swarm_view::Activity::WaitingOnWorkers =>
+            {
+                return Some(TabRing::waiting());
+            }
             _ if self.finished_unseen => MinimapSessionState::Complete,
             _ => MinimapSessionState::Idle,
         };
         TabRing::resolve(state, self.latest_todo_progress())
+    }
+
+    fn has_live_wait_tool(&self) -> bool {
+        self.items
+            .iter()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .any(|item| {
+                let Item::Tool {
+                    name,
+                    input,
+                    done: false,
+                    ..
+                } = item
+                else {
+                    return false;
+                };
+                matches!(name.as_str(), "bg" | "swarm")
+                    && serde_json::from_str::<serde_json::Value>(input).is_ok_and(|input| {
+                        matches!(
+                            (name.as_str(), input["action"].as_str()),
+                            ("bg", Some("wait")) | ("swarm", Some("await_members"))
+                        )
+                    })
+            })
     }
 
     pub(crate) fn tab_outline(&self) -> gpui::AnyView {
@@ -829,6 +1175,7 @@ impl Panel {
             || self.applet.is_some()
             || self.todoist.is_some()
             || self.orchestration.is_some()
+            || self.openrig.is_some()
             || self.terminal.is_some()
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
@@ -865,6 +1212,218 @@ impl Panel {
         Self::is_pending_session_id(&self.session_id)
     }
 
+    /// Hold the runtime session back until the user commits to this draft.
+    /// A draft that was already requested keeps its in-flight request.
+    pub(crate) fn defer_session(&mut self, cx: &mut Context<Self>) {
+        if self.is_pending_session() && self.draft_session == DraftSession::Unrequested {
+            self.draft_session = DraftSession::Deferred;
+            self.load_draft_model_defaults(cx);
+            if self.has_queued_prompts() {
+                // Sent before the runtime was reachable: the commitment is
+                // already made.
+                self.request_deferred_session(cx);
+                return;
+            }
+            self.status = DEFERRED_SESSION_STATUS.into();
+            self.seed_draft_models(cx);
+            self.load_draft_skills(cx);
+            cx.notify();
+        }
+    }
+
+    fn load_draft_model_defaults(&mut self, cx: &mut Context<Self>) {
+        if self.draft_config.model.is_some() || self.draft_config.effort.is_some() {
+            return;
+        }
+        let defaults = cx
+            .try_global::<RememberedDraftModel>()
+            .map(|defaults| defaults.0.clone())
+            .unwrap_or_else(|| {
+                #[cfg(not(test))]
+                {
+                    crate::config::get().models.draft_defaults.clone()
+                }
+                #[cfg(test)]
+                crate::config::DraftModelDefaults::default()
+            });
+        if let Some(model) = defaults.model {
+            self.pick_draft_model(&model, cx);
+        }
+        self.draft_config.effort = defaults.effort.clone();
+        self.reasoning_effort = defaults.effort;
+        self.sync_effort_menu(cx);
+    }
+
+    fn remember_draft_model(&mut self, cx: &mut Context<Self>) {
+        if !self.session_deferred() {
+            return;
+        }
+        let defaults = crate::config::DraftModelDefaults {
+            model: self
+                .draft_config
+                .model
+                .clone()
+                .or_else(|| self.model.clone()),
+            effort: self.draft_config.effort.clone(),
+        };
+        if let Err(error) = crate::config::persist_draft_model_defaults(&defaults) {
+            self.effort_notice(format!("Could not save new session defaults: {error}"), cx);
+            return;
+        }
+        cx.set_global(RememberedDraftModel(defaults));
+    }
+
+    /// The workspace sent, or is about to send, this draft's create request.
+    pub(crate) fn mark_session_requested(&mut self) {
+        self.draft_session = DraftSession::Requested;
+    }
+
+    /// True while nothing has asked the runtime to create this draft's session.
+    pub(crate) fn session_deferred(&self) -> bool {
+        self.is_pending_session() && self.draft_session == DraftSession::Deferred
+    }
+
+    pub(crate) fn listable_conversation(&self, cx: &App) -> bool {
+        !self.is_pending_session()
+            || self.has_queued_prompts()
+            || self.input.read(cx).has_user_draft()
+    }
+
+    /// Prefer the daemon's unbound catalog to any previously observed session.
+    pub(crate) fn seed_draft_models(&mut self, cx: &mut Context<Self>) {
+        if !self.session_deferred() {
+            return;
+        }
+        let catalog = cx.try_global::<LocalDraftModels>().cloned().or_else(|| {
+            cx.try_global::<KnownModelRoutes>()
+                .map(|known| LocalDraftModels {
+                    current: None,
+                    routes: known.0.clone(),
+                })
+        });
+        let Some(LocalDraftModels { current, routes }) = catalog.filter(|c| !c.routes.is_empty())
+        else {
+            return;
+        };
+        if self.draft_config.model.is_none() && current.is_some() {
+            self.model = current;
+        }
+        let models = available_model_names(&routes);
+        self.available_models = models.clone();
+        let panel = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = panel.update(cx, |panel, cx| {
+                if !panel.session_deferred() {
+                    return;
+                }
+                let current = panel.model.clone();
+                panel.input.update(cx, |input, cx| {
+                    input.set_model_routes(models, &routes, current, cx);
+                });
+                if panel.recovery_picker_open {
+                    panel.open_model_picker(cx);
+                }
+                panel.sync_effort_menu(cx);
+                cx.notify();
+            });
+        });
+    }
+
+    pub(crate) fn publish_draft_models(
+        current: Option<String>,
+        routes: Vec<jcode_sdk::ModelRouteInfo>,
+        cx: &mut App,
+    ) {
+        if !routes.is_empty() {
+            cx.set_global(LocalDraftModels { current, routes });
+        }
+    }
+
+    /// Record a model picked on a draft. Nothing is sent until the session
+    /// exists.
+    pub(super) fn pick_draft_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        self.draft_config.model = Some(model.to_string());
+        if self
+            .draft_config
+            .effort
+            .as_deref()
+            .is_some_and(|level| !crate::effort::ladder(None, Some(model)).contains(&level))
+        {
+            self.draft_config.effort = None;
+            self.reasoning_effort = None;
+        }
+        // The runtime reports the bare id once it serves the model. Show the
+        // same name now, without the picker's route prefix.
+        let shown = match model.split_once(':') {
+            Some((route, bare)) if !route.contains('/') && !bare.is_empty() => bare,
+            _ => model,
+        };
+        self.model = Some(shown.to_string());
+        // Deferred: `/model` runs inside the composer's own submit callback.
+        let input = self.input.clone();
+        let current = self.model.clone();
+        cx.defer(move |cx| input.update(cx, |input, cx| input.set_current_model(current, cx)));
+        self.sync_effort_menu(cx);
+        cx.notify();
+    }
+
+    /// Send the draft's picked model and effort to its new session, ahead of
+    /// the prompts queued behind them.
+    fn apply_draft_config(&mut self, cx: &mut Context<Self>) {
+        let ladder = self.effort_ladder();
+        let DraftConfig {
+            model,
+            effort,
+            modes,
+        } = std::mem::take(&mut self.draft_config);
+        if let Some(model) = model {
+            self.bridge.send(Command::SetModel {
+                session_id: self.session_id.clone(),
+                model,
+            });
+        }
+        if let Some(effort) = effort {
+            self.reasoning_effort = None;
+            self.request_effort_on(&ladder, &effort, cx);
+        }
+        for mode in modes {
+            self.bridge.send(Command::RuntimeCommand {
+                session_id: self.session_id.clone(),
+                command: jcode_sdk::api::RuntimeCommand::Mode,
+                args: vec!["toggle".into(), mode],
+            });
+        }
+    }
+
+    /// Create the session a deferred draft stands for. Called when the user
+    /// sends a prompt or reaches for something only a runtime session has.
+    pub(crate) fn request_deferred_session(&mut self, cx: &mut Context<Self>) {
+        if !self.session_deferred() {
+            return;
+        }
+        self.draft_session = DraftSession::Requested;
+        self.status = "Starting session · you can type now".into();
+        self.bridge.send(Command::CreateSession {
+            working_dir: self.working_dir.clone(),
+            request_id: Some(self.session_id.clone()),
+        });
+        cx.notify();
+    }
+
+    /// A draft restored after a restart resumes where it stood: prompts that
+    /// were queued need their session now, an untouched editor does not.
+    pub(crate) fn resume_draft_session(&mut self, needs_session: bool, cx: &mut Context<Self>) {
+        self.draft_session = DraftSession::Deferred;
+        if needs_session || self.has_queued_prompts() {
+            self.request_deferred_session(cx);
+        } else {
+            self.status = DEFERRED_SESSION_STATUS.into();
+            self.seed_draft_models(cx);
+            self.load_draft_skills(cx);
+            cx.notify();
+        }
+    }
+
     /// Promote in place so focus, selection, undo history, and pasted images
     /// all survive the asynchronous runtime connection.
     pub fn attach_startup_session(
@@ -872,6 +1431,7 @@ impl Panel {
         session: jcode_sdk::SessionInfo,
         cx: &mut Context<Self>,
     ) {
+        self.context_usage = context_usage::State::default();
         self.session_id = session.session_id;
         self.title = session
             .title
@@ -888,6 +1448,7 @@ impl Panel {
             input.set_submission_enabled(true, cx);
             input.set_pending_session(!self.history_loaded, cx);
         });
+        self.apply_draft_config(cx);
         self.send_queued_prompts(cx);
         cx.notify();
     }
@@ -899,6 +1460,8 @@ impl Panel {
         bridge: Bridge,
         cx: &mut Context<Self>,
     ) -> Self {
+        let rig_feed = crate::openrig_feed::get(cx);
+        cx.observe(&rig_feed, |_, _, cx| cx.notify()).detach();
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
@@ -910,6 +1473,7 @@ impl Panel {
                         session_id: send_session.clone(),
                         content,
                         images,
+                        attachments: Vec::new(),
                     });
                 },
             )
@@ -918,6 +1482,7 @@ impl Panel {
         // Local echo is appended by the workspace when submit fires; simplest
         // is to observe our own input entity... but the closure above has no
         // panel access. Instead the workspace routes sends through the panel.
+        Self::observe_draft_images(&input, cx);
         let display_title = title
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
@@ -942,6 +1507,9 @@ impl Panel {
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
                 panel.release_startup_preview();
+                if event.is_scrolled && !event.is_following_tail && event.visible_range.start == 0 {
+                    panel.request_older_history();
+                }
                 let stick_to_bottom =
                     event.is_following_tail && !panel.transcript_selection.read(cx).is_dragging();
                 if panel.stick_to_bottom != stick_to_bottom {
@@ -951,6 +1519,16 @@ impl Panel {
             });
         });
         let fixture = screenshot_fixture_for(&session_id);
+        let items: Transcript = demo_items(fixture.as_deref()).into();
+        // `JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in the
+        // fixture, so the capture shows the expanded text rather than only the
+        // collapsed rows.
+        let expanded_regions =
+            if crate::harness::screenshot_mode() && expandable::screenshot_expanded() {
+                expandable::all_regions(&items)
+            } else {
+                HashSet::new()
+            };
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
             && matches!(
@@ -959,6 +1537,9 @@ impl Panel {
             );
         let usage_fixture =
             crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens");
+        let effort_fixture = usage_fixture
+            || (crate::fixture_control_targets::enabled()
+                && fixture.as_deref() == Some("mode-picker"));
         let activity_status = if crate::harness::screenshot_mode() {
             match fixture.as_deref() {
                 Some("orb-working" | "orb-todos") => "running",
@@ -969,23 +1550,83 @@ impl Panel {
         } else {
             "idle"
         };
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("ask") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let questions: Vec<_> = (0..4).map(|i| serde_json::json!({
+                    "header": format!("Section {}", i + 1),
+                    "question": format!("Section {}: Which option works best for this project?", i + 1),
+                    "options": (0..5).map(|o| serde_json::json!({"label": format!("Option {}", o + 1), "description": "A longer description to show how the answer wraps across multiple lines in a compact card."})).collect::<Vec<_>>()
+                })).collect();
+                let event = serde_json::json!({"ev":"ask_request", "session_id":"screenshot-fixture", "request_id":"screenshot-ask", "tool_call_id":"screenshot-tool", "questions":questions});
+                if let Ok(event) = serde_json::from_value::<ApiEvent>(event) {
+                    let _ = panel.update(cx, |panel, cx| {
+                        panel.apply(&event, cx);
+                        if let Some(card) = &mut panel.ask_card {
+                            card.toggle(0, 0);
+                            card.open_comment(0, 0);
+                        }
+                    });
+                }
+            });
+        }
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mode-picker") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| panel.seed_mode_picker_fixture(cx));
+            });
+        }
+        if session_id == "screenshot-fixture" && crate::fixture_control_targets::voice_recording() {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| panel.seed_inline_voice_fixture(cx));
+            });
+        }
+        if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| {
+                    let image = image_preview::fixture_image();
+                    let attachment = (image.media_type, image.data);
+                    panel.seed_screenshot_expanded_queue_image(attachment.clone());
+                    panel.input.update(cx, |input, cx| {
+                        input.recall_prompt(
+                            "Draft [#image 2] and [#image 1] with more text",
+                            vec![attachment.clone(), attachment],
+                            cx,
+                        );
+                    });
+                    cx.notify();
+                });
+            });
+        }
         let activity_owner = cx.entity();
+        let (fixture_tool_durations, fixture_tool_wall_times) = demo_tool_times(fixture.as_deref());
+        let queue_items_scroll = gpui::ScrollHandle::new();
         Self {
             session_id,
             title: display_title.into(),
             working_dir,
             status: activity_status.into(),
             connection_phase: String::new(),
-            model: usage_fixture.then(|| "gpt-5.6-sol".into()),
-            provider: usage_fixture.then(|| "openai".into()),
+            model: effort_fixture.then(|| "gpt-5.6-sol".into()),
+            provider: effort_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
             account_label: usage_fixture.then(|| "work@example.com".into()),
-            reasoning_effort: usage_fixture.then(|| "high".into()),
+            reasoning_effort: effort_fixture.then(|| "high".into()),
+            skills: Vec::new(),
+            active_skill: None,
+            pinned_modes: Vec::new(),
+            mode_multiselect: false,
+            mode_catalog: Default::default(),
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
+            context_usage: context_usage::State::default(),
+            memory_activity: None,
             response_stats: response_stats::Tracker::default(),
-            items: demo_items(fixture.as_deref()).into(),
+            cache_telemetry: cache_card::CacheTelemetry::default(),
+            items,
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
             } else {
@@ -998,8 +1639,22 @@ impl Panel {
             animate_stream_in_tests: false,
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
-            show_build_footer: true,
-            swarm_strip: None,
+            swarm_workers: Vec::new(),
+            background_jobs: Default::default(),
+            pending_awaits: Vec::new(),
+            pending_await_refresh: None,
+            tab_dependency_waiting: false,
+            worker_record: None,
+            swarm_list_open: false,
+            swarm_list_focus: cx.focus_handle(),
+            swarm_finished_open: false,
+            swarm_finished_focus: cx.focus_handle(),
+            swarm_picker_rows: Vec::new(),
+            swarm_list_scroll: ScrollHandle::new(),
+            swarm_trigger_focus: cx.focus_handle(),
+            swarm_marks: Default::default(),
+            swarm_usage: Default::default(),
+            swarm_row_focus: Default::default(),
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
@@ -1012,17 +1667,24 @@ impl Panel {
             input,
             voice: voice::VoiceState::default(),
             image_pane_open: false,
+            session_image_gallery: Default::default(),
+            draft_has_images: false,
             image_pane_selected: None,
             image_pane_scroll: ScrollHandle::new(),
             image_pane_stacked: false,
             image_preview: None,
+            pending_history_image: None,
+            history_image_requests: std::cell::RefCell::new(HashMap::new()),
+            image_preview_dimensions: None,
             diff_review: None,
             edit_previews: diff_review::EditPreviews::default(),
             image_preview_zoom: 1.0,
             image_preview_scroll: gpui::ScrollHandle::new(),
             image_preview_drag: None,
             focus_handle: cx.focus_handle(),
+            rewind_selection: None,
             transcript_list,
+            expandable_viewport_height: px(0.),
             transcript_row_count: 0,
             transcript_measurements: Default::default(),
             flicker_diagnostics: Default::default(),
@@ -1030,8 +1692,8 @@ impl Panel {
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
+            swarm_scrolls: Default::default(),
             publish_tracker: false,
-            publish_armed_at: None,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -1040,26 +1702,34 @@ impl Panel {
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
             tail_glide: Default::default(),
-            stick_to_bottom: true,
+            stick_to_bottom: fixture.as_deref() != Some("transcript-scroll"),
             transcript_end_visible: true,
             composer_dock_height: 0.0,
             steady_activity: Default::default(),
             transcript_end_pad: 0.0,
             pending_history_scroll: None,
             bridge,
+            rig_feed,
+            rig_host_id: (crate::harness::screenshot_mode()
+                && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some())
+            .then(|| "host-fixture-local".into()),
             preview_state: None,
             demo: false,
             history_loaded: false,
+            history_paging: None,
             reconnect_response: None,
             restored_transcript: false,
             provisional_items: 0,
             provisional_task: None,
             awaiting_persisted: false,
-            expanded_tools: HashSet::new(),
+            draft_session: DraftSession::Requested,
+            draft_config: DraftConfig::default(),
+            expanded_regions,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
+            user_times: HashMap::new(),
             arriving_tools: HashMap::new(),
             applet_positions: HashMap::new(),
             applet_selection: cx.new(TextSelection::new),
@@ -1067,8 +1737,10 @@ impl Panel {
             applet_rows: Vec::new(),
             applet_rows_version: 0,
             transcript_derived: None,
+            control_reveal: None,
             tool_started: HashMap::new(),
-            tool_durations: HashMap::new(),
+            tool_durations: fixture_tool_durations,
+            tool_wall_times: fixture_tool_wall_times,
             running_tool_tickers: Default::default(),
             superseded_drafts: Default::default(),
             terminal: None,
@@ -1079,14 +1751,29 @@ impl Panel {
             applet: None,
             todoist: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos"))
                 .then(|| TodoistPanelState::fixture(80)),
+            openrig: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("openrig"))
+                .then(openrig::State::screenshot_fixture),
             orchestration: (crate::harness::screenshot_mode()
                 && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             ask_card: None,
+            queued_asks: VecDeque::new(),
+            ask_focus_return: None,
+            ask_recovery: None,
+            answered_asks: HashSet::new(),
+            queue_items_scroll: queue_items_scroll.clone(),
+            queue_edit_anchor: gpui::ScrollAnchor::for_handle(queue_items_scroll),
+            pending_ask_draft: None,
+            side_question: None,
             model_picker_open: false,
+            picker_search: None,
+            picker_triggers: std::array::from_fn(|_| cx.focus_handle()),
+            composer_popover_watch: None,
+            composer_popover_trigger: None,
             focus_pending: false,
             transcript_only: false,
+            search_terms: Vec::new(),
             login: None,
             available_models: Vec::new(),
         }
@@ -1099,6 +1786,12 @@ impl Panel {
     fn glide_transcript_input(&mut self, pixels: f32, precise: bool, cx: &mut Context<Self>) {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
+        }
+        if pixels < 0.0
+            && self.transcript_list.logical_scroll_top().item_ix == 0
+            && self.transcript_list.logical_scroll_top().offset_in_item <= px(0.)
+        {
+            self.request_older_history();
         }
         self.flicker_diagnostics
             .borrow_mut()
@@ -1140,6 +1833,12 @@ impl Panel {
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
+        if delta_y > 0.0
+            && self.transcript_list.logical_scroll_top().item_ix == 0
+            && self.transcript_list.logical_scroll_top().offset_in_item <= px(0.)
+        {
+            self.request_older_history();
+        }
         self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
@@ -1194,6 +1893,9 @@ impl Panel {
         let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, px(target)));
+        if step < 0.0 && target >= 0.0 {
+            self.request_older_history();
+        }
         self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
@@ -1270,7 +1972,10 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork() && self.todoist.is_none() && self.orchestration.is_none()
+        self.can_fork()
+            && self.todoist.is_none()
+            && self.orchestration.is_none()
+            && self.openrig.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
@@ -1442,7 +2147,7 @@ impl Panel {
             })
             .cloned()
             .collect::<Vec<_>>();
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.priority));
 
         let mut projects = div().flex().flex_wrap().gap_1().child(
             div()
@@ -1723,6 +2428,7 @@ impl Panel {
             && !self.is_side_document()
             && self.session_id != "unfinished-work"
             && self.orchestration.is_none()
+            && self.openrig.is_none()
             && !self.is_pending_session()
     }
 
@@ -1760,6 +2466,7 @@ impl Panel {
             .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            draft_config: self.draft_config.clone(),
             transcript: None,
             image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
@@ -1768,6 +2475,11 @@ impl Panel {
             title: self.title.to_string(),
             working_dir: self.working_dir.clone(),
             draft: self.input.read(cx).snapshot(),
+            ask_draft: self
+                .ask_card
+                .as_ref()
+                .map(|card| card.draft(cx))
+                .or_else(|| self.pending_ask_draft.clone()),
             scroll_x: f32::from(offset.x),
             scroll_y: f32::from(offset.y),
             stick_to_bottom: self.stick_to_bottom,
@@ -1796,16 +2508,57 @@ impl Panel {
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
+        self.prompt_queue.replay_pending_on_connect = true;
+        self.pending_ask_draft = snapshot.ask_draft;
+        if let (Some(draft), Some(card)) = (&self.pending_ask_draft, &self.ask_card)
+            && draft.matches_questions(&card.questions)
+        {
+            let draft = self.pending_ask_draft.take().expect("checked above");
+            self.ask_card
+                .as_mut()
+                .expect("checked above")
+                .restore_draft(draft, cx);
+        }
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
+        if self.is_pending_session() {
+            self.draft_config = snapshot.draft_config;
+            if let Some(model) = self.draft_config.model.clone() {
+                self.pick_draft_model(&model, cx);
+            }
+            self.reasoning_effort.clone_from(&self.draft_config.effort);
+            self.pinned_modes.clone_from(&self.draft_config.modes);
+            self.sync_effort_menu(cx);
+            self.sync_mode_menu(cx);
+        }
         self.stick_to_bottom = snapshot.stick_to_bottom;
         self.startup_layout = snapshot.startup_layout;
         self.pending_history_scroll =
             (!snapshot.stick_to_bottom).then_some((snapshot.scroll_x, snapshot.scroll_y));
         self.transcript_list
             .set_offset_from_scrollbar(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
-        self.input
-            .update(cx, |input, cx| input.restore(snapshot.draft, cx));
+        self.input.update(cx, |input, cx| {
+            input.restore(snapshot.draft, cx);
+            input.set_working_dir(self.working_dir.as_deref());
+        });
+        self.schedule_ask_recovery(cx);
+    }
+
+    fn observe_draft_images(input: &Entity<PromptInput>, cx: &mut Context<Self>) {
+        let owner = cx.weak_entity();
+        gpui::App::observe(cx, input, move |input, cx| {
+            let has_images = input.read(cx).has_draft_images();
+            if owner
+                .read_with(cx, |panel, _| panel.draft_has_images != has_images)
+                .unwrap_or(false)
+            {
+                let _ = owner.update(cx, |panel, cx| {
+                    panel.draft_has_images = has_images;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Wire the input's submit to also echo locally. Called once after
@@ -1819,132 +2572,32 @@ impl Panel {
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
             this.input = cx.new(|cx| {
-                PromptInput::new_with_queue(
+                PromptInput::new_with_queue_files(
                     cx,
                     "Type something…",
-                    move |content, images, queued, _window, app| {
-                        if images.is_empty()
-                            && let Some(panel) = weak.upgrade()
-                            && Panel::dispatch_workspace_command(&panel, &content, _window, app)
-                        {
-                            return;
-                        }
-                        if images.is_empty() && crate::commands::is_resume_command(&content) {
-                            _window.dispatch_action(Box::new(crate::ui_actions::OpenResume), app);
-                            return;
-                        }
-                        // First-run launch is local, including before a session connects.
-                        if images.is_empty() && content.trim() == "/applets" {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenAppletShowcase),
-                                app,
-                            );
-                            return;
-                        }
-                        if images.is_empty()
-                            && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::ToggleOnboardingSimulator),
-                                app,
-                            );
-                            return;
-                        }
-                        if images.is_empty()
-                            && (crate::commands::is_accounts_command(&content)
-                                || content.trim() == "/subscribe")
-                            && let Some(panel) = weak.upgrade()
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenAccounts {
-                                    source: panel.entity_id(),
-                                    login_command: None,
-                                }),
-                                app,
-                            );
-                            return;
-                        }
-                        // Usage resets open Desktop's review dialog. The daemon
-                        // never sees the command, and nothing is spent until the
-                        // dialog's confirm button.
-                        if images.is_empty()
-                            && let Some(command) = crate::commands::reset_command(&content)
-                        {
-                            let provider = match command {
-                                crate::commands::ResetCommand::OpenAi => {
-                                    crate::accounts::ResetProvider::OpenAi
-                                }
-                                crate::commands::ResetCommand::Claude => {
-                                    crate::accounts::ResetProvider::Claude
-                                }
-                                crate::commands::ResetCommand::Current => weak
-                                    .upgrade()
-                                    .map(|panel| reset_provider_for(panel.read(app)))
-                                    .unwrap_or(crate::accounts::ResetProvider::OpenAi),
-                            };
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::OpenUsageReset { provider }),
-                                app,
-                            );
-                            return;
-                        }
-                        // A draft has no runtime identity yet. The editor
-                        // retains slash commands while ordinary prompts queue.
-                        if let Some(panel) = weak.upgrade()
-                            && (panel.read(app).is_pending_session()
-                                || (panel.read(app).prompt_queue.waiting_for_connection
-                                    && !panel.read(app).history_loaded))
-                        {
-                            panel.update(app, |this, cx| {
-                                this.submit_or_queue(content, images, queued, cx);
-                            });
-                            return;
-                        }
-                        if images.is_empty() && content.trim() == "/changelog" {
-                            _window
-                                .dispatch_action(Box::new(crate::ui_actions::OpenChangelog), app);
-                            return;
-                        }
-                        if images.is_empty()
-                            && content.trim() == "/publish"
-                            && let Some(panel) = weak.upgrade()
-                            && panel.read(app).publish_checkout().is_some()
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::ui_actions::PublishDesktop {
-                                    source: panel.entity_id(),
-                                }),
-                                app,
-                            );
-                        }
-                        if let Some(panel) = weak.upgrade() {
-                            // Login owns a separate, transient panel just like the
-                            // Accounts footer. Never cover the source conversation.
-                            if images.is_empty()
-                                && content.split_whitespace().next() == Some("/login")
-                            {
-                                _window.dispatch_action(
-                                    Box::new(crate::ui_actions::OpenAccounts {
-                                        source: panel.entity_id(),
-                                        login_command: Some(content),
-                                    }),
-                                    app,
-                                );
-                                return;
-                            }
+                    move |kind, content, images, files, queued, _window, app| {
+                        let Some(panel) = weak.upgrade() else { return };
+                        if kind == crate::input::SubmissionKind::Message {
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
-                                    this.handle_preview_command(&content, cx);
                                     return;
                                 }
-                                if images.is_empty() && this.handle_slash_command(&content, cx) {
-                                    return;
+                                if !content.trim().is_empty()
+                                    || !images.is_empty()
+                                    || !files.is_empty()
+                                    || (!queued && this.has_visible_queued_prompts())
+                                {
+                                    this.submit_or_queue_with_files(
+                                        content, images, files, queued, cx,
+                                    );
                                 }
-                                this.submit_or_queue(content, images, queued, cx);
                             });
+                            return;
                         }
+                        Panel::dispatch_composer_command(&panel, content, _window, app);
                     },
                 )
+                .with_empty_submit()
                 .with_example_prompts()
                 .with_ghost_completions({
                     let weak = change_weak.clone();
@@ -1957,8 +2610,11 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
+                            if content == "/model" || content.starts_with("/model ") {
+                                this.seed_draft_models(cx);
+                            }
                             if (content == "/model" || content.starts_with("/model "))
-                                && !this.is_pending_session()
+                                && (!this.is_pending_session() || !this.available_models.is_empty())
                             {
                                 this.model_picker_open = true;
                                 cx.notify();
@@ -1979,20 +2635,13 @@ impl Panel {
                                 this.close_model_picker(cx);
                                 handled = true;
                             } else if !this.is_pending_session()
-                                && (this.status != "idle"
-                                    || !this.connection_phase.is_empty()
-                                    || !this.streaming_text.is_empty()
-                                    || !this.streaming_reasoning.is_empty()
+                                && (this.activity_active()
+                                    || this.has_unconfirmed_stop()
                                     || !this.pending_users.is_empty())
                             {
-                                if this.preview_state.is_none() {
-                                    this.bridge.send(Command::Cancel {
-                                        session_id: this.session_id.clone(),
-                                    });
-                                }
                                 this.prompt_queue.paused = true;
                                 this.sound_events.cancel();
-                                this.record_stop(stop_reason::StopNotice::cancel_requested());
+                                this.request_user_stop(cx);
                                 handled = true;
                             }
                             cx.notify();
@@ -2001,6 +2650,7 @@ impl Panel {
                     handled
                 })
             });
+            Self::observe_draft_images(&this.input, cx);
             if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
             {
@@ -2058,11 +2708,80 @@ impl Panel {
                 );
             }
             if this.is_pending_session() {
+                this.draft_session = DraftSession::Unrequested;
                 this.status = "Starting session · you can type now".into();
                 this.input
                     .update(cx, |input, cx| input.set_pending_session(true, cx));
             }
         });
+    }
+
+    fn dispatch_composer_command(
+        panel: &Entity<Self>,
+        command: String,
+        window: &mut Window,
+        app: &mut App,
+    ) {
+        use crate::{commands, ui_actions};
+
+        if Self::dispatch_workspace_command(panel, &command, window, app) {
+            return;
+        }
+        if commands::is_resume_command(&command) {
+            window.dispatch_action(Box::new(ui_actions::OpenResume), app);
+            return;
+        }
+        if commands::is_accounts_command(&command) || command == "/subscribe" {
+            window.dispatch_action(
+                Box::new(ui_actions::OpenAccounts {
+                    source: panel.entity_id(),
+                    login_command: None,
+                }),
+                app,
+            );
+            return;
+        }
+        if let Some(command) = commands::reset_command(&command) {
+            let provider = match command {
+                commands::ResetCommand::OpenAi => crate::accounts::ResetProvider::OpenAi,
+                commands::ResetCommand::Claude => crate::accounts::ResetProvider::Claude,
+                commands::ResetCommand::Current => reset_provider_for(panel.read(app)),
+            };
+            window.dispatch_action(Box::new(ui_actions::OpenUsageReset { provider }), app);
+            return;
+        }
+        match command.as_str() {
+            "/applets" => window.dispatch_action(Box::new(ui_actions::OpenAppletShowcase), app),
+            "/onboarding-sim" | "/onboarding-preview" => {
+                window.dispatch_action(Box::new(ui_actions::ToggleOnboardingSimulator), app);
+            }
+            "/changelog" => window.dispatch_action(Box::new(ui_actions::OpenChangelog), app),
+            "/publish" if panel.read(app).publish_checkout().is_some() => {
+                window.dispatch_action(
+                    Box::new(ui_actions::PublishDesktop {
+                        source: panel.entity_id(),
+                    }),
+                    app,
+                );
+            }
+            _ if command.split_whitespace().next() == Some("/login") => {
+                window.dispatch_action(
+                    Box::new(ui_actions::OpenAccounts {
+                        source: panel.entity_id(),
+                        login_command: Some(command),
+                    }),
+                    app,
+                );
+            }
+            _ => panel.update(app, |this, cx| {
+                this.handle_slash_command(&command, cx);
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn composer_identity_for_test(&self) -> (String, Option<String>) {
+        self.composer_identity()
     }
 
     #[cfg(test)]
@@ -2083,6 +2802,17 @@ impl Panel {
             return self.handle_preview_command(content, cx);
         }
         let trimmed = content.trim();
+        if self.session_deferred() && trimmed.split_whitespace().next() == Some("/mode") {
+            self.select_draft_mode(trimmed["/mode".len()..].trim(), cx);
+            return true;
+        }
+        if self.handle_skill_invocation(trimmed, cx) {
+            return true;
+        }
+        if trimmed == "/rewind" {
+            self.start_rewind(cx);
+            return true;
+        }
         if self.handle_special_command(trimmed, cx)
             || self.handle_recovery_command(trimmed, cx)
             || self.handle_runtime_command(trimmed, cx)
@@ -2094,10 +2824,7 @@ impl Panel {
         }
         if matches!(trimmed, "/improve stop" | "/refactor stop") {
             self.pause_queue_for_stop();
-            self.bridge.send(Command::Cancel {
-                session_id: self.session_id.clone(),
-            });
-            self.record_stop(stop_reason::StopNotice::cancel_requested());
+            self.request_user_stop(cx);
             self.items.push(Item::Assistant("Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.".into()));
             cx.notify();
             return true;
@@ -2128,26 +2855,44 @@ impl Panel {
             cx.notify();
             return true;
         }
-        if let Some(model) = trimmed
+        if let Some((model, effort)) = trimmed
             .strip_prefix("/model ")
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
+            .map(crate::input::parse_model_pick)
+            .filter(|(model, _)| !model.is_empty())
         {
             self.close_model_picker(cx);
-            self.bridge.send(Command::SetModel {
-                session_id: self.session_id.clone(),
-                model: model.to_string(),
-            });
-            self.items
-                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+            if let Some(effort) = effort {
+                self.switch_model_with_effort(model, &effort.to_ascii_lowercase(), cx);
+            } else if self.is_pending_session() {
+                self.pick_draft_model(model, cx);
+                self.remember_draft_model(cx);
+            } else {
+                self.bridge.send(Command::SetModel {
+                    session_id: self.session_id.clone(),
+                    model: model.to_string(),
+                });
+                self.items
+                    .push(Item::Assistant(format!("Switching model to `{model}`…")));
+            }
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             let effort = effort.to_ascii_lowercase();
             if self.request_effort(&effort, cx) {
-                let input = self.input.clone();
-                cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
-                self.items.push(Item::Assistant(format!(
-                    "Reasoning effort set to `{effort}`."
-                )));
+                if self
+                    .picker_search
+                    .as_ref()
+                    .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+                {
+                    self.picker_search = None;
+                    self.focus_pending = true;
+                } else {
+                    let input = self.input.clone();
+                    cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
+                }
+                if !self.is_pending_session() {
+                    self.items.push(Item::Assistant(format!(
+                        "Reasoning effort set to `{effort}`."
+                    )));
+                }
             }
         } else if let Some(title) = trimmed.strip_prefix("/rename ").map(str::trim) {
             if title.is_empty() {
@@ -2173,7 +2918,7 @@ impl Panel {
                         .push(Item::Error("Rewind numbering starts at 1.".into()));
                 } else {
                     self.run_session_operation(
-                        SessionOperation::Rewind(index - 1),
+                        SessionOperation::Rewind(index),
                         format!("Rewound to message {index}."),
                     );
                 }
@@ -2185,15 +2930,13 @@ impl Panel {
         } else {
             match trimmed {
                 "/cancel" => {
-                    self.bridge.send(Command::Cancel {
-                        session_id: self.session_id.clone(),
-                    });
-                    self.record_stop(stop_reason::StopNotice::cancel_requested());
+                    self.request_user_stop(cx);
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
                     self.image_pane_selected = None;
                     self.items.clear();
+                    self.user_times.clear();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
@@ -2216,7 +2959,7 @@ impl Panel {
                         self.items.push(Item::Todos(TodoCardPayload::default()));
                     }
                 }
-                "/model" | "/models" => self.open_model_picker(cx),
+                "/model" | "/models" => self.open_model_picker_deferred(cx),
                 "/update" => {
                     let request = crate::updates::request_now();
                     let message = match request {
@@ -2273,16 +3016,14 @@ impl Panel {
                         "Reasoning effort is not available for this model.".into()
                     } else {
                         format!(
-                            "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
+                            "Effort: `{}`. Use `/effort <{}>`{keys} to change it.",
+                            crate::effort::spoken(current),
                             ladder.join("|")
                         )
                     }));
                 }
                 "/rename" => self.items.push(Item::Error(
                     "Usage: `/rename <session name>` or `/rename --clear`.".into(),
-                )),
-                "/rewind" => self.items.push(Item::Assistant(
-                    "Use `/rewind <message number>` to rewind, or `/rewind undo` to restore.".into(),
                 )),
                 "/commit" => self.submit_command_prompt(
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
@@ -2314,15 +3055,61 @@ impl Panel {
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
                 ),
-                _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
-                    "{}",
-                    command_unavailable_message(trimmed)
-                ))),
+                _ if trimmed.split_whitespace().next().and_then(registered_command).is_some()
+                    || jcode_base::skill::SkillRegistry::parse_invocation(trimmed).is_some() => self.items.push(Item::Error(command_unavailable_message(trimmed))),
                 _ => return false,
             }
         }
         self.stick_to_bottom = true;
         self.transcript_list.scroll_to_end();
+        cx.notify();
+        true
+    }
+
+    fn handle_skill_invocation(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        self.handle_skill_invocation_with_images(content, Vec::new(), false, cx)
+    }
+
+    fn handle_skill_invocation_with_images(
+        &mut self,
+        content: &str,
+        images: Vec<(String, String)>,
+        queued: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(rest) = content.strip_prefix('/') else {
+            return false;
+        };
+        let Some((name, description)) = self
+            .skills
+            .iter()
+            .filter(|(name, _)| {
+                rest.strip_prefix(name)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+                    && (name == "selfdev"
+                        || crate::commands::registered_command(&format!("/{name}")).is_none())
+            })
+            .max_by_key(|(name, _)| name.len())
+            .cloned()
+        else {
+            return false;
+        };
+        let prompt = rest[name.len()..].trim();
+        let prompt = match prompt.as_bytes() {
+            [b'"', .., b'"'] | [b'\'', .., b'\''] if prompt.len() >= 2 => {
+                &prompt[1..prompt.len() - 1]
+            }
+            _ => prompt,
+        }
+        .to_string();
+        self.active_skill = Some(name.clone());
+        self.sync_mode_menu(cx);
+        self.items.push(Item::Assistant(format!(
+            "Activated skill: {name} - {description}"
+        )));
+        if !prompt.is_empty() || !images.is_empty() {
+            self.submit_or_queue(prompt, images, queued, cx);
+        }
         cx.notify();
         true
     }
@@ -2383,12 +3170,140 @@ impl Panel {
         }
         self.recovery_picker_open = false;
         self.model_picker_open = true;
-        let models = self.available_models.clone();
-        let input = self.input.clone();
+        self.open_picker_search(PickerKind::Model, cx);
+    }
+
+    fn open_model_picker_deferred(&mut self, cx: &mut Context<Self>) {
+        let panel = cx.weak_entity();
         cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                input.open_model_menu(models, cx);
+            let _ = panel.update(cx, |panel, cx| panel.open_model_picker(cx));
+        });
+    }
+
+    pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
+        self.swarm_list_open = false;
+        self.select_background_job(None, cx);
+        let settings = self.input.read(cx).picker_settings();
+        let models = self.available_models.clone();
+        let deferred = self.session_deferred();
+        let submit = cx.weak_entity();
+        let cancel = cx.weak_entity();
+        let outside = cx.weak_entity();
+        let search = cx.new(|cx| {
+            let placeholder = match kind {
+                PickerKind::Model => "Search models…",
+                PickerKind::Effort => "Search effort…",
+                PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
+            };
+            let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
+                if let Some(panel) = submit.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        if kind == PickerKind::Mode {
+                            if content.starts_with("/mode toggle ") || content == "/mode off" {
+                                if panel.session_deferred() {
+                                    panel.handle_slash_command(&content, cx);
+                                } else {
+                                    panel.handle_runtime_command(&content, cx);
+                                }
+                            }
+                            return;
+                        }
+                        if content.starts_with("/model ") || content.starts_with("/effort ") {
+                            panel.handle_slash_command(&content, cx);
+                        }
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.composer_popover_trigger = None;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                }
+            })
+            .with_on_overlay_cancel(move |app| {
+                if let Some(panel) = cancel.upgrade() {
+                    panel.update(app, |panel, cx| {
+                        panel.picker_search = None;
+                        panel.model_picker_open = false;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                    true
+                } else {
+                    false
+                }
+            })
+            .with_on_picker_outside(move |focus, window, app| {
+                let _ = outside.update(app, |panel, cx| {
+                    panel.dismiss_composer_popover(focus, true, window, cx);
+                });
             });
+            input.apply_picker_settings(settings, cx);
+            input.set_pending_session(deferred, cx);
+            input.start_picker_search(
+                match kind {
+                    PickerKind::Model => "/model",
+                    PickerKind::Effort => "/effort",
+                    PickerKind::Mode => "/mode",
+                },
+                models,
+                cx,
+            );
+            input
+        });
+        self.picker_search = Some((kind, search));
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    fn composer_popover_focus(&self, cx: &App) -> Option<FocusHandle> {
+        self.picker_search
+            .as_ref()
+            .map(|(_, search)| search.read(cx).focus_handle.clone())
+            .or_else(|| self.swarm_list_open.then(|| self.swarm_list_focus.clone()))
+    }
+
+    fn dismiss_composer_popover(
+        &mut self,
+        expected: &FocusHandle,
+        restore_if_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // An outside click can open a different picker. Never dismiss that one.
+        if self.composer_popover_focus(cx).as_ref() != Some(expected) {
+            return;
+        }
+        let restore = restore_if_focused && expected.contains_focused(window, cx);
+        if self.picker_search.take().is_some() {
+            self.model_picker_open = false;
+        } else {
+            self.swarm_list_open = false;
+            self.select_background_job(None, cx);
+        }
+        self.composer_popover_trigger = None;
+        if restore {
+            self.focus_input(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn watch_composer_popover_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.composer_popover_focus(cx);
+        if self.composer_popover_watch.as_ref().map(|(f, _, _)| f) == focus.as_ref() {
+            return;
+        }
+        self.composer_popover_watch = focus.map(|focus| {
+            let blurred = focus.clone();
+            let deactivated = focus.clone();
+            let blur = cx.on_focus_out(&focus, window, move |panel, _, window, cx| {
+                panel.dismiss_composer_popover(&blurred, false, window, cx);
+            });
+            let activation = cx.observe_window_activation(window, move |panel, window, cx| {
+                if !window.is_window_active() {
+                    panel.dismiss_composer_popover(&deactivated, true, window, cx);
+                }
+            });
+            (focus, blur, activation)
         });
     }
 
@@ -2397,27 +3312,42 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
-        if self.model_picker_open {
-            self.close_model_picker(cx);
-        }
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                if input.effort_menu_open() {
-                    input.close_effort_menu(cx);
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Effort)
+        {
+            self.picker_search = None;
+        } else {
+            if self.model_picker_open {
+                if self.picker_search.is_some() {
+                    self.close_model_picker(cx);
                 } else {
-                    input.open_effort_menu(cx);
+                    // A typed /model is still a draft, not a transient menu.
+                    self.model_picker_open = false;
                 }
-            });
-        });
+            }
+            self.login = None;
+            self.recovery_picker_open = false;
+            self.open_picker_search(PickerKind::Effort, cx);
+        }
         self.focus_input(window, cx);
         cx.notify();
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
         self.model_picker_open = false;
-        let input = self.input.clone();
-        cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        if self
+            .picker_search
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == PickerKind::Model)
+        {
+            self.picker_search = None;
+            self.focus_pending = true;
+        } else {
+            let input = self.input.clone();
+            cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
+        }
         cx.notify();
     }
 
@@ -2470,11 +3400,11 @@ impl Panel {
             session_id: self.session_id.clone(),
             operation,
         });
-        self.items.push(Item::Assistant(if compact {
-            "Requesting context compaction…".into()
-        } else {
-            "Requested the session change. The conversation will refresh after the runtime confirms it.".into()
-        }));
+        if !compact {
+            self.items.push(Item::Assistant(
+                "Requested the session change. The conversation will refresh after the runtime confirms it.".into(),
+            ));
+        }
     }
 
     fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
@@ -2485,9 +3415,11 @@ impl Panel {
             session_id: self.session_id.clone(),
             content: prompt.to_string(),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
         let index = self.items.len();
         self.items.push(Item::User(prompt.to_string()));
+        self.stamp_user(index);
         self.pending_users.push_back(index);
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
@@ -2498,11 +3430,18 @@ impl Panel {
     fn history_items(
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
-    ) -> Vec<Item> {
+    ) -> (Vec<Item>, HashMap<usize, i64>) {
+        let mut user_times = HashMap::new();
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
         for image in images {
+            if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                if let Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor {
+                    images_by_prompt.entry(ordinal).or_default().push(image);
+                }
+                continue;
+            }
             if let Some(index) = image.history_message_index {
                 // The boundary counts protocol messages, including hidden tool
                 // rows, rather than visible desktop transcript items.
@@ -2532,8 +3471,22 @@ impl Panel {
             }
             match message.role.as_str() {
                 "user" => {
-                    items.push(Item::User(message.content));
-                    if let Some(images) = images_by_prompt.remove(&user_ordinal) {
+                    let prompt = agent_message::history_user_item(
+                        message.content,
+                        !message.attachments.is_empty()
+                            || images_by_prompt.contains_key(&user_ordinal),
+                        message.timestamp_ms,
+                    );
+                    if let Some(at) = message.timestamp_ms
+                        && matches!(prompt, Item::User(_))
+                    {
+                        user_times.insert(items.len(), at);
+                    }
+                    let is_prompt = prompt::is_pinnable_prompt(&prompt);
+                    items.push(prompt);
+                    if let Some(images) = images_by_prompt.remove(&user_ordinal)
+                        && is_prompt
+                    {
                         items.extend(
                             images
                                 .into_iter()
@@ -2547,10 +3500,48 @@ impl Panel {
                         items.push(Item::Assistant(message.content));
                     }
                     if let Some(stats) = message.response_stats {
-                        let stats: response_stats::ResponseStats = stats.into();
+                        let mut stats: response_stats::ResponseStats = stats.into();
+                        stats.at_ms = message.timestamp_ms;
                         if !stats.is_empty() {
                             items.push(Item::ResponseStats(stats));
                         }
+                    }
+                }
+                "tool" => {
+                    if let Some(tool) = message.tool {
+                        if tool.name == "ask"
+                            && let Some(at) = message.timestamp_ms
+                        {
+                            user_times.insert(items.len(), at);
+                        }
+                        items.push(Item::Tool {
+                            call_id: tool.id,
+                            name: tool.name,
+                            input: tool.input.to_string(),
+                            output: message.content,
+                            done: true,
+                            error: None,
+                        });
+                    }
+                }
+                // A stored compaction divider. Its body already carries the
+                // label and the expandable detail, so it renders identically
+                // before and after a reload.
+                "compaction" => {
+                    if !message.content.trim().is_empty() {
+                        items.push(Item::Compaction(compaction::CompactionRow::complete(
+                            message.content,
+                        )));
+                    }
+                }
+                // A stored automatic memory injection. Like the compaction
+                // divider, its body already carries the label and the
+                // expandable detail, so the reloaded row matches the live one.
+                "memory" => {
+                    if !message.content.trim().is_empty() {
+                        items.push(Item::Memory(compaction::CompactionRow::complete(
+                            message.content,
+                        )));
                     }
                 }
                 _ => {}
@@ -2559,15 +3550,45 @@ impl Panel {
         if let Some(images) = images_by_message.remove(&message_count) {
             trailing_images.splice(0..0, images);
         }
-        for images in images_by_prompt.into_values() {
-            trailing_images.extend(images);
-        }
         items.extend(
             trailing_images
                 .into_iter()
                 .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
         );
-        items
+        (items, user_times)
+    }
+
+    fn restore_tool_times(&mut self, messages: &[jcode_sdk::HistoryMessage]) {
+        for (id, (start, finish, duration)) in history_tool_times(messages) {
+            self.tool_wall_times.insert(id.clone(), (start, finish));
+            if let Some(duration) = duration {
+                self.tool_durations.insert(id, duration);
+            }
+        }
+    }
+
+    /// Record when the user prompt at `index` was sent.
+    pub(super) fn stamp_user(&mut self, index: usize) {
+        if let Some(at) = response_stats::now_ms() {
+            self.user_times.insert(index, at);
+        }
+    }
+
+    /// Arrival time of the user prompt at `index`, as `HH:MM` local time.
+    pub(super) fn user_clock(&self, index: usize) -> Option<String> {
+        self.user_times
+            .get(&index)
+            .copied()
+            .and_then(response_stats::clock_label)
+    }
+
+    /// Shift index-keyed prompt times after items were inserted or removed
+    /// before them.
+    fn shift_user_times(&mut self, added: usize, removed: usize) {
+        self.user_times = std::mem::take(&mut self.user_times)
+            .into_iter()
+            .filter_map(|(index, at)| Some((index.checked_sub(removed)? + added, at)))
+            .collect();
     }
 
     /// Paint the locally persisted transcript while the runtime attaches.
@@ -2600,7 +3621,10 @@ impl Panel {
         let started = Instant::now();
         // Parse, render, and decode images off the UI thread.
         let request = cx.background_executor().spawn(async move {
-            loader().map(|(messages, images)| Self::history_items(messages, images))
+            loader().map(|(messages, images)| {
+                let times = history_tool_times(&messages);
+                (Self::history_items(messages, images), times)
+            })
         });
         self.provisional_task = Some(cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -2609,7 +3633,9 @@ impl Panel {
                 if std::mem::take(&mut panel.awaiting_persisted) {
                     cx.notify();
                 }
-                let Ok(items) = result else { return };
+                let Ok(((items, user_times), tool_times)) = result else {
+                    return;
+                };
                 if items.is_empty() || !panel.can_show_provisional() {
                     return;
                 }
@@ -2619,6 +3645,13 @@ impl Panel {
                     started.elapsed()
                 );
                 panel.provisional_items = items.len();
+                panel.user_times = user_times;
+                for (id, (start, finish, duration)) in tool_times {
+                    panel.tool_wall_times.insert(id.clone(), (start, finish));
+                    if let Some(duration) = duration {
+                        panel.tool_durations.insert(id, duration);
+                    }
+                }
                 *panel.items = items;
                 panel.transcript_measurements.dirty = true;
                 if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
@@ -2648,7 +3681,11 @@ impl Panel {
     /// Retire the provisional prefix before the authoritative history lands.
     /// Returns true when the reply matched it exactly and nothing else is
     /// needed, which keeps measurements and scroll position untouched.
-    fn adopt_authoritative_over_provisional(&mut self, items: &[Item]) -> bool {
+    fn adopt_authoritative_over_provisional(
+        &mut self,
+        items: &[Item],
+        user_times: &HashMap<usize, i64>,
+    ) -> bool {
         self.provisional_task = None;
         self.awaiting_persisted = false;
         let count = std::mem::take(&mut self.provisional_items).min(self.items.len());
@@ -2656,9 +3693,12 @@ impl Panel {
             return false;
         }
         if self.items[..count] == *items {
+            self.user_times
+                .extend(user_times.iter().map(|(index, at)| (*index, *at)));
             return true;
         }
         self.items.drain(..count);
+        self.shift_user_times(0, count);
         self.pending_users = self
             .pending_users
             .drain(..)
@@ -2669,6 +3709,7 @@ impl Panel {
             .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
             .collect();
         self.expanded_prompts.clear();
+        self.swarm_scrolls.borrow_mut().clear();
         false
     }
 
@@ -2685,6 +3726,15 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        self.restore_tool_times(&messages);
+        if self.history_paging.is_none() {
+            self.history_paging = history_paging::HistoryPaging::from_history(&messages);
+            if self.history_loaded
+                && let Some(paging) = &mut self.history_paging
+            {
+                paging.set_anchor(&self.items);
+            }
+        }
         self.transcript_measurements.dirty = true;
         if self.restored_transcript {
             self.hydrate_restored_prefix(&messages);
@@ -2695,13 +3745,12 @@ impl Panel {
                 .update(cx, |input, cx| input.set_pending_session(false, cx));
         }
         if self.history_loaded {
+            self.schedule_ask_recovery(cx);
             // History is persisted message state, not a replay of the live turn.
             // Wait for authoritative idle before reconciling it with a saved
             // suffix. Buffered deltas must not be appended to a history prefix.
             self.defer_reconnect_history(&messages);
-            for image in images {
-                self.insert_rendered_image(image);
-            }
+            self.reconcile_history_images(&messages, images);
             self.send_queued_prompts(cx);
             cx.notify();
             return;
@@ -2722,8 +3771,11 @@ impl Panel {
         {
             self.startup_layout = None;
         }
-        let mut items = Self::history_items(messages, images);
-        if self.adopt_authoritative_over_provisional(&items) {
+        let (mut items, history_times) = Self::history_items(messages, images);
+        if let Some(paging) = &mut self.history_paging {
+            paging.set_anchor(&items);
+        }
+        if self.adopt_authoritative_over_provisional(&items, &history_times) {
             self.send_queued_prompts(cx);
             cx.notify();
             return;
@@ -2736,6 +3788,8 @@ impl Panel {
             _ => true,
         });
         let history_len = items.len();
+        self.shift_user_times(history_len, 0);
+        self.user_times.extend(history_times);
         self.pending_users = self
             .pending_users
             .drain(..)
@@ -2748,6 +3802,7 @@ impl Panel {
         items.append(&mut existing);
         self.image_pane_selected = None;
         *self.items = items;
+        self.schedule_ask_recovery(cx);
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
@@ -2837,6 +3892,8 @@ impl Panel {
             ApiEvent::TextDelta { .. }
                 | ApiEvent::ReasoningDelta { .. }
                 | ApiEvent::TokenUsage { .. }
+                | ApiEvent::RequestUsage { .. }
+                | ApiEvent::ContextOccupancy { .. }
                 | ApiEvent::ModelInfo { .. }
                 | ApiEvent::RuntimeInfo { .. }
                 | ApiEvent::SessionRenamed { .. }
@@ -2848,6 +3905,7 @@ impl Panel {
         // `lost: …` banner must not outlive the outage.
         if self.status.starts_with("lost:") && !matches!(event, ApiEvent::Error { .. }) {
             self.status = "connected".into();
+            self.queue_reconnected(cx);
         }
         self.response_stats.observe(event, self.provider.as_deref());
         self.observe_activity_state(event);
@@ -2860,11 +3918,11 @@ impl Panel {
         match event {
             ApiEvent::AskRequest {
                 request_id,
+                tool_call_id,
                 questions,
                 ..
             } => {
-                self.ask_card = Some(ask::AskCard::new(request_id.clone(), questions.clone()));
-                self.stick_to_bottom = true;
+                self.show_ask(request_id, tool_call_id, questions, cx);
             }
             ApiEvent::RuntimeCommandResult {
                 session_id,
@@ -2872,6 +3930,114 @@ impl Panel {
                 data,
                 message,
             } => {
+                if *command == jcode_sdk::api::RuntimeCommand::BackgroundOutput {
+                    if let (Some(task_id), Some(output)) =
+                        (data["task_id"].as_str(), data["output"].as_str())
+                    {
+                        for item in self.items.iter_mut() {
+                            match item {
+                                Item::BackgroundTask {
+                                    task_id: id,
+                                    detail,
+                                    ..
+                                } if id == task_id => {
+                                    *detail = Some(format!(
+                                        "**Background task**\n\n```text\n{output}\n```"
+                                    ));
+                                }
+                                Item::Tool {
+                                    name,
+                                    input,
+                                    output: body,
+                                    ..
+                                } if name == "bg"
+                                    && serde_json::from_str::<serde_json::Value>(input)
+                                        .ok()
+                                        .and_then(|v| {
+                                            v.get("task_id")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_owned)
+                                        })
+                                        .as_deref()
+                                        == Some(task_id) =>
+                                {
+                                    let metadata = body
+                                        .split_once("\n\nOutput preview:\n")
+                                        .map(|(metadata, _)| metadata)
+                                        .unwrap_or(body.as_str());
+                                    *body = format!(
+                                        "{metadata}\n\nOutput preview:\n```text\n{output}\n```"
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        self.transcript_measurements.dirty = true;
+                        cx.notify();
+                    }
+                    return;
+                }
+                if *command == jcode_sdk::api::RuntimeCommand::Mode {
+                    self.mode_multiselect = data["pinned_skills"].is_array();
+                    self.pinned_modes = crate::mode_catalog::pinned_names(data, "pinned_skill");
+                    // A modern daemon already applied these modes to its session.
+                    // Do not send its compatibility primary back as a legacy replacement.
+                    self.active_skill = if self.mode_multiselect {
+                        None
+                    } else {
+                        self.pinned_modes.first().cloned()
+                    };
+                    self.sync_mode_menu(cx);
+                    if message.is_empty() {
+                        cx.notify();
+                        return;
+                    }
+                }
+                if *command == jcode_sdk::api::RuntimeCommand::Skills {
+                    let skills = data["skills"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|skill| {
+                            Some((
+                                skill["name"].as_str()?.to_string(),
+                                skill["description"].as_str().unwrap_or("").to_string(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    self.skills = skills;
+                    self.mode_catalog = data["skills"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|skill| {
+                            Some((
+                                skill["name"].as_str()?.to_owned(),
+                                crate::mode_catalog::ModeMetadata {
+                                    mode: skill["mode"].as_bool(),
+                                    icon: skill["icon"].as_str().map(str::to_owned),
+                                },
+                            ))
+                        })
+                        .collect();
+                    let multiselect = data["pinned_skills"].is_array();
+                    if multiselect
+                        && !self.mode_multiselect
+                        && self.active_skill == self.pinned_modes.first().cloned()
+                    {
+                        self.active_skill = None;
+                    }
+                    self.mode_multiselect = multiselect;
+                    self.pinned_modes = crate::mode_catalog::pinned_names(data, "active_skill");
+                    if !multiselect && self.active_skill.is_none() {
+                        self.active_skill = self.pinned_modes.first().cloned();
+                    }
+                    self.sync_mode_menu(cx);
+                    cx.notify();
+                    if message.is_empty() {
+                        return;
+                    }
+                }
                 let output = jcode_sdk::api::RuntimeCommandOutput {
                     session_id: session_id.clone(),
                     command: *command,
@@ -2881,6 +4047,28 @@ impl Panel {
                 self.items.push(Item::Assistant(output.message.clone()));
                 self.apply_special_command_artifacts(&output, cx);
                 self.stick_to_bottom = true;
+            }
+            ApiEvent::PeerUserMessage { content, .. } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.stamp_user(self.items.len());
+                self.items.push(Item::User(content.clone()));
+                self.stick_to_bottom = true;
+            }
+            ApiEvent::AgentMessage {
+                from_session,
+                from_name,
+                message,
+                ..
+            } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.items.push(Item::AgentMessage {
+                    from_session: from_session.clone(),
+                    from_name: from_name.clone(),
+                    message: message.clone(),
+                    timestamp_ms: response_stats::now_ms(),
+                });
             }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
@@ -2908,6 +4096,8 @@ impl Panel {
                 self.flush_streaming();
                 self.arriving_tools.insert(call_id.clone(), Instant::now());
                 self.tool_started.insert(call_id.clone(), Instant::now());
+                self.tool_wall_times
+                    .insert(call_id.clone(), (response_stats::now_ms(), None));
                 self.items.push(Item::Tool {
                     call_id: call_id.clone(),
                     name: name.clone(),
@@ -2918,9 +4108,24 @@ impl Panel {
                 });
             }
             ApiEvent::ToolInputDelta { call_id, delta, .. } => {
-                if let Some(Item::Tool { input, .. }) = self.find_tool(call_id) {
+                if let Some(Item::Tool { input, name, .. }) = self.find_tool(call_id) {
                     input.push_str(delta);
+                    if name == "ask" {
+                        self.schedule_ask_recovery(cx);
+                    }
                 }
+            }
+            ApiEvent::ToolExec { call_id, name, .. } => {
+                if name == "ask" {
+                    self.schedule_ask_recovery(cx);
+                }
+                self.tool_started.insert(call_id.clone(), Instant::now());
+                self.tool_wall_times
+                    .insert(call_id.clone(), (response_stats::now_ms(), None));
+                let key = format!("clock:{call_id}");
+                self.running_tool_tickers
+                    .get_mut()
+                    .retain(|existing| existing != key);
             }
             ApiEvent::ToolDone {
                 call_id,
@@ -2929,7 +4134,32 @@ impl Panel {
                 error,
                 ..
             } => {
+                self.tool_wall_times
+                    .entry(call_id.clone())
+                    .or_insert((None, None))
+                    .1 = response_stats::now_ms();
+                let completed_ask = self.ask_card.as_ref().is_some_and(|card| {
+                    name == "ask"
+                        && (card.tool_call_id == *call_id
+                            || (card.tool_call_id.is_empty()
+                                && card.request_id.strip_prefix("ask-") == Some(call_id)))
+                });
+                let ask_input = if completed_ask {
+                    self.cancel_ask_voice(cx);
+                    let card = self.ask_card.take().expect("checked above");
+                    self.ask_focus_return = card.focus_scope.clone();
+                    let was_reload = output.contains("reload")
+                        || error
+                            .as_deref()
+                            .is_some_and(|error| error.contains("reload"));
+                    self.pending_ask_draft = was_reload.then(|| card.draft(cx));
+                    let input = serde_json::json!({"questions": card.questions}).to_string();
+                    Some(input)
+                } else {
+                    None
+                };
                 if let Some(Item::Tool {
+                    input,
                     done,
                     error: slot,
                     output: output_slot,
@@ -2939,6 +4169,11 @@ impl Panel {
                     *done = true;
                     *slot = error.clone();
                     *output_slot = output.clone();
+                    if input.is_empty()
+                        && let Some(ask_input) = &ask_input
+                    {
+                        *input = ask_input.clone();
+                    }
                     if let Some(started) = self.tool_started.remove(call_id) {
                         self.tool_durations
                             .insert(call_id.clone(), started.elapsed());
@@ -2953,26 +4188,110 @@ impl Panel {
                     self.items.push(Item::Tool {
                         call_id: call_id.clone(),
                         name: name.clone(),
-                        input: String::new(),
+                        input: ask_input.unwrap_or_default(),
                         output: output.clone(),
                         done: true,
                         error: error.clone(),
                     });
                 }
+                // Any finished tool retires the questions it was waiting on,
+                // including computer-use consent prompts.
+                self.forget_queued_ask(call_id);
+                if name == "ask" {
+                    self.show_next_queued_ask(cx);
+                    self.schedule_ask_recovery(cx);
+                }
             }
             ApiEvent::Compacted { message, .. } => {
-                self.items.push(Item::BackgroundTask {
-                    task_id: "context-compaction".into(),
-                    label: "Context compaction".into(),
-                    summary: message.clone(),
-                    percent: None,
-                    done: false,
-                });
+                self.context_usage.compacting = true;
+                // Older daemons include a multi-line context report in the acknowledgement.
+                let label = if message.lines().count() == 1 {
+                    message.as_str()
+                } else {
+                    "Compacting context…"
+                };
+                self.show_compaction_running(label);
+            }
+            ApiEvent::MemoryInjected { content, .. } => {
+                // The daemon stores the same row it sends here, so the live
+                // line and the reloaded one come from one body. Never coalesce
+                // repeated injections: each delivery is part of the timeline.
+                if !content.trim().is_empty() {
+                    self.items
+                        .push(Item::Memory(compaction::CompactionRow::complete(
+                            content.clone(),
+                        )));
+                }
+            }
+            ApiEvent::MemoryActivity { activity, .. } => {
+                // Activity is chrome, not transcript: keep the latest snapshot
+                // only while the pipeline is doing something.
+                self.memory_activity = (!activity.is_idle()).then(|| activity.clone());
+            }
+            // A compaction started or finished. The divider replaces the old
+            // transient "Context compaction" card: it is one rule line, it
+            // carries the method/token/duration label, and the completed row is
+            // also written to session history so it survives a reload.
+            ApiEvent::CompactionDivider {
+                content,
+                running,
+                pre_tokens,
+                post_tokens,
+                trigger,
+                ..
+            } => {
+                self.context_usage.compacting = *running;
+                if *running {
+                    self.show_compaction_running(content.clone());
+                } else {
+                    self.finish_compaction_divider(content.clone());
+                    // The composer's context figure described the pre-compaction
+                    // transcript until the next provider report; adopt the
+                    // daemon's measured post-compaction size now.
+                    if let Some(post_tokens) = post_tokens {
+                        self.context_tokens = Some(*post_tokens);
+                        self.set_compacted_context_estimate(*post_tokens);
+                    }
+                    if matches!(trigger.as_deref(), None | Some("manual")) {
+                        self.finish_manual_context_compaction(
+                            trigger.as_deref() == Some("manual"),
+                            *pre_tokens,
+                            *post_tokens,
+                            cx,
+                        );
+                    } else {
+                        self.refresh_context_usage(cx);
+                    }
+                }
+            }
+            ApiEvent::BackgroundTasks { snapshot, .. } => {
+                self.apply_background_tasks(snapshot, cx);
+                return;
+            }
+            ApiEvent::BackgroundProgress {
+                task_id,
+                summary,
+                done: true,
+                ..
+            } if task_id == "context-compaction" => {
+                self.context_usage.compacting = false;
+                self.fail_compaction(summary);
+                let reason = summary.lines().rev().find(|line| !line.trim().is_empty());
+                self.settle_context_action(
+                    context_usage::Action::Compact,
+                    reason
+                        .unwrap_or(summary)
+                        .trim_start_matches("⚠ ")
+                        .replace("**", ""),
+                    true,
+                    cx,
+                );
             }
             ApiEvent::BackgroundProgress {
                 task_id,
                 label,
                 summary,
+                detail,
                 percent,
                 done,
                 ..
@@ -2980,6 +4299,7 @@ impl Panel {
                 if let Some(Item::BackgroundTask {
                     label: current_label,
                     summary: current_summary,
+                    detail: current_detail,
                     percent: current_percent,
                     done: current_done,
                     ..
@@ -2988,6 +4308,9 @@ impl Panel {
                 }) {
                     *current_label = label.clone();
                     *current_summary = summary.clone();
+                    if detail.is_some() {
+                        *current_detail = detail.clone();
+                    }
                     *current_percent = *percent;
                     *current_done = *done;
                 } else {
@@ -2995,6 +4318,7 @@ impl Panel {
                         task_id: task_id.clone(),
                         label: label.clone(),
                         summary: summary.clone(),
+                        detail: detail.clone(),
                         percent: *percent,
                         done: *done,
                     });
@@ -3006,8 +4330,33 @@ impl Panel {
                 }
             }
             ApiEvent::TurnDone { .. } => {
+                self.refresh_context_usage(cx);
                 self.reconcile_reconnect_response();
                 self.finish_response();
+            }
+            ApiEvent::ProviderGuardrailRetry {
+                turn_id,
+                attempt,
+                max_attempts,
+                ..
+            } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                let text = format!(
+                    "Provider stopped the response. Jcode retried the request (attempt {attempt} of {max_attempts})."
+                );
+                if let Some(Item::ProviderGuardrailRetry { text: current, .. }) =
+                    self.items.iter_mut().rev().find(|item| {
+                        matches!(item, Item::ProviderGuardrailRetry { turn_id: id, .. } if id == turn_id)
+                    })
+                {
+                    *current = text;
+                } else {
+                    self.items.push(Item::ProviderGuardrailRetry {
+                        turn_id: turn_id.clone(),
+                        text,
+                    });
+                }
             }
             ApiEvent::TurnStopped {
                 reason,
@@ -3058,12 +4407,20 @@ impl Panel {
                 account_label,
                 ..
             } => {
+                let previous_route = (
+                    self.provider.clone(),
+                    self.model.clone(),
+                    self.auth_method.clone(),
+                    self.account_label.clone(),
+                );
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                // Identity events always carry the current effort, and `None`
-                // means the provider has none, so a stale label never lingers.
-                self.identity_effort(reasoning_effort.clone());
+                // A known model makes an absent effort authoritative. A wholly
+                // empty identity does not erase the persisted fallback.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -3085,6 +4442,17 @@ impl Panel {
                 } else if account_label.is_some() {
                     self.account_label = account_label.clone();
                 }
+                if previous_route
+                    != (
+                        self.provider.clone(),
+                        self.model.clone(),
+                        self.auth_method.clone(),
+                        self.account_label.clone(),
+                    )
+                {
+                    self.invalidate_context_meter();
+                    self.refresh_context_usage(cx);
+                }
                 self.sync_effort_menu(cx);
             }
             ApiEvent::RuntimeInfo {
@@ -3099,7 +4467,11 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                self.identity_effort(reasoning_effort.clone());
+                // An empty runtime snapshot carries no identity yet. Keep the
+                // persisted effort until the runtime actually reports a model.
+                if model.is_some() || reasoning_effort.is_some() {
+                    self.identity_effort(reasoning_effort.clone());
+                }
                 if model.is_some() {
                     self.model = model.clone();
                 }
@@ -3108,6 +4480,9 @@ impl Panel {
                     .as_deref()
                     .map(human_auth_method)
                     .or_else(|| auth_method_for_model(self.model.as_deref(), routes));
+                if !routes.is_empty() {
+                    cx.set_global(KnownModelRoutes(routes.clone()));
+                }
                 let models = available_model_names(routes);
                 self.available_models = models.clone();
                 self.input.update(cx, |input, cx| {
@@ -3129,8 +4504,18 @@ impl Panel {
                         *cache_creation_input,
                     ));
             }
+            // The daemon replays the persisted prompt occupancy when a session
+            // attaches. It describes a request that completed before this
+            // attachment, so it is context state only: no turn stats, no cost,
+            // and no effect on the live stream counters.
+            ApiEvent::ContextOccupancy { prompt_tokens, .. } => {
+                self.context_tokens = Some(*prompt_tokens);
+            }
+            ApiEvent::ContextCapChanged { .. } => self.refresh_context_usage(cx),
+            ApiEvent::RequestUsage { .. } => self.cache_telemetry.observe(event),
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
+                    self.cache_telemetry.miss(&notice);
                     // Keep the notice in order: settle text streamed so far.
                     self.flush_reasoning();
                     self.flush_streaming();
@@ -3140,11 +4525,14 @@ impl Panel {
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
             }
-            ApiEvent::Error { message, .. } => {
+            ApiEvent::Error { code, message } => {
                 self.finish_response();
                 if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
                 {
-                    self.items.push(Item::Error(message.clone()));
+                    self.items.push(Item::RuntimeError {
+                        code: *code,
+                        message: message.clone(),
+                    });
                 }
             }
             _ => {}
@@ -3230,10 +4618,16 @@ impl Panel {
     }
 
     fn insert_rendered_image(&mut self, image: jcode_sdk::RenderedImage) {
+        // Side-pane events have no user-message boundary. Pasted images arrive
+        // with the local echo or as part of history, never as tool side effects.
+        if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+            return;
+        }
         if self.items.iter().any(|item| {
             matches!(item, Item::Image(existing)
                 if existing.anchor == image.anchor && existing.source == image.source
-                    && existing.media_type == image.media_type && existing.data == image.data)
+                    && existing.media_type == image.media_type && existing.data == image.data
+                    && (!matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask") || existing.label == image.label))
         }) {
             return;
         }
@@ -3262,6 +4656,10 @@ impl Panel {
             self.flush_streaming();
             self.items.len()
         });
+        self.insert_transcript_image(insertion, TranscriptImage::from_rendered(image));
+    }
+
+    fn insert_transcript_image(&mut self, insertion: usize, image: TranscriptImage) {
         for index in &mut self.pending_users {
             if *index >= insertion {
                 *index += 1;
@@ -3271,15 +4669,20 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
-        if let Some(selected) = &mut self.image_pane_selected {
-            if *selected >= insertion {
-                *selected += 1;
-            }
+        self.user_times = std::mem::take(&mut self.user_times)
+            .into_iter()
+            .map(|(index, at)| (index + usize::from(index >= insertion), at))
+            .collect();
+        self.expanded_prompts = std::mem::take(&mut self.expanded_prompts)
+            .into_iter()
+            .map(|index| index + usize::from(index >= insertion))
+            .collect();
+        if let Some(selected) = &mut self.image_pane_selected
+            && *selected >= insertion
+        {
+            *selected += 1;
         }
-        self.items.insert(
-            insertion,
-            Item::Image(TranscriptImage::from_rendered(image)),
-        );
+        self.items.insert(insertion, Item::Image(image));
     }
 
     fn flush_reasoning(&mut self) {
@@ -3302,10 +4705,13 @@ impl Panel {
     /// The transcript remains the source of truth, so todo progress keeps
     /// working across live updates without duplicating state in `Workspace`.
     pub(crate) fn minimap_state(&self) -> MinimapSessionState {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
-            || matches!(self.items.last(), Some(Item::Error(_)))
+            || matches!(
+                self.items.last(),
+                Some(Item::Error(_) | Item::RuntimeError { .. })
+            )
         {
             MinimapSessionState::Error
         } else if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
@@ -3322,20 +4728,37 @@ impl Panel {
         }
     }
 
-    pub(crate) fn latest_todo_progress(&self) -> Option<(usize, usize)> {
-        self.items.iter().rev().find_map(|item| {
-            let Item::Todos(payload) = item else {
-                return None;
-            };
-            Some((
-                payload
-                    .todos
-                    .iter()
-                    .filter(|todo| todo.status == "completed")
-                    .count(),
-                payload.todos.len(),
-            ))
+    #[cfg(test)]
+    pub(crate) fn test_set_todos(&mut self, json: &str, cx: &mut Context<Self>) {
+        self.items
+            .push(Item::Todos(parse_todo_tool_output(json).unwrap()));
+        cx.notify();
+    }
+
+    fn latest_todo_card(&self) -> Option<&TodoCardPayload> {
+        self.items.iter().rev().find_map(|item| match item {
+            Item::Todos(payload) => Some(payload),
+            _ => None,
         })
+    }
+
+    pub(crate) fn latest_todo_progress(&self) -> Option<(usize, usize)> {
+        self.latest_todo_card()
+            .map(|payload| {
+                (
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status == "completed")
+                        .count(),
+                    payload
+                        .todos
+                        .iter()
+                        .filter(|todo| todo.status != "cancelled")
+                        .count(),
+                )
+            })
+            .filter(|(_, total)| *total > 0)
     }
 
     pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
@@ -3358,6 +4781,19 @@ impl Panel {
         let phase = self.connection_phase.trim();
         if !phase.is_empty() && !matches!(phase, "connected" | "streaming") {
             return activity_state::phase_label(phase);
+        }
+        // Memory recall runs before the model request, so while it works its
+        // step is the most specific thing this session is doing. Streaming,
+        // reasoning and running tools take over as soon as they start.
+        if self.activity_active()
+            && !matches!(
+                self.status.as_str(),
+                "thinking" | "streaming" | "running_tools" | "compacting"
+            )
+            && let Some(activity) = self.memory_activity.as_ref()
+            && let Some(label) = activity.status_label()
+        {
+            return label;
         }
         if self.activity_active() {
             // Buffers may still contain an earlier block. The latest semantic
@@ -3391,8 +4827,18 @@ impl Panel {
         }
     }
 
+    fn lowercase_status(&self) -> std::borrow::Cow<'_, str> {
+        // Chrome and transcript paths query this repeatedly each frame. Most
+        // status snapshots are already lowercase and need no allocated copy.
+        if self.status.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(self.status.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(self.status.as_str())
+        }
+    }
+
     fn activity_active(&self) -> bool {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error") || status.contains("crash") || status.starts_with("lost:") {
             return false;
         }
@@ -3403,7 +4849,7 @@ impl Panel {
             || self.connection_phase.trim() == "streaming"
             || activity_state::is_request_phase(&self.connection_phase)
             || matches!(
-                status.as_str(),
+                status.as_ref(),
                 "generating"
                     | "running"
                     | "busy"
@@ -3498,12 +4944,12 @@ impl Panel {
                 entry.hash(&mut state);
                 sum = sum.wrapping_add(state.finish());
             }
-            for entry in &self.expanded_tools {
+            for entry in &self.expanded_regions {
                 let mut state = std::collections::hash_map::DefaultHasher::new();
                 entry.hash(&mut state);
                 sum = sum.wrapping_add(state.finish().rotate_left(17));
             }
-            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_tools.len() as u64
+            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_regions.len() as u64
         };
         let key = TranscriptDerivedKey {
             items_revision: self.items.revision(),
@@ -3529,28 +4975,56 @@ impl Panel {
                 &self.items,
                 &rows,
                 &self.expanded_prompts,
-                &self.expanded_tools,
+                &self.expanded_regions,
             ) {
                 self.transcript_selection
                     .update(cx, |selection, _| selection.set_document(document));
             }
-            let prompt_rows = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(row, entry)| match entry.source {
-                    TranscriptRowSource::Settled(index)
-                        if prompt::is_pinnable_prompt(&self.items[index]) =>
-                    {
-                        Some((row, index))
-                    }
-                    _ => None,
+            // Live rows are appended after settled rows. Their growth and
+            // disclosure changes cannot move a settled prompt's row index.
+            let prompt_rows = self
+                .transcript_derived
+                .as_ref()
+                .filter(|derived| {
+                    derived.key.items_revision == key.items_revision
+                        && derived.key.applet_rows_version == key.applet_rows_version
+                        && derived.key.display == key.display
                 })
-                .collect();
+                .map(|derived| derived.prompt_rows.clone())
+                .unwrap_or_else(|| {
+                    Arc::new(
+                        rows.iter()
+                            .enumerate()
+                            .filter_map(|(row, entry)| match entry.source {
+                                TranscriptRowSource::Settled(index)
+                                    if prompt::is_pinnable_prompt(&self.items[index]) =>
+                                {
+                                    Some((row, index))
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    )
+                });
+            // Live text and disclosure changes rebuild rows, not settled todo
+            // state. Do not rescan history, clone the payload or format its
+            // fingerprint for every streaming chunk.
+            let (latest_todo, tail_headers) = self
+                .transcript_derived
+                .as_ref()
+                .filter(|derived| derived.key.items_revision == key.items_revision)
+                .map(|derived| (derived.latest_todo.clone(), derived.tail_headers))
+                .unwrap_or_else(|| {
+                    let latest_todo = self.latest_todo_payload().map(Arc::new);
+                    let tail_headers = transcript_tail_headers(latest_todo.as_deref());
+                    (latest_todo, tail_headers)
+                });
             self.transcript_derived = Some(TranscriptDerived {
                 key,
                 rows,
                 prompt_rows,
-                latest_todo: self.latest_todo_payload(),
+                latest_todo,
+                tail_headers,
             });
         }
         self.transcript_derived.as_ref().unwrap()
@@ -3580,6 +5054,65 @@ impl Panel {
     ) -> Vec<TranscriptRenderRow> {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
+        let mut inline_images = HashSet::new();
+        let mut user_attachments_end = 0;
+        let completed_asks: HashSet<&str> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Tool {
+                    call_id,
+                    name,
+                    done: true,
+                    ..
+                } if name == "ask" => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        // A completion notice is redundant only when a completed bg call
+        // already contains the same task, status and actual output preview.
+        // Keep nonmatching previews and ongoing tasks: they carry distinct data.
+        let completed_bg: Vec<(String, String, String)> = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Tool {
+                    name,
+                    input,
+                    output,
+                    done: true,
+                    error: None,
+                    ..
+                } = item
+                else {
+                    return None;
+                };
+                let result = tool_output::background_output(name, output)?;
+                let task = serde_json::from_str::<serde_json::Value>(input)
+                    .ok()?
+                    .get("task_id")?
+                    .as_str()?
+                    .to_owned();
+                if !result
+                    .fields
+                    .iter()
+                    .any(|line| line == &format!("Task: {task}"))
+                {
+                    return None;
+                }
+                let status = result
+                    .fields
+                    .iter()
+                    .find_map(|line| line.strip_prefix("Status: "))?
+                    .trim()
+                    .to_owned();
+                let preview = result.preview?;
+                if status.is_empty() || preview.trim().is_empty() {
+                    return None;
+                }
+                Some((task, status, preview))
+            })
+            .collect();
         let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
@@ -3597,6 +5130,56 @@ impl Panel {
                 rows.push(applet_row(ordinal, instance));
             }
             // Filter presentation only, never persisted items.
+            if matches!(item, Item::User(_)) {
+                user_attachments_end = if prompt::is_pinnable_prompt(item) {
+                    self.user_attachment_range(index).end
+                } else {
+                    index + 1
+                };
+                inline_images = self
+                    .user_image_markers(index)
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect();
+            }
+            if inline_images.contains(&index) {
+                continue;
+            }
+            // A cached transcript from before the history merge fix can still
+            // contain detached copies appended after an unrelated tool row.
+            if index >= user_attachments_end
+                && matches!(item, Item::Image(image)
+                    if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput)
+                        && matches!(image.anchor, Some(jcode_sdk::RenderedImageAnchor::UserPrompt { .. })))
+            {
+                continue;
+            }
+            if let Item::BackgroundTask {
+                task_id,
+                summary,
+                detail: Some(detail),
+                done: true,
+                ..
+            } = item
+                && let Some((_, rest)) = detail.split_once("```text\n")
+                && let Some((preview, _)) = rest.rsplit_once("\n```")
+                && completed_bg.iter().any(|(id, status, output)| {
+                    id == task_id
+                        && summary.contains(status)
+                        && preview.trim_end() == output.trim_end()
+                })
+            {
+                continue;
+            }
+            // Ask-result attachments render inside their answer card. Keep
+            // the image items for the session image browser and history.
+            if let Item::Image(image) = item
+                && matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask")
+                && let Some(jcode_sdk::RenderedImageAnchor::ToolCall { id }) = &image.anchor
+                && completed_asks.contains(id.as_str())
+            {
+                continue;
+            }
             if matches!(item, Item::Reasoning(_))
                 && display.thinking_display != crate::config::ThinkingDisplay::Full
             {
@@ -3691,19 +5274,23 @@ impl Panel {
         finished: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let clock = div()
-            .debug_selector(|| "tool-elapsed".into())
-            .flex_none()
-            .text_size(px(11.0))
-            .text_color(Theme::global().TEXT_FAINT);
+        let clock = compact_clock();
+        let start = self
+            .tool_wall_times
+            .get(call_id)
+            .and_then(|(start, _)| *start)
+            .and_then(tool_clock_label);
         if finished {
-            let duration = self.tool_durations.get(call_id)?;
-            // Instant tools need no badge.
-            (duration.as_millis() >= 1_000).then(|| {
-                clock
-                    .child(format_tool_elapsed(*duration))
-                    .into_any_element()
-            })
+            let duration = self
+                .tool_durations
+                .get(call_id)
+                .map(|duration| format_tool_elapsed(*duration));
+            let label = [start, duration]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            (!label.is_empty()).then(|| clock.child(label).into_any_element())
         } else {
             let started = *self.tool_started.get(call_id)?;
             let _ = index;
@@ -3717,8 +5304,35 @@ impl Panel {
                 },
                 cx,
             );
-            Some(clock.child(ticker).into_any_element())
+            Some(
+                clock
+                    .children(start.map(|start| format!("{start} · ")))
+                    .child(ticker)
+                    .into_any_element(),
+            )
         }
+    }
+
+    fn tool_timing_detail(&self, call_id: &str) -> String {
+        let (start, finish) = self
+            .tool_wall_times
+            .get(call_id)
+            .copied()
+            .unwrap_or_default();
+        let start = start
+            .and_then(tool_clock_label)
+            .unwrap_or_else(|| "unknown".into());
+        let finish = finish
+            .and_then(tool_clock_label)
+            .unwrap_or_else(|| "unknown".into());
+        let duration = self
+            .tool_durations
+            .get(call_id)
+            .copied()
+            .or_else(|| self.tool_started.get(call_id).map(Instant::elapsed))
+            .map(format_tool_elapsed)
+            .unwrap_or_else(|| "unknown".into());
+        format!("Started at: {start}   Finished at: {finish}   Duration: {duration}")
     }
 
     fn render_item(
@@ -3726,21 +5340,28 @@ impl Panel {
         index: usize,
         item: &Item,
         _show_avatar: bool,
-        response_viewport_height: gpui::Pixels,
+        _response_viewport_height: gpui::Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let display = crate::config::display();
-        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::BackgroundTask { .. }) {
+        if display.screenshot_mode
+            && matches!(
+                item,
+                Item::Error(_) | Item::RuntimeError { .. } | Item::BackgroundTask { .. }
+            )
+        {
             return div()
                 .px_1()
                 .text_size(px(11.))
                 .text_color(Theme::global().TEXT_DIM)
-                .child(if matches!(item, Item::Error(_)) {
-                    "Error details hidden"
-                } else {
-                    "Background task"
-                })
+                .child(
+                    if matches!(item, Item::Error(_) | Item::RuntimeError { .. }) {
+                        "Error details hidden"
+                    } else {
+                        "Background task"
+                    },
+                )
                 .into_any_element();
         }
         let notice_title = match item {
@@ -3766,6 +5387,24 @@ impl Panel {
                     .unwrap_or_else(|| div().into_any_element())
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::ProviderGuardrailRetry { text, .. } => div()
+                .debug_selector(|| "provider-guardrail-retry".into())
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .truncate()
+                .text_size(px(11.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(text_selection::plain(
+                    self.transcript_selection.clone(),
+                    format!("{index}-provider-guardrail-retry"),
+                    text.clone(),
+                    window,
+                    cx,
+                ))
+                .into_any_element(),
+            Item::Compaction(row) => self.render_compaction_divider(index, row, window, cx),
+            Item::Memory(row) => self.render_memory_divider(index, row, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
@@ -3773,6 +5412,9 @@ impl Panel {
             }
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
+                if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                    return self.render_user_image_chip(index, image, cx);
+                }
                 if self.image_pane_open && !display.screenshot_mode {
                     return self.render_image_pane_link(index, image, cx);
                 }
@@ -3824,11 +5466,26 @@ impl Panel {
                         )
                     })
                     .when(image.preview.is_none(), |el| {
+                        let lazy_image = image.clone();
+                        let lazy = image.data.starts_with("jcode-lazy:");
                         el.child(
                             div()
+                                .id(("history-image-placeholder", index))
+                                .debug_selector(|| "history-image-placeholder".into())
                                 .text_size(px(11.0))
                                 .text_color(Theme::global().TEXT_DIM)
-                                .child(format!("{label} (could not display {})", image.media_type)),
+                                .when(lazy, |el| {
+                                    el.cursor_pointer().on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.open_image_preview(lazy_image.clone(), window, cx);
+                                        },
+                                    ))
+                                })
+                                .child(if lazy {
+                                    format!("{label} (click to load)")
+                                } else {
+                                    format!("{label} (could not display {})", image.media_type)
+                                }),
                         )
                     })
                     .into_any_element()
@@ -3858,6 +5515,20 @@ impl Panel {
                     },
                 ))
                 .into_any_element(),
+            Item::AgentMessage {
+                from_session,
+                from_name,
+                message,
+                timestamp_ms,
+            } => self.render_agent_message(
+                index,
+                from_session,
+                from_name.as_deref(),
+                message,
+                *timestamp_ms,
+                window,
+                cx,
+            ),
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
             // Never truncate it: there is deliberately no disclosure control.
@@ -3900,20 +5571,149 @@ impl Panel {
                 task_id,
                 label,
                 summary,
+                detail,
                 percent,
                 done,
-            } => background_task::render(
-                index,
-                task_id,
-                label,
-                summary,
-                *percent,
-                *done,
-                &self.transcript_selection,
-                window,
-                cx,
-            )
-            .into_any_element(),
+            } => {
+                let key = expandable::key::task(task_id);
+                let expanded = self.expanded_regions.contains(&key);
+                let (row_summary, exit_code) = background_task::summary_parts(summary);
+                // One ellipsis budget, with the title ahead of progress text.
+                let mut header = label.clone();
+                let summary_start = header.len();
+                if !row_summary.is_empty() {
+                    header.push_str(" · ");
+                    header.push_str(&row_summary);
+                }
+                let summary_style = (summary_start < header.len()).then(|| {
+                    (
+                        summary_start..header.len(),
+                        gpui::HighlightStyle {
+                            color: Some(Theme::global().TEXT_FAINT.into()),
+                            ..Default::default()
+                        },
+                    )
+                });
+                let header = gpui::StyledText::new(header).with_highlights(summary_style);
+                let toggle_key = key.clone();
+                let background_task_id = task_id.clone();
+                let done_for_click = *done
+                    && detail
+                        .as_deref()
+                        .is_some_and(|value| value.contains("_Full output:_"));
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .min_w_0()
+                    .debug_selector(|| "background-task-card".into())
+                    .child(
+                        div()
+                            .id(("background-task-toggle", index))
+                            .debug_selector(|| "background-task-expand".into())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_none()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .px_1()
+                            .py(px(2.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                if !this.expanded_regions.contains(&toggle_key) && done_for_click {
+                                    this.request_background_output(&background_task_id);
+                                }
+                                this.toggle_line(&toggle_key, cx);
+                            }))
+                            .child(crate::tool_icon::render_badge(
+                                "bg",
+                                *done,
+                                *done
+                                    && (exit_code.is_some()
+                                        || summary.to_lowercase().contains("failed")),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .debug_selector(|| "background-task-title".into())
+                                    .text_color(Theme::global().TOOL_TEXT)
+                                    .child(header),
+                            )
+                            .when_some(exit_code, |el, code| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .px_2()
+                                        .rounded_full()
+                                        .bg(Theme::global().INLINE_CODE_BG)
+                                        .text_color(Theme::global().ERROR)
+                                        .child(format!("exit {code}")),
+                                )
+                            })
+                            .when_some(
+                                percent.filter(|value| !*done && value.is_finite()),
+                                |el, percent| {
+                                    el.child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(40.0))
+                                            .debug_selector(|| "background-task-progress".into())
+                                            .h(px(2.0))
+                                            .rounded_full()
+                                            .bg(Theme::global().TOOL_BORDER)
+                                            .child(
+                                                div()
+                                                    .h_full()
+                                                    .w(relative((percent / 100.0).clamp(0.0, 1.0)))
+                                                    .rounded_full()
+                                                    .bg(Theme::global().WARN),
+                                            ),
+                                    )
+                                },
+                            )
+                            .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
+                            .when(crate::fixture_control_targets::background_tasks(), |el| {
+                                el.relative()
+                                    .children(crate::fixture_control_targets::marker(
+                                        || key.clone(),
+                                        || Some(self.session_id.clone()),
+                                    ))
+                            }),
+                    )
+                    .when(expanded, |el| {
+                        el.child(
+                            div()
+                                .id(("background-task-output-scroll", index))
+                                .debug_selector(|| "background-task-output".into())
+                                .ml(px(24.0))
+                                .mt_1()
+                                .p_3()
+                                .rounded_lg()
+                                .max_h(px(expandable::MAX_HEIGHT))
+                                .bg(Theme::global().CODE_BG)
+                                .font_family(Theme::global().FONT_MONO)
+                                .text_size(px(11.5))
+                                .text_color(Theme::global().CODE_TEXT)
+                                .child(text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    format!("background-detail-{index}"),
+                                    background_task::detail_text(
+                                        task_id,
+                                        summary,
+                                        detail.as_deref(),
+                                    ),
+                                    window,
+                                    cx,
+                                ))
+                                .map(crate::transcript_scroll::vertical),
+                        )
+                    })
+                    .into_any_element()
+            }
             Item::Tool {
                 call_id,
                 name,
@@ -3922,31 +5722,16 @@ impl Panel {
                 done,
                 error,
             } => {
-                if let Some(response) = error
-                    .is_none()
-                    .then(|| user_response::parse(name, input))
-                    .flatten()
-                {
-                    return user_response::render(
-                        &response,
+                if name == "ask" && *done {
+                    return self.render_decision(
                         index,
-                        response_viewport_height,
-                        &self.transcript_selection,
-                        self.media_preview_handler(cx),
+                        call_id,
+                        input,
+                        output,
+                        error.as_deref(),
                         window,
                         cx,
                     );
-                }
-                if display.screenshot_mode {
-                    return div()
-                        .px_1()
-                        .text_size(px(12.))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(format!(
-                            "{name} · {}",
-                            if *done { "finished" } else { "running" }
-                        ))
-                        .into_any_element();
                 }
                 let (offset, opacity, animating) = self
                     .arriving_tools
@@ -3963,161 +5748,25 @@ impl Panel {
                 if animating {
                     window.request_animation_frame();
                 }
-                let tool_card = crate::applet_runtime::get(cx)
-                    .host
-                    .borrow()
-                    .tool_card(&self.session_id, call_id)
-                    .map(|mounted| mounted.instance.id.clone());
-                if let Some(instance) = tool_card {
-                    let selection = self.applet_selection.clone();
-                    if let Some(card) =
-                        crate::applet_surface::card(&instance, true, &selection, window, cx)
-                    {
-                        return div()
-                            .id(("tool", index))
-                            .debug_selector(|| "tool-applet".into())
-                            .flex_none()
-                            .ml(px(offset))
-                            .opacity(opacity)
-                            .child(card)
-                            .into_any_element();
-                    }
-                }
-                if name == "todo"
-                    && *done
-                    && error.is_none()
-                    && let Some(payload) = parse_todo_tool_output(output)
+                if !display.screenshot_mode
+                    && let Some(call) = swarm_card::parse(name, input, output)
                 {
-                    return div()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(render_todo_card_with_style(
-                            &payload,
-                            false,
-                            &format!("todo-{index}"),
-                            &self.transcript_selection,
-                            window,
-                            cx,
-                        ))
-                        .into_any_element();
-                }
-                if display.diff_display != crate::config::DiffDisplay::Off
-                    && let Some(preview) = self.render_edit_metadata(
+                    return self.render_swarm_card(
+                        index,
                         call_id,
+                        &call,
                         name,
                         input,
-                        output,
                         *done,
+                        output,
                         error.as_deref(),
-                        cx,
-                    )
-                {
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-edit".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(preview)
-                        .into_any_element();
-                }
-                if let Some(compose) = gmail_draft_card::parse(name, input) {
-                    let compose = gmail_draft_card::merge_output(compose, output, *done);
-                    let superseded = self.superseded_drafts().get(call_id).copied();
-                    let expanded = self.expanded_tools.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = gmail_draft_card::render(
-                        index,
-                        &compose,
-                        &gmail_draft_card::outcome(output, *done),
-                        error.as_deref(),
-                        tool_card_token_pill(output),
-                        superseded,
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
+                        offset,
+                        opacity,
                         window,
                         cx,
                     );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-gmail-compose".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
                 }
-                if let Some(view) =
-                    gmail_read_card::parse(name, input, output, *done, error.as_deref())
-                {
-                    let expanded = self.expanded_tools.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = gmail_read_card::render(
-                        index,
-                        &view,
-                        tool_card_token_pill(output),
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-gmail-read".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
-                }
-                if let Some(view) =
-                    mcp_list_card::parse(name, input, output, *done, error.as_deref())
-                {
-                    let expanded = self.expanded_tools.contains(call_id);
-                    let toggle_id = call_id.clone();
-                    let card = mcp_list_card::render(
-                        index,
-                        &view,
-                        tool_card_token_pill(output),
-                        expanded,
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            if !this.expanded_tools.remove(&toggle_id) {
-                                this.expanded_tools.insert(toggle_id.clone());
-                            }
-                            this.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                    );
-                    return div()
-                        .id(("tool", index))
-                        .debug_selector(|| "tool-mcp-list".into())
-                        .flex_none()
-                        .ml(px(offset))
-                        .opacity(opacity)
-                        .child(card)
-                        .into_any_element();
-                }
-                let expanded = self.expanded_tools.contains(call_id)
+                let expanded = self.expanded_regions.contains(call_id)
                     ^ (name == "agentgrep" && display.show_agentgrep_output);
                 let detail_progress = self
                     .tool_detail_motion
@@ -4129,17 +5778,32 @@ impl Panel {
                     .unwrap_or(if expanded { 1.0 } else { 0.0 });
                 let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
                 let summary = if display.screenshot_mode {
-                    String::new()
+                    if *done {
+                        "finished".into()
+                    } else {
+                        "running".into()
+                    }
                 } else {
-                    tool_summary(input)
+                    tool_row_summary(name, input)
                 };
-                // Pretty-printing the arguments and stripping ANSI from the
-                // whole output is the costly part of a tool row, and it was
-                // done for every collapsed row on every frame. The detail
-                // always has a header line, so only build it while it shows.
+                let toggle_key = call_id.clone();
+                let bg_task_for_click = if name == "bg" && *done {
+                    serde_json::from_str::<serde_json::Value>(input)
+                        .ok()
+                        .and_then(|v| v.get("task_id").and_then(|v| v.as_str()).map(str::to_owned))
+                } else {
+                    None
+                };
+                let keyboard_key = call_id.clone();
+                let bg_task_for_keyboard = bg_task_for_click.clone();
+                let row_focus = self
+                    .swarm_row_focus
+                    .borrow_mut()
+                    .entry(call_id.clone())
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                    .clone();
+                let click_focus = row_focus.clone();
                 let has_detail = true;
-                let detail = (detail_visible && !display.screenshot_mode)
-                    .then(|| tool_detail(name, input, output));
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 let running_veil = (!*done && error.is_none()).then(|| {
@@ -4165,7 +5829,29 @@ impl Panel {
                     .overflow_hidden()
                     .child(crate::tool_icon::animate_running(
                         div()
+                            .id(("tool-header-click", index))
                             .debug_selector(|| "tool-header".into())
+                            .cursor_pointer()
+                            .track_focus(&row_focus)
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if event.keystroke.key == "enter" && !event.is_held {
+                                        if !this.expanded_regions.contains(&keyboard_key) && let Some(task_id) = &bg_task_for_keyboard {
+                                            this.request_background_output(task_id);
+                                        }
+                                        this.toggle_region(&keyboard_key, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                window.focus(&click_focus, cx);
+                                if !this.expanded_regions.contains(&toggle_key) && let Some(task_id) = &bg_task_for_click {
+                                    this.request_background_output(task_id);
+                                }
+                                this.toggle_region(&toggle_key, cx);
+                                cx.stop_propagation();
+                            }))
                             .flex()
                             .flex_row()
                             .gap_2()
@@ -4175,36 +5861,24 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(crate::tool_icon::render_badge_with_label(
-                                name,
-                                *done,
-                                error.is_some(),
-                                text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("tool-name-{index}"),
-                                    name.clone(),
-                                    window,
-                                    cx,
-                                ),
-                            ))
+                            .child(crate::tool_icon::render_badge(name, *done, error.is_some()))
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
                                         .debug_selector(|| "tool-summary".into())
+                                        .id(("tool-summary-text", index))
                                         .flex_1()
                                         .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
+                                        .truncate()
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(Theme::global().TOOL_TEXT)
-                                        .child(text_selection::plain(
-                                            self.transcript_selection.clone(),
-                                            format!("tool-summary-{index}"),
-                                            summary,
-                                            window,
-                                            cx,
-                                        )),
+                                        .child(summary),
                                 )
+                            })
+                            .when_some(tool_output::background_output(name, output), |el, result| {
+                                el.when_some(tool_bg_status(name, output), |el, status| el.child(div().flex_none().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(status)))
+                                  .when_some(output.lines().find_map(|line| line.strip_prefix("Duration: ")), |el, duration| el.child(div().flex_none().text_size(px(11.0)).text_color(Theme::global().TEXT_FAINT).child(duration.to_owned())))
+                                  .when_some(result.exit_code.filter(|code| *code != 0), |el, code| el.child(div().debug_selector(|| "tool-bg-exit-code".into()).flex_none().px_2().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(Theme::global().ERROR).child(format!("exit {code}"))))
                             })
                             .children(self.render_tool_clock(
                                 index,
@@ -4212,31 +5886,8 @@ impl Panel {
                                 *done || error.is_some(),
                                 cx,
                             ))
-                            .when(!*done && error.is_none() && self.has_running_tool(), |el| {
-                                el.child(
-                                    div()
-                                        .id(("tool-background", index))
-                                        .debug_selector(|| "tool-background".into())
-                                        .flex_none()
-                                        .px_2()
-                                        .py(px(2.0))
-                                        .rounded_full()
-                                        .bg(Theme::global().INLINE_CODE_BG)
-                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
-                                        .cursor_pointer()
-                                        .text_size(px(10.0))
-                                        .line_height(px(14.0))
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .on_click(cx.listener(|this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            this.background_running_tool(cx);
-                                        }))
-                                        .child("Background  Alt+B"),
-                                )
-                            })
-                            // The token pill is the sole expansion control,
-                            // including while a tool is still running.
-                            .when(has_detail, |el| {
+                            // The token pill shares the row's click target.
+                            .when(has_detail && !display.screenshot_mode, |el| {
                                 el.child(
                                     div()
                                         .id(("tool-output-toggle", index))
@@ -4252,35 +5903,6 @@ impl Panel {
                                         .text_size(px(10.0))
                                         .line_height(px(14.0))
                                         .text_color(token_color)
-                                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            let was_expanded = expanded;
-                                            if !this.expanded_tools.remove(&call_id) {
-                                                this.expanded_tools.insert(call_id.clone());
-                                            }
-                                            let duration = crate::transition::policy(
-                                                crate::transition::Transition::Overlay,
-                                            )
-                                            .duration;
-                                            if cx.reduce_motion() || duration.is_zero() {
-                                                this.tool_detail_motion.remove(&call_id);
-                                            } else {
-                                                this.tool_detail_motion
-                                                    .entry(call_id.clone())
-                                                    .or_insert_with(|| {
-                                                        crate::transition::AnimatedValue::new(
-                                                            if was_expanded { 1.0 } else { 0.0 },
-                                                            duration,
-                                                        )
-                                                    })
-                                                    .set(
-                                                        if was_expanded { 0.0 } else { 1.0 },
-                                                        Instant::now(),
-                                                    );
-                                            }
-                                            this.transcript_measurements.dirty = true;
-                                            cx.notify();
-                                        }))
                                         .child(token_label),
                                 )
                             }),
@@ -4288,15 +5910,144 @@ impl Panel {
                         error.is_some(),
                         running_veil,
                     ))
-                    .when_some(detail.filter(|_| has_detail), |el, detail| {
+                    .when(detail_visible && !display.screenshot_mode && has_detail, |el| {
+                        let scroll = self
+                            .swarm_scrolls
+                            .borrow_mut()
+                            .entry(call_id.clone())
+                            .or_default()
+                            .clone();
+                        let applet_instance = crate::applet_runtime::get(cx)
+                            .host
+                            .borrow()
+                            .tool_card(&self.session_id, &call_id)
+                            .map(|mounted| mounted.instance.id.clone());
+                        let mut supplement = if name == "ask" && *done {
+                            Some(
+                                div()
+                                    .debug_selector(|| "ask-result".into())
+                                    .child(self.render_ask_answer(
+                                        call_id.as_str(),
+                                        ask::result_text(input, output, error.as_deref()),
+                                        cx,
+                                    ))
+                                    .into_any_element(),
+                            )
+                        } else if let Some(response) = error
+                            .is_none()
+                            .then(|| user_response::parse(name, input))
+                            .flatten()
+                        {
+                            Some(user_response::render(
+                                &response,
+                                index,
+                                None,
+                                &self.transcript_selection,
+                                self.media_preview_handler(cx),
+                                window,
+                                cx,
+                            ))
+                        } else if let Some(instance) = applet_instance {
+                            crate::applet_surface::card(
+                                &instance,
+                                true,
+                                &self.applet_selection,
+                                window,
+                                cx,
+                            )
+                        } else if name == "todo" && *done && error.is_none() {
+                            parse_todo_tool_output(output).map(|payload| {
+                                render_todo_card_with_style(
+                                    &payload,
+                                    false,
+                                    &format!("todo-{index}"),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        } else {
+                            None
+                        };
+                        if supplement.is_none()
+                            && display.diff_display != crate::config::DiffDisplay::Off
+                        {
+                            supplement = self.render_edit_metadata(
+                                &call_id,
+                                name,
+                                input,
+                                output,
+                                *done,
+                                error.as_deref(),
+                                cx,
+                            );
+                        }
+                        if supplement.is_none() {
+                            let toggle_id = call_id.clone();
+                            if let Some(compose) = gmail_draft_card::parse(name, input) {
+                                let compose =
+                                    gmail_draft_card::merge_output(compose, output, *done);
+                                supplement = Some(gmail_draft_card::render(
+                                    index,
+                                    &compose,
+                                    &gmail_draft_card::outcome(output, *done),
+                                    error.as_deref(),
+                                    tool_card_token_pill(output),
+                                    self.superseded_drafts().get(&call_id).copied(),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            } else if let Some(view) =
+                                gmail_read_card::parse(name, input, output, *done, error.as_deref())
+                            {
+                                supplement = Some(gmail_read_card::render(
+                                    index,
+                                    &view,
+                                    tool_card_token_pill(output),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            } else if let Some(view) =
+                                mcp_list_card::parse(name, input, output, *done, error.as_deref())
+                            {
+                                supplement = Some(mcp_list_card::render(
+                                    index,
+                                    &view,
+                                    tool_card_token_pill(output),
+                                    true,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_region(&toggle_id, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                ));
+                            }
+                        }
+                        let height = if self.expandable_viewport_height > px(0.) {
+                            (f32::from(self.expandable_viewport_height) * 0.6)
+                                .clamp(1., expandable::MAX_HEIGHT)
+                        } else {
+                            expandable::MAX_HEIGHT
+                        };
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
-                                // Keep the collapsed header inline, and give
-                                // expanded output its own quiet card surface.
                                 .opacity(detail_progress)
                                 .relative()
-                                .left(px(6.0 * (1.0 - detail_progress)))
                                 .ml(px(24.0))
                                 .mt_1()
                                 .mb_1()
@@ -4307,36 +6058,159 @@ impl Panel {
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
                                 .text_color(Theme::global().CODE_TEXT)
-                                .child(text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("tool-detail-{index}"),
-                                    detail,
-                                    window,
-                                    cx,
+                                .child(
+                                    div()
+                                        .id(format!("tool-detail-{index}-scroll"))
+                                        .debug_selector(move || {
+                                            format!("tool-detail-{index}-scroll")
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .max_h(px(height))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .child(div().debug_selector(|| "tool-timing-detail".into()).mb_2().text_color(Theme::global().TEXT_FAINT).child(self.tool_timing_detail(&call_id)))
+                                                .when_some(tool_output::bash_exit_code(name, output).filter(|code| *code != 0), |el, code| {
+                                                    el.child(div().debug_selector(|| "tool-detail-exit-code".into()).self_start().mb_2().px_2().py_1().rounded_full().bg(Theme::global().INLINE_CODE_BG).text_color(if code == 0 { Theme::global().OK } else { Theme::global().ERROR }).child(format!("exit {code}")))
+                                                })
+                                                .when(!*done && error.is_none() && self.has_running_tool(), |el| {
+                                                el.child(
+                                                    div()
+                                                        .id(("tool-background", index))
+                                                        .debug_selector(|| "tool-background".into())
+                                                        .flex_none()
+                                                        .px_2()
+                                                        .py(px(2.0))
+                                                        .rounded_full()
+                                                        .bg(Theme::global().INLINE_CODE_BG)
+                                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
+                                                        .cursor_pointer()
+                                                        .text_size(px(10.0))
+                                                        .line_height(px(14.0))
+                                                        .text_color(Theme::global().TEXT_FAINT)
+                                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.background_running_tool(cx);
+                                                        }))
+                                                        .child("Background  Alt+B"),
+                                                )
+                                            })
+                                            .children(supplement)
+                                                .child(if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
+                                                    div().flex().flex_col()
+                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
+                                                        .into_any_element()
+                                                } else if let Some(result) = tool_output::background_output(name, output) {
+                                                    div().flex().flex_col().gap_2()
+                                                        .when_some(result.preview, |el, preview| el.child(div().debug_selector(|| "tool-bg-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bg-preview-{index}"), preview, window, cx))))
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else if let Some(lines) = tool_output::json_lines(name, output, &call_id, &self.expanded_regions) {
+                                                    let args = tool_output::ToolDetail::arguments(input);
+                                                    let mut toggle_index = 0usize;
+                                                    let rows = lines.into_iter().enumerate().map(|(line_index, line)| {
+                                                        let toggle = line.toggle.map(|key| {
+                                                            let selector = format!("tool-json-toggle-{toggle_index}");
+                                                            toggle_index += 1;
+                                                            div().id(SharedString::from(format!("json-toggle-{index}-{line_index}"))).debug_selector(move || selector.clone().into())
+                                                                .w(px(18.0)).flex_none().cursor_pointer().text_color(Theme::global().TEXT_FAINT)
+                                                                .child(if line.collapsed { "▸" } else { "▾" })
+                                                                .on_click(cx.listener(move |this, _, _, cx| { cx.stop_propagation(); this.toggle_line(&key, cx); })).into_any_element()
+                                                        }).unwrap_or_else(|| div().w(px(18.0)).flex_none().into_any_element());
+                                                        div().flex().child(toggle).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-json-{index}-{line_index}"), line.text, window, cx)).into_any_element()
+                                                    }).collect::<Vec<_>>();
+                                                    div().debug_selector(|| "tool-detail-json".into()).font_family(Theme::global().FONT_MONO).flex().flex_col()
+                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .children(rows)
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else if let Some(markdown) = tool_output::markdown_output(name, output) {
+                                                    let args = tool_output::ToolDetail::arguments(input);
+                                                    div().debug_selector(|| "tool-detail-markdown".into())
+                                                        .flex().flex_col().gap_2()
+                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .child(div().font_family(Theme::global().FONT_AI).child(markdown::render(&markdown, tool_output::markdown_row(index), &self.transcript_selection, window, cx)))
+                                                        .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
+                                                        .into_any_element()
+                                                } else {
+                                                    div().debug_selector(|| "tool-argument-table".into()).child(div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
+                                                        name, input, tool_output::ToolDetail::new(name, input, output, error.as_deref()),
+                                                        format!("tool-detail-{index}"),
+                                                        self.transcript_selection.clone(), window, cx,
+                                                    ))).into_any_element()
+                                                })
+                                                .child(
+                                                    div()
+                                                        .debug_selector(|| "tool-detail-end".into())
+                                                        .child(""),
+                                                ),
+                                        )
+                                        .map(|body| crate::transcript_scroll::tracked_vertical(body, &scroll)),
+                                )
+                                .children((crate::fixture_control_targets::transcript_scroll_fixture() && call_id == "scroll-fixture").then(|| {
+                                    crate::fixture_control_targets::marker(|| "scroll:tool".into(), || Some(self.session_id.clone())).unwrap()
+                                }))
+                                .child(crate::scrollbar::vertical_with_track(
+                                    &scroll,
+                                    "tool-detail-scrollbar",
                                 )),
                         )
                     })
-                    .children(error.clone().map(|message| {
-                        div()
-                            .debug_selector(|| "tool-error".into())
-                            .ml(px(24.0))
-                            .pr_1()
-                            .py_1()
-                            .text_size(px(11.5))
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_color(Theme::global().ERROR)
-                            .child(text_selection::plain(
-                                self.transcript_selection.clone(),
-                                format!("tool-error-{index}"),
-                                condense(&strip_ansi(&message), 300),
-                                window,
-                                cx,
-                            ))
-                    }))
                     .into_any_element()
             }
-            Item::Error(message) => self.render_recovery_error(index, message, window, cx),
+            Item::Error(message) => self.render_recovery_error(index, message, false, window, cx),
+            Item::RuntimeError { message, .. } => {
+                self.render_recovery_error(index, message, true, window, cx)
+            }
         }
+    }
+
+    /// Flip one disclosure region (`expandable::Open`). A tool card fades its
+    /// detail in and out; every other region appears at once.
+    pub(super) fn toggle_region(&mut self, key: &str, cx: &mut Context<Self>) {
+        let was_expanded = self.expanded_regions.contains(key);
+        if !self.expanded_regions.remove(key) {
+            self.expanded_regions.insert(key.to_owned());
+        }
+        let duration = crate::transition::policy(crate::transition::Transition::Overlay).duration;
+        if cx.reduce_motion() || duration.is_zero() {
+            self.tool_detail_motion.remove(key);
+        } else {
+            self.tool_detail_motion
+                .entry(key.to_owned())
+                .or_insert_with(|| {
+                    crate::transition::AnimatedValue::new(
+                        if was_expanded { 1.0 } else { 0.0 },
+                        duration,
+                    )
+                })
+                .set(if was_expanded { 0.0 } else { 1.0 }, Instant::now());
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
+    /// Flip one disclosure region that has no animated detail: a notice body,
+    /// a background task, a swarm line or an error card's raw message.
+    fn request_background_output(&self, task_id: &str) {
+        if !self.is_side_document() && self.preview_state.is_none() {
+            self.bridge.send(Command::RuntimeCommand {
+                session_id: self.session_id.clone(),
+                command: jcode_sdk::api::RuntimeCommand::BackgroundOutput,
+                args: vec![task_id.to_owned()],
+            });
+        }
+    }
+
+    pub(super) fn toggle_line(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.expanded_regions.remove(key) {
+            self.expanded_regions.insert(key.to_owned());
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
     }
 
     pub fn focus_input(&self, window: &mut Window, cx: &mut App) {
@@ -4362,6 +6236,7 @@ impl Panel {
                 .as_deref()
                 .is_some_and(|text| !text.is_empty() && text.chars().all(|c| !c.is_control()))
             || self.transcript_only
+            || self.ask_card.is_some()
             || self.login.is_some()
             || self.recovery_picker_open
             || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
@@ -4404,6 +6279,9 @@ impl Panel {
         if let Some(handle) = self.login_input_focus_handle(cx) {
             return handle;
         }
+        if let Some((_, search)) = &self.picker_search {
+            return search.read(cx).focus_handle.clone();
+        }
         if let Some(handle) = self.document_focus_handle(cx) {
             return handle;
         }
@@ -4413,6 +6291,7 @@ impl Panel {
             terminal.read(cx).focus_handle(cx)
         } else if self.unfinished_work.is_some()
             || self.orchestration.is_some()
+            || self.openrig.is_some()
             || self.is_changelog()
             || self.code_file.is_some()
             || self.is_side_document()
@@ -4427,12 +6306,11 @@ impl Panel {
         }
     }
 
-    /// Whether `set_surface_focused(focused)` or the one-shot build footer would
-    /// change anything. Callers drawing a frame check this first, since GPUI
-    /// counts any update made while drawing as a change to the views reading it.
+    /// Whether `set_surface_focused(focused)` would change anything. Callers
+    /// drawing a frame check this first, since GPUI counts any update made
+    /// while drawing as a change to the views reading it.
     pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
-        self.show_build_footer
-            || self.surface_focused != focused
+        self.surface_focused != focused
             || (focused && self.finished_unseen)
             || self
                 .terminal
@@ -4510,8 +6388,21 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Panel");
-        if std::mem::take(&mut self.focus_pending) {
+        self.watch_composer_popover_focus(window, cx);
+        if let Some(scope) = self.ask_focus_return.take()
+            && (scope.contains_focused(window, cx) || self.focus_handle.is_focused(window))
+        {
             self.focus_input(window, cx);
+        }
+        self.expandable_viewport_height = self.transcript_list.viewport_bounds().size.height;
+        if std::mem::take(&mut self.focus_pending) {
+            if self.composer_popover_focus(cx).is_none()
+                && let Some(trigger) = self.composer_popover_trigger.take()
+            {
+                window.focus(&trigger, cx);
+            } else {
+                self.focus_input(window, cx);
+            }
         }
         if !self.tool_detail_motion.is_empty() {
             let now = Instant::now();
@@ -4677,6 +6568,9 @@ impl Render for Panel {
         if self.todoist.is_some() {
             return self.render_todoist(window, cx);
         }
+        if self.openrig.is_some() {
+            return self.render_openrig(window, cx);
+        }
         if self.orchestration.is_some() {
             return self.render_orchestration(window, cx);
         }
@@ -4705,7 +6599,7 @@ impl Render for Panel {
                 let open_session = self.unfinished_session_opener.clone();
                 let mut card = div()
                     .id(("unfinished-session", index))
-                    .debug_selector(move || format!("unfinished-session-{index}").into())
+                    .debug_selector(move || format!("unfinished-session-{index}"))
                     .p_3()
                     .rounded_lg()
                     .border_1()
@@ -4779,6 +6673,21 @@ impl Render for Panel {
             // retain their entities when an unrelated streamed reply starts or
             // ends. Only the debug selector reflects streaming state.
             .id("transcript")
+            .children(crate::fixture_control_targets::marker(
+                || "history:scroll-up".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .children(
+                crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+                    crate::fixture_control_targets::marker(
+                        || "scroll:transcript".into(),
+                        || Some(self.session_id.clone()),
+                    )
+                    .unwrap()
+                    .right_auto()
+                    .w(px(4.))
+                }),
+            )
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -4822,22 +6731,15 @@ impl Render for Panel {
         let rows = derived.rows.clone();
         let prompt_rows = derived.prompt_rows.clone();
         let latest_todo = derived.latest_todo.clone();
+        let tail_headers = derived.tail_headers;
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
-        let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
+        let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
-        let tail_header = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            publish_tracker.is_some().hash(&mut hasher);
-            if let Some(payload) = &pinned_todo {
-                format!("{payload:?}").hash(&mut hasher);
-            }
-            hasher.finish()
-        };
+        let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
         let row_count = rows.len() + usize::from(self.activity_active());
@@ -4852,10 +6754,11 @@ impl Render for Panel {
                 .startup_layout
                 .as_ref()
                 .is_some_and(|layout| layout.committed);
-        if !fresh_session && !self.items.is_empty() {
-            if let Some(layout) = &mut self.startup_layout {
-                layout.committed = true;
-            }
+        if !fresh_session
+            && !self.items.is_empty()
+            && let Some(layout) = &mut self.startup_layout
+        {
+            layout.committed = true;
         }
         // The ordinary composer floats over the bottom of the transcript, so
         // earlier history scrolls beneath its translucent veil instead of
@@ -4927,24 +6830,26 @@ impl Render for Panel {
                     .remeasure_items(row_count - 1..row_count);
             }
         }
-        if row_count > 0 {
-            if let Some((_, y)) = self.pending_history_scroll.take() {
-                // Restore relative to the first row, not the scrollbar's
-                // partially measured total. The virtual list measures and
-                // clamps this logical position while laying out the history.
-                self.transcript_list.scroll_to(gpui::ListOffset {
-                    item_ix: 0,
-                    offset_in_item: px((-y).max(0.0)),
-                });
-                // Scrollbar geometry is available after this layout pass.
-                window.request_animation_frame();
-            }
+        if row_count > 0
+            && let Some((_, y)) = self.pending_history_scroll.take()
+        {
+            // Restore relative to the first row, not the scrollbar's
+            // partially measured total. The virtual list measures and
+            // clamps this logical position while laying out the history.
+            self.transcript_list.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px((-y).max(0.0)),
+            });
+            // Scrollbar geometry is available after this layout pass.
+            window.request_animation_frame();
         }
         let startup_preview = self.startup_prompt_preview();
         // While the welcome viewport still grows with its content, following
         // the tail would scroll a line up for one frame and then snap back
         // when the composer moves down. Hold the top until the space fills.
-        if startup_preview || self.startup_growing() {
+        if self.rewind_selection.is_some() {
+            self.tail_glide.reset();
+        } else if startup_preview || self.startup_growing() {
             self.tail_glide.reset();
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
@@ -4953,12 +6858,14 @@ impl Render for Panel {
         } else {
             self.tail_glide.reset();
         }
+        let rewind_inset = self.reveal_rewind_selection(&rows, dock_pad, window, cx);
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let wheel_input_bounds = input_bounds.clone();
+        let (wheel_root, wheel_hitbox) = crate::transcript_scroll::capture_root();
         let list_rows = rows.clone();
         let first_visible_row = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_first_visible = first_visible_row.clone();
@@ -5009,8 +6916,8 @@ impl Render for Panel {
                                 .flex()
                                 .flex_col()
                                 .gap_2()
-                                .children(self.render_prompt_queue(cx))
-                                .children(self.render_voice_pending())
+                                .when(self.has_visible_queued_prompts(), |el| el.gap_0())
+                                .children(self.render_composer_cards(cx))
                                 .child(self.render_composer(window, cx))
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
@@ -5039,7 +6946,7 @@ impl Render for Panel {
                             if row_index == list_rows.len() {
                                 return div()
                                     .relative()
-                                    .pb(px(end_pad))
+                                    .pb(px(end_pad) + rewind_inset)
                                     .child(steady_activity::steady_row(
                                         panel.read(cx).render_transcript_activity(),
                                         steady_cell.clone(),
@@ -5072,31 +6979,40 @@ impl Render for Panel {
                                 let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
                                     && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
+                                    || matches!(item, Item::ResponseStats(_) | Item::AgentMessage { .. })
+                                    || matches!(item, Item::Tool { .. }) && follows_tool
                                 {
-                                    2.0
-                                } else if matches!(item, Item::ResponseStats(_)) {
-                                    2.0
-                                } else if matches!(item, Item::Tool { .. }) && follows_tool {
                                     2.0
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let element = panel.render_item(
-                                    row.index,
-                                    item,
-                                    row.show_label,
-                                    response_viewport_height,
-                                    window,
-                                    cx,
-                                );
-                                div()
-                                    .debug_selector(move || {
-                                        format!("transcript-row-{row_index}").into()
-                                    })
+                                let mut terms = panel.search_terms.clone();
+                                let highlighted = matches!(row.source, TranscriptRowSource::Settled(index)
+                                    if panel.control_highlight().is_some_and(|reveal| reveal.range.contains(&index)));
+                                if highlighted && let Some(text) = panel.control_highlight().and_then(|reveal| reveal.text.as_ref()) {
+                                    terms.push(text.clone());
+                                }
+                                let element = markdown::with_search_terms(&terms, || {
+                                    panel.render_item(
+                                        row.index,
+                                        item,
+                                        row.show_label,
+                                        response_viewport_height,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                let padded = div()
+                                    .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
+                                    .when(highlighted, |el| el.rounded_lg().bg(Theme::global().ACCENT.opacity(0.14)))
                                     .px_3()
                                     .pt(px(top_padding))
-                                    .pb(px(end_pad))
+                                    .pb(if rewind_inset > px(0.) {
+                                        px(0.)
+                                    } else {
+                                        px(end_pad)
+                                    })
                                     .map(|el| match display.alignment {
                                         crate::config::TextAlignment::Left => el.text_left(),
                                         crate::config::TextAlignment::Center => el.text_center(),
@@ -5146,8 +7062,28 @@ impl Render for Panel {
                                         prompt::is_pinnable_prompt(item),
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
-                                    ))
-                                    .into_any_element()
+                                    ));
+                                let rendered = match &row.source {
+                                    TranscriptRowSource::Settled(_) => {
+                                        panel.render_rewind_row(row.index, item, padded, cx)
+                                    }
+                                    TranscriptRowSource::Owned(_) => padded.into_any_element(),
+                                };
+                                if rewind_inset > px(0.)
+                                    && (row_index == 0 || row_index + 1 == row_count)
+                                {
+                                    div()
+                                        .pt(if row_index == 0 { rewind_inset } else { px(0.) })
+                                        .pb(if row_index + 1 == row_count {
+                                            rewind_inset + px(end_pad)
+                                        } else {
+                                            px(0.)
+                                        })
+                                        .child(rendered)
+                                        .into_any_element()
+                                } else {
+                                    rendered
+                                }
                             })
                         },
                     )
@@ -5179,6 +7115,7 @@ impl Render for Panel {
                             .w_full()
                             .flex_none()
                             .px_4()
+                            .pb(px(COMPOSER_BOTTOM_INSET))
                             .flex()
                             .justify_center()
                             .child(
@@ -5189,8 +7126,8 @@ impl Render for Panel {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .children(self.render_prompt_queue(cx))
-                                    .children(self.render_voice_pending())
+                                    .when(self.has_visible_queued_prompts(), |el| el.gap_0())
+                                    .children(self.render_composer_cards(cx))
                                     .child(self.render_composer(window, cx))
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),
@@ -5227,6 +7164,46 @@ impl Render for Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
+            .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
+                if this.finish_rewind(false, window, cx) {
+                    cx.stop_propagation();
+                } else if this.queue_editor_focused(window, cx) {
+                    // Esc first closes an attachment preview the editor opened.
+                    if this.queue_editor_has_preview(cx) {
+                        cx.propagate();
+                    } else {
+                        this.cancel_queued_prompt_edit(window, cx);
+                        cx.stop_propagation();
+                    }
+                } else if this.ask_editor_focused(window, cx) {
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            // Up in an empty composer opens the newest queued message for
+            // editing in its own queue row. Anything the queue does not claim
+            // falls through to the composer's ordinary prompt history.
+            .capture_action(
+                cx.listener(|this, _: &crate::input::HistoryPrev, window, cx| {
+                    if this.queue_recall_prev(window, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(|this, _: &crate::input::Submit, window, cx| {
+                if this.queue_editor_focused(window, cx) {
+                    this.save_queued_prompt_edit(window, cx);
+                } else if !this.handle_ask_editor_submit(window, cx) {
+                    cx.propagate();
+                    return;
+                }
+                cx.stop_propagation();
+            }))
             // Files dragged in from the file manager: images attach like a
             // paste, other files are referenced by path in the prompt.
             .when(!self.transcript_only && !self.demo, |el| {
@@ -5258,7 +7235,10 @@ impl Render for Panel {
                     panel.jump_to_latest_if_empty(cx);
                 }),
             )
-            .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
+            .on_action(cx.listener(|panel, _: &voice::ToggleVoice, window, cx| {
+                if !panel.voice_active() {
+                    panel.capture_focused_ask_voice_target(window, cx);
+                }
                 panel.toggle_voice(cx);
             }))
             .on_action(
@@ -5272,12 +7252,23 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.resume_composer_typing(event, false, window, cx) {
+                if this.context_usage.is_open() && event.keystroke.key == "escape" {
+                    this.close_context_usage(cx);
+                    this.focus_input(window, cx);
+                    cx.stop_propagation();
+                } else if this.handle_rewind_key(event, window, cx)
+                    || this.handle_queue_card_key(event, window, cx)
+                    || this.handle_ask_key(event, window, cx)
+                    || this.resume_composer_typing(event, false, window, cx)
+                {
                     cx.stop_propagation();
                 }
             }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.login.is_some() && event.keystroke.key == "escape" {
+                if this.swarm_list_open && event.keystroke.key == "escape" {
+                    this.close_swarm_to_trigger(window, cx);
+                    cx.stop_propagation();
+                } else if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
                     this.focus_input(window, cx);
                     cx.stop_propagation();
@@ -5295,10 +7286,11 @@ impl Render for Panel {
                 }
             }))
             .children(crate::harness::remote_host(&self.session_id).map(|host| {
-                let machine = if host == crate::managed_cloud::HOST {
-                    "Jcode Cloud".to_string()
-                } else {
-                    format!("SSH · {host}")
+                let machine = match crate::managed_cloud::Destination::parse(&host) {
+                    Some(target) => target
+                        .name()
+                        .map_or_else(|| "Jcode Cloud".into(), |name| format!("Cloud · {name}")),
+                    None => format!("SSH · {host}"),
                 };
                 let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
                     Some(dir) => format!("Running on {machine} · {dir}"),
@@ -5316,6 +7308,7 @@ impl Render for Panel {
                     .child(label)
             }))
             .children(publish_tracker)
+            .children(self.render_rewind_hint())
             .children(pinned_todo.map(|payload| {
                 div()
                     .id("pinned-todo-scroll")
@@ -5343,31 +7336,55 @@ impl Render for Panel {
                     .min_h_0()
                     .relative()
                     .when(!has_pinned_todo, |body| body.mt_2())
+                    .child(wheel_root)
+                    .child(transcript)
+                    .children(self.render_pinned_prompt(window, cx))
                     // Pace both wheel and touchpad movement on display frames.
                     // Precise deltas use a much shorter smoothing window so
                     // native gesture control stays responsive.
                     .child(
                         gpui::canvas(
-                            move |bounds, window, _| {
-                                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-                            },
-                            move |_, hitbox, window, _| {
+                            |_, _, _| (),
+                            move |_, _, window, _| {
                                 let wheel_panel = wheel_panel.clone();
                                 let input_bounds = wheel_input_bounds.clone();
+                                let hitbox = wheel_hitbox.clone();
                                 window.on_mouse_event(
                                     move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
-                                        if phase != gpui::DispatchPhase::Capture
-                                            || !hitbox.should_handle_scroll(window)
-                                        {
+                                        if phase != gpui::DispatchPhase::Capture {
                                             return;
                                         }
-                                        // Fresh/startup editors live inside this body. Let
-                                        // their own scroll containers receive wheel events.
-                                        if input_bounds.get().is_some_and(
+                                        let child_owns_wheel =
+                                            crate::transcript_scroll::end_capture(cx);
+                                        if !hitbox.get().is_some_and(|hitbox| {
+                                            hitbox.should_handle_scroll(window)
+                                        }) {
+                                            return;
+                                        }
+                                        let in_composer = input_bounds.get().is_some_and(
                                             |bounds: gpui::Bounds<gpui::Pixels>| {
                                                 bounds.contains(&event.position)
                                             },
-                                        ) {
+                                        );
+                                        let (over_editor, editor_gesture) = wheel_panel
+                                            .read(cx)
+                                            .input
+                                            .read(cx)
+                                            .editor_wheel_ownership(event, in_composer);
+                                        if editor_gesture && !over_editor {
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        if child_owns_wheel || over_editor {
+                                            if wheel_panel.read(cx).transcript_wheel_frame.is_some()
+                                            {
+                                                wheel_panel.update(cx, |panel, _| {
+                                                    panel.cancel_transcript_momentum()
+                                                });
+                                            }
+                                            return;
+                                        }
+                                        if in_composer {
                                             return;
                                         }
                                         let delta = event.delta.pixel_delta(window.line_height());
@@ -5392,7 +7409,7 @@ impl Render for Panel {
                                             return;
                                         }
                                         let precise = event.delta.precise();
-                                        let _ = wheel_panel.update(cx, |panel, cx| {
+                                        wheel_panel.update(cx, |panel, cx| {
                                             if precise {
                                                 panel.glide_transcript_input(-y, true, cx);
                                             } else {
@@ -5405,10 +7422,10 @@ impl Render for Panel {
                             },
                         )
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full(),
                     )
-                    .child(transcript)
-                    .children(self.render_pinned_prompt(window, cx))
                     .when(docked_composer, |el| {
                         el.child(self.render_composer_dock(input_bounds.clone(), window, cx))
                     })
@@ -5647,17 +7664,25 @@ fn short_id(session_id: &str) -> String {
 fn role_of(item: &Item) -> Option<&'static str> {
     match item {
         Item::User(_) => Some("you"),
+        Item::Tool {
+            name, done: true, ..
+        } if name == "ask" => Some("you"),
         Item::Assistant(_) => Some("jcode"),
-        Item::Image(_)
+        Item::AgentMessage { .. }
+        | Item::Image(_)
         | Item::ResponseStats(_)
         | Item::Reasoning(_)
         | Item::Tool { .. }
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::ProviderGuardrailRetry { .. }
+        | Item::Compaction(_)
+        | Item::Memory(_)
         | Item::CacheMiss(_)
         | Item::Applet(_)
-        | Item::Error(_) => None,
+        | Item::Error(_)
+        | Item::RuntimeError { .. } => None,
     }
 }
 
@@ -5778,28 +7803,8 @@ fn pretty_auth_method(method: &str) -> String {
     }
 }
 
-fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(used) = context_tokens {
-        match model.and_then(context_window_for_model) {
-            Some(window) => {
-                let percent = (used as f64 / window as f64 * 100.0).min(100.0);
-                parts.push(format!(
-                    "{} / {} ({percent:.0}%)",
-                    format_tokens(used),
-                    format_tokens(window)
-                ));
-            }
-            None => parts.push(format!("{} tokens", format_tokens(used))),
-        }
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("  ·  "))
-}
-
 /// Shorten a home-relative path for the footer.
+#[cfg(test)]
 fn compact_dir(path: &str) -> String {
     match crate::platform_dirs::tilde(path) {
         home if home == "~" => "~ (home)".to_string(),
@@ -5893,6 +7898,7 @@ fn condense(text: &str, limit: usize) -> String {
 
 /// Like `condense`, but keeps the end: while reasoning streams, the newest
 /// words are the ones worth reading.
+#[cfg(test)]
 fn condense_tail(text: &str, limit: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let count = flat.chars().count();
@@ -6309,20 +8315,24 @@ fn render_todo_card_with_style(
         completed as f32 / total as f32
     };
 
-    let mut groups: Vec<(Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
+    let mut groups: Vec<(Option<u32>, Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
     for todo in &payload.todos {
         let group = todo
             .group
             .as_deref()
             .map(str::trim)
             .filter(|g| !g.is_empty());
-        if let Some((_, items)) = groups.iter_mut().find(|(known, _)| *known == group) {
+        let stage = todo.stage;
+        if let Some((_, _, items)) = groups
+            .iter_mut()
+            .find(|(known_stage, known, _)| *known_stage == stage && *known == group)
+        {
             items.push(todo);
         } else {
-            groups.push((group, vec![todo]));
+            groups.push((stage, group, vec![todo]));
         }
     }
-    groups.sort_by_key(|(group, _)| group.is_none());
+    groups.sort_by_key(|(stage, group, _)| (*stage, group.is_none()));
 
     let mut body = div()
         .id("todo-card-body-scroll")
@@ -6331,7 +8341,7 @@ fn render_todo_card_with_style(
         .flex_col()
         .w_full()
         .gap_0p5()
-        .when(!pinned, |body| body.max_h(px(132.0)).overflow_y_scroll());
+        .when(!pinned, |body| body.max_h(px(132.0)));
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -6341,7 +8351,7 @@ fn render_todo_card_with_style(
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
-        for (group_index, (group, todos)) in groups.into_iter().enumerate() {
+        for (group_index, (stage, group, todos)) in groups.into_iter().enumerate() {
             let done = todos
                 .iter()
                 .filter(|todo| todo.status == "completed")
@@ -6350,6 +8360,15 @@ fn render_todo_card_with_style(
             // column. Give every level an explicit width so each row's flex_1
             // text child receives space instead of collapsing to zero width.
             let mut section = div().flex().flex_col().w_full();
+            if let Some(stage) = stage {
+                section = section.child(
+                    div()
+                        .debug_selector(move || format!("pinned-todo-phase-{stage}"))
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(format!("Phase {stage}")),
+                );
+            }
             let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
             if group.is_some() || has_any_group {
                 section = section.child(
@@ -6420,13 +8439,40 @@ fn render_todo_card_with_style(
                                     window,
                                     cx,
                                 )),
-                        ),
+                        )
+                        .children(todo.assigned_to.as_ref().map(|assignee| {
+                            let full = assignee.clone();
+                            let label = assignee
+                                .strip_prefix("session_")
+                                .and_then(|rest| rest.split('_').next())
+                                .unwrap_or(assignee)
+                                .to_owned();
+                            div()
+                                .id(gpui::SharedString::from(format!(
+                                    "{key}-assignee-{group_index}-{todo_index}"
+                                )))
+                                .debug_selector(move || {
+                                    format!("pinned-todo-assignee-{group_index}-{todo_index}")
+                                })
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(Theme::global().TEXT_FAINT)
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| usage::MeterTooltip(full.clone())).into()
+                                })
+                                .child(label)
+                        })),
                 );
             }
             body = body.child(section);
         }
     }
 
+    let body = if pinned {
+        body.into_any_element()
+    } else {
+        crate::transcript_scroll::vertical(body).into_any_element()
+    };
     if pinned {
         return div()
             .debug_selector(|| "pinned-todo-details-paper".into())
@@ -6572,12 +8618,19 @@ fn render_todo_card_with_style(
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
+#[cfg(test)]
 fn tool_summary(input: &str) -> String {
+    condense(&tool_summary_full(input), 90)
+}
+
+/// The same intent, complete. Collapsing it is a paint decision
+/// (`expandable::TITLE`), so the text is never lost on the way in.
+fn tool_summary_full(input: &str) -> String {
     if let Some(summary) = tool_streaming::summary(input) {
-        return condense(&summary, 90);
+        return summary.split_whitespace().collect::<Vec<_>>().join(" ");
     }
     if serde_json::from_str::<serde_json::Value>(input).is_ok() {
-        condense(input, 90)
+        input.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
         // The name already identifies the tool. Do not fill its header with
         // unfinished JSON while waiting for a useful argument to complete.
@@ -6594,29 +8647,176 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Expanded tool detail: the exact invocation plus a clipped output tail.
-fn tool_detail(name: &str, input: &str, output: &str) -> String {
-    let arguments = if input.trim().is_empty() {
-        "{}"
-    } else {
-        input.trim()
-    };
-    let pretty = serde_json::from_str::<serde_json::Value>(arguments)
-        .ok()
-        .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| arguments.to_string());
-    let mut parts = vec![format!(
-        "Tool call\n{}\n{}",
-        name.trim(),
-        clip_lines(&pretty, 40)
-    )];
-    if !output.trim().is_empty() {
-        parts.push(format!(
-            "Output\n{}",
-            clip_lines(strip_ansi(output).trim(), 40)
-        ));
+fn tool_row_summary(name: &str, input: &str) -> String {
+    if name.trim_start_matches("functions.") == "memory" {
+        return memory_tool_summary(input);
     }
-    parts.join("\n\n")
+    if name == "bg"
+        && serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|v| v.get("intent").and_then(|v| v.as_str()).map(str::to_owned))
+            .is_none()
+    {
+        "Background task".into()
+    } else {
+        tool_summary_full(input)
+    }
+}
+
+/// What a `memory` call did, in the same words the TUI row uses: the raw
+/// arguments would otherwise read as `remember: <the whole note>` or as
+/// `recall` with no query, because `action` is not a summary field.
+fn memory_tool_summary(input: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+        return tool_summary_full(input);
+    };
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+    };
+    match text("action") {
+        "remember" => {
+            let content = text("content");
+            if content.is_empty() {
+                "remember".into()
+            } else {
+                format!("remember: {}", condense(content, 90))
+            }
+        }
+        "recall" => {
+            let query = text("query");
+            if query.is_empty() {
+                "recall (recent)".into()
+            } else {
+                format!("recall '{}'", condense(query, 80))
+            }
+        }
+        "search" => {
+            let query = text("query");
+            if query.is_empty() {
+                "search".into()
+            } else {
+                format!("search '{}'", condense(query, 80))
+            }
+        }
+        "forget" => {
+            let id = text("id");
+            if id.is_empty() {
+                "forget".into()
+            } else {
+                format!("forget {id}")
+            }
+        }
+        "tag" => {
+            let id = text("id");
+            if id.is_empty() {
+                "tag".into()
+            } else {
+                format!("tag {id}")
+            }
+        }
+        "list" => "list memories".into(),
+        "link" => "link memories".into(),
+        "related" => "related memories".into(),
+        action if !action.is_empty() => action.to_string(),
+        _ => tool_summary_full(input),
+    }
+}
+
+fn tool_argument_visible(key: &str) -> bool {
+    !matches!(
+        key,
+        "intent" | "label" | "id" | "task_id" | "call_id" | "session_id" | "request_id"
+    ) && !key.ends_with("_id")
+}
+
+/// Expanded tool detail: the invocation and complete ANSI-free output.
+fn tool_detail(name: &str, input: &str, output: &str) -> String {
+    tool_output::ToolDetail::new(name, input, output, None).text
+}
+
+type HistoryToolTimes = HashMap<String, (Option<i64>, Option<i64>, Option<Duration>)>;
+
+fn history_tool_times(messages: &[jcode_sdk::HistoryMessage]) -> HistoryToolTimes {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let tool = message.tool.as_ref()?;
+            let finish = message.timestamp_ms;
+            let duration = tool.duration_ms.map(Duration::from_millis);
+            let start = finish
+                .zip(tool.duration_ms.and_then(|ms| i64::try_from(ms).ok()))
+                .and_then(|(finish, duration)| finish.checked_sub(duration));
+            Some((tool.id.clone(), (start, finish, duration)))
+        })
+        .collect()
+}
+
+fn compact_clock() -> gpui::Div {
+    div()
+        .debug_selector(|| "tool-elapsed".into())
+        .flex_none()
+        .text_size(px(11.0))
+        .text_color(Theme::global().TEXT_FAINT)
+}
+
+fn tool_clock_label(ms: i64) -> Option<String> {
+    use chrono::TimeZone;
+    Some(
+        chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()?
+            .format("%H:%M:%S")
+            .to_string(),
+    )
+}
+
+#[test]
+fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
+    let detail = tool_detail(
+        "bash",
+        r#"{"command":"pwd","notify":null,"wake":false,"timeout":0}"#,
+        "",
+    );
+    assert!(detail.contains("command: pwd"));
+    assert!(detail.contains("wake: false"));
+    assert!(detail.contains("timeout: 0"));
+    assert!(!detail.contains("notify"));
+}
+
+#[test]
+fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
+    let rows: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
+        {"role":"tool", "content":"", "timestamp_ms":20000,
+         "tool":{"id":"a", "name":"bash", "input":{}, "duration_ms":7000}},
+        {"role":"tool", "content":"", "timestamp_ms":30000,
+         "tool":{"id":"b", "name":"read", "input":{}}}
+    ]))
+    .unwrap();
+    let (items, _) = Panel::history_items(rows.clone(), Vec::new());
+    assert!(matches!(&items[0], Item::Tool { name, .. } if name == "bash"));
+    assert!(matches!(&items[1], Item::Tool { name, .. } if name == "read"));
+    let times = history_tool_times(&rows);
+    assert_eq!(
+        times.get("a"),
+        Some(&(Some(13000), Some(20000), Some(Duration::from_secs(7))))
+    );
+    assert_eq!(times.get("b"), Some(&(None, Some(30000), None)));
+}
+
+fn tool_bg_status(name: &str, output: &str) -> Option<String> {
+    if name != "bg" {
+        return None;
+    }
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("Status: "))
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map(str::to_owned)
 }
 
 /// Keep a block short from the top, noting how much was hidden.
@@ -6630,22 +8830,9 @@ fn acknowledge_next(
     }
 }
 
-/// Keep a block short by keeping its head and tail: for command output the
-/// end (results, errors) usually matters more than the middle.
-fn clip_lines(text: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= max_lines {
-        return text.to_string();
-    }
-    let head = max_lines * 2 / 3;
-    let tail = max_lines - head;
-    let hidden = lines.len() - head - tail;
-    let mut kept = lines[..head].join("\n");
-    kept.push_str(&format!("\n… {hidden} lines hidden …\n"));
-    kept.push_str(&lines[lines.len() - tail..].join("\n"));
-    kept
-}
-
+#[cfg(test)]
+#[path = "panel_expandable_tests.rs"]
+mod expandable_tests;
 #[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
@@ -6763,6 +8950,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tab_waits_for_parked_work_and_live_questions(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("waiting-tab", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            use super::tab_outline::TabMode;
+            let mode = |panel: &Panel| panel.tab_ring().map(|ring| ring.mode);
+            assert_eq!(mode(panel), None);
+            panel.set_pending_awaits(vec![jcode_sdk::PendingAwait {
+                requested_ids: vec!["worker".into()], deadline_unix_ms: u64::MAX,
+            }], cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_pending_awaits(Vec::new(), cx);
+            assert_eq!(mode(panel), None);
+
+            panel.set_tab_waiting(true, cx);
+            panel.set_pending_awaits(vec![jcode_sdk::PendingAwait {
+                requested_ids: vec!["removed-worker-1".into(), "removed-worker-2".into()],
+                deadline_unix_ms: u64::MAX,
+            }], cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_tab_waiting(false, cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_pending_awaits(Vec::new(), cx);
+            assert_eq!(mode(panel), None);
+            assert!(panel.awaiting_ids().is_empty());
+            panel.set_tab_waiting(true, cx);
+            panel.set_pending_awaits(Vec::new(), cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_tab_waiting(false, cx);
+
+            for (wire, expected) in [
+                (serde_json::json!({"ev":"tool_start", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg"}), TabMode::Working),
+                (serde_json::json!({"ev":"tool_input_delta", "session_id":"waiting-tab", "call_id":"bg-1", "delta":"{\"action\":\"wait\"}"}), TabMode::Waiting),
+                (serde_json::json!({"ev":"tool_done", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg", "output":"Completed"}), TabMode::Working),
+            ] {
+                panel.apply(&serde_json::from_value(wire).unwrap(), cx);
+                assert_eq!(mode(panel), Some(expected));
+            }
+
+            let event: ApiEvent = serde_json::from_value(serde_json::json!({
+                "ev":"ask_request", "session_id":"waiting-tab", "request_id":"ask-1", "tool_call_id":"tool-1",
+                "questions":[{"header":"Choice", "question":"Continue?", "options":[{"label":"Yes"},{"label":"No"}]}]
+            })).unwrap();
+            panel.apply(&event, cx);
+            assert_eq!(mode(panel), Some(TabMode::Question));
+        });
+    }
+
+    #[gpui::test]
     fn minimap_state_covers_session_lifecycle_and_latest_todo_progress(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -6799,6 +9042,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "next".into(),
@@ -6807,6 +9052,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -6823,6 +9070,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -6929,6 +9178,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                     TodoCardItem {
                         content: "remaining".into(),
@@ -6937,6 +9188,8 @@ mod tests {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                        stage: None,
+                        assigned_to: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
@@ -6971,6 +9224,8 @@ mod tests {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 }],
                 plan: TodoCardPlan::default(),
                 goals: Vec::new(),
@@ -7039,7 +9294,9 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "user".into(),
                         content: (0..80)
@@ -7048,7 +9305,9 @@ mod tests {
                             .join("\n\n"),
                     },
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "assistant".into(),
                         content: (0..80)
@@ -7094,13 +9353,17 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "user".into(),
                         content: "Fix the rendering".into(),
                     },
                     jcode_sdk::HistoryMessage {
+                        attachments: Vec::new(),
                         response_stats: None,
+                        timestamp_ms: None,
                         tool: None,
                         role: "assistant".into(),
                         content: "Fixed.".into(),
@@ -7192,7 +9455,7 @@ mod tests {
 
     #[gpui::test]
     fn restored_alternating_history_still_overflows_and_scrolls(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7218,7 +9481,9 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                     role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
                     content: format!("restored message {index}"),
@@ -7264,7 +9529,7 @@ mod tests {
 
     #[gpui::test]
     fn large_transcripts_only_paint_the_visible_tail(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7371,17 +9636,18 @@ mod tests {
     #[test]
     fn tool_detail_pretty_prints_and_clips() {
         let detail = tool_detail("bash", r#"{"a":1}"#, "line1\nline2");
-        assert!(detail.starts_with("Tool call\nbash\n"));
-        assert!(detail.contains("\"a\": 1"));
-        assert!(detail.contains("\n\nOutput\nline1\nline2"));
+        assert!(detail.starts_with("a: 1"));
+        assert!(detail.contains("\n\nline1\nline2"));
         assert!(detail.contains("line2"));
-        let long: String = (0..50).map(|n| format!("l{n}\n")).collect();
-        let clipped = tool_detail("bash", "{}", &long);
-        assert!(clipped.contains("Tool call\nbash\n{}"));
-        assert!(clipped.contains("lines hidden"));
-        // The tail survives: results and errors live at the end of output.
-        assert!(clipped.contains("l49"));
-        assert!(clipped.contains("l0"));
+        // Nothing is dropped from the middle: the painted region scrolls and
+        // Copy keeps every line, so the detail is the complete output.
+        let long: String = (0..500).map(|n| format!("l{n}\n")).collect();
+        let detail = tool_detail("bash", "{}", &long);
+        assert!(!detail.contains("Tool call"));
+        for n in [0, 250, 499] {
+            assert!(detail.contains(&format!("l{n}")), "line {n} is kept");
+        }
+        assert!(!detail.contains("lines hidden"));
     }
 
     #[test]
@@ -7520,7 +9786,7 @@ mod tests {
 
     #[gpui::test]
     fn inline_reasoning_paints_full_markdown_live_and_settled(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7569,8 +9835,8 @@ mod tests {
         let heading = vcx.debug_bounds("selectable-text-0-0").unwrap();
         let last_line = vcx.debug_bounds("selectable-text-0-2").unwrap();
         assert!(
-            heading.size.height > last_line.size.height,
-            "thinking headings read as subsection titles above quieter body text"
+            heading.size.height <= last_line.size.height,
+            "thinking headings stay as small as the surrounding reasoning"
         );
 
         // A quadruple click selects the entire Markdown leaf, not card chrome.
@@ -7749,7 +10015,7 @@ mod tests {
 
     #[gpui::test]
     fn runtime_catalog_only_populates_picker_with_available_routes(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7809,7 +10075,7 @@ mod tests {
 
     #[gpui::test]
     fn runtime_info_auth_method_overrides_route_guessing(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7938,15 +10204,6 @@ mod tests {
         assert_eq!(account_method_label(Some("openai"), None), "OpenAI");
         assert_eq!(account_method_label(None, None), "Accounts");
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
-        assert_eq!(context_usage_label(None, None), None);
-        assert_eq!(
-            context_usage_label(Some("gpt-5.6-sol"), Some(100_000)).as_deref(),
-            Some("100.0k / 272.0k (37%)")
-        );
-        assert_eq!(
-            context_usage_label(Some("mystery-model"), Some(1_500)).as_deref(),
-            Some("1.5k tokens")
-        );
     }
 
     #[test]
@@ -8007,7 +10264,7 @@ mod tests {
     /// panel yanked the view back down on every streamed event.
     #[gpui::test]
     fn scrolling_up_releases_follow_mode_and_the_chip_restores_it(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8132,7 +10389,7 @@ mod tests {
     /// fence syntax) on the clipboard.
     #[gpui::test]
     fn clicking_copy_on_a_code_block_fills_the_clipboard(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8165,7 +10422,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn compaction_start_and_result_share_a_card(cx: &mut gpui::TestAppContext) {
+    fn queued_compaction_settles_one_row_with_result_or_error(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8176,18 +10433,47 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.apply(&ApiEvent::Compacted { session_id: "session-a".into(), message: "Compacting".into() }, cx);
-            panel.apply(&ApiEvent::BackgroundProgress { session_id: "session-a".into(), task_id: "context-compaction".into(), label: "Context compaction".into(), percent: Some(100.0), summary: "10000 → 4000 tokens".into(), done: true }, cx);
-            let cards: Vec<_> = panel.items.iter().filter(|item| matches!(item, Item::BackgroundTask { task_id, .. } if task_id == "context-compaction")).collect();
-            assert_eq!(cards.len(), 1);
-            assert!(matches!(cards[0], Item::BackgroundTask { summary, done: true, .. } if summary.contains("10000") && summary.contains("4000")));
+            let session_id = "session-a".to_owned();
+            let queued = ApiEvent::Compacted {
+                session_id: session_id.clone(),
+                message: "Context compaction queued.".into(),
+            };
+            let divider = |content: &str, running| ApiEvent::CompactionDivider {
+                session_id: session_id.clone(),
+                content: content.into(),
+                running,
+                method: None,
+                trigger: Some("manual".into()),
+                pre_tokens: None,
+                post_tokens: None,
+            };
+            let initial = panel.items.len();
+            panel.apply(&queued, cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if row.state.is_running() && row.label() == "Context compaction queued."));
+            panel.apply(&divider("compacting… · manual", true), cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if row.state.is_running() && row.label() == "compacting… · manual"));
+            panel.apply(&divider("compacted · 10k→4k", false), cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if !row.state.is_running() && row.label() == "compacted · 10k→4k"));
+
+            panel.apply(&queued, cx);
+            panel.apply(&divider("compacting… · manual", true), cx);
+            panel.apply(&ApiEvent::BackgroundProgress {
+                session_id,
+                task_id: "context-compaction".into(),
+                label: "Context compaction".into(),
+                percent: None,
+                summary: "Compaction failed: provider unavailable".into(),
+                detail: None,
+                done: true,
+            }, cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row), Item::Error(error)] if !row.state.is_running() && error == "Compaction failed: provider unavailable"));
         });
     }
 
     /// Progress reuses a quiet row, then finishes as a compact result card.
     #[gpui::test]
     fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8216,6 +10502,7 @@ mod tests {
                         label: "Workspace tests".into(),
                         percent,
                         summary: summary.into(),
+                        detail: None,
                         done,
                     },
                     cx,
@@ -8226,13 +10513,11 @@ mod tests {
                 .debug_bounds("background-task-card")
                 .expect("task row paints");
             if done {
-                assert!(vcx.debug_bounds("background-task-completed").is_some());
                 assert!(
-                    row.size.height > px(28.0) && row.size.height <= px(100.0),
-                    "finished tasks use a compact result card: {row:?}"
+                    row.size.height > px(0.0) && row.size.height <= px(40.0),
+                    "finished tasks render as one compact row: {row:?}"
                 );
             } else {
-                assert!(vcx.debug_bounds("background-task-completed").is_none());
                 assert!(
                     row.size.height <= px(28.0),
                     "running tasks stay one compact row: {row:?}"
@@ -8311,7 +10596,7 @@ mod tests {
 
     #[gpui::test]
     fn tool_token_badge_paints_for_empty_and_single_line_results(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8371,9 +10656,12 @@ mod tests {
             vcx.simulate_click(pill.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(
-                vcx.debug_bounds("tool-detail").is_none(),
-                "identity pill is not an expansion control"
+                vcx.debug_bounds("tool-detail").is_some(),
+                "identity pill expands the row"
             );
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            settle_tool_details(&panel, vcx);
             let status_selector = if failed {
                 "tool-icon-failed"
             } else if done {
@@ -8402,8 +10690,8 @@ mod tests {
     }
 
     #[gpui::test]
-    fn only_the_token_button_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+    fn whole_tool_row_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8448,15 +10736,11 @@ mod tests {
             "detail stays hidden until expanded"
         );
 
-        // The row itself is no longer an expansion target.
-        // The compact header's center may land on the token button.
-        // Click the intent to exercise the non-interactive part of the row.
+        // The intent, like the rest of the header, expands the call.
         let name = vcx.debug_bounds("tool-summary").unwrap();
         vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("tool-detail").is_none());
-        vcx.simulate_click(hint.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
         settle_tool_details(&panel, vcx);
         let detail = vcx
             .debug_bounds("tool-detail")
@@ -8481,19 +10765,14 @@ mod tests {
             other => panic!("expected the tool row, got {other:?}"),
         });
         assert!(!rendered.contains('\u{1b}'), "detail must be ANSI-free");
-        assert!(rendered.contains("Tool call\nbash\n"));
-        assert!(rendered.contains("\"command\": \"make build\""));
-        assert!(rendered.contains("\n\nOutput\n"));
+        assert!(rendered.contains("command:"));
+        assert!(rendered.contains("command: make build"));
         assert!(rendered.contains("line 0") && rendered.contains("line 59"));
-        assert!(rendered.contains("lines hidden"));
+        // The complete output is reachable now, not a 40-line window around a
+        // `lines hidden` marker.
+        assert!(!rendered.contains("lines hidden"));
 
-        // Clicking the header or output card leaves it open.
-        // The compact header's center may land on the token button.
-        // Click the intent to exercise the non-interactive part of the row.
-        let name = vcx.debug_bounds("tool-summary").unwrap();
-        vcx.simulate_click(name.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("tool-detail").is_some());
+        // Clicking the body does not collapse the call or prevent selection.
         vcx.simulate_click(detail.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
@@ -8507,7 +10786,7 @@ mod tests {
             "closing card remains mounted during exit"
         );
         panel.read_with(vcx, |panel, _| {
-            assert!(!panel.expanded_tools.contains("call-1"));
+            assert!(!panel.expanded_regions.contains("call-1"));
             assert!(panel.tool_detail_motion.contains_key("call-1"));
         });
         // Reverse a closing card without unmounting it or jumping back to zero.
@@ -8515,7 +10794,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
         settle_tool_details(&panel, vcx);
-        assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call-1")));
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call-1")));
         let button = vcx.debug_bounds("tool-output-size").unwrap();
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
@@ -8539,54 +10818,28 @@ mod tests {
 
     #[gpui::test]
     fn inline_tool_rows_keep_status_errors_and_edit_previews(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("session-a", cx);
-            workspace
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "inline-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
         });
-        vcx.run_until_parked();
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .expect("panel exists");
-
-        for (name, input, done, error, preview) in [
-            ("bash", r#"{"command":"cargo test"}"#, false, None, false),
+        for (name, input, error, preview) in [
+            ("bash", r#"{"command":"cargo test"}"#, None, false),
             (
                 "bash",
                 r#"{"command":"cargo test"}"#,
-                true,
                 Some("build failed"),
                 false,
             ),
             (
                 "edit",
                 r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                true,
                 None,
                 true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                false,
-                None,
-                true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
-                true,
-                Some("original text not found"),
-                true,
-            ),
-            (
-                "edit",
-                r#"{"intent":"Clarify navigation","file_path":"#,
-                false,
-                None,
-                false,
             ),
         ] {
             panel.update(vcx, |panel, cx| {
@@ -8595,63 +10848,22 @@ mod tests {
                     name: name.into(),
                     input: input.into(),
                     output: String::new(),
-                    done,
+                    done: true,
                     error: error.map(str::to_owned),
                 }];
+                panel.expanded_regions.clear();
+                panel.tool_detail_motion.clear();
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
+            assert!(vcx.debug_bounds("tool-header").is_some());
+            assert!(vcx.debug_bounds("tool-detail").is_none());
+            assert!(vcx.debug_bounds("code-edit-preview").is_none());
+            let row = vcx.debug_bounds("tool-header").unwrap();
+            vcx.simulate_click(row.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("tool-detail").is_some());
             assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
-            if preview {
-                assert!(vcx.debug_bounds("tool-type-icon").is_some());
-                let card = vcx
-                    .debug_bounds("edit-preview-card-0")
-                    .expect("edit card paints");
-                for selector in [
-                    "tool-inline",
-                    "tool-header",
-                    "tool-output-size",
-                    "tool-detail",
-                ] {
-                    assert!(
-                        vcx.debug_bounds(selector).is_none(),
-                        "no duplicate {selector}"
-                    );
-                }
-                for selector in [
-                    "edit-preview-intent-0",
-                    "edit-preview-footer-0",
-                    "tool-error",
-                ] {
-                    if matches!(selector, "tool-error" | "edit-preview-footer-0") && error.is_none()
-                    {
-                        assert!(vcx.debug_bounds(selector).is_none());
-                        continue;
-                    }
-                    let content = vcx.debug_bounds(selector).expect("card content paints");
-                    assert!(content.origin.x >= card.origin.x);
-                    assert!(content.right() <= card.right());
-                    assert!(content.origin.y >= card.origin.y);
-                    assert!(content.bottom() <= card.bottom());
-                }
-                continue;
-            }
-            let row = vcx.debug_bounds("tool-inline").expect("inline row paints");
-            assert!(vcx.debug_bounds("tool-type-icon").is_some());
-            let header = vcx
-                .debug_bounds("tool-header")
-                .expect("status header paints");
-            assert!(row.size.height >= header.size.height);
-            assert!(vcx.debug_bounds("tool-card").is_none());
-            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
-            assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
-            for selector in ["tool-error", "code-edit-preview"] {
-                if let Some(body) = vcx.debug_bounds(selector) {
-                    assert_eq!(body.origin.x, header.origin.x + px(24.0));
-                    assert!(body.origin.y >= header.bottom());
-                }
-            }
         }
     }
 
@@ -8704,7 +10916,7 @@ mod tests {
 
     #[gpui::test]
     fn consecutive_tool_rows_use_compact_spacing(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8750,7 +10962,7 @@ mod tests {
     /// row and visibly squashes their headers.
     #[gpui::test]
     fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8810,7 +11022,7 @@ mod tests {
     /// panicking, and the signature regions all occupy space.
     #[gpui::test]
     fn the_demo_transcript_paints_every_item_shape(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8870,7 +11082,7 @@ mod tests {
     /// Blockquotes paint as a distinct region in a real assistant message.
     #[gpui::test]
     fn blockquotes_paint_in_a_real_transcript(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -8935,7 +11147,7 @@ mod tests {
     fn the_identity_footer_paints_after_runtime_info_and_token_events(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -9082,12 +11294,14 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
-                        response_stats: None, tool: None,
+                        attachments: Vec::new(),
+                        response_stats: None, timestamp_ms: None, tool: None,
                         role: "user".into(),
                         content: "hello".into(),
                     },
                     jcode_sdk::HistoryMessage {
-                        response_stats: None, tool: None,
+                        attachments: Vec::new(),
+                        response_stats: None, timestamp_ms: None, tool: None,
                         role: "assistant".into(),
                         content: "recovered response".into(),
                     },
@@ -9104,8 +11318,8 @@ mod tests {
             *panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
-                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None, tool: None }, jcode_sdk::HistoryMessage {
-                    response_stats: None, tool: None,
+                vec![jcode_sdk::HistoryMessage { attachments: Vec::new(), role: "user".into(), content: "next".into(), response_stats: None, timestamp_ms: None, tool: None }, jcode_sdk::HistoryMessage { attachments: Vec::new(),
+                    response_stats: None, timestamp_ms: None, tool: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
                 }],
@@ -9180,7 +11394,9 @@ mod tests {
             panel.items.clear();
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
+                    attachments: Vec::new(),
                     response_stats: None,
+                    timestamp_ms: None,
                     tool: None,
                     role: "user".into(),
                     content: "what is in this?".into(),
@@ -9203,10 +11419,314 @@ mod tests {
     }
 
     #[gpui::test]
+    fn signed_agent_message_paints_without_replacing_a_draft(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            workspace.push_test_panel("sender", cx);
+            workspace
+        });
+        let (recipient, sender) = workspace.update(vcx, |workspace, _| {
+            (
+                workspace.test_panel(0).unwrap(),
+                workspace.test_panel(1).unwrap(),
+            )
+        });
+        recipient.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("unsent draft".into(), cx));
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::Event {
+                    session_id: "recipient".into(),
+                    event: ApiEvent::AgentMessage {
+                        session_id: "recipient".into(),
+                        from_session: "sender".into(),
+                        from_name: Some("fox".into()),
+                        message: "DM from fox: check the output".into(),
+                    },
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message").is_some());
+        recipient.update(vcx, |panel, cx| {
+            assert!(
+                matches!(panel.items.last(), Some(Item::AgentMessage { from_session, message, .. })
+                if from_session == "sender" && message == "DM from fox: check the output")
+            );
+            assert_eq!(panel.input.read(cx).snapshot().content, "unsent draft");
+        });
+        sender.update(vcx, |panel, _| {
+            assert!(
+                !panel
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::AgentMessage { .. }))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn agent_dm_discloses_its_body_on_click(cx: &mut gpui::TestAppContext) {
+        let opened_sender = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let reported_sender = opened_sender.clone();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            cx.subscribe(
+                &workspace.test_panel(0).unwrap(),
+                move |_, _, event: &OpenSwarmWorker, _| {
+                    reported_sender.replace(Some(event.0.clone()));
+                },
+            )
+            .detach();
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::Event {
+                    session_id: "recipient".into(),
+                    event: ApiEvent::AgentMessage {
+                        session_id: "recipient".into(),
+                        from_session: "sender".into(),
+                        from_name: Some("fox".into()),
+                        message: "DM from fox: First line\n\n**Hidden second line**".into(),
+                    },
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let summary = vcx
+            .debug_bounds("agent-message-summary")
+            .expect("one-line DM disclosure");
+        let pill = vcx
+            .debug_bounds("tool-identity-pill")
+            .expect("incoming DM shows the swarm pill");
+        let time = vcx
+            .debug_bounds("tool-elapsed")
+            .expect("live DM shows its arrival time");
+        assert!(pill.left() >= summary.left() && time.right() <= summary.right());
+        assert!(pill.right() < time.left());
+        assert!(vcx.debug_bounds("tool-card-tokens").is_none());
+        let window = vcx.window_handle();
+        vcx.simulate_window_resize(window, gpui::size(px(480.), px(680.)));
+        vcx.run_until_parked();
+        let summary = vcx.debug_bounds("agent-message-summary").unwrap();
+        let preview = vcx.debug_bounds("tool-swarm-preview").unwrap();
+        let time = vcx.debug_bounds("tool-elapsed").unwrap();
+        assert!(preview.right() <= time.left() && time.right() <= summary.right());
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        vcx.simulate_click(summary.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        vcx.simulate_click(summary.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+
+        let sender = vcx.debug_bounds("agent-message-sender").unwrap();
+        vcx.simulate_click(sender.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert_eq!(opened_sender.borrow().as_deref(), Some("sender"));
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+    }
+
+    #[gpui::test]
+    fn agent_dm_search_discloses_a_restored_message(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            let history = serde_json::from_value(serde_json::json!([{
+                "role": "user",
+                "content": "DM from fox: First line\n\n**Obscured search term**"
+            }]))
+            .unwrap();
+            panel.load_history(history, vec![], cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-summary").is_some());
+        assert!(vcx.debug_bounds("tool-identity-pill").is_some());
+        assert!(vcx.debug_bounds("tool-elapsed").is_none());
+        assert!(vcx.debug_bounds("tool-card-tokens").is_none());
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.search_terms = vec!["obscured".into()];
+            assert!(panel.reveal_transcript_match(Some("Obscured search term"), true, cx));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        panel.update(vcx, |panel, _| {
+            let item = panel.items.last().unwrap();
+            let open = expandable::Open::for_row(&panel.expanded_regions, item, 0, false);
+            let text: Vec<_> =
+                text_document::segments_with_display(item, 0, open, &crate::config::display())
+                    .into_iter()
+                    .map(|(_, text)| text.to_string())
+                    .collect();
+            assert_eq!(text, ["First line", "Obscured search term"]);
+        });
+    }
+
+    #[gpui::test]
+    fn peer_prompt_paints_at_end_of_long_history(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.unwrap();
+        panel.update(vcx, |panel, cx| {
+            let messages = (0..40)
+                .map(|i| {
+                    serde_json::json!({
+                        "role": if i % 2 == 0 { "user" } else { "assistant" },
+                        "content": format!("previous message {i}")
+                    })
+                })
+                .collect::<Vec<_>>();
+            panel.load_history(serde_json::from_value(messages.into()).unwrap(), vec![], cx);
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.transcript_list.scroll_to_end();
+            panel.stick_to_bottom = true;
+            panel.apply(
+                &ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "давай делать".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ReasoningDelta {
+                    session_id: "session-a".into(),
+                    text: "thinking".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let bounds = vcx
+            .debug_bounds("user-prompt-40")
+            .expect("peer prompt paints at the bottom");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn peer_prompt_paints_in_workspace_after_previous_answer(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel.items.push(Item::Assistant("previous answer".into()));
+        });
+        workspace.update(vcx, |workspace, cx| {
+            for event in [
+                ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "давай делать".into(),
+                },
+                ApiEvent::ReasoningDelta {
+                    session_id: "session-a".into(),
+                    text: "thinking".into(),
+                },
+            ] {
+                workspace.apply(
+                    crate::harness::Update::Event {
+                        session_id: "session-a".into(),
+                        event,
+                    },
+                    cx,
+                );
+            }
+        });
+        vcx.run_until_parked();
+        let bounds = vcx
+            .debug_bounds("user-prompt-1")
+            .expect("peer prompt card paints");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn peer_prompt_is_visible_live_after_compaction(cx: &mut gpui::TestAppContext) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        panel.unwrap().update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel
+                .items
+                .push(Item::Compaction(compaction::CompactionRow::complete(
+                    "compacted · snapcompact",
+                )));
+            panel.apply(
+                &ApiEvent::PeerUserMessage {
+                    session_id: "session-a".into(),
+                    content: "external prompt".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    message_id: None,
+                    text: "answer".into(),
+                },
+                cx,
+            );
+            assert!(
+                matches!(panel.items.last(), Some(Item::User(text)) if text == "external prompt")
+            );
+            assert_eq!(panel.streaming_text, "answer");
+        });
+    }
+
+    #[gpui::test]
     fn keyboard_submission_reaches_the_bridge_and_streamed_text_paints(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9218,6 +11738,7 @@ mod tests {
         let mut panel = None;
         workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
         let panel = panel.expect("test panel exists");
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
         vcx.update(|window, cx| {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
@@ -9228,7 +11749,7 @@ mod tests {
         vcx.simulate_keystrokes("enter");
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
-            Ok(Command::Send { session_id, content, images })
+            Ok(Command::Send { session_id, content, images, .. })
                 if session_id == "session-a" && content == "hello jcode" && images.is_empty()
         ));
 
@@ -9254,7 +11775,7 @@ mod tests {
 
     #[gpui::test]
     fn escape_cancels_an_active_transcript_from_the_focused_prompt(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9286,6 +11807,12 @@ mod tests {
             commands.recv_timeout(std::time::Duration::from_millis(100)),
             Ok(Command::Cancel { session_id }) if session_id == "session-a"
         ));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::ForceStopTurn { session_id }) if session_id == "session-a"
+        ));
     }
 
     /// Nested inline markdown used to produce overlapping highlight ranges,
@@ -9295,7 +11822,7 @@ mod tests {
     /// live session can no longer take the desktop down.
     #[gpui::test]
     fn streamed_nested_markdown_paints_without_aborting(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, _commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9336,7 +11863,7 @@ mod tests {
     /// helper alone would not catch a panel that still displayed the fenced source.
     #[gpui::test]
     fn streamed_mermaid_renders_as_a_visible_panel_diagram(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, _commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9369,7 +11896,7 @@ mod tests {
 
     #[gpui::test]
     fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9411,7 +11938,7 @@ mod tests {
     fn update_command_submits_through_the_prompt_and_reports_platform_availability(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let _update_guard = crate::updates::test_lock();
         crate::updates::set(crate::updates::UpdateState::Idle);
         let (bridge, commands) = crate::harness::spawn_recording();
@@ -9431,6 +11958,7 @@ mod tests {
         });
 
         vcx.simulate_input("/update");
+        vcx.simulate_keystrokes("enter");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
 
@@ -9489,7 +12017,7 @@ mod tests {
     fn model_command_replaces_suggestions_above_input_and_enter_switches_selection(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -9541,6 +12069,8 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.update(|_, cx| assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model "));
+        vcx.simulate_keystrokes("cmd-a backspace");
 
         vcx.simulate_input("/model");
         vcx.run_until_parked();
@@ -9609,11 +12139,11 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.simulate_keystrokes("ctrl-a");
         vcx.simulate_input("/models");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("slash-command-overlay").is_some());
-        vcx.simulate_keystrokes("down up");
         let row = vcx
             .debug_bounds("slash-command-row-0")
             .expect("model suggestion is clickable");
@@ -9825,18 +12355,71 @@ mod fixture_for_panel_tests {
     }
 }
 
+/// Screenshot fixture timings, so captures show the real tool clock labels
+/// instead of "unknown". The release check finished, the cleanup was refused
+/// instantly.
+type DemoToolTimes = (
+    HashMap<String, Duration>,
+    HashMap<String, (Option<i64>, Option<i64>)>,
+);
+
+fn demo_tool_times(fixture: Option<&str>) -> DemoToolTimes {
+    let mut durations = HashMap::new();
+    let mut wall = HashMap::new();
+    if !crate::harness::screenshot_mode() || fixture != Some("expandable") {
+        return (durations, wall);
+    }
+    let Some(now) = response_stats::now_ms() else {
+        return (durations, wall);
+    };
+    for (call_id, ago_ms, ran_ms) in [
+        ("expandable-title", 95_000_i64, 83_400_u64),
+        ("expandable-error", 9_000, 40),
+    ] {
+        let start = now - ago_ms;
+        durations.insert(call_id.to_string(), Duration::from_millis(ran_ms));
+        wall.insert(
+            call_id.to_string(),
+            (Some(start), Some(start + ran_ms as i64)),
+        );
+    }
+    (durations, wall)
+}
+
 /// `JCODE_DESKTOP_DEMO_TRANSCRIPT=1` seeds one panel with a sample of every
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     let fixture = fixture.map(str::to_owned);
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("decision") {
+        return vec![Item::Tool {
+            call_id: "decision-fixture".into(),
+            name: "ask".into(),
+            input: serde_json::json!({"questions": [
+                {"question": "Which database should we use for this long-term project, and why?", "options": [{"label": "Postgres (Recommended)"}, {"label": "SQLite"}]},
+                {"question": "When should we migrate?", "options": [{"label": "Now"}, {"label": "Later"}]}
+            ]}).to_string(),
+            output: "User answers:\n1. Which database should we use for this long-term project, and why? -> Postgres (Recommended) (comment: Reliable and familiar); Other: Keep a backup\n2. When should we migrate? -> Later\n".into(),
+            done: true,
+            error: None,
+        }];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("background-tasks") {
         return vec![
             Item::User("Run the checks in the background".into()),
             Item::BackgroundTask {
-                task_id: "running".into(),
+                task_id: "rollout-plan".into(),
+                label: "Сверить установленную пару daemon и Desktop".into(),
+                summary: "100% · [8/8] verify          plan  daemon + current + bundle report the pair; bridge answers search_sessions; SUPublicEDKey set; rollback on failure".into(),
+                detail: Some("```text\n[8/8] verify          plan  daemon + current + bundle report the pair\n```".into()),
+                percent: Some(100.0),
+                done: true,
+            },
+            Item::BackgroundTask {
+                task_id: "building".into(),
                 label: "Workspace tests".into(),
                 summary: "35% · Running integration tests".into(),
+                detail: None,
                 percent: Some(35.0),
                 done: false,
             },
@@ -9844,6 +12427,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 task_id: "waiting".into(),
                 label: "Release build".into(),
                 summary: "Compiling dependencies and waiting for the linker to finish".into(),
+                detail: None,
                 percent: None,
                 done: false,
             },
@@ -9851,9 +12435,42 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 task_id: "done".into(),
                 label: "Formatting".into(),
                 summary: "✓ completed · 8.2s · exit 0".into(),
+                detail: None,
                 percent: None,
                 done: true,
             },
+        ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("swarm") {
+        // The user's real workers (see workspace `load_real_swarm_fixture`).
+        let call = |id: &str, action: &str, intent: &str| Item::Tool {
+            call_id: format!("swarm-{id}"),
+            name: "swarm".into(),
+            input: format!(r#"{{"action":"{action}","intent":"{intent}","session_ids":["{id}"]}}"#),
+            output: String::new(),
+            done: true,
+            error: None,
+        };
+        return vec![
+            Item::User("Wait for the footer and swarm workers".into()),
+            Item::Tool {
+                call_id: "swarm-message-example".into(),
+                name: "swarm".into(),
+                input: r#"{"action":"message","to_session":"session_fox_1794718668160_87674d9271df588d","message":"Please check the compact swarm row and report back.\nInclude the test result."}"#.into(),
+                output: "Direct message sent to session_fox_1794718668160_87674d9271df588d: Please check the compact swarm row and report back.".into(),
+                done: true,
+                error: None,
+            },
+            call(
+                "session_rose_1794717290730_574aea8d9f6adcc3",
+                "await_members",
+                "Wait desktop-footer",
+            ),
+            call(
+                "session_badger_1794720615830_8c546c8d2a5870c4",
+                "status",
+                "Check swarm-ui-compact",
+            ),
         ];
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("orb-todos") {
@@ -9876,6 +12493,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 })
                 .collect(),
                 plan: TodoCardPlan::default(),
@@ -9896,6 +12515,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                         blocked_by: vec![],
                         confidence: None,
                         completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
@@ -9958,10 +12579,80 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         })
         .collect();
     }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("transcript-scroll") {
+        let mut items = vec![
+            Item::Tool {
+                call_id: "scroll-fixture".into(),
+                name: "bash".into(),
+                input: r#"{"command":"echo fixture"}"#.into(),
+                output: (0..150).map(|n| format!("Fixture output {n}\n")).collect(),
+                done: true,
+                error: None,
+            },
+            Item::User(
+                (0..100)
+                    .map(|n| format!("Prompt paragraph {n}\n\n"))
+                    .collect(),
+            ),
+        ];
+        items.extend((0..30).map(|n| Item::Assistant(format!("Response {n}"))));
+        return items;
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("expandable") {
+        // Every truncated class in one transcript: a cut title, a cut error and
+        // an output long past the old 40-line clip.
+        return vec![
+            Item::User(
+                "Run the release checks, then tell me why the cleanup command was refused.".into(),
+            ),
+            Item::Tool {
+                call_id: "expandable-title".into(),
+                name: "bash".into(),
+                input: serde_json::json!({
+                    "command": "cargo test --workspace --all-targets -- --nocapture \
+                                && cargo clippy --workspace --all-targets \
+                                && cargo build --release",
+                    "notify": null
+                })
+                .to_string(),
+                output: (0..60)
+                    .map(|n| format!("test workspace::case_{n} ... ok"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                done: true,
+                error: None,
+            },
+            Item::Tool {
+                call_id: "expandable-error".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "rm -rf ./build"}).to_string(),
+                output: String::new(),
+                done: true,
+                error: Some(
+                    "Error: This command was not run. It is irreversible:\n\n\
+                     Deleting the build directory removes artifacts the user did not name.\n\
+                     Before it can proceed, stop and check it against the user's actual request:\n\
+                     - Which specific thing the user asked for requires deleting this?\n\
+                     - Did the user name this path, or did you infer it?\n\
+                     - If you inferred it, is a narrower target enough?\n\
+                     If it is genuinely what the user asked for, re-issue the same call with a \
+                     `justification` field explaining which request it serves."
+                        .into(),
+                ),
+            },
+        ];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-streaming") {
         return tool_streaming::fixture_items();
     }
-    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("empty") {
+    if crate::harness::screenshot_mode()
+        && matches!(
+            fixture.as_deref(),
+            Some(
+                "empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt" | "soniox-rt"
+            )
+        )
+    {
         return Vec::new();
     }
     if !crate::harness::screenshot_mode()
@@ -10051,6 +12742,27 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             ),
         ];
     }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
+        // Two pasted screenshots, the first followed directly by a
+        // parenthetical, as typed in a real report.
+        let pasted = |label: &str| {
+            let mut image = image_preview::fixture_image();
+            image.label = Some(label.into());
+            image.source = jcode_sdk::RenderedImageSource::UserInput;
+            image.anchor = Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 });
+            Item::Image(image)
+        };
+        return vec![
+            Item::User(
+                "The bottom inset is off on some sessions [#img_0123456789abcdef0123456789abcdef](transcription and TLDR video). \
+                 And the compaction issue from [#img_abcdef0123456789abcdef0123456789] happened again."
+                    .into(),
+            ),
+            pasted("first"),
+            pasted("second"),
+            Item::Assistant("Both screenshots are attached above.".into()),
+        ];
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("html") {
         return vec![
             Item::User("Show me different fonts directly in this chat.".into()),
@@ -10124,6 +12836,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Plausible),
                     completion_confidence: Some(jcode_base::todo::ConfidenceState::Verified),
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
@@ -10132,6 +12846,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Validated),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Inspect the real offline screenshot".into(),
@@ -10140,6 +12856,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: Some(jcode_base::todo::ConfidenceState::Speculative),
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
                 TodoCardItem {
                     content: "Retired task".into(),
@@ -10148,6 +12866,8 @@ fn demo_item_fixtures() -> Vec<Item> {
                     blocked_by: vec![],
                     confidence: None,
                     completion_confidence: None,
+                    stage: None,
+                    assigned_to: None,
                 },
             ],
             plan: TodoCardPlan {
@@ -10179,6 +12899,10 @@ fn demo_item_fixtures() -> Vec<Item> {
 #[cfg(test)]
 #[path = "panel_responsive_tests.rs"]
 mod responsive_tests;
+
+#[cfg(test)]
+#[path = "panel_derived_chrome_tests.rs"]
+mod derived_chrome_tests;
 
 #[cfg(test)]
 #[path = "panel_todoist_tests.rs"]

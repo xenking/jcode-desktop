@@ -677,7 +677,7 @@ impl Panel {
         if state.busy || state.complete {
             return;
         }
-        let Some(provider) = state.provider.clone() else {
+        let Some(provider) = state.provider else {
             return;
         };
         // Enter while the browser is expected to return must not fail the step.
@@ -724,7 +724,7 @@ impl Panel {
         let (Some(flow), Some(prompt)) = (state.flow.clone(), state.prompt.as_ref()) else {
             return;
         };
-        let kind = prompt.input_kind.clone();
+        let kind = prompt.input_kind;
         if kind != AuthInputKind::DeviceCode && secret.trim().is_empty() {
             state.error = Some("Paste the code or callback URL from your browser first.".into());
             cx.notify();
@@ -775,10 +775,8 @@ impl Panel {
                 .provider
                 .as_ref()
                 .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
+                || manual_input_visible(state)
             {
-                let focus = state.input.read(cx).focus_handle.clone();
-                focus.focus(window, cx);
-            } else if manual_input_visible(state) {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
             } else {
@@ -959,7 +957,7 @@ impl Panel {
                                     .tooltip(|_, cx| {
                                         cx.new(|_| {
                                             super::usage::MeterTooltip(
-                                                "Send one small live request through every connected account to confirm each one works. Uses a little quota or credit.".into(),
+                                                "Test all accounts · Uses quota or credit".into(),
                                             )
                                         })
                                         .into()
@@ -1153,7 +1151,9 @@ mod tests {
                 input.set_content("keep my draft".into(), cx)
             });
         });
-        assert!(vcx.debug_bounds("panel-login").is_some());
+        // The bar carries no method pill: provider switching lives in the
+        // sidebar's quota row and the Accounts page.
+        assert!(vcx.debug_bounds("panel-login").is_none());
         // Workspace tests exercise the footer opening a separate adjacent panel.
         panel.update(vcx, |panel, cx| panel.open_login_picker(cx));
         vcx.run_until_parked();

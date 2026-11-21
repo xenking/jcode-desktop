@@ -73,12 +73,13 @@ impl Worker {
         if !cfg!(target_os = "linux") {
             return Err("Interactive HTML previews currently require Linux with WebKitGTK 4.1. Source is still available.".into());
         }
-        if ACTIVE
+        #[allow(deprecated, reason = "try_update is newer than the supported MSRV")]
+        let admitted = ACTIVE
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 (n < 3).then_some(n + 1)
             })
-            .is_err()
-        {
+            .is_ok();
+        if !admitted {
             return Err(
                 "Three previews are already active. Pause another preview, then retry.".into(),
             );

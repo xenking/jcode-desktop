@@ -25,10 +25,27 @@ impl PromptLayout {
         index: usize,
         line_height: Pixels,
     ) -> Option<Point<Pixels>> {
+        self.position_for_caret(index, line_height, false)
+    }
+
+    pub(super) fn position_for_caret(
+        &self,
+        index: usize,
+        line_height: Pixels,
+        downstream: bool,
+    ) -> Option<Point<Pixels>> {
         let mut start = 0;
         let mut top = px(0.);
         for line in &self.lines {
             if index <= start + line.len() {
+                if downstream
+                    && let Some(row) = line.wrap_boundaries().iter().position(|boundary| {
+                        line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                            == index - start
+                    })
+                {
+                    return Some(point(px(0.), top + line_height * (row + 1)));
+                }
                 return line
                     .position_for_index(index - start, line_height)
                     .map(|position| position + point(px(0.), top));

@@ -1,20 +1,31 @@
 //! Machine selection is a workspace preference, not a mutation of existing panels.
 use super::*;
+use crate::managed_cloud::{self, Destination, RegisteredMachine};
 
 /// Reserved managed destination, never an SSH alias or the personal AWS alpha.
-pub(super) const MANAGED_CLOUD_HOST: &str = "jcode-cloud";
+pub(super) const MANAGED_CLOUD_HOST: &str = managed_cloud::HOST;
 pub(super) const MANAGED_CLOUD_STARTING: &str = "Checking your Jcode Cloud machine…";
 
-fn managed_destination(host: &str) -> bool {
-    matches!(host, MANAGED_CLOUD_HOST | cloud_alpha::HOST)
+pub(super) fn managed_destination(host: &str) -> bool {
+    host == cloud_alpha::HOST || Destination::parse(host).is_some()
 }
 
 pub(super) fn new_session_host(host: &str) -> &str {
-    if managed_destination(host) {
+    if host == cloud_alpha::HOST {
         MANAGED_CLOUD_HOST
     } else {
         host
     }
+}
+
+pub(super) fn machine_label(host: &str) -> &str {
+    Destination::parse(new_session_host(host)).map_or(host, Destination::label)
+}
+
+struct MachineSessions {
+    destination: String,
+    request_id: u64,
+    result: Option<Result<Vec<jcode_sdk::SessionInfo>, String>>,
 }
 
 #[path = "workspace_cloud_alpha.rs"]
@@ -67,7 +78,13 @@ pub(super) struct Machines {
     startup_requested: bool,
     pub(super) input: Option<Entity<PromptInput>>,
     notice: Option<String>,
+    #[allow(dead_code)]
     discovery: Option<gpui::Task<()>>,
+    registry_fetch: Option<gpui::Task<()>>,
+    registered: Vec<RegisteredMachine>,
+    registry_error: Option<String>,
+    session_request_id: u64,
+    cloud_sessions: Option<MachineSessions>,
     cloud: cloud_alpha::Lifecycle,
     connected_cloud_sessions: std::collections::HashSet<String>,
     cloud_progress: std::collections::HashMap<String, cloud_progress::Progress>,
@@ -78,10 +95,10 @@ impl Machines {
     pub fn from_config() -> Self {
         let config = &crate::config::get().workspace;
         let mut hosts = config.remote_hosts.clone();
-        if let Some(host) = &config.default_remote_host {
-            if !hosts.contains(host) {
-                hosts.push(host.clone());
-            }
+        if let Some(host) = &config.default_remote_host
+            && !hosts.contains(host)
+        {
+            hosts.push(host.clone());
         }
         Self {
             default_host: config
@@ -96,6 +113,23 @@ impl Machines {
 }
 
 impl Workspace {
+    pub(super) fn show_cloud_picker_fixture(&mut self, cx: &mut Context<Self>) {
+        self.remotes.registered = vec![
+            RegisteredMachine {
+                name: "ai-core".into(),
+                is_default: true,
+                last_seen_at: Some(1_795_236_600_000),
+            },
+            RegisteredMachine {
+                name: "studio".into(),
+                is_default: false,
+                last_seen_at: None,
+            },
+        ];
+        self.remotes.default_host = Some("cloud:ai-core".into());
+        self.show_machines(cx);
+    }
+
     pub(super) fn set_cloud_transport_connected(&mut self, session_id: &str, connected: bool) {
         if harness::remote_host(session_id).as_deref() != Some(cloud_alpha::HOST) {
             return;
@@ -209,6 +243,8 @@ impl Workspace {
         if !panel.read(cx).is_pending_session() {
             return;
         }
+        // An explicit retry is a request for the session.
+        panel.update(cx, |panel, _| panel.mark_session_requested());
         let remote_host = pending::remote_draft_host(&panel.read(cx).session_id).map(str::to_owned);
         if let Some(host) = remote_host.as_ref().filter(|_| !local) {
             let host = new_session_host(host).to_owned();
@@ -269,6 +305,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let panel = self.slots[index].panel.clone();
+        if panel.read(cx).session_deferred() {
+            return panel.into_any_element();
+        }
         let startup = panel.read(cx).is_startup_draft();
         let host = pending::remote_draft_host(&panel.read(cx).session_id).or_else(|| {
             startup
@@ -283,6 +322,26 @@ impl Workspace {
             panel.read(cx).status.starts_with("Session creation failed")
         };
         let theme = Theme::global();
+        let owner = cx.weak_entity();
+        let recover = |id: &'static str, label, local| {
+            let owner = owner.clone();
+            crate::keyboard::press_button(div().id(id), move |window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+                let _ = owner.update(cx, |this, cx| {
+                    this.retry_pending_session(index, local, cx);
+                    this.set_active(index, cx);
+                    this.focus_active(window, cx);
+                });
+            })
+            .debug_selector(move || id.into())
+            .px_3()
+            .py_1()
+            .rounded_full()
+            .bg(theme.ACCENT_DIM)
+            .cursor_pointer()
+            .child(label)
+        };
         div()
             .size_full()
             .flex()
@@ -339,38 +398,16 @@ impl Workspace {
                     .child(div().text_color(theme.TEXT_DIM).child(if failed {
                         "Not sent. Your draft and queued prompts are preserved."
                     } else {
-                        if cloud { "This panel shares your cloud VM. Enter queues your prompt until connected." } else { "Enter queues your prompt until the connection is ready." }
+                        if cloud { "This panel shares your cloud VM. Enter queues your prompt until connected." } else if panel.read(cx).session_deferred() { "Nothing is created until you send. Enter starts the session with your prompt." } else { "Enter queues your prompt until the connection is ready." }
                     }))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap_2()
-                            .when(failed, |el| {
-                                el.child(
-                                    div()
-                                        .id("pending-session-retry")
-                                        .debug_selector(|| "pending-session-retry".into())
-                                        .px_3()
-                                        .py_1()
-                                        .rounded_full()
-                                        .bg(theme.ACCENT_DIM)
-                                        .cursor_pointer()
-                                        .child("Retry connection")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |this, _, window, cx| {
-                                                cx.stop_propagation();
-                                                this.retry_pending_session(index, false, cx);
-                                                this.set_active(index, cx);
-                                                this.focus_active(window, cx);
-                                            }),
-                                        ),
-                                )
-                            })
+                            .when(failed, |el| el.child(recover("pending-session-retry", "Retry connection", false)))
                             .when(cloud && failed, |el| {
-                                el.child(div()
-                                    .id("pending-cloud-account")
+                                el.child(crate::keyboard::button(div().id("pending-cloud-account"))
                                     .debug_selector(|| "pending-cloud-account".into())
                                     .px_3().py_1().rounded_full().bg(theme.ACCENT_DIM)
                                     .cursor_pointer().child("Jcode account")
@@ -379,28 +416,7 @@ impl Workspace {
                                         cx.open_url("https://jcode.sh/account");
                                     }))
                             })
-                            .when(remote, |el| {
-                                el.child(
-                                    div()
-                                        .id("pending-session-local")
-                                        .debug_selector(|| "pending-session-local".into())
-                                        .px_3()
-                                        .py_1()
-                                        .rounded_full()
-                                        .bg(theme.ACCENT_DIM)
-                                        .cursor_pointer()
-                                        .child("Use this computer")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |this, _, window, cx| {
-                                                cx.stop_propagation();
-                                                this.retry_pending_session(index, true, cx);
-                                                this.set_active(index, cx);
-                                                this.focus_active(window, cx);
-                                            }),
-                                        ),
-                                )
-                            }),
+                            .when(remote, |el| el.child(recover("pending-session-local", "Use this computer", true))),
                     ),
             )
             .child(
@@ -462,7 +478,23 @@ impl Workspace {
                 .iter()
                 .any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
         {
+            if self.remotes.default_host.is_none() {
+                // A local startup draft creates its session with the first
+                // prompt. Not marked requested: a machine chosen before then
+                // still connects through the branch below.
+                for slot in &self.slots {
+                    if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                        slot.panel.update(cx, |panel, cx| panel.defer_session(cx));
+                    }
+                }
+                return;
+            }
             self.remotes.startup_requested = true;
+            for slot in &self.slots {
+                if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                    slot.panel.update(cx, |panel, _| panel.mark_session_requested());
+                }
+            }
             self.create_default_session(
                 self.default_working_dir(),
                 Some(Panel::STARTUP_SESSION_ID.into()),
@@ -480,12 +512,8 @@ impl Workspace {
         request_id: String,
         cx: &mut Context<Self>,
     ) {
-        let host = if managed_destination(&host) {
-            MANAGED_CLOUD_HOST.to_owned()
-        } else {
-            host
-        };
-        if host == MANAGED_CLOUD_HOST {
+        let host = new_session_host(&host).to_owned();
+        if managed_destination(&host) {
             // Restored defaults and drafts from the old personal-alpha button
             // move to the managed destination. They never run the AWS helper.
             let request_id = if pending::remote_draft_host(&request_id) == Some(cloud_alpha::HOST) {
@@ -530,19 +558,20 @@ impl Workspace {
         request_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if self
+        if let Some(host) = self
             .remotes
             .default_host
             .as_deref()
-            .is_some_and(managed_destination)
+            .filter(|host| managed_destination(host))
         {
-            self.remotes.default_host = Some(MANAGED_CLOUD_HOST.into());
+            let host = new_session_host(host).to_owned();
+            self.remotes.default_host = Some(host.clone());
             for slot in &self.slots {
                 if Some(slot.panel.read(cx).session_id.as_str()) == request_id.as_deref()
                     && slot.panel.read(cx).is_pending_session()
                 {
                     slot.panel.update(cx, |panel, cx| {
-                        panel.title = "Jcode Cloud".into();
+                        panel.title = machine_label(&host).to_owned().into();
                         cx.notify();
                     });
                 }
@@ -557,7 +586,7 @@ impl Workspace {
                 cx,
             );
             self.bridge.send(Command::CreateRemoteSession {
-                host: MANAGED_CLOUD_HOST.into(),
+                host,
                 working_dir: None,
                 request_id,
             });
@@ -654,12 +683,13 @@ impl Workspace {
         if let Some(index) = self.machines_panel_index(cx) {
             self.set_active(index, cx);
         } else {
+            self.refresh_cloud_registry(cx);
             let input = self.create_machine_input(cx);
             self.remotes.input = Some(input.clone());
             let panel = cx.new(|cx| {
                 let mut panel = Panel::new(
                     Panel::MACHINES_SESSION_ID.into(),
-                    Some("Machines".into()),
+                    Some("New session destination".into()),
                     None,
                     self.bridge.clone(),
                     cx,
@@ -722,6 +752,68 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(super) fn refresh_cloud_registry(&mut self, cx: &mut Context<Self>) {
+        if cfg!(test) || harness::screenshot_mode() {
+            return;
+        }
+        self.remotes.registered.clear();
+        self.remotes.cloud_sessions = None;
+        self.remotes.registry_error = None;
+        self.remotes.registry_fetch = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async {
+                    let Ok(account) = managed_cloud::account() else {
+                        return Ok(Vec::new());
+                    };
+                    let result = managed_cloud::list_machines(&account);
+                    if managed_cloud::account().is_ok_and(|now| now == account) {
+                        result
+                    } else {
+                        Ok(Vec::new())
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(machines) => this.remotes.registered = machines,
+                    Err(error) => this.remotes.registry_error = Some(error),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn browse_machine_sessions(&mut self, destination: String, cx: &mut Context<Self>) {
+        self.remotes.session_request_id += 1;
+        let request_id = self.remotes.session_request_id;
+        self.remotes.cloud_sessions = Some(MachineSessions {
+            destination: destination.clone(),
+            request_id,
+            result: None,
+        });
+        self.bridge.send(Command::ListRemoteSessions {
+            host: destination,
+            request_id,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn apply_machine_sessions(
+        &mut self,
+        request_id: u64,
+        result: Result<Vec<jcode_sdk::SessionInfo>, String>,
+    ) {
+        if let Some(list) = self
+            .remotes
+            .cloud_sessions
+            .as_mut()
+            .filter(|list| list.request_id == request_id)
+        {
+            list.result = Some(result);
+        }
+    }
+
     pub(super) fn machines_panel_index(&self, cx: &App) -> Option<usize> {
         self.slots
             .iter()
@@ -733,7 +825,7 @@ impl Workspace {
         let cancel = weak.clone();
         cx.new(|cx| {
             PromptInput::new(cx, "SSH alias or user@hostname", move |host, _, _, app| {
-                let _ = weak.update(app, |this, cx| this.connect_machine(Some(host), cx));
+                let _ = weak.update(app, |this, cx| this.connect_typed_ssh(&host, cx));
             })
             .with_on_overlay_cancel(move |app| {
                 let _ = cancel.update(app, |this, cx| this.close_machines(cx));
@@ -782,14 +874,26 @@ impl Workspace {
             self.row_focus[self.active_row] = Some(slot.panel.entity_id());
         }
         self.remotes.input = None;
+        self.remotes.cloud_sessions = None;
+        self.remotes.registry_fetch = None;
         self.focus_pending = true;
         self.retarget_camera();
         cx.notify();
     }
 
+    fn connect_typed_ssh(&mut self, host: &str, cx: &mut Context<Self>) {
+        match crate::remote_targets::validate_host(host) {
+            Ok(host) => self.connect_machine(Some(host), cx),
+            Err(error) => {
+                self.remotes.notice = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn connect_machine(&mut self, host: Option<String>, cx: &mut Context<Self>) {
         let host = match host {
-            Some(host) => match crate::remote_targets::validate_host(&host) {
+            Some(host) => match crate::remote_targets::validate_destination(&host) {
                 Ok(host) => Some(new_session_host(&host).to_owned()),
                 Err(error) => {
                     self.remotes.notice = Some(error);
@@ -801,13 +905,14 @@ impl Workspace {
         };
         if let Some(host) = host {
             self.remotes.failed = false;
-            if !self.remotes.hosts.contains(&host) {
+            self.remotes.notice = None;
+            if !managed_destination(&host) && !self.remotes.hosts.contains(&host) {
                 self.remotes.hosts.push(host.clone());
+                self.remotes.notice = crate::config::persist_remote_hosts(&self.remotes.hosts)
+                    .err()
+                    .map(|error| format!("Could not save machines: {error}"));
             }
-            self.remotes.notice = crate::config::persist_remote_hosts(&self.remotes.hosts)
-                .err()
-                .map(|error| format!("Could not save machines: {error}"));
-            self.remotes.status = Some(format!("Connecting to {host}…"));
+            self.remotes.status = Some(format!("Connecting to {}…", machine_label(&host)));
             self.open_remote_draft(host, cx);
         } else {
             self.remotes.notice = None;
@@ -818,7 +923,7 @@ impl Workspace {
 
     pub(super) fn set_default_machine(&mut self, host: Option<String>, cx: &mut Context<Self>) {
         let host = match host {
-            Some(host) => match crate::remote_targets::validate_host(&host) {
+            Some(host) => match crate::remote_targets::validate_destination(&host) {
                 Ok(host) => Some(new_session_host(&host).to_owned()),
                 Err(error) => {
                     self.remotes.notice = Some(error);
@@ -838,30 +943,14 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_machine_switcher(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// The destination row. Folder mode passes the sidebar's section menu and
+    /// toggle as `trailing`, making this the sidebar's only header line.
+    pub(super) fn render_machine_switcher(
+        &self,
+        trailing: Option<gpui::AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let host = self.remotes.default_host.as_deref();
-        let button = |id: &'static str, icon: &'static [u8], title: String, selected: bool| {
-            let ink = if selected {
-                theme.ACCENT
-            } else {
-                theme.TEXT_DIM
-            };
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .flex_none()
-                .size(px(28.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .cursor_pointer()
-                .when(selected, |el| el.bg(theme.ACCENT_DIM))
-                .hover(|el| el.bg(theme.TOOL_BG))
-                .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(title.clone().into())).into())
-                .child(gpui::svg().data(icon).size(px(16.0)).text_color(ink))
-        };
         div()
             .debug_selector(|| "machine-destination-switcher".into())
             .flex_none()
@@ -875,53 +964,14 @@ impl Workspace {
             .text_size(px(10.5))
             .child(
                 div()
+                    .when(trailing.is_some(), |el| {
+                        el.debug_selector(|| "sidebar-navigation-tabs".into())
+                    })
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(
-                        button(
-                            "machine-destination-local",
-                            include_bytes!("../../../assets/icons/computer.svg"),
-                            "This computer · Use locally for new sessions".into(),
-                            host.is_none(),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_default_machine(None, cx);
-                        })),
-                    )
-                    .child(
-                        button(
-                            "machine-destination-cloud",
-                            include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                            "Cloud · Open a cloud panel and use Cloud for new sessions".into(),
-                            host.is_some_and(managed_destination),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_default_machine(Some(MANAGED_CLOUD_HOST.into()), cx);
-                            this.open_remote_draft(MANAGED_CLOUD_HOST.into(), cx);
-                        })),
-                    )
-                    .child(
-                        button(
-                            "machines-picker-button",
-                            include_bytes!("../../../assets/icons/ssh.svg"),
-                            match host.filter(|host| !managed_destination(host)) {
-                                Some(host) => format!("SSH · {host} · Choose a remote host"),
-                                None => "SSH · Choose a remote host".into(),
-                            },
-                            host.is_some_and(|host| !managed_destination(host)),
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_machines(window, cx);
-                            }),
-                        ),
-                    )
-                    .child(self.render_default_directory_button(cx)),
+                    .child(self.render_default_directory_button(cx))
+                    .children(trailing),
             )
             .when(self.remotes.failed, |el| {
                 el.child(
@@ -945,17 +995,80 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Machine and directory preferences live together, without starting a session.
+    fn render_destination_preferences(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let host = self.remotes.default_host.as_deref();
+        let mode = |id: &'static str, label: &'static str, selected: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(if selected {
+                    theme.ACCENT_DIM
+                } else {
+                    theme.TOOL_BG
+                })
+                .text_color(if selected { theme.ACCENT } else { theme.TEXT })
+                .hover(|el| el.bg(theme.ACCENT_DIM))
+                .child(label)
+        };
+        let path = self
+            .pinned_working_dir
+            .clone()
+            .or_else(|| self.default_working_dir())
+            .unwrap_or_else(|| "Not set".into());
+        div().flex().flex_col().gap_2()
+            .child(div().flex().flex_wrap().gap_2()
+                .child(mode("machine-destination-local", "This computer", host.is_none())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_default_machine(None, cx);
+                    })))
+                .child(mode("machine-destination-cloud", "Cloud", host.is_some_and(managed_destination))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_default_machine(Some(MANAGED_CLOUD_HOST.into()), cx);
+                    }))))
+            .child(div().text_color(theme.TEXT_DIM).child(match host {
+                None => "Default directory on this computer".to_owned(),
+                Some(host) if managed_destination(host) => format!("{} · ~ (remote home)", machine_label(host)),
+                Some(host) => format!("SSH · {host} · ~ (remote home)"),
+            }))
+            .when(host.is_some(), |el| el.child(
+                div().text_color(theme.TEXT_DIM)
+                    .child("Remote sessions start in the remote home. Custom remote directories are not configurable yet.")))
+            .child(div().id("destination-change-directory")
+                .debug_selector(|| "destination-change-directory".into())
+                .px_3().py_2().rounded_full().bg(theme.TOOL_BG)
+                .cursor_pointer().hover(|el| el.bg(theme.ACCENT_DIM))
+                .child(if host.is_none() {
+                    format!("{path} · Change directory…")
+                } else {
+                    format!("Local directory: {path} · Change…")
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_default_directory_picker(window, cx);
+                })))
+            .into_any_element()
+    }
+
     pub(super) fn render_machines(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let mut picker = div().id("machines-picker").debug_selector(|| "machines-picker".into())
             .size_full().p_3().flex().flex_col().gap_2().overflow_y_scroll().text_size(px(11.0))
             .child(div().flex().justify_between()
-                .child(div().text_size(px(14.0)).child("Machines"))
+                .child(div().text_size(px(14.0)).child("New session destination"))
                 .child(div().id("machines-panel-close").debug_selector(|| "machines-panel-close".into())
-                    .cursor_pointer().child("close")
+                    .cursor_pointer().px_2().py_1().rounded_full().bg(theme.TOOL_BG).child("close")
                     .on_click(cx.listener(|this, _, _, cx| { cx.stop_propagation(); this.close_machines(cx); }))))
             .child(div().text_color(theme.TEXT_DIM)
-                .child("Connect opens a new panel. Default applies to new session panels, including after restart."))
+                .child("Choose where new sessions start. Changing the default leaves existing sessions alone."))
+            .child(self.render_destination_preferences(cx))
             .child(div().debug_selector(|| "machine-connection-status".into())
                 .text_color(if self.remotes.failed { theme.ERROR } else { theme.ACCENT })
                 .child(self.remotes.status.clone().unwrap_or_default()))
@@ -968,9 +1081,42 @@ impl Workspace {
                         }
                     })).child("Retry startup on default machine")
             }))
-            .child(self.render_machine_row(None, 0, cx));
-        for (index, host) in self.remotes.hosts.iter().enumerate() {
-            picker = picker.child(self.render_machine_row(Some(host.clone()), index + 1, cx));
+            .child(self.render_machine_row(None, 0, None, cx));
+        let cloud_index = self.remotes.hosts.len() + 1;
+        picker = picker.child(self.render_machine_row(
+            Some(MANAGED_CLOUD_HOST.into()),
+            cloud_index,
+            None,
+            cx,
+        ));
+        for (index, machine) in self.remotes.registered.iter().enumerate() {
+            if let Some(destination) = Destination::named(&machine.name) {
+                let host = destination.preference();
+                picker = picker.child(
+                    div()
+                        .pl_3()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(self.render_machine_row(
+                            Some(host.clone()),
+                            cloud_index + index + 1,
+                            Some(machine),
+                            cx,
+                        ))
+                        .children(self.render_machine_sessions(&host, cx)),
+                );
+            }
+        }
+        if let Some(error) = &self.remotes.registry_error {
+            picker = picker.child(div().text_color(theme.TEXT_DIM).child(error.clone()));
+        }
+        for (index, host) in
+            self.remotes.hosts.iter().enumerate().filter(|(_, host)| {
+                !managed_destination(host) || host.as_str() == cloud_alpha::HOST
+            })
+        {
+            picker = picker.child(self.render_machine_row(Some(host.clone()), index + 1, None, cx));
         }
         picker = picker.child(div().mt_2().child("Connect another machine"));
         if let Some(input) = &self.remotes.input {
@@ -1001,7 +1147,7 @@ impl Workspace {
                         .debug_selector(|| "machine-connect-input".into())
                         .px_2()
                         .py_2()
-                        .rounded_sm()
+                        .rounded_full()
                         .cursor_pointer()
                         .bg(theme.ACCENT_DIM)
                         .hover(|el| el.bg(theme.TOOL_BG))
@@ -1010,7 +1156,7 @@ impl Workspace {
                             cx.listener(|this, _, _, cx| {
                                 if let Some(input) = &this.remotes.input {
                                     let host = input.read(cx).snapshot().content;
-                                    this.connect_machine(Some(host), cx);
+                                    this.connect_typed_ssh(&host, cx);
                                 }
                             }),
                         )
@@ -1045,54 +1191,67 @@ impl Workspace {
         &self,
         host: Option<String>,
         index: usize,
+        machine: Option<&RegisteredMachine>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let is_default = self.remotes.default_host == host;
         let label = match host.as_deref() {
             Some(MANAGED_CLOUD_HOST) => "Jcode Cloud".into(),
             Some(cloud_alpha::HOST) => "Personal cloud alpha (existing sessions only)".into(),
-            Some(host) => host.to_owned(),
+            Some(host) => machine_label(host).to_owned(),
             None => "This computer".into(),
         };
         let default_host = host.clone();
-        let cloud_status = host
-            .as_deref()
-            .is_some_and(managed_destination)
-            .then(|| "Your own machine, run by Jcode. Sleeps when idle.".to_owned());
+        let cloud_status = if let Some(machine) = machine {
+            Some(registered_machine_status(machine))
+        } else if host.as_deref() == Some(MANAGED_CLOUD_HOST) {
+            Some(
+                if self.remotes.registered.is_empty() {
+                    "Your own machine, run by Jcode. Sleeps when idle."
+                } else {
+                    "Uses the account’s default machine."
+                }
+                .to_owned(),
+            )
+        } else {
+            None
+        };
+        let browse_host = machine.and(host.clone());
+        let expanded = self.remotes.cloud_sessions.as_ref().is_some_and(|list| {
+            Some(&list.destination) == browse_host.as_ref()
+                && list.result.as_ref().is_none_or(Result::is_ok)
+        });
+        let theme = Theme::global();
+        let registered = machine.is_some();
         div()
-            .px_2()
+            .px_3()
             .py_2()
-            .rounded_sm()
-            .bg(Theme::global().PANEL_BG)
+            .rounded_full()
+            .bg(if registered { theme.TOOL_BG } else { theme.PANEL_BG })
             .flex()
-            .flex_col()
+            .when(registered, |el| el.flex_wrap().items_center().justify_between())
+            .when(!registered, |el| el.flex_col())
             .gap_2()
             .child(
                 div()
-                    .font_family(Theme::global().FONT_MONO)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(label),
+                    .min_w_0()
+                    .flex().flex_col().gap_1()
+                    .child(div().font_family(theme.FONT_MONO).truncate().child(label))
+                    .children(cloud_status.map(|status| div().text_color(theme.TEXT_DIM).child(status))),
             )
-            .children(cloud_status.map(|status| {
-                div()
-                    .debug_selector(|| "cloud-alpha-status".into())
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(status)
-            }))
             .child(
                 div()
                     .flex()
                     .gap_2()
+                    .flex_wrap()
                     .justify_between()
                     .child(
                         div()
                             .id(("machine-connect", index))
-                            .debug_selector(move || format!("machine-connect-{index}").into())
+                            .debug_selector(move || format!("machine-connect-{index}"))
                             .px_2()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .bg(Theme::global().ACCENT_DIM)
                             .hover(|el| el.bg(Theme::global().TOOL_BG))
@@ -1112,14 +1271,35 @@ impl Workspace {
                             })
                             .child("Connect"),
                     )
+                    .children(browse_host.map(|host| {
+                        div()
+                            .id(("machine-sessions", index))
+                            .debug_selector(move || format!("machine-sessions-{index}"))
+                            .px_2()
+                            .py_1()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(theme.PANEL_BG)
+                            .hover(|el| el.bg(theme.ACCENT_DIM))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if expanded {
+                                    this.remotes.cloud_sessions = None;
+                                    cx.notify();
+                                } else {
+                                    this.browse_machine_sessions(host.clone(), cx);
+                                }
+                            }))
+                            .child(if expanded { "Hide sessions" } else { "Sessions" })
+                    }))
                     .child(
                         div()
                             .id(("machine-default", index))
-                            .debug_selector(move || format!("machine-default-{index}").into())
+                            .debug_selector(move || format!("machine-default-{index}"))
                             .px_2()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
+                            .when(registered, |el| el.bg(theme.PANEL_BG))
                             .text_color(if is_default {
                                 Theme::global().ACCENT
                             } else {
@@ -1141,11 +1321,161 @@ impl Workspace {
             )
             .into_any_element()
     }
+
+    fn render_machine_sessions(
+        &self,
+        host: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let list = self
+            .remotes
+            .cloud_sessions
+            .as_ref()
+            .filter(|list| list.destination == host)?;
+        let theme = Theme::global();
+        let content = div()
+            .pl_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .text_color(theme.TEXT_DIM);
+        Some(
+            match &list.result {
+                None => content.child("Loading sessions…"),
+                Some(Err(error)) => {
+                    content.child(div().text_color(theme.ERROR).child(error.clone()))
+                }
+                Some(Ok(sessions)) if sessions.is_empty() => {
+                    content.child("No sessions on this machine")
+                }
+                Some(Ok(sessions)) => {
+                    content.children(sessions.iter().enumerate().map(|(index, session)| {
+                        let session = session.clone();
+                        let title = session
+                            .title
+                            .clone()
+                            .or_else(|| session.working_dir.clone())
+                            .unwrap_or_else(|| "Untitled session".into());
+                        div()
+                            .id(("cloud-open-session", index))
+                            .debug_selector(move || format!("cloud-open-session-{index}"))
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .truncate()
+                            .bg(theme.TOOL_BG)
+                            .hover(|el| el.bg(theme.ACCENT_DIM))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_session(session.clone(), window, cx);
+                            }))
+                            .child(title)
+                    }))
+                }
+            }
+            .into_any_element(),
+        )
+    }
+}
+
+fn registered_machine_status(machine: &RegisteredMachine) -> String {
+    let seen = machine
+        .last_seen_at
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|at| {
+            format!(
+                "Last seen {}",
+                at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+            )
+        })
+        .unwrap_or_else(|| "Last seen unknown".into());
+    if machine.is_default {
+        format!("Account default · {seen}")
+    } else {
+        seen
+    }
 }
 
 #[cfg(test)]
 mod cloud_routing_tests {
+    use super::super::remote_tests::{click, session};
     use super::*;
+
+    #[gpui::test]
+    fn machines_picker_routes_named_cloud_connect_default_and_session_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace.remotes = Machines::default();
+            workspace.show_machines(cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("machine-connect-1").is_some());
+        assert!(vcx.debug_bounds("machine-connect-2").is_none());
+
+        workspace.update(vcx, |w, cx| {
+            w.remotes.registered = vec![
+                RegisteredMachine {
+                    name: "ai-core".into(),
+                    is_default: true,
+                    last_seen_at: Some(1_795_236_600_000),
+                },
+                RegisteredMachine {
+                    name: "studio".into(),
+                    is_default: false,
+                    last_seen_at: None,
+                },
+            ];
+            cx.notify();
+        });
+        click(vcx, "machine-default-2");
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.remotes.default_host.as_deref(), Some("cloud:ai-core"))
+        });
+        assert!(commands.try_recv().is_err());
+        click(vcx, "machine-sessions-2");
+        let first = match commands.try_recv().unwrap() {
+            Command::ListRemoteSessions { host, request_id } if host == "cloud:ai-core" => {
+                request_id
+            }
+            _ => panic!("expected ai-core catalog request"),
+        };
+        click(vcx, "machine-sessions-3");
+        let second = match commands.try_recv().unwrap() {
+            Command::ListRemoteSessions { host, request_id } if host == "cloud:studio" => {
+                request_id
+            }
+            _ => panic!("expected studio catalog request"),
+        };
+        workspace.update(vcx, |w, cx| {
+            w.apply_machine_sessions(first, Ok(vec![session("cloud://ai-core/not-current")]));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("cloud-open-session-0").is_none());
+        workspace.update(vcx, |w, cx| {
+            w.apply_machine_sessions(second, Ok(vec![session("cloud://studio/session-existing")]));
+            cx.notify();
+        });
+        click(vcx, "cloud-open-session-0");
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Watch { session_id }) if session_id == "cloud://studio/session-existing")
+        );
+
+        click(vcx, "machines-picker-button");
+        click(vcx, "machine-connect-3");
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, working_dir: None, .. }) if host == "cloud:studio")
+        );
+        workspace.update(vcx, |w, cx| w.open_default_draft(None, cx));
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, working_dir: None, .. }) if host == "cloud:ai-core")
+        );
+    }
 
     #[test]
     fn cloud_active_detector_requires_connected_nonclosing_exact_namespace() {

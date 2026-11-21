@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -72,7 +75,10 @@ def format_message(*, tag, body, url, notes=None):
     fixed placeholder rather than the changelog.
     """
     title = f"## Jcode Desktop {tag.removeprefix('desktop-v')}"
-    links = f"\n\nDownload: <{WEBSITE}>\nPublic binaries: <{url}>"
+    if "-beta." in tag:
+        links = f"\n\nDownload beta: <{url}>\nStable release: <{WEBSITE}>"
+    else:
+        links = f"\n\nDownload: <{WEBSITE}>\nPublic binaries: <{url}>"
     budget = DISCORD_LIMIT - len(title) - len(links) - 1
     text = ""
     if notes and notes.get("sections"):
@@ -130,6 +136,21 @@ def validate_manifest(manifest, tag):
 
 
 def verify_website_asset(asset):
+    # Retry only idempotent public reads, never Discord posts or integrity failures.
+    for attempt in range(3):
+        try:
+            return _verify_website_asset_once(asset)
+        except urllib.error.HTTPError as error:
+            if error.code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead):
+            if attempt == 2:
+                raise
+        print("Transient public download error; retrying verification", flush=True)
+        time.sleep(2 ** attempt)
+
+
+def _verify_website_asset_once(asset):
     digest, size = hashlib.sha256(), 0
     request = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": "JcodeReleaseVerifier/1.0"})
     with urllib.request.urlopen(request, timeout=120) as response:
@@ -141,25 +162,37 @@ def verify_website_asset(asset):
 
 
 def verify_publication(tag):
+    print("Verifying public release identity", flush=True)
     public = fetch_release(repository=PUBLIC_REPOSITORY, tag=tag)
     validate_release(public, PUBLIC_REPOSITORY, tag)
     live = request_json(f"{WEBSITE}/latest.json")
     live_tag = live.get("tag_name", "")
-    validate_manifest(live, live_tag)
+    # The default feed deliberately stays stable when a newer beta is published.
+    # Validate its identity without applying today's package matrix to a different,
+    # potentially historical release. The requested release is checked in full below.
+    PREPARE.expected_assets(live_tag)
+    if (live.get("draft") is not False
+            or live.get("prerelease") is not ("-beta." in live_tag)
+            or live.get("name") != f"Jcode Desktop {live_tag.removeprefix('desktop-v')}"):
+        raise ValueError("Invalid live channel identity")
     if live_tag != tag:
-        if "-beta." in tag and "-beta." not in live_tag:
-            stable = fetch_release(repository=PUBLIC_REPOSITORY, tag=live_tag)
-            validate_release(stable, PUBLIC_REPOSITORY, live_tag)
+        if "-beta." not in tag or "-beta." in live_tag:
+            raise ValueError("Website does not advertise the requested release")
+        stable = fetch_release(repository=PUBLIC_REPOSITORY, tag=live_tag)
+        validate_release(stable, PUBLIC_REPOSITORY, live_tag)
+        if NOTES.version_key(live_tag) >= NOTES.version_key(tag):
             print("Stable Desktop release has superseded this beta; skipping")
             return None
-        raise ValueError("Website does not advertise the requested release")
     immutable = request_json(f"https://github.com/{PUBLIC_REPOSITORY}/releases/download/{tag}/latest.json")
-    if live != immutable:
+    if live_tag == tag and live != immutable:
         raise ValueError("Live and immutable public manifests differ")
+    validate_manifest(immutable, tag)
     public_names = {a["name"] for a in public.get("assets", []) if a.get("state") == "uploaded"}
-    if not ({a["name"] for a in live["assets"]} | {"latest.json"}) <= public_names:
+    if not ({a["name"] for a in immutable["assets"]} | {"latest.json"}) <= public_names:
         raise ValueError("Public release is incomplete")
-    for asset in live["assets"]:
+    print("Verifying immutable public download sizes and SHA-256 hashes", flush=True)
+    for asset in immutable["assets"]:
+        print(f"Verifying {asset['name']}", flush=True)
         verify_website_asset(asset)
     # Fail closed if promotion changed while the package verification ran.
     if request_json(f"{WEBSITE}/latest.json") != live:
@@ -197,6 +230,7 @@ def announce_release(*, repository, tag, token, webhook_url):
     PREPARE.expected_assets(tag)
     if repository != SOURCE_REPOSITORY:
         raise ValueError("Unexpected source repository")
+    print("Verifying source release and announcement receipt", flush=True)
     source = fetch_release(repository=repository, tag=tag, token=token)
     validate_release(source, repository, tag)
     if already_announced(source.get("body") or "", tag):
@@ -208,6 +242,7 @@ def announce_release(*, repository, tag, token, webhook_url):
     notes = NOTES.notes_for_tag(tag)
     if notes["source"] == "none":
         print("::warning::No CHANGELOG.md section or commits found for this tag; falling back to the release body.")
+    print("Posting verified release notes to Discord", flush=True)
     message = post_to_discord(webhook_url=webhook_url, content=format_message(
         tag=tag, body=source.get("body") or "", url=public["html_url"], notes=notes))
     try:
@@ -238,7 +273,12 @@ def main():
             else:
                 print(f"Posted {args.tag} to Discord as message {message_id}")
         return 0
-    except Exception:
+    except Exception as error:
+        # Type and numeric HTTP status are useful diagnostics without exception
+        # messages, URLs, headers, or response bodies that could expose secrets.
+        if isinstance(error, urllib.error.HTTPError):
+            print(f"::error::Verification HTTP status: {error.code}", file=sys.stderr)
+        print(f"::error::Failure category: {type(error).__name__}", file=sys.stderr)
         print("::error::Desktop announcement failed. Check release identity, public/live metadata, hashes, and configured credentials. Error details suppressed to protect secrets.", file=sys.stderr)
         return 1
 

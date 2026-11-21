@@ -1,0 +1,20 @@
+{
+ "id": "session_dove_1794679479514_30450dcf4dca0303",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Add a soft \"Monokai Pro Ristretto\" theme to the user's jcode",
+ "created_at": "2026-11-14T18:04:39.514070Z",
+ "updated_at": "2026-11-14T18:45:46.136836Z",
+ "model_usage_turn_id": "session_dove_1794679479514_30450dcf4dca0303:message_1794679479530_14889210043446400845",
+ "provider_key": "openai-oauth",
+ "model": "gpt-6.1-terra",
+ "route_api_method": "openai-oauth@openai-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking/.jcode/scratch/probe",
+ "short_name": "dove",
+ "status": "Closed",
+ "last_pid": 84375,
+ "last_active_at": "2026-11-14T18:04:39.514522Z",
+ "is_debug": true,
+ "saved": false
+}

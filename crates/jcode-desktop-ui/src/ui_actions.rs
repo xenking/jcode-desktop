@@ -42,6 +42,29 @@ pub(crate) struct PublishDesktop {
     pub source: gpui::EntityId,
 }
 
+/// Open a `/btw` answer as its own chat instead of the side card.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct PromoteSideQuestion {
+    pub source: gpui::EntityId,
+    pub session: jcode_sdk::SessionInfo,
+}
+
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenFleetSession {
+    pub target: jcode_desktop_openrig::fleet::HostTarget,
+    pub native_id: String,
+}
+
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct InspectFleetSeat {
+    pub host_id: String,
+    pub rig_id: String,
+    pub seat_id: String,
+}
+
 /// Pick another folder for the source panel, from its location pill.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]
@@ -86,6 +109,22 @@ gpui::actions!(
         ToggleOnboardingSimulator,
         OpenChangelog,
         OpenResume,
+        /// Full-height search across every stored session's titles and
+        /// messages. Also bound to the sidebar's magnifier button.
+        GlobalSearch,
+    ]
+);
+
+// Kept in this leaf so workspace views do not depend on native menu setup.
+gpui::actions!(
+    application_menu,
+    [
+        OpenSettings,
+        CheckForUpdates,
+        About,
+        Hide,
+        HideOthers,
+        ShowAll
     ]
 );
 

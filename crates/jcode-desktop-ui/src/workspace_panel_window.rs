@@ -149,13 +149,12 @@ impl PanelWindow {
                 let Some(source) = source else {
                     return;
                 };
-                if accounts && source.read(cx).can_refresh_account_runtime() {
-                    if let Some(workspace) = workspace {
+                if accounts && source.read(cx).can_refresh_account_runtime()
+                    && let Some(workspace) = workspace {
                         workspace.read(cx).bridge.send(Command::RefreshRuntime {
                             session_id: source.read(cx).session_id.clone(),
                         });
                     }
-                }
                 if choose_model {
                     window.dispatch_action(
                         Box::new(OpenModelPicker {
@@ -181,6 +180,10 @@ impl Render for PanelWindow {
         let _render_scope = crate::render_stats::scope("PanelWindow");
         Theme::sync_window_background(window, &mut self.window_background);
         let theme = Theme::global();
+        let width = window.viewport_size().width;
+        if self.panel.read(cx).openrig_width_changed(width) {
+            self.panel.update(cx, |panel, cx| panel.set_openrig_width(width, cx));
+        }
         div()
             .debug_selector(|| "panel-window-root".into())
             .size_full()
@@ -189,6 +192,22 @@ impl Render for PanelWindow {
             .text_color(theme.TEXT)
             .font_family(theme.FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
+            .on_action(cx.listener(
+                |this, action: &crate::ui_actions::OpenFleetSession, _, cx| {
+                    let origin = this.source_window;
+                    let action = action.clone();
+                    cx.defer(move |cx| {
+                        let _ = origin.update(cx, |root, window, cx| {
+                            if let Ok(workspace) = root.downcast::<Workspace>() {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.open_fleet_session(&action, window, cx);
+                                });
+                                window.activate_window();
+                            }
+                        });
+                    });
+                },
+            ))
             .on_action(cx.listener(
                 |this, action: &change_review::CloseChangeReview, window, cx| {
                     if action.panel == this.panel.entity_id() {

@@ -1,0 +1,20 @@
+{
+ "id": "session_hamster_1794718698462_fa6bdd5a9eec4f73",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Use model claude-opus-5-5. Live acceptance FAILED for commit",
+ "created_at": "2026-11-15T04:58:18.462628Z",
+ "updated_at": "2026-11-15T05:12:40.865942Z",
+ "model_usage_turn_id": "session_hamster_1794718698462_fa6bdd5a9eec4f73:message_1794718698522_7032871844803138342",
+ "provider_key": "claude-oauth",
+ "model": "claude-opus-5-5",
+ "route_api_method": "claude-oauth@claude-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking",
+ "short_name": "hamster",
+ "status": "Closed",
+ "last_pid": 84375,
+ "last_active_at": "2026-11-15T04:58:18.472444Z",
+ "is_debug": true,
+ "saved": false
+}

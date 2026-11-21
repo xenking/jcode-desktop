@@ -2,7 +2,177 @@
 //! pane mode replaces large inline previews with compact navigation links.
 use super::*;
 
+#[derive(Clone, serde::Deserialize)]
+struct GalleryImage {
+    image_id: String,
+    message_index: usize,
+    timestamp: Option<String>,
+    media_type: String,
+}
+
+#[derive(Default)]
+pub(super) struct Gallery {
+    metadata: Option<Result<Vec<GalleryImage>, String>>,
+    loading: bool,
+}
+
+impl Gallery {
+    pub(super) fn receive(&mut self, result: Result<String, String>) {
+        self.loading = false;
+        self.metadata = Some(result.and_then(|json| {
+            serde_json::from_str(&json).map_err(|error| error.to_string())
+        }));
+    }
+
+    pub(super) fn loaded_image(&self, image_id: &str, data: &str) -> Option<TranscriptImage> {
+        let image = self.metadata.as_ref()?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|image| image.image_id == image_id)?;
+        Some(TranscriptImage::new(
+            image.media_type.clone(),
+            data.to_owned(),
+            Some(format!("[#{image_id}]")),
+        ))
+    }
+}
+
 impl Panel {
+    pub(super) fn reconcile_history_images(
+        &mut self,
+        messages: &[jcode_sdk::HistoryMessage],
+        images: Vec<jcode_sdk::RenderedImage>,
+    ) {
+        let prompts: Vec<_> = messages.iter().filter(|message| message.role == "user").collect();
+        let mut next_slot = HashMap::<usize, usize>::new();
+        for image in images {
+            if !matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
+                self.insert_rendered_image(image);
+                continue;
+            }
+            let Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor else {
+                continue;
+            };
+            let Some(prompt) = prompts.get(ordinal) else {
+                continue;
+            };
+            // The ordinal belongs to the returned window, not the live panel.
+            // Timestamps distinguish repeated prompts; otherwise merge only an
+            // unambiguous text match (normally including stable image IDs).
+            let mut matches = self.items.iter().enumerate().filter_map(|(index, item)| {
+                let Item::User(text) = item else { return None };
+                (text == &prompt.content && prompt::is_pinnable_prompt(item)).then_some(index)
+            });
+            let Some(first) = matches.next() else { continue };
+            let owner = if let Some(second) = matches.next() {
+                let mut timed = [first, second].into_iter().chain(matches).filter(|index| {
+                    self.user_times.get(index).copied().is_some_and(|at| Some(at) == prompt.timestamp_ms)
+                });
+                let Some(owner) = timed.next() else { continue };
+                if timed.next().is_some() {
+                    continue;
+                }
+                owner
+            } else {
+                first
+            };
+            let range = self.user_attachment_range(owner);
+            let offset = next_slot.entry(ordinal).or_default();
+            let index = range.start + *offset;
+            *offset += 1;
+            if index < range.end {
+                let Item::Image(existing) = &mut self.items[index] else { unreachable!() };
+                let existing_lazy = existing.data.starts_with("jcode-lazy:");
+                let incoming_lazy = image.data.starts_with("jcode-lazy:");
+                if existing.data != image.data && !(incoming_lazy && !existing_lazy && existing.preview.is_some()) {
+                    *existing = TranscriptImage::from_rendered(image);
+                }
+            } else {
+                self.insert_transcript_image(range.end, TranscriptImage::from_rendered(image));
+            }
+        }
+    }
+
+    pub(super) fn user_attachment_range(&self, user_index: usize) -> std::ops::Range<usize> {
+        let start = user_index + 1;
+        let count = self.items[start..].iter().take_while(|item| {
+            matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
+        }).count();
+        start..start + count
+    }
+
+    /// Match the submitted markers and user images in their original order.
+    /// Images with no marker retain the fallback chip for older histories.
+    pub(super) fn user_image_markers(&self, user_index: usize) -> Vec<(usize, String)> {
+        let Some(Item::User(text)) = self.items.get(user_index) else {
+            return Vec::new();
+        };
+        let labels = crate::input::image_marker_ranges(text)
+            .into_iter()
+            .map(|range| text[range].to_string());
+        labels
+            .zip(self.user_attachment_range(user_index))
+            .map(|(label, index)| (index, label))
+            .collect()
+    }
+
+    pub(super) fn render_user_image_chip(
+        &self,
+        index: usize,
+        image: &TranscriptImage,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let start = self.items[..index]
+            .iter()
+            .rposition(|item| matches!(item, Item::User(_)))
+            .unwrap_or(0);
+        let number = self.items[start..index].iter().filter(|item| {
+            matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
+        }).count() + 1;
+        let label = crate::image_chip::numbered_label(number);
+        if image.preview.is_none() {
+            self.request_history_thumbnail(image, false);
+        }
+        let preview = image.clone();
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(("transcript-user-image-chip", index))
+                    .debug_selector(|| "transcript-user-image-chip".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .rounded_full()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(11.))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .bg(Theme::global().USER_BG)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(Theme::global().TEXT))
+                    .children(image.preview.clone().map(|image| {
+                        img(crate::image_cache::source(image))
+                            .debug_selector(|| "transcript-fallback-thumbnail".into())
+                            .size(px(14.))
+                            .rounded_sm()
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
+                    .child(label)
+                    .when(image.preview.is_none(), |chip| {
+                        chip.child(div().debug_selector(|| "image-chip-placeholder".into())
+                            .child("No preview"))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_image_preview(preview.clone(), window, cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn session_image_indices(&self) -> Vec<usize> {
         self.items
             .iter()
@@ -23,19 +193,34 @@ impl Panel {
 
     pub(super) fn set_image_pane_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.image_pane_open = open;
+        if open {
+            self.request_session_image_gallery();
+        }
         self.cancel_transcript_momentum();
         self.transcript_measurements.dirty = true;
         cx.notify();
     }
 
-    /// Icon-only toggle: the footer never shows an image count, and the
-    /// toggle only appears once the transcript has images to browse.
+    pub(super) fn request_session_image_gallery(&mut self) {
+        if self.session_image_gallery.loading || self.is_pending_session() {
+            return;
+        }
+        self.session_image_gallery.loading = true;
+        self.bridge.send(Command::ListSessionImages {
+            session_id: self.session_id.clone(),
+        });
+    }
+
     pub(super) fn render_image_pane_toggle(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let has_images = self.items.iter().any(|item| matches!(item, Item::Image(_)));
-        if !has_images && !self.image_pane_open {
+        if !self.draft_has_images
+            && self.selected_session_image_index().is_none()
+            && !self.session_image_gallery.metadata.as_ref().is_some_and(|result| {
+                result.as_ref().is_ok_and(|images| !images.is_empty())
+            })
+        {
             return None;
         }
         let theme = Theme::global();
@@ -47,6 +232,11 @@ impl Panel {
         div()
             .id("panel-images")
             .debug_selector(|| "panel-images".into())
+            .relative()
+            .children(crate::fixture_control_targets::marker(
+                || "composer:images".into(),
+                || Some(self.session_id.clone()),
+            ))
             .flex_none()
             .size(px(22.))
             .flex()
@@ -114,6 +304,10 @@ impl Panel {
         let theme = Theme::global();
         let indices = self.session_image_indices();
         let selected = self.selected_session_image_index();
+        let gallery = self.session_image_gallery.metadata.clone();
+        let gallery_has_images = gallery
+            .as_ref()
+            .is_some_and(|result| result.as_ref().is_ok_and(|images| !images.is_empty()));
         let image = selected.and_then(|index| match &self.items[index] {
             Item::Image(image) => Some(image),
             _ => None,
@@ -150,7 +344,13 @@ impl Panel {
                             .truncate()
                             .text_size(px(13.))
                             .text_color(theme.TEXT)
-                            .child(format!("Session images · {}", indices.len())),
+                            .child(format!(
+                                "Session images · {}",
+                                gallery
+                                    .as_ref()
+                                    .and_then(|result| result.as_ref().ok())
+                                    .map_or(indices.len(), Vec::len)
+                            )),
                     )
                     .child(
                         div()
@@ -171,6 +371,57 @@ impl Panel {
                             })),
                     ),
             )
+            .when_some(gallery, |el, gallery| match gallery {
+                Ok(images) => el.child(
+                    div()
+                        .id("session-gallery-list")
+                        .debug_selector(|| "session-gallery-list".into())
+                        .flex_none()
+                        .max_h(px(140.))
+                        .w_full()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(images.into_iter().enumerate().map(|(index, image)| {
+                            let id = image.image_id.clone();
+                            let media_type = image.media_type.clone();
+                            let label = format!(
+                                "{} · message {} · {}",
+                                id,
+                                image.message_index + 1,
+                                image.timestamp.as_deref().unwrap_or("time unavailable")
+                            );
+                            div()
+                                .id(("session-gallery-image", index))
+                                .debug_selector(move || format!("session-gallery-image-{index}"))
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .truncate()
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT_DIM)
+                                .cursor_pointer()
+                                .hover(|el| el.bg(theme.QUOTE_BG))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let image = TranscriptImage::new(
+                                        media_type.clone(),
+                                        format!("jcode-lazy:{id}"),
+                                        Some(format!("[#{id}]")),
+                                    );
+                                    this.open_image_preview(image, window, cx);
+                                    cx.stop_propagation();
+                                }))
+                        })),
+                ),
+                Err(error) => el.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(format!("Could not load session images: {error}")),
+                ),
+            })
             .when_some(image, |el, image| {
                 let preview_image = image.clone();
                 el.child(
@@ -198,12 +449,32 @@ impl Panel {
                                 }))
                         })
                         .when(image.preview.is_none(), |el| {
+                            let lazy = image.data.starts_with("jcode-lazy:");
+                            let lazy_image = image.clone();
                             el.flex().items_center().justify_center().child(
                                 div()
+                                    .id("session-image-placeholder")
+                                    .debug_selector(|| "session-image-placeholder".into())
                                     .p_3()
                                     .text_size(px(12.))
                                     .text_color(theme.TEXT_DIM)
-                                    .child(format!("Could not display {}", image.media_type)),
+                                    .when(lazy, |el| {
+                                        el.cursor_pointer().on_click(cx.listener(
+                                            move |this, _, window, cx| {
+                                                this.open_image_preview(
+                                                    lazy_image.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            },
+                                        ))
+                                    })
+                                    .child(if lazy {
+                                        "Click to load image".to_string()
+                                    } else {
+                                        format!("Could not display {}", image.media_type)
+                                    }),
                             )
                         }),
                 )
@@ -262,8 +533,16 @@ impl Panel {
                         .gap_2()
                         .text_size(px(12.))
                         .text_color(theme.TEXT_DIM)
-                        .child("No images in this session yet")
-                        .child("Images read by the model and your attachments will appear here."),
+                        .child(if gallery_has_images {
+                            "Choose an image above"
+                        } else {
+                            "No images in the loaded transcript"
+                        })
+                        .child(if gallery_has_images {
+                            "Images from older messages can be opened by ID."
+                        } else {
+                            "Session images appear here when available."
+                        }),
                 )
             })
             .when(!indices.is_empty(), |el| {

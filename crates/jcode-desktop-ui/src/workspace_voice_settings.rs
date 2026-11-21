@@ -16,10 +16,15 @@ pub(super) struct VoiceSettings {
     text_input: Option<(&'static str, Entity<PromptInput>)>,
 }
 
-pub(super) const BACKENDS: [(DictationBackend, &str, &str); 5] = [
+pub(super) const BACKENDS: [(DictationBackend, &str, &str); 6] = [
     (DictationBackend::Auto, "auto", "Auto"),
     (DictationBackend::Nari, "nari", "Nari"),
     (DictationBackend::Soniox, "soniox", "Soniox"),
+    (
+        DictationBackend::ElevenLabs,
+        "elevenlabs",
+        "ElevenLabs Scribe",
+    ),
     (
         DictationBackend::Subscription,
         "subscription",
@@ -35,10 +40,44 @@ pub(super) fn backend_slug(backend: DictationBackend) -> &'static str {
         .map_or("auto", |(_, slug, _)| slug)
 }
 
+/// `[dictation] mode` choices, in the order the Settings row shows them. The
+/// default comes first: voice is an input method, so the words land in the
+/// composer for editing unless the user asks for an immediate send.
+pub(super) const MODES: [(jcode_base::protocol::TranscriptMode, &str, &str); 4] = [
+    (
+        jcode_base::protocol::TranscriptMode::Insert,
+        "insert",
+        "Insert at cursor",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Append,
+        "append",
+        "Append to draft",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Replace,
+        "replace",
+        "Replace draft",
+    ),
+    (
+        jcode_base::protocol::TranscriptMode::Send,
+        "send",
+        "Send immediately",
+    ),
+];
+
+pub(super) fn mode_slug(mode: jcode_base::protocol::TranscriptMode) -> &'static str {
+    MODES
+        .iter()
+        .find(|(m, ..)| *m == mode)
+        .map_or("insert", |(_, slug, _)| slug)
+}
+
 fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
     match backend {
         DictationBackend::Nari => Some(StreamingBackend::Nari),
         DictationBackend::Soniox => Some(StreamingBackend::Soniox),
+        DictationBackend::ElevenLabs => Some(StreamingBackend::ElevenLabs),
         _ => None,
     }
 }
@@ -46,21 +85,18 @@ fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
 /// Install the SuperWhisper bridge next to the jcode config and return the
 /// command line to store in `[dictation] command`.
 fn install_superwhisper_bridge() -> std::io::Result<String> {
-    let dir = jcode_desktop_model::platform_dirs::jcode_home()
-        .ok_or_else(|| std::io::Error::other("no jcode home"))?
-        .join("bin");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("superwhisper-dictate.sh");
+    let path = crate::panel::voice::superwhisper_bridge_path()
+        .ok_or_else(|| std::io::Error::other("no jcode home"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(&path, SUPERWHISPER_SCRIPT)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     }
-    Ok(format!(
-        "'{}'",
-        path.display().to_string().replace('\'', "'\\''")
-    ))
+    Ok(crate::panel::voice::bridge_command(&path))
 }
 
 fn superwhisper_installed() -> bool {
@@ -105,6 +141,17 @@ impl Workspace {
         if self.save_dictation("backend", backend_slug(backend), cx) {
             self.voice_settings = VoiceSettings::default();
             self.status = format!("Voice backend: {}", backend_slug(backend));
+        }
+        cx.notify();
+    }
+
+    fn select_voice_mode(
+        &mut self,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.save_dictation("mode", mode_slug(mode), cx) {
+            self.status = format!("Voice mode: {}", mode_slug(mode));
         }
         cx.notify();
     }
@@ -173,8 +220,7 @@ impl Workspace {
                 {
                     self.voice_settings = VoiceSettings::default();
                     self.status =
-                        "Voice uses SuperWhisper. Stop recording with SuperWhisper's shortcut."
-                            .into();
+                        "Voice uses SuperWhisper. Use Stop voice to finish recording.".into();
                 }
             }
             Err(error) => self.status = format!("Could not install SuperWhisper bridge: {error}"),
@@ -192,6 +238,7 @@ impl Workspace {
                 "auto" => "settings-voice-auto",
                 "nari" => "settings-voice-nari",
                 "soniox" => "settings-voice-soniox",
+                "elevenlabs" => "settings-voice-elevenlabs",
                 "subscription" => "settings-voice-subscription",
                 _ => "settings-voice-command",
             };
@@ -206,6 +253,13 @@ impl Workspace {
         }
         let detail: String = match selected {
             DictationBackend::Auto => "Uses a Nari key if present, else a Soniox key.".into(),
+            DictationBackend::ElevenLabs => {
+                if StreamingBackend::ElevenLabs.api_key().is_some() {
+                    "Uses your own ElevenLabs key. SuperWhisper is not needed.".into()
+                } else {
+                    "Set an ElevenLabs API key. A SuperWhisper Pro license does not grant API access.".into()
+                }
+            }
             DictationBackend::Nari | DictationBackend::Soniox => {
                 let b = streaming(selected).expect("streaming");
                 let (var, file) = b.key_location();
@@ -231,17 +285,34 @@ impl Workspace {
             }
         };
         let mut actions = div().flex().flex_wrap().gap_1();
+        let mut modes = div().flex().flex_wrap().gap_1();
+        for (mode, slug, label) in MODES {
+            let id: &'static str = match slug {
+                "insert" => "settings-voice-mode-insert",
+                "append" => "settings-voice-mode-append",
+                "replace" => "settings-voice-mode-replace",
+                _ => "settings-voice-mode-send",
+            };
+            modes = modes.child(
+                pill(id, mode == dictation.mode)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.select_voice_mode(mode, cx)),
+                    )
+                    .child(label),
+            );
+        }
         if let Some(b) = streaming(selected) {
-            actions = actions
-                .child(
-                    pill("settings-voice-key", false)
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx)),
-                        )
-                        .child("Set API key"),
-                )
-                .child(
+            actions = actions.child(
+                pill("settings-voice-key", false)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx)),
+                    )
+                    .child("Set API key"),
+            );
+            if b != StreamingBackend::ElevenLabs {
+                actions = actions.child(
                     pill("settings-voice-base-url", false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -255,6 +326,7 @@ impl Workspace {
                             format!("Endpoint: {}", dictation.base_url.trim())
                         }),
                 );
+            }
         }
         if selected == DictationBackend::Command {
             actions = actions.child(
@@ -326,6 +398,17 @@ impl Workspace {
             .child(actions)
             .children(key_editor)
             .children(text_editor)
+            .child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child("After speaking · where the words go"),
+            )
+            .child(modes)
+            .child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child("Insert at cursor leaves the words in the composer for you to edit; only Send immediately submits them."),
+            )
             .into_any_element()
     }
 }
@@ -342,6 +425,21 @@ mod tests {
             assert_eq!(parsed.dictation.backend, backend);
             assert_eq!(backend_slug(backend), slug);
         }
+    }
+
+    #[test]
+    fn mode_slugs_match_the_shared_config_names() {
+        for (mode, slug, _) in MODES {
+            let parsed: jcode_base::config::Config =
+                toml::from_str(&format!("[dictation]\nmode = \"{slug}\"\n")).unwrap();
+            assert_eq!(parsed.dictation.mode, mode);
+            assert_eq!(mode_slug(mode), slug);
+        }
+        // The row leads with the mode a fresh install uses.
+        assert_eq!(
+            MODES[0].0,
+            jcode_base::config::Config::default().dictation.mode
+        );
     }
 
     #[test]

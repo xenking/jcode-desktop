@@ -7,6 +7,7 @@
 //! `[keybindings] effort_increase / effort_decrease`, so one setting drives
 //! both clients.
 
+use crate::theme::Theme;
 use gpui::{App, KeyBinding, Keystroke};
 
 gpui::actions!(effort, [IncreaseEffort, DecreaseEffort]);
@@ -78,6 +79,58 @@ pub(crate) fn label(effort: &str) -> &str {
     }
 }
 
+/// Hover copy for the drawn level mark: the level name the shape replaces.
+/// Swarm is not a rung, so its hover says what it actually does.
+pub(crate) fn tooltip(effort: &str) -> String {
+    if effort.trim().eq_ignore_ascii_case("swarm") {
+        return format!("Reasoning effort: Swarm\n{SWARM_HELP}");
+    }
+    format!("Reasoning effort: {}", spoken(effort))
+}
+
+/// What the swarm rung means, unlike `/swarm`, which only toggles the tools.
+pub(crate) const SWARM_HELP: &str =
+    "Root thinks at low effort and every prompt asks it to fan work out to parallel workers";
+
+/// The level name, for the places that must stay legible without a hover:
+/// picker rows (beside the drawn mark), transcript notices. No text glyph:
+/// the level's shape is drawn by `effort_icon`, never typed.
+pub(crate) fn spoken(effort: &str) -> String {
+    label(effort.trim()).to_string()
+}
+
+/// Ink for a level glyph.
+///
+/// The ladder is a heat scale, not a fade to the brand accent: the quiet rungs
+/// stay cool and dim, medium is the chrome's neutral ink, high warms to amber,
+/// and the top rungs are hot. A glance then says how hard the model is priced
+/// to think without reading the glyph's name. The TUI's status line uses the
+/// same scale (`jcode_tui_style::effort_ramp`).
+///
+/// The warm end is fixed rather than theme-keyed: every palette needs the same
+/// warm/hot signal, and a monochrome palette would otherwise erase the top.
+pub(crate) fn tint(effort: &str, theme: &Theme) -> gpui::Rgba {
+    use gpui::Rgba;
+    let rgb = |hex: u32| Rgba {
+        r: ((hex >> 16) & 0xff) as f32 / 255.,
+        g: ((hex >> 8) & 0xff) as f32 / 255.,
+        b: (hex & 0xff) as f32 / 255.,
+        a: 1.,
+    };
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "minimal" => theme.TEXT_FAINT,
+        // Cool: paid the least thinking, reads as the quiet end of the scale.
+        "low" => rgb(0x6f9ed6),
+        "medium" => theme.TEXT_DIM,
+        // Warm, then hot.
+        "high" => rgb(0xe0a458),
+        "xhigh" => rgb(0xe8734a),
+        "max" => rgb(0xe0453f),
+        // Swarm modes are orchestration sentinels, not rungs.
+        _ => theme.TEXT_FAINT,
+    }
+}
+
 /// The configured effort chords in GPUI syntax, `(increase, decrease)`.
 pub(crate) struct EffortKeys {
     pub increase: Vec<String>,
@@ -98,6 +151,7 @@ impl EffortKeys {
     }
 
     /// Display label such as `Alt+Left / Alt+Right`, or `None` when unbound.
+    #[allow(dead_code)]
     pub(crate) fn label(&self) -> Option<String> {
         let decrease = self.decrease.first()?;
         let increase = self.increase.first()?;
@@ -272,6 +326,62 @@ pub(crate) fn bound_keys_label(cx: &App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spoken copy is the level name only: the shape is drawn, so no text
+    /// circle leaks into notices, hovers or picker rows.
+    #[test]
+    fn spoken_copy_carries_no_text_glyph() {
+        assert_eq!(tooltip("xhigh"), "Reasoning effort: xHigh");
+        assert_eq!(
+            tooltip("swarm"),
+            format!("Reasoning effort: Swarm\n{SWARM_HELP}")
+        );
+        for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let text = spoken(level);
+            assert!(
+                text.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                "{level} spoke {text:?}"
+            );
+        }
+    }
+
+    /// The ladder is a heat scale: cool low rungs, a neutral middle, warm high
+    /// rungs and a hot top. Neighbouring levels never share an ink, so the
+    /// glyph's color alone tells low from high.
+    #[test]
+    fn glyph_tint_is_a_heat_scale() {
+        let theme = Theme::global();
+        let levels = ["none", "low", "medium", "high", "xhigh", "max"];
+        let inks = levels.map(|level| tint(level, theme));
+        for (index, pair) in inks.windows(2).enumerate() {
+            assert_ne!(
+                pair[0],
+                pair[1],
+                "{} and {} share an ink",
+                levels[index],
+                levels[index + 1]
+            );
+        }
+        assert_eq!(
+            tint("none", theme),
+            theme.TEXT_FAINT,
+            "the weakest rung is chrome ink"
+        );
+        let low = inks[1];
+        let high = inks[3];
+        assert!(low.b > low.r, "low is cool (more blue than red): {low:?}");
+        assert!(
+            high.r > high.b,
+            "high is warm (more red than blue): {high:?}"
+        );
+        let max = inks[5];
+        assert!(max.r > max.g && max.r > max.b, "max is hot: {max:?}");
+        assert_eq!(
+            tint("swarm", theme),
+            theme.TEXT_FAINT,
+            "modes are not rungs"
+        );
+    }
 
     #[test]
     fn ladder_follows_the_serving_model() {

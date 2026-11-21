@@ -125,6 +125,7 @@ def main():
     log_path = root / "logs/jcode-desktop/jcode-desktop.log"
     recovery = log_path.parent / ("crash-recovery-no-sidebar.json" if args.no_sidebar
                                   else "crash-recovery.json")
+    missed_recovery = recovery.with_suffix(".missed.json")
     processes, logs, evidence = [], [], []
     app = None
 
@@ -218,7 +219,8 @@ def main():
         key(args.quit_key)
         assert app.wait(timeout=15) == 0, "native Quit must exit successfully"
         app = None
-        wait("normal quit removes recovery checkpoint", lambda: not recovery.exists(), 5)
+        wait("normal quit saves final recovery checkpoint",
+             lambda: (c := read_json(recovery)) is not None and c["clean"], 5)
 
     read_fd, write_fd = os.pipe()
     try:
@@ -280,18 +282,16 @@ def main():
         start("expired", 1, 1)
         checkpoint("expired checkpoint replaced by fresh workspace", lambda c:
                    len(c["snapshot"]["slots"]) == 1 and draft(c, "screenshot-fixture") == "")
+        assert read_json(missed_recovery) == expired, "expired checkpoint lost its tabs or draft"
+        assert missed_recovery.stat().st_mode & 0o777 == 0o600, "archive must be private"
         capture("expired-is-fresh")
         quit_normally()
 
-        # Quit from three panels, not one, so a stale checkpoint cannot make the
-        # one-panel fresh-start assertion pass accidentally.
-        start("before-normal-quit", 3, 3)
-        checkpoint("three panels before normal quit", lambda c: len(c["snapshot"]["slots"]) == 3)
-        quit_normally()
-        start("after-normal-quit", 1, 1)
-        checkpoint("normal quit starts fresh", lambda c:
+        start("after-normal-quit", 3, 1)
+        checkpoint("normal quit restores the last workspace", lambda c:
                    len(c["snapshot"]["slots"]) == 1 and draft(c, "screenshot-fixture") == "")
-        capture("normal-quit-is-fresh")
+        assert read_json(missed_recovery) == expired, "normal quit replaced the archive"
+        capture("normal-quit-restores-tabs")
         quit_normally()
         (root / "results.json").write_text(json.dumps({
             "result": "passed", "runtime": "offline fixture, private Xvfb/Openbox",

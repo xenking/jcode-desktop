@@ -38,6 +38,8 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
     let messages = messages
         .into_iter()
         .map(|message| jcode_sdk::HistoryMessage {
+            attachments: message.attachments,
+            timestamp_ms: message.timestamp_ms,
             response_stats: message
                 .response_stats
                 .and_then(|stats| serde_json::to_value(stats).ok())
@@ -47,6 +49,7 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
                 .flatten()
                 .filter(|call| !call.id.is_empty())
                 .map(|call| jcode_sdk::HistoryTool {
+                    duration_ms: message.tool_duration_ms,
                     id: call.id,
                     name: call.name,
                     input: call.input,

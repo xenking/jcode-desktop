@@ -70,11 +70,10 @@ impl Workspace {
             .position(|s| !s.closing && Some(s.panel.entity_id()) == original)
         {
             self.set_active(index, cx);
-        } else if self.slots.get(self.active).is_none_or(|s| s.closing) {
-            if let Some(index) = self.slots.iter().position(|s| !s.closing) {
+        } else if self.slots.get(self.active).is_none_or(|s| s.closing)
+            && let Some(index) = self.slots.iter().position(|s| !s.closing) {
                 self.set_active(index, cx);
             }
-        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -196,6 +195,7 @@ mod interaction_tests {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
             w

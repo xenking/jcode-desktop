@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf, sync::OnceLock, time::Durati
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct DesktopConfig {
     pub appearance: AppearanceConfig,
     pub workspace: WorkspaceConfig,
@@ -13,6 +14,24 @@ pub struct DesktopConfig {
     pub voice: VoiceConfig,
     pub display: DisplayConfig,
     pub completions: CompletionsConfig,
+    pub models: ModelsConfig,
+}
+
+/// Model picker preferences.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelsConfig {
+    /// Route specs (`openai-oauth:gpt-5.6-sol`) hidden from the Desktop model
+    /// picker. The "Manage models" view lists them again so they can be shown.
+    pub hidden: Vec<String>,
+    pub draft_defaults: DraftModelDefaults,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DraftModelDefaults {
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// Inline composer autocomplete (ghost text, Tab accepts).
@@ -26,11 +45,19 @@ pub struct CompletionsConfig {
     pub model: Option<String>,
 }
 
+#[cfg(test)]
+mod completion_rate_tests {
+    #[test]
+    fn default_debounce_is_at_least_400ms() {
+        assert!(super::CompletionsConfig::default().debounce_ms >= 400);
+    }
+}
+
 impl Default for CompletionsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            debounce_ms: 250,
+            debounce_ms: 400,
             model: None,
         }
     }
@@ -88,7 +115,7 @@ pub enum LayoutMode {
 pub struct WorkspaceConfig {
     /// The optional Jcode account welcome screen was completed or skipped.
     pub account_sign_in_handled: bool,
-    /// Selected once from session history, then fixed for Super+Enter / Super+;.
+    /// Default directory for new local Desktop sessions.
     pub pinned_working_dir: Option<String>,
     /// Default SSH target. Missing or empty means local sessions.
     pub default_remote_host: Option<String>,
@@ -109,20 +136,6 @@ pub struct WorkspaceConfig {
 #[serde(default)]
 pub struct TerminalConfig {
     pub scrollback_lines: usize,
-}
-
-impl Default for DesktopConfig {
-    fn default() -> Self {
-        Self {
-            appearance: AppearanceConfig::default(),
-            workspace: WorkspaceConfig::default(),
-            terminal: TerminalConfig::default(),
-            sounds: SoundsConfig::default(),
-            voice: VoiceConfig::default(),
-            display: DisplayConfig::default(),
-            completions: CompletionsConfig::default(),
-        }
-    }
 }
 
 impl Default for AppearanceConfig {
@@ -182,9 +195,12 @@ impl DesktopConfig {
             .workspace
             .default_remote_host
             .as_deref()
-            .and_then(|host| jcode_desktop_harness::remote_targets::validate_host(host).ok());
+            .and_then(|host| {
+                jcode_desktop_harness::remote_targets::validate_destination(host).ok()
+            });
         self.workspace.remote_hosts = normalized_remote_hosts(&self.workspace.remote_hosts);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
+        self.models.hidden = normalized_hidden_models(&self.models.hidden);
         self
     }
 
@@ -476,6 +492,112 @@ fn persist_pinned_working_dir_at(
     )
 }
 
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn persist_draft_model_defaults(defaults: &DraftModelDefaults) -> std::io::Result<()> {
+    persist_draft_model_defaults_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        defaults,
+    )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn persist_draft_model_defaults(_defaults: &DraftModelDefaults) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(any(test, not(feature = "test-support")))]
+fn persist_draft_model_defaults_at(
+    path: &std::path::Path,
+    standalone: bool,
+    defaults: &DraftModelDefaults,
+) -> std::io::Result<()> {
+    let value = toml::Value::try_from(defaults).expect("draft defaults serialize");
+    persist_value_at(
+        path,
+        standalone,
+        "models",
+        "draft_defaults",
+        &value.to_string(),
+    )
+}
+
+/// Sorted, deduplicated, non-empty hidden route specs.
+pub fn normalized_hidden_models(models: &[String]) -> Vec<String> {
+    let mut result: Vec<String> = models
+        .iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
+    result.sort();
+    result.dedup();
+    result
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+static HIDDEN_MODELS: OnceLock<std::sync::RwLock<Vec<String>>> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    // Tests never touch the developer's config, and each test thread gets its own list.
+    static HIDDEN_MODELS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Live hidden-model list. Every composer reads this, so a change in one
+/// panel reaches the others on their next rebuild.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn hidden_models() -> Vec<String> {
+    HIDDEN_MODELS
+        .get_or_init(|| std::sync::RwLock::new(get().models.hidden.clone()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn hidden_models() -> Vec<String> {
+    HIDDEN_MODELS.with(|hidden| hidden.borrow().clone())
+}
+
+/// Persist `[desktop.models] hidden` and update the live list. Runtime state
+/// changes only after the write succeeds.
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn set_hidden_models(models: &[String]) -> std::io::Result<()> {
+    let models = normalized_hidden_models(models);
+    let state = HIDDEN_MODELS.get_or_init(|| std::sync::RwLock::new(get().models.hidden.clone()));
+    let mut state = state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    persist_hidden_models_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        &models,
+    )?;
+    *state = models;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_hidden_models(models: &[String]) -> std::io::Result<()> {
+    let models = normalized_hidden_models(models);
+    HIDDEN_MODELS.with(|hidden| *hidden.borrow_mut() = models);
+    Ok(())
+}
+
+fn persist_hidden_models_at(
+    path: &std::path::Path,
+    standalone: bool,
+    models: &[String],
+) -> std::io::Result<()> {
+    let value = toml::Value::Array(
+        normalized_hidden_models(models)
+            .into_iter()
+            .map(toml::Value::String)
+            .collect(),
+    );
+    persist_value_at(path, standalone, "models", "hidden", &value.to_string())
+}
+
 /// Save the default SSH target, or an empty string to explicitly select local.
 #[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
@@ -509,7 +631,7 @@ pub fn persist_remote_hosts(_hosts: &[String]) -> std::io::Result<()> {
 
 fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
     match host.filter(|host| !host.trim().is_empty()) {
-        Some(host) => jcode_desktop_harness::remote_targets::validate_host(host)
+        Some(host) => jcode_desktop_harness::remote_targets::validate_destination(host)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
         None => Ok(String::new()),
     }
@@ -518,10 +640,10 @@ fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
 fn normalized_remote_hosts(hosts: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     for host in hosts {
-        if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host) {
-            if !result.contains(&host) {
-                result.push(host);
-            }
+        if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host)
+            && !result.contains(&host)
+        {
+            result.push(host);
         }
     }
     result
@@ -605,7 +727,7 @@ fn persist_dictation_value_at(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    if !matches!(key, "backend" | "base_url" | "command") {
+    if !matches!(key, "backend" | "base_url" | "command" | "mode") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unsupported dictation key {key}"),
@@ -622,6 +744,20 @@ fn persist_value_with_header(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(path.with_extension("toml.lock"))?;
+    lock.lock()?;
     let mut text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -689,12 +825,15 @@ fn persist_value_with_header(
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
         }
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
     }
-    let temporary = path.with_extension("toml.tmp");
-    fs::write(&temporary, text)?;
-    fs::rename(temporary, path)
+    std::io::Write::write_all(&mut temporary, text.as_bytes())?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -1074,6 +1213,15 @@ mod tests {
                 Some("user@desktop")
             );
             assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
+            persist_default_remote_host_at(&path, standalone, Some("cloud:ai-core")).unwrap();
+            let config = parse(&fs::read_to_string(&path).unwrap(), standalone)
+                .unwrap()
+                .normalize();
+            assert_eq!(
+                config.workspace.default_remote_host.as_deref(),
+                Some("cloud:ai-core")
+            );
+            assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
             for local in [None, Some(""), Some("   ")] {
                 persist_default_remote_host_at(&path, standalone, local).unwrap();
                 let text = fs::read_to_string(&path).unwrap();
@@ -1147,6 +1295,29 @@ mod tests {
                 Some(directory)
             );
             assert_eq!(config.appearance.theme, "neutral-light");
+        }
+    }
+
+    #[test]
+    fn draft_model_defaults_survive_reload_in_shared_and_standalone_configs() {
+        for standalone in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.toml");
+            let section = if standalone { "models" } else { "desktop.models" };
+            fs::write(&path, format!("[{section}]\nhidden = [\"example\"] # keep\n")).unwrap();
+            let mut defaults = DraftModelDefaults {
+                model: Some("claude-oauth:claude-fable-5-2".into()),
+                effort: Some("low".into()),
+            };
+            for effort in [Some("low".into()), None] {
+                defaults.effort = effort;
+                persist_draft_model_defaults_at(&path, standalone, &defaults).unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                let config = parse(&text, standalone).unwrap();
+                assert_eq!(config.models.draft_defaults, defaults);
+                assert_eq!(config.models.hidden, ["example"]);
+                assert!(text.contains("# keep"));
+            }
         }
     }
 
@@ -1255,6 +1426,98 @@ mod tests {
         assert_eq!(parse(&text, false).unwrap().appearance.theme, "warm-studio");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn persisting_preferences_preserves_private_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "model = 'keep'\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        persist_theme_at(&path, false, "neutral-light").unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            parse(&fs::read_to_string(&path).unwrap(), false)
+                .unwrap()
+                .appearance
+                .theme,
+            "neutral-light"
+        );
+    }
+
+    #[test]
+    fn concurrent_preference_edits_keep_every_successful_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            format!("model = 'keep'\n# {}\n", "padding".repeat(16384)),
+        )
+        .unwrap();
+        let start = std::sync::Barrier::new(16);
+        std::thread::scope(|threads| {
+            let writers: Vec<_> = (0..16)
+                .map(|index| {
+                    let path = &path;
+                    let start = &start;
+                    threads.spawn(move || {
+                        start.wait();
+                        persist_value_at(
+                            path,
+                            false,
+                            "workspace",
+                            &format!("worker_{index}"),
+                            "true",
+                        )
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap().unwrap();
+            }
+        });
+
+        let text = fs::read_to_string(&path).unwrap();
+        let values: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(values["model"].as_str(), Some("keep"));
+        for index in 0..16 {
+            assert_eq!(
+                values["desktop"]["workspace"].get(format!("worker_{index}")),
+                Some(&toml::Value::Boolean(true)),
+                "successful update {index} was overwritten"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisting_preferences_does_not_follow_a_stale_temporary_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let unrelated = dir.path().join("unrelated");
+        fs::write(&path, "model = 'keep'\n").unwrap();
+        fs::write(&unrelated, "untouched").unwrap();
+        symlink(&unrelated, path.with_extension("toml.tmp")).unwrap();
+
+        persist_theme_at(&path, false, "neutral-light").unwrap();
+
+        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "untouched");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn layout_mode_defaults_to_folder_tabs_and_persists_without_losing_config() {
         assert_eq!(
@@ -1313,6 +1576,8 @@ fn desktop_sections(text: &str, standalone: bool) -> String {
 
 #[cfg(test)]
 mod persist_tolerance_tests {
+    use super::*;
+
     #[test]
     fn duplicate_inside_desktop_sections_is_still_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -1349,5 +1614,35 @@ mod persist_tolerance_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(original));
         assert!(text.contains("[desktop.workspace]\npinned_working_dir = \"/tmp/project\""));
+    }
+
+    #[test]
+    fn hidden_models_persist_beside_shared_settings_and_normalize() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "# keep me\nmodel = \"openai:gpt-5\"\n").unwrap();
+        persist_hidden_models_at(
+            &path,
+            false,
+            &["b:x".into(), " a:y ".into(), "b:x".into(), "".into()],
+        )
+        .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("[desktop.models]"));
+        let config = parse(&text, false).unwrap().normalize();
+        assert_eq!(config.models.hidden, ["a:y", "b:x"]);
+        persist_hidden_models_at(&path, false, &[]).unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches("hidden =").count(), 1);
+        assert!(parse(&text, false).unwrap().models.hidden.is_empty());
+    }
+
+    #[test]
+    fn hidden_models_live_list_round_trips() {
+        set_hidden_models(&["z:m".into(), "a:m".into()]).unwrap();
+        assert_eq!(hidden_models(), ["a:m", "z:m"]);
+        set_hidden_models(&[]).unwrap();
+        assert!(hidden_models().is_empty());
     }
 }

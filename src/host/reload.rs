@@ -208,6 +208,7 @@ impl ReloadManager {
 
     /// Snapshot every attached window before any of them changes. One
     /// failure cancels the whole reload, so no window loses its state.
+    #[allow(clippy::type_complexity)]
     fn snapshot_all(&self, cx: &mut App) -> Result<Vec<(AnyWindowHandle, (u32, Vec<u8>))>> {
         let windows = self.windows();
         anyhow::ensure!(!windows.is_empty(), "desktop window is not attached");

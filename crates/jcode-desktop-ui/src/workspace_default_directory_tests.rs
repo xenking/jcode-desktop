@@ -42,6 +42,8 @@ fn assert_no_command(commands: &Receiver<Command>) {
 }
 
 fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
+    vcx.executor().advance_clock(Duration::from_secs(2));
+    vcx.run_until_parked();
     let bounds = vcx.debug_bounds(selector).expect(selector);
     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
@@ -77,7 +79,15 @@ fn select_directory(
     });
 }
 
-fn assert_created_in(commands: &Receiver<Command>, directory: &Path) {
+/// The draft opened in `directory` creates its session there once committed.
+fn assert_created_in(
+    workspace: &Entity<Workspace>,
+    vcx: &mut gpui::VisualTestContext,
+    commands: &Receiver<Command>,
+    directory: &Path,
+) {
+    assert_no_command(commands);
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     match commands
         .try_recv()
         .expect("one new session should be created")
@@ -131,7 +141,7 @@ fn default_directory_panel_can_focus_move_resize_and_close_like_chat(
     vcx.simulate_keystrokes("c h a t");
     vcx.simulate_keystrokes(&platform_chord("super-right"));
     vcx.run_until_parked();
-    click(vcx, "default-directory-button");
+    open_picker(&workspace, vcx);
     vcx.update(|window, cx| {
         let w = workspace.read(cx);
         assert_eq!(w.slots.len(), 3, "reopening must not duplicate the picker");
@@ -217,7 +227,9 @@ fn default_directory_panel_snapshot_restores_search_and_focus_without_watching_s
 }
 
 #[gpui::test]
-fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppContext) {
+fn destination_pill_opens_picker_with_focused_change_directory_action(
+    cx: &mut gpui::TestAppContext,
+) {
     let prior = tempfile::tempdir().unwrap();
     let (workspace, vcx, commands) = setup(cx, prior.path());
     // The control must remain usable in both supported workspace layouts.
@@ -231,12 +243,20 @@ fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppCon
         });
         vcx.run_until_parked();
         let header = vcx.debug_bounds("default-directory-button").unwrap();
+        let destination = vcx.debug_bounds("machines-picker-button").unwrap();
+        assert!(header.left() >= destination.left());
+        assert!(header.right() <= destination.right());
+        assert_eq!(header.size.height, destination.size.height);
         let path = vcx.debug_bounds("default-directory-path").unwrap();
         assert_eq!(header.size.height, px(28.0));
         assert!(path.top() >= header.top());
         assert!(path.bottom() <= header.bottom());
         assert!(path.right() <= header.right());
         click(vcx, "default-directory-button");
+        assert!(vcx.debug_bounds("machines-picker").is_some());
+        assert!(vcx.debug_bounds("default-directory-panel").is_none());
+        assert_no_command(&commands);
+        click(vcx, "destination-change-directory");
         assert!(vcx.debug_bounds("default-directory-panel").is_some());
         assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
         vcx.update(|window, cx| {
@@ -256,11 +276,57 @@ fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppCon
                 workspace.pinned_working_dir.as_deref(),
                 prior.path().to_str()
             );
-            assert_eq!(workspace.slots.len(), 3);
+            assert_eq!(workspace.slots.len(), 4);
         });
         assert_no_command(&commands);
         click(vcx, "folder-picker-cancel");
     }
+}
+
+#[gpui::test]
+fn destination_directory_change_stays_local_with_cloud_default_without_spawning(
+    cx: &mut gpui::TestAppContext,
+) {
+    let prior = tempfile::tempdir().unwrap();
+    let selected = tempfile::tempdir().unwrap();
+    let (workspace, vcx, commands) = setup(cx, prior.path());
+    click(vcx, "machines-picker-button");
+    click(vcx, "machine-destination-cloud");
+    assert_no_command(&commands);
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(
+            w.remotes.default_host.as_deref(),
+            Some(remotes::MANAGED_CLOUD_HOST)
+        );
+        assert_eq!(w.slots.len(), 3);
+        assert!(w.slots[w.active].panel.read(cx).is_machines());
+    });
+    click(vcx, "destination-change-directory");
+    assert!(vcx.debug_bounds("default-directory-panel").is_some());
+    select_directory(&workspace, vcx, selected.path());
+    click(vcx, "folder-picker-open");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.pinned_working_dir.as_deref(), selected.path().to_str());
+        assert_eq!(
+            w.remotes.default_host.as_deref(),
+            Some(remotes::MANAGED_CLOUD_HOST)
+        );
+        assert_eq!(w.slots.len(), 3);
+        assert!(
+            w.slots
+                .iter()
+                .all(|slot| !Panel::is_pending_session_id(&slot.panel.read(cx).session_id))
+        );
+    });
+    assert_no_command(&commands);
+    click(vcx, "machines-picker-button");
+    click(vcx, "machine-destination-local");
+    workspace.read_with(vcx, |w, _| {
+        assert!(w.remotes.default_host.is_none());
+        assert_eq!(w.pinned_working_dir.as_deref(), selected.path().to_str());
+        assert_eq!(w.slots.len(), 3);
+    });
+    assert_no_command(&commands);
 }
 
 #[gpui::test]
@@ -305,10 +371,23 @@ fn choosing_default_directory_changes_preference_without_spawning_and_next_enter
     // shortcut operational without waiting for a runtime reply.
     vcx.simulate_keystrokes(&platform_chord("super-enter"));
     vcx.run_until_parked();
-    assert_created_in(&commands, selected.path());
+    assert_created_in(&workspace, vcx, &commands, selected.path());
     workspace.read_with(vcx, |workspace, _| {
         assert_eq!(workspace.slots.len(), before.len() + 1);
     });
+}
+
+#[gpui::test]
+fn tab_plus_and_new_session_action_use_the_configured_local_directory(
+    cx: &mut gpui::TestAppContext,
+) {
+    let pinned = tempfile::tempdir().unwrap();
+    let (workspace, vcx, commands) = setup(cx, pinned.path());
+    click(vcx, "tab-new-session");
+    assert_created_in(&workspace, vcx, &commands, pinned.path());
+    vcx.update(|window, cx| window.dispatch_action(Box::new(NewPanel), cx));
+    vcx.run_until_parked();
+    assert_created_in(&workspace, vcx, &commands, pinned.path());
 }
 
 #[gpui::test]
@@ -408,7 +487,7 @@ fn cancelling_default_directory_preserves_prior_and_restores_shortcut(
     assert_no_command(&commands);
     vcx.simulate_keystrokes(&platform_chord("super-enter"));
     vcx.run_until_parked();
-    assert_created_in(&commands, prior.path());
+    assert_created_in(&workspace, vcx, &commands, prior.path());
 }
 
 #[gpui::test]
@@ -435,7 +514,7 @@ fn ordinary_open_folder_resets_default_mode_and_still_spawns(cx: &mut gpui::Test
         );
         assert_eq!(workspace.slots.len(), 3);
     });
-    assert_created_in(&commands, selected.path());
+    assert_created_in(&workspace, vcx, &commands, selected.path());
 }
 
 #[gpui::test]
@@ -567,6 +646,7 @@ fn directory_session(id: &str, directory: &Path) -> jcode_sdk::SessionInfo {
         agent_label: None,
         swarm_status: None,
         edit_stats: None,
+        context: None,
     }
 }
 

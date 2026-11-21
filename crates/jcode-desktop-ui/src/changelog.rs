@@ -15,6 +15,7 @@ const IDENTITY: &str = concat!(
 );
 const MARKER: &str = "changelog-last-seen-build";
 
+#[allow(dead_code)]
 pub(crate) fn development() -> bool {
     include_development_snapshot(
         crate::build_info::development(),
@@ -25,6 +26,7 @@ pub(crate) fn development() -> bool {
 
 // Hot reload commonly uses an optimized release-profile plugin. The explicit
 // development switches, not just Rust debug assertions, control its snapshot.
+#[allow(dead_code)]
 fn include_development_snapshot(debug: bool, hot_reload: bool, ui_override: bool) -> bool {
     debug || hot_reload || ui_override
 }

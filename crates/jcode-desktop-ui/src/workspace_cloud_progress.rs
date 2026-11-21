@@ -61,13 +61,12 @@ impl Progress {
             } else {
                 None
             };
-            if let Some(next) = next {
-                if self.phase.is_none_or(|current| next > current) {
+            if let Some(next) = next
+                && self.phase.is_none_or(|current| next > current) {
                     self.phase = Some(next);
                     self.phase_started = Some(now);
                     self.phase_elapsed = Duration::ZERO;
                 }
-            }
         }
         if failed {
             self.failed = true;

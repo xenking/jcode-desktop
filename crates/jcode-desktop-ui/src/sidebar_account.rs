@@ -104,6 +104,9 @@ impl JcodeAccount {
 
 impl Workspace {
     pub(super) fn render_sidebar_account(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // The avatar is the app's single update control. `render_sidebar` has
+        // already started the release check for this frame.
+        let offer = version::offered_update();
         let theme = Theme::global();
         let account = JcodeAccount::current();
         let signed_in = account.signed_in;
@@ -114,6 +117,8 @@ impl Workspace {
             theme.TEXT_DIM
         };
         let menu_open = signed_in && self.account_menu.open;
+        // The block spells out whom it belongs to only on hover now.
+        let account_tooltip = format!("{} · {}", account.title(show_email), account.detail());
 
         div()
             .id("sidebar-account-area")
@@ -176,6 +181,7 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(|| "sidebar-account-avatar".into())
+                            .relative()
                             .size(px(26.0))
                             .flex_none()
                             .flex()
@@ -189,35 +195,154 @@ impl Workspace {
                             })
                             .text_size(px(11.0))
                             .text_color(ink)
-                            .child(account.initial(show_email)),
+                            .child(account.initial(show_email))
+                            // Update indication lives on the avatar and nowhere
+                            // else. No update means a plain avatar with no
+                            // extra text, exactly as before.
+                            .when_some(offer, |el, offer| {
+                                el.child(
+                                    div()
+                                        .id("sidebar-update-badge")
+                                        .debug_selector(|| "sidebar-update-badge".into())
+                                        .absolute()
+                                        .top(px(-3.0))
+                                        .right(px(-3.0))
+                                        .size(px(13.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(theme.ACCENT)
+                                        .text_color(theme.BG)
+                                        .text_size(px(9.0))
+                                        .line_height(px(9.0))
+                                        .cursor_pointer()
+                                        .hover(|el| el.opacity(0.85))
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| {
+                                                live_tabs::TabTooltip(
+                                                    format!(
+                                                        "{}\nClick to {}",
+                                                        offer.label,
+                                                        offer.action.to_lowercase()
+                                                    )
+                                                    .into(),
+                                                )
+                                            })
+                                            .into()
+                                        })
+                                        // The badge acts on the press and keeps
+                                        // the click from opening the account
+                                        // popup, so a restart is never a
+                                        // side effect of a mis-aimed click.
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|_, _, window, cx| {
+                                                cx.stop_propagation();
+                                                window.prevent_default();
+                                                Self::check_and_apply_update(cx);
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child("↑"),
+                                )
+                            }),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-account-name".into())
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .line_height(px(14.0))
-                                    .text_color(ink)
-                                    .child(account.title(show_email)),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-account-detail".into())
-                                    .truncate()
-                                    .text_size(px(9.0))
-                                    .line_height(px(12.0))
-                                    .text_color(theme.TEXT_DIM)
-                                    .child(account.detail()),
-                            ),
-                    ),
+                    // The avatar plus one icon and figure per provider. The
+                    // account and its plan live in the hover, so the block is
+                    // usage at a glance instead of repeated identity.
+                    .children(self.render_sidebar_quota(cx))
+                    .child(div().flex_1())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::panel::usage::MeterTooltip(account_tooltip.clone()))
+                            .into()
+                    }),
             )
             .into_any_element()
+    }
+
+    /// Provider quota icons for the account block: one icon plus figure per
+    /// configured credential, red at exhaustion, each with the same hover card
+    /// it had in the composer bar. Clicking one opens the account picker.
+    fn render_sidebar_quota(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let Some(accounts) = cx.try_global::<crate::panel::usage::StatusAccounts>() else {
+            return Vec::new();
+        };
+        let chips = crate::panel::usage::quota_chips(&accounts.0);
+        if chips.is_empty() {
+            return Vec::new();
+        }
+        let theme = Theme::global();
+        let source = self
+            .slots
+            .get(self.active)
+            .filter(|slot| !slot.closing)
+            .map(|slot| slot.panel.entity_id());
+        {
+            chips
+                .into_iter()
+                .map(|chip| {
+                    let id = format!("sidebar-quota-{}", chip.logo);
+                    let selector = id.clone();
+                    let account = accounts
+                        .0
+                        .iter()
+                        .find(|account| account.id == chip.logo && account.status == "available")
+                        .expect("quota chip has a matching account");
+                    let tooltip = crate::panel::usage::quota_card(account, &chip);
+                    let color = match chip.percent {
+                        Some(percent) if percent >= 70. => {
+                            crate::panel::usage::usage_color(percent, theme)
+                        }
+                        _ => theme.TEXT_DIM,
+                    };
+                    let logo = crate::accounts::logo(chip.logo).map(|bytes| {
+                        gpui::svg()
+                            .data(bytes)
+                            .size(px(12.))
+                            .flex_none()
+                            .text_color(color)
+                    });
+                    div()
+                        .id(gpui::SharedString::from(id))
+                        .debug_selector(move || selector.clone())
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .h(px(22.))
+                        .px(px(5.0))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.HEADER_BG))
+                        .text_size(px(10.5))
+                        .font_family(theme.FONT_MONO)
+                        .text_color(color)
+                        .when(chip.cached, |el| el.opacity(0.6))
+                        .tooltip(move |_, cx| cx.new(|_| tooltip.clone()).into())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            match source {
+                                Some(source) => this.open_accounts(
+                                    &OpenAccounts {
+                                        source,
+                                        login_command: None,
+                                    },
+                                    window,
+                                    cx,
+                                ),
+                                None => {
+                                    this.status = "Open a session to switch provider".into();
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                        .children(logo)
+                        .child(chip.label())
+                        .into_any_element()
+                })
+                .collect()
+        }
     }
 
     /// Settings row: reveal the account email in the sidebar. Off by default.
@@ -265,6 +390,65 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::JcodeAccount;
+
+    /// The user's layout: one block at the bottom of the sidebar with the
+    /// avatar on the left and the provider figures to its right. The account
+    /// name and plan are hover text now, so the block never repeats identity
+    /// over the usage it exists to show.
+    #[gpui::test]
+    fn the_quota_icons_sit_inside_the_account_block(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available"},{"id":"openai","status":"available"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude)","limits":[{"name":"7-day window","usage_percent":41.0,"reset_in":"1d 11h"}],"extra_info":[],"error":null}]}"#,
+            );
+            cx.set_global(crate::panel::usage::StatusAccounts(accounts));
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)
+        });
+        let _ = &workspace;
+        vcx.run_until_parked();
+        let block = vcx
+            .debug_bounds("sidebar-account")
+            .expect("the account block paints");
+        let chip = vcx
+            .debug_bounds("sidebar-quota-claude")
+            .expect("Claude's figure sits in the block");
+        assert!(
+            chip.left() >= block.left()
+                && chip.right() <= block.right()
+                && chip.top() >= block.top()
+                && chip.bottom() <= block.bottom(),
+            "the quota icon lives inside the account pill: {chip:?} {block:?}"
+        );
+        let avatar = vcx.debug_bounds("sidebar-account-avatar").unwrap();
+        assert!(
+            avatar.right() <= chip.left(),
+            "the avatar leads, then the provider figures: {avatar:?} {chip:?}"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-account-name").is_none(),
+            "the block no longer spells the account name inline"
+        );
+        assert!(vcx.debug_bounds("sidebar-account-detail").is_none());
+        vcx.update(|window, cx| window.simulate_mouse_move(chip.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limits-tooltip").is_some());
+        assert!(vcx.debug_bounds("panel-limit-0").is_some());
+        assert!(vcx.debug_bounds("panel-limit-bar-0").is_some());
+        assert!(
+            vcx.debug_bounds("sidebar-quota").is_none(),
+            "no separate quota row above the block"
+        );
+    }
 
     #[test]
     fn signed_in_account_names_email_and_plan() {

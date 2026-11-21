@@ -71,6 +71,128 @@ fn assert_settled_partial_output(panel: &Panel) {
 }
 
 #[gpui::test]
+fn guardrail_retries_update_one_visible_row_without_stopping_turn(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("stop-test", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.history_loaded = true;
+        panel.apply(
+            &ApiEvent::TextDelta {
+                session_id: "stop-test".into(),
+                message_id: None,
+                text: "Partial answer".into(),
+            },
+            cx,
+        );
+        for attempt in 1..=3 {
+            panel.apply(
+                &ApiEvent::ProviderGuardrailRetry {
+                    session_id: "stop-test".into(),
+                    turn_id: "turn-1".into(),
+                    attempt,
+                    max_attempts: 3,
+                },
+                cx,
+            );
+        }
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |panel, _| {
+        let rows: Vec<_> = panel
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::ProviderGuardrailRetry { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("attempt 3 of 3"));
+        assert!(panel.activity_active());
+        assert!(notices(panel).is_empty());
+    });
+    assert!(vcx.debug_bounds("provider-guardrail-retry").is_some());
+}
+
+#[gpui::test]
+fn unconfirmed_stop_shows_force_stop_button_and_click_escalates(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("stop-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
+    vcx.run_until_parked();
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(3));
+    vcx.run_until_parked();
+    let button = vcx
+        .debug_bounds("force-stop-button")
+        .expect("force stop button must be visible");
+    vcx.simulate_click(button.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::ForceStopTurn { session_id }) if session_id == "stop-test")
+    );
+}
+
+#[gpui::test]
+fn repeated_stop_escalates_and_force_button_remains_retryable(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("stop-test".into(), None, None, bridge, cx);
+        panel.history_loaded = true;
+        panel.status = "running".into();
+        panel
+    });
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::Cancel { .. })));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::ForceStopTurn { .. })
+    ));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("force-stop-button").is_some());
+}
+
+#[gpui::test]
+fn unconfirmed_cancel_reports_timeout_and_late_confirmation_replaces_it(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/cancel", cx));
+        assert_eq!(notices(panel)[0].title, "Stop requested by you");
+    });
+    vcx.run_until_parked();
+    vcx.executor()
+        .advance_clock(std::time::Duration::from_secs(6));
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        assert_eq!(notices(panel)[0].title, "Stop not confirmed");
+        assert!(notices(panel)[0].detail.contains("may still be running"));
+        panel.apply(
+            &stopped(TurnStopReason::Interrupted, "Runtime confirmed"),
+            cx,
+        );
+        assert_eq!(notices(panel)[0].title, "Response interrupted");
+    });
+}
+
+#[gpui::test]
 fn all_stop_categories_preserve_partial_output_settle_tools_and_pause_queue(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -264,15 +386,8 @@ fn active_disconnect_reports_unknown_outcome_not_a_confirmed_crash(cx: &mut gpui
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {
         panel.connection_lost("Socket closed", cx);
-        assert_settled_partial_output(panel);
-        assert!(panel.prompt_queue.paused);
-        let notice = notices(panel);
-        assert_eq!(notice.len(), 1);
-        assert_eq!(notice[0].title, "Connection lost. Reconnecting…");
-        assert_eq!(notice[0].detail, "The response may still be running.");
-        assert_eq!(notice[0].raw.as_deref(), Some("Socket closed"));
-        assert!(!notice[0].failure);
-        assert!(notice[0].provisional);
+        assert!(notices(panel).is_empty());
+        assert!(panel.status.starts_with("lost:"));
         assert_ne!(panel.status, "crashed");
         panel.apply(
             &stopped(TurnStopReason::Interrupted, "Confirmed after reconnect"),
@@ -295,21 +410,11 @@ fn stale_socket_notice_is_short_and_copies_the_raw_error(cx: &mut gpui::TestAppC
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {
         panel.connection_lost(RAW, cx);
-        let notice = notices(panel);
-        assert_eq!(
-            notice[0].detail,
-            "Can't reach the Jcode runtime. The response may still be running."
-        );
+        assert!(notices(panel).is_empty());
+        assert_eq!(panel.status, "lost: Can't reach the Jcode runtime.");
     });
     vcx.run_until_parked();
-    let copy = vcx.debug_bounds("stop-notice-copy").expect("copy pill");
-    vcx.simulate_click(copy.center(), gpui::Modifiers::default());
-    vcx.update(|_, cx| {
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().as_deref(),
-            Some(RAW)
-        )
-    });
+    assert!(vcx.debug_bounds("response-stop-notice").is_none());
 }
 
 #[gpui::test]
@@ -360,6 +465,7 @@ fn stop_settles_only_current_turn_tools_and_preserves_detached_background_work(
             task_id: "detached-job".into(),
             label: "Build".into(),
             summary: "Still running independently".into(),
+            detail: None,
             percent: Some(25.0),
             done: false,
         });

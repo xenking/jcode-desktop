@@ -10,6 +10,7 @@ pub(super) fn is_compact(width: f32) -> bool {
 
 /// Compact windows reserve no sidebar column at all. Sessions get the full
 /// width, and the sidebar opens as an overlay from the tab row's menu button.
+#[allow(dead_code)]
 pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
     if visible && !compact {
         SIDEBAR_WIDTH
@@ -30,7 +31,11 @@ impl Workspace {
             .id("sidebar-resize-handle")
             .debug_selector(|| "sidebar-resize-handle".into())
             .absolute()
-            .top_0()
+            .top(px(if cfg!(target_os = "macos") {
+                STRIP_PADDING_TOP + FOLDER_CONTENT_INSET
+            } else {
+                0.0
+            }))
             .bottom_0()
             .left(px(self.sidebar_custom_width - 4.0))
             .w(px(8.0))
@@ -66,9 +71,7 @@ impl Workspace {
                     if event.dragging() {
                         this.sidebar_custom_width = f32::from(event.position.x).clamp(
                             180.0,
-                            (f32::from(window.viewport_size().width) * 0.4)
-                                .min(480.0)
-                                .max(180.0),
+                            (f32::from(window.viewport_size().width) * 0.4).clamp(180.0, 480.0),
                         );
                     } else {
                         this.sidebar_resizing = false;
@@ -115,60 +118,53 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The only compact sidebar affordance: a pill in the tab row where the
-    /// FPS readout normally sits. Workspaces stay reachable through the
-    /// numbered tab groups, so no extra column is spent on them.
+    /// Keep sidebar access in compact windows without adding another column.
     pub(super) fn render_compact_menu_button(
         &self,
         left: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        div()
-            .id("compact-sidebar-toggle")
-            .debug_selector(|| "compact-sidebar-toggle".into())
-            .absolute()
-            .left(px(left + 4.0))
-            .top_0()
-            .size(px(28.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .cursor_pointer()
-            .text_size(px(15.0))
-            .text_color(Theme::global().TEXT_DIM)
-            .occlude()
-            .tooltip(|_, cx| {
-                cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
-                    .into()
-            })
-            .hover(|el| {
-                el.bg(Theme::global().PANEL_BG)
-                    .text_color(Theme::global().TEXT)
-            })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    if this.show_sidebar {
-                        this.compact_sidebar_open = !this.compact_sidebar_open;
-                    } else {
-                        // Restores a sidebar hidden with Ctrl+B or its hide
-                        // button. Wide windows reset the drawer flag on render.
-                        this.show_sidebar = true;
-                        this.compact_sidebar_open = true;
-                    }
-                    // The drawer owns Escape while open. A persistent sidebar
-                    // toggle must leave keyboard focus in the chat composer.
-                    if is_compact(f32::from(window.viewport_size().width)) {
-                        window.focus(&this.focus_handle, cx);
-                    }
-                    cx.notify();
-                }),
-            )
-            .child("☰")
-            .into_any_element()
+        let owner = cx.weak_entity();
+        crate::keyboard::press_button(div().id("compact-sidebar-toggle"), move |window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+            let _ = owner.update(cx, |this, cx| {
+                if this.show_sidebar {
+                    this.compact_sidebar_open = !this.compact_sidebar_open;
+                } else {
+                    // Restores a sidebar hidden with Ctrl+B or its hide button.
+                    this.show_sidebar = true;
+                    this.compact_sidebar_open = true;
+                }
+                if is_compact(f32::from(window.viewport_size().width)) {
+                    window.focus(&this.focus_handle, cx);
+                }
+                cx.notify();
+            });
+        })
+        .debug_selector(|| "compact-sidebar-toggle".into())
+        .absolute()
+        .left(px(left + 4.0))
+        .top_0()
+        .size(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .cursor_pointer()
+        .text_size(px(15.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .occlude()
+        .tooltip(|_, cx| {
+            cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
+                .into()
+        })
+        .hover(|el| {
+            el.bg(Theme::global().PANEL_BG)
+                .text_color(Theme::global().TEXT)
+        })
+        .child("☰")
+        .into_any_element()
     }
 
     pub(super) fn render_compact_sidebar_overlay(

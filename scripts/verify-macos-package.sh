@@ -64,7 +64,7 @@ verify_bundle() {
   update_key="$(plist_value "$plist" SUPublicEDKey 2>/dev/null || true)"
   if [[ -n "$update_key" ]]; then
     [[ "$(plist_value "$plist" SUFeedURL)" == \
-      "${UPDATE_FEED_URL:-https://jcode.sh/desktop/appcast.xml}" ]] || \
+      "${UPDATE_FEED_URL:-https://github.com/xenking/jcode-desktop/releases/download/desktop-latest/appcast.xml}" ]] || \
       fail "unexpected automatic update feed"
     [[ "$(plist_value "$plist" SUEnableAutomaticChecks)" == "true" ]] || fail "automatic checks are disabled"
     [[ "$(plist_value "$plist" SUAutomaticallyUpdate)" == "true" ]] || fail "automatic updates are disabled"
@@ -89,7 +89,11 @@ PY
     [[ -x "$executable" ]] || fail "missing executable companion: $bin"
     local executable_archs
     executable_archs="$(lipo -archs "$executable")"
-    [[ " $executable_archs " == *" arm64 "* && " $executable_archs " == *" x86_64 "* ]] || fail "$bin is not universal"
+    if [[ "${PACKAGE_TARGETS:-aarch64-apple-darwin}" == *x86_64* ]]; then
+      [[ " $executable_archs " == *" arm64 "* && " $executable_archs " == *" x86_64 "* ]] || fail "$bin is not universal"
+    else
+      [[ " $executable_archs " == *" arm64 "* ]] || fail "$bin is not arm64"
+    fi
     codesign --verify --strict --verbose=2 "$executable"
 
     local actual_entitlements

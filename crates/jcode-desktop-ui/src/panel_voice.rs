@@ -1,4 +1,4 @@
-//! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
+//! Streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
 use gpui::FutureExt as _;
 use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
@@ -24,14 +24,27 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 mod overlay;
 pub(crate) use jcode_desktop_voice::tag;
 // The button's keycap, tooltip, labels and crossfade hold no panel state.
-pub(crate) use jcode_desktop_voice::chrome::short_voice_status;
 use jcode_desktop_voice::chrome::*;
 
 #[cfg(test)]
 #[path = "panel_global_voice_tests.rs"]
 mod global_tests;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+/// `[dictation] mode` for a finished utterance. Read per utterance so a
+/// Settings change applies to the next one without restarting Desktop.
+pub(crate) fn dictation_mode() -> jcode_base::protocol::TranscriptMode {
+    jcode_base::config::config().dictation.mode
+}
+
+pub(crate) fn superwhisper_bridge_path() -> Option<std::path::PathBuf> {
+    Some(jcode_desktop_model::platform_dirs::jcode_home()?.join("bin/superwhisper-dictate.sh"))
+}
+
+pub(crate) fn bridge_command(path: &std::path::Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
     Idle,
@@ -75,6 +88,8 @@ pub(super) struct VoiceState {
     // focused hold, but its status and Jev's decision are mirrored in the OS pill.
     global_capture: bool,
     recording: Option<NariRecording>,
+    superwhisper_capture: bool,
+    inline_draft: bool,
     live_transcript: String,
     levels: [f32; 24],
     canceled: Arc<AtomicBool>,
@@ -98,10 +113,6 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
-    /// The idle microphone/shortcut swap, animating in its own view.
-    swap: Option<Entity<VoiceSwap>>,
-    /// The colors last handed to `swap`.
-    swap_colors: Option<(gpui::Hsla, gpui::Hsla)>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -295,7 +306,7 @@ impl Panel {
 
     pub(crate) fn begin_voice_hold(&mut self, cx: &mut Context<Self>) {
         if self.supports_voice() && self.voice.phase == Phase::Idle {
-            self.start_voice_with_hold(true, cx);
+            self.start_voice_capture(true, false, cx);
         }
     }
 
@@ -304,8 +315,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Option<Arc<AtomicBool>> {
         if self.supports_voice() && !self.voice_active() {
-            self.start_voice_with_hold(true, cx);
-            self.voice.global_capture = true;
+            self.start_voice_capture(true, true, cx);
             return Some(self.voice.canceled.clone());
         }
         None
@@ -352,12 +362,22 @@ impl Panel {
 
     /// `normal` marks an intentional user cancel. Everything else is logged
     /// as ABNORMAL so unexpected stops can be found and fixed.
+    pub(super) fn cancel_ask_voice(&mut self, cx: &mut Context<Self>) {
+        if self.ask_card.is_some() && self.voice_active() {
+            self.cancel_voice(true, "ask answered", cx);
+        }
+    }
+
     fn cancel_voice(&mut self, normal: bool, reason: &'static str, cx: &mut Context<Self>) {
         if self.voice.phase != Phase::Idle {
             self.voice
                 .log_end(normal, &format!("canceled: {reason}"), None);
         }
+        if self.voice.inline_draft {
+            self.input.update(cx, |input, cx| input.end_live_dictation(None, cx));
+        }
         self.reset_voice_attempt();
+        self.clear_voice_preview(cx);
         cx.notify();
     }
 
@@ -381,11 +401,20 @@ impl Panel {
     }
 
     fn start_voice(&mut self, cx: &mut Context<Self>) {
-        self.start_voice_with_hold(false, cx);
+        self.start_voice_capture(false, false, cx);
     }
 
-    fn start_voice_with_hold(&mut self, hold_capture: bool, cx: &mut Context<Self>) {
-        if self.preview_state.is_some() || crate::harness::screenshot_mode() {
+    fn start_voice_capture(
+        &mut self,
+        hold_capture: bool,
+        global_capture: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preview_state.is_some()
+            || (crate::harness::screenshot_mode()
+                && !(self.session_id == "screenshot-fixture"
+                    && crate::fixture_control_targets::allow_soniox_recording()))
+        {
             self.voice.error = Some("Microphone access is disabled in offline previews.".into());
             cx.notify();
             return;
@@ -395,6 +424,7 @@ impl Panel {
         }
         jcode_voice::timing::begin();
         self.prepare_voice_attempt(hold_capture);
+        self.voice.global_capture = global_capture;
         // Starting is nonblocking: the microphone opens and the provider
         // handshake runs in the background while PCM buffers. The press is
         // the start of recording, so the UI shows Listening immediately.
@@ -424,7 +454,7 @@ impl Panel {
 
     /// `[dictation] backend = "command"`: the external command owns the
     /// microphone (SuperWhisper, whisper.cpp, ...) and prints the transcript.
-    /// Pressing voice again cancels the wait.
+    /// A managed SuperWhisper bridge also supports stopping its capture.
     fn start_command_voice(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
         let cfg = jcode_base::config::config().dictation.clone();
         let command = cfg.command.trim().to_owned();
@@ -437,7 +467,13 @@ impl Panel {
             return;
         }
         voice_log(format_args!("external dictation command started"));
-        self.voice.phase = Phase::Transcribing;
+        self.voice.superwhisper_capture = cfg!(target_os = "macos")
+            && superwhisper_bridge_path().is_some_and(|path| command == bridge_command(&path));
+        self.voice.phase = if self.voice.superwhisper_capture {
+            Phase::Recording
+        } else {
+            Phase::Transcribing
+        };
         self.voice.started = Some(Instant::now());
         let task = cx.background_executor().spawn(async move {
             tokio::runtime::Builder::new_current_thread()
@@ -452,11 +488,11 @@ impl Panel {
             let _ = this.update(cx, |panel, cx| {
                 if !Arc::ptr_eq(&attempt, &panel.voice.canceled)
                     || attempt.load(Ordering::SeqCst)
-                    || panel.voice.phase != Phase::Transcribing
+                    || !matches!(panel.voice.phase, Phase::Recording | Phase::Transcribing)
                 {
                     return;
                 }
-                panel.voice.stop_reason = Some("external command finished");
+                panel.voice.stop_reason.get_or_insert("external command finished");
                 match result {
                     Ok(text) => panel.finish_voice(Ok(text), cx),
                     Err(error) => {
@@ -506,6 +542,16 @@ impl Panel {
                 self.voice.phase = Phase::Recording;
                 self.voice.recording = Some(recording);
                 self.voice.started = Some(Instant::now());
+                if !self.voice.global_capture
+                    && self.ask_voice_input().is_none()
+                    && dictation_mode() == jcode_base::protocol::TranscriptMode::Insert
+                {
+                    self.begin_inline_voice(cx);
+                } else {
+                    self.input.update(cx, |input, cx| {
+                        input.set_voice_preview(Some(String::new()), cx);
+                    });
+                }
                 self.tick_voice(cx);
             }
             Err(error) => {
@@ -612,25 +658,186 @@ impl Panel {
         }));
     }
 
+    pub(super) fn seed_inline_voice_fixture(&mut self, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_content("Before after".into(), cx);
+            input.set_caret("Before ".len(), cx);
+        });
+        self.voice.phase = Phase::Recording;
+        self.begin_inline_voice(cx);
+        self.apply_voice_event(NariEvent::Transcript("spoken wor".into()), cx);
+    }
+
+    fn begin_inline_voice(&mut self, cx: &mut Context<Self>) {
+        self.voice.inline_draft = true;
+        self.input.update(cx, |input, cx| input.begin_live_dictation(cx));
+    }
+
     fn apply_voice_event(&mut self, event: NariEvent, cx: &mut Context<Self>) {
         match event {
             NariEvent::Started => {}
             NariEvent::Transcript(text) => {
-                // This separate preview can be revised without replacing anything the
-                // user types. Only Finished inserts one undoable edit into the draft.
                 self.voice.live_transcript = text;
+                let live = &self.voice.live_transcript;
+                if self.voice.inline_draft {
+                    self.input.update(cx, |input, cx| input.revise_live_dictation(live, cx));
+                } else {
+                    let target = self.ask_voice_input().unwrap_or_else(|| self.input.clone());
+                    target.update(cx, |input, cx| input.set_voice_preview(Some(live.clone()), cx));
+                }
                 cx.notify();
             }
             NariEvent::Finished(result) => self.finish_voice(result, cx),
         }
     }
 
-    fn stop_voice(&mut self, reason: &'static str, cx: &mut Context<Self>) {
-        let Some(recording) = self.voice.recording.as_ref() else {
+    /// Drop the dim recognition preview. The final words replace it, either in
+    /// the draft or in the chat.
+    fn clear_voice_preview(&mut self, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_voice_preview(None, cx);
+            input.set_voice_preview_hint(None, cx);
+        });
+        if let Some(target) = self.ask_voice_input() {
+            target.update(cx, |input, cx| {
+                input.set_voice_preview(None, cx);
+                input.set_voice_preview_hint(None, cx);
+            });
+        }
+    }
+
+    /// `/dictate` with `backend = "command"` or an external command: the same
+    /// `[dictation] mode` rules as the built-in microphone.
+    pub(crate) fn apply_command_transcript(
+        &mut self,
+        run: &jcode_voice::dictation::DictationRun,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_base::protocol::TranscriptMode;
+        let text = run.text.trim();
+        if text.is_empty() {
+            self.items
+                .push(Item::Error("Dictation command returned no words.".into()));
             return;
-        };
+        }
+        match run.mode {
+            TranscriptMode::Insert => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+            TranscriptMode::Append => self
+                .input
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx)),
+            TranscriptMode::Replace => self.input.update(cx, |input, cx| {
+                input.replace_dictation(&tag::wrap(text), cx)
+            }),
+            TranscriptMode::Send => {
+                self.submit_or_queue(tag::wrap(text), Vec::new(), false, cx);
+                return;
+            }
+        }
+        self.focus_composer_after_voice(cx);
+        cx.notify();
+    }
+
+    /// Put finished words in the draft for editing, per `[dictation] mode`.
+    /// Nothing is submitted and the composer keeps keyboard focus.
+    #[allow(dead_code)]
+    fn keep_voice_in_draft(&mut self, text: &str, cx: &mut Context<Self>) {
+        let mode = dictation_mode();
+        self.keep_voice_in_draft_with(text, mode, cx);
+    }
+
+    fn keep_voice_in_draft_with(
+        &mut self,
+        text: &str,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_base::protocol::TranscriptMode;
+        self.voice.phase = Phase::Idle;
+        self.voice.error = None;
+        self.voice.trace = None;
+        self.voice.live_transcript.clear();
+        // A focused hold shows the draft itself. Only the unfocused OS pill
+        // needs a confirmation label.
+        self.voice.decision = self
+            .voice
+            .global_capture
+            .then(|| "Inserted into the composer".into());
+        match mode {
+            TranscriptMode::Insert => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+            TranscriptMode::Append => self
+                .input
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx)),
+            TranscriptMode::Replace => self.input.update(cx, |input, cx| {
+                input.replace_dictation(&tag::wrap(text), cx)
+            }),
+            // `send` is handled before this point; never silently send here.
+            TranscriptMode::Send => self
+                .input
+                .update(cx, |input, cx| input.insert_dictation(text, cx)),
+        }
+        self.focus_composer_after_voice(cx);
+        jcode_voice::timing::mark("ui kept transcript in draft");
+        cx.notify();
+    }
+
+    /// Hand typing back to the composer after dictation, so the user edits the
+    /// words without reaching for the mouse. Deferred: dictation finishes
+    /// inside an entity update, where no window is borrowed.
+    fn focus_composer_after_voice(&self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        cx.defer(move |app| {
+            let Some(panel) = weak.upgrade() else {
+                return;
+            };
+            let Some(window) = app.active_window() else {
+                return;
+            };
+            let _ = window.update(app, |_, window, app| {
+                panel.update(app, |panel, cx| panel.focus_input(window, cx));
+            });
+        });
+    }
+
+    fn stop_voice(&mut self, reason: &'static str, cx: &mut Context<Self>) {
+        if self.session_id == "screenshot-fixture" && crate::fixture_control_targets::voice_recording()
+        {
+            self.voice.stop_reason = Some(reason);
+            self.apply_voice_event(NariEvent::Finished(Ok("spoken words".into())), cx);
+            return;
+        }
+        if let Some(recording) = self.voice.recording.as_ref() {
+            recording.stop();
+        } else if self.voice.superwhisper_capture {
+            let attempt = self.voice.canceled.clone();
+            let stop = cx.background_executor().spawn(async move {
+                std::process::Command::new("/usr/bin/open")
+                    .args(["-g", "superwhisper://record/stop"])
+                    .status()
+                    .is_ok_and(|status| status.success())
+            });
+            cx.spawn(async move |this, cx| {
+                if !stop.await {
+                    let _ = this.update(cx, |panel, cx| {
+                        if Arc::ptr_eq(&attempt, &panel.voice.canceled)
+                            && panel.voice.phase == Phase::Transcribing
+                        {
+                            panel.voice.phase = Phase::Recording;
+                            panel.voice.audio = None;
+                            panel.voice.stop_reason = None;
+                            panel.voice.error = Some("Could not stop SuperWhisper. Use its own recording shortcut.".into());
+                            cx.notify();
+                        }
+                    });
+                }
+            }).detach();
+        } else {
+            return;
+        }
         jcode_voice::timing::release();
-        recording.stop();
         self.voice.stop_reason = Some(reason);
         self.voice.audio = self.voice.started.map(|started| started.elapsed());
         voice_log(format_args!(
@@ -642,6 +849,20 @@ impl Panel {
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
+        let mode = if self.voice.inline_draft {
+            jcode_base::protocol::TranscriptMode::Insert
+        } else {
+            dictation_mode()
+        };
+        self.finish_voice_with_mode(result, mode, cx);
+    }
+
+    fn finish_voice_with_mode(
+        &mut self,
+        result: Result<String, VoiceError>,
+        mode: jcode_base::protocol::TranscriptMode,
+        cx: &mut Context<Self>,
+    ) {
         jcode_voice::timing::mark("ui received final transcript");
         match &result {
             Ok(text) if text.trim().is_empty() => self.voice.log_end(
@@ -671,9 +892,28 @@ impl Panel {
             .or_else(|| self.voice.started.map(|started| started.elapsed()));
         self.voice.started = None;
         self.voice.recording = None;
+        self.voice.superwhisper_capture = false;
         self.voice.live_transcript.clear();
+        self.clear_voice_preview(cx);
+        let was_inline = std::mem::take(&mut self.voice.inline_draft);
+        if was_inline {
+            let final_text = result.as_ref().ok().map(String::as_str);
+            self.input.update(cx, |input, cx| input.end_live_dictation(final_text, cx));
+        }
         match result {
             Ok(text) if !text.trim().is_empty() => {
+                if was_inline {
+                    self.voice.error = None;
+                    self.focus_composer_after_voice(cx);
+                    cx.notify();
+                    return;
+                }
+                if !self.voice.global_capture && let Some(input) = self.ask_voice_input() {
+                    input.update(cx, |input, cx| input.insert_dictation(&text, cx));
+                    self.voice.error = None;
+                    cx.notify();
+                    return;
+                }
                 if self.voice.global_capture {
                     self.voice.phase = Phase::Transcribing;
                     let attempt = self.voice.canceled.clone();
@@ -683,10 +923,18 @@ impl Panel {
                     self.voice.task = Some(cx.spawn(async move |this, cx| {
                         let allowed = check.await;
                         let _ = this.update(cx, |panel, cx| {
-                            panel.finish_global_voice_text(&attempt, text, audio, allowed, cx);
+                            panel
+                                .finish_global_voice_text(&attempt, text, audio, allowed, mode, cx);
                         });
                     }));
                     cx.notify();
+                    return;
+                }
+                // `[dictation] mode` decides. Only an explicit `send` submits:
+                // voice is an input method, so the default leaves the words in
+                // the composer at the caret for the user to edit and send.
+                if mode != jcode_base::protocol::TranscriptMode::Send {
+                    self.keep_voice_in_draft_with(&text, mode, cx);
                     return;
                 }
                 if self.voice.sessions.is_some() || !JEV_ROUTING {
@@ -697,14 +945,15 @@ impl Panel {
                     input.append_dictation(&tag::wrap(&text), cx);
                 });
                 self.voice.error = None;
+                self.focus_composer_after_voice(cx);
             }
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
         }
-        if self.voice.global_capture {
-            if let Some(error) = &self.voice.error {
-                eprintln!("global voice: finished without text: {error}");
-            }
+        if self.voice.global_capture
+            && let Some(error) = &self.voice.error
+        {
+            eprintln!("global voice: finished without text: {error}");
         }
         cx.notify();
     }
@@ -715,6 +964,7 @@ impl Panel {
         text: String,
         audio: Option<Duration>,
         allowed: bool,
+        mode: jcode_base::protocol::TranscriptMode,
         cx: &mut Context<Self>,
     ) {
         if !Arc::ptr_eq(attempt, &self.voice.canceled)
@@ -724,7 +974,21 @@ impl Panel {
         {
             return;
         }
-        if allowed && (self.voice.sessions.is_some() || !JEV_ROUTING) {
+        if allowed && let Some(input) = self.ask_voice_input() {
+            input.update(cx, |input, cx| input.insert_dictation(&text, cx));
+            self.voice.phase = Phase::Idle;
+            self.voice.error = None;
+            self.voice.decision = Some("Inserted into the answer".into());
+            cx.notify();
+        } else if allowed && mode != jcode_base::protocol::TranscriptMode::Send {
+            // Unfocused hold into the draft: the words appear in the composer
+            // the user comes back to, and the OS pill says so.
+            eprintln!(
+                "global voice: kept {} transcript chars in the draft",
+                text.chars().count()
+            );
+            self.keep_voice_in_draft_with(&text, mode, cx);
+        } else if allowed && (self.voice.sessions.is_some() || !JEV_ROUTING) {
             // Length only. Never log transcript content.
             eprintln!(
                 "global voice: sending {} transcript chars",
@@ -741,6 +1005,7 @@ impl Panel {
             });
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
+            self.focus_composer_after_voice(cx);
             cx.notify();
         } else {
             self.cancel_global_voice(attempt, "session check denied the transcript", cx);
@@ -978,13 +1243,11 @@ impl Panel {
         )
     }
 
-    /// Voice pill on the right of the composer's pill row: microphone plus its
-    /// keybinding, so the shortcut is visible without hovering. While
-    /// voice is active it fills with the accent. No glow or halo.
+    /// The shortcut is in the tooltip, never in place of the microphone.
     pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
-        let active = phase != Phase::Idle;
+        let active = phase == Phase::Recording;
         let label = match phase {
             Phase::Idle => "Start voice",
             Phase::Checking => "Cancel microphone connection",
@@ -994,51 +1257,9 @@ impl Panel {
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
         let size = VOICE_BUTTON_SIZE;
-        let keycap_color = if active {
-            theme.BG.opacity(0.8)
-        } else {
-            theme.TEXT_FAINT
-        };
-        // Idle, the button alternates between the microphone and its
-        // shortcut instead of showing both side by side. While voice is
-        // active, or with reduced motion, it holds the microphone.
-        let alternate =
-            !active && !cx.reduce_motion() && !crate::config::get().appearance.reduce_motion;
-        let faces = if alternate {
-            // The faces crossfade in their own small view, so each animation
-            // frame redraws only this button. Notifying the panel would
-            // rebuild the transcript and composer and everything observing
-            // the panel, 30 times a second during every crossfade.
-            let swap = self
-                .voice
-                .swap
-                .get_or_insert_with(|| cx.new(VoiceSwap::new))
-                .clone();
-            // Compare against the colors last handed over, not by reading the
-            // swap view: a view that reads another is built again whenever
-            // that one is updated.
-            let colors = (icon_color.into(), keycap_color.into());
-            if self.voice.swap_colors != Some(colors) {
-                self.voice.swap_colors = Some(colors);
-                swap.update(cx, |swap, cx| {
-                    swap.colors = Some(colors);
-                    cx.notify();
-                });
-            }
-            swap.into_any_element()
-        } else {
-            self.voice.swap = None;
-            self.voice.swap_colors = None;
-            div()
-                .absolute()
-                .inset_0()
-                .child(voice_microphone_face(icon_color.into()))
-                .child(voice_shortcut_face(keycap_color.into()).opacity(0.))
-                .into_any_element()
-        };
-        let button = div()
-            .id("voice-toggle")
+        let button = crate::keyboard::button(div().id("voice-toggle"))
             .debug_selector(|| "voice-toggle".into())
+            .occlude()
             .relative()
             .flex_none()
             .h(px(size))
@@ -1051,7 +1272,7 @@ impl Panel {
             .justify_center()
             .cursor_pointer()
             .bg(if active {
-                theme.ACCENT
+                theme.ERROR
             } else {
                 theme.prompt_background(usize::MAX)
             })
@@ -1065,13 +1286,37 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
-            // Invisible keycap sizes the pill so both faces fit.
-            .child(
-                div()
-                    .invisible()
-                    .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
+            .children(
+                (crate::fixture_control_targets::voice_recording()
+                    || crate::fixture_control_targets::voice_soniox())
+                    .then(|| {
+                        crate::fixture_control_targets::marker(
+                            || "composer.voice".into(),
+                            || Some(self.session_id.clone()),
+                        )
+                    })
+                    .flatten(),
             )
-            .child(faces);
+            .child({
+                let icon = if active {
+                    div().absolute().inset_0().flex().items_center().justify_center()
+                        .debug_selector(|| "voice-recording-indicator".into())
+                        .child(div().debug_selector(|| "voice-stop-icon".into())
+                            .size(px(10.)).rounded(px(1.)).bg(icon_color))
+                } else {
+                    voice_microphone_face(icon_color.into())
+                };
+                if active {
+                    gpui::AnimationExt::with_animation(
+                        icon,
+                        "voice-recording-pulse",
+                        gpui::Animation::new(Duration::from_millis(1200)).repeat().with_easing(gpui::pulsating_between(0.5, 1.0)),
+                        |el, opacity| el.opacity(opacity),
+                    ).into_any_element()
+                } else {
+                    icon.into_any_element()
+                }
+            });
         div()
             .flex_none()
             .h(px(size))
@@ -1087,6 +1332,55 @@ mod live_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_end_clears_composer_even_when_ask_target_changes(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "voice-ask".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.input.update(cx, |input, cx| input.set_voice_preview(Some(String::new()), cx));
+            let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+            panel.apply(&event, cx);
+            panel.apply_voice_event(NariEvent::Finished(Ok("answer".into())), cx);
+            assert!(!panel.voice_active());
+            assert!(panel.input.read(cx).voice_preview().is_none(), "composer preview must clear even if the active target changed");
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+    }
+
+    #[gpui::test]
+    fn voice_end_after_reconnect_clears_composer(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "voice-reconnect".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.input.update(cx, |input, cx| input.set_voice_preview(Some(String::new()), cx));
+            panel.connection_lost("runtime connection closed; reconnecting", cx);
+            let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-reconnect","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+            panel.apply(&event, cx);
+            panel.apply_voice_event(NariEvent::Finished(Ok("answer".into())), cx);
+            assert!(!panel.voice_active());
+            assert!(panel.input.read(cx).voice_preview().is_none());
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+    }
 
     #[gpui::test]
     fn voice_report_retains_actual_answers_and_keeps_dictation_text(cx: &mut gpui::TestAppContext) {
@@ -1216,7 +1510,7 @@ mod tests {
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
         });
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+            matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. })
             if session_id == "voice-agent" && *content == tag::wrap("debug this failure") && images.is_empty())
         );
         assert!(
@@ -1350,7 +1644,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_hold_routes_final_transcription_without_touching_typed_draft(
+    fn voice_hold_send_mode_routes_final_transcription_without_touching_typed_draft(
         cx: &mut gpui::TestAppContext,
     ) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
@@ -1364,8 +1658,12 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("fix the bug".into()), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert!(panel.voice.phase == Phase::Recording);
-            panel.apply_voice_event(NariEvent::Finished(Ok("fix the bug".into())), cx);
-            // Jev routing is off: the utterance is sent straight to the agent.
+            panel.finish_voice_with_mode(
+                Ok("fix the bug".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
+            // Jev routing is off: an explicit `send` still goes straight to the agent.
             assert!(panel.voice.phase == Phase::Idle);
             assert!(!panel.voice.hold_capture);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
@@ -1406,6 +1704,21 @@ mod tests {
             assert!(panel.voice.recording.is_none());
             assert!(panel.voice.task.is_none());
         });
+    }
+
+    #[gpui::test]
+    fn voice_recording_indicator_clears_when_capture_stops(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| { panel.voice.phase = Phase::Recording; cx.notify(); });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-recording-indicator").is_some());
+        assert!(vcx.debug_bounds("voice-stop-icon").is_some());
+        assert!(vcx.debug_bounds("voice-microphone-icon").is_none());
+        panel.update(vcx, |panel, cx| { panel.voice.phase = Phase::Transcribing; cx.notify(); });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-recording-indicator").is_none());
+        assert!(vcx.debug_bounds("voice-stop-icon").is_none());
+        assert!(vcx.debug_bounds("voice-microphone-icon").is_some());
     }
 
     #[gpui::test]
@@ -1507,6 +1820,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn voice_streaming_insert_revises_only_the_spoken_span(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.input.update(cx, |input, cx| {
+                input.set_content("до после".into(), cx);
+                input.set_caret("до ".len(), cx);
+            });
+            panel.begin_inline_voice(cx);
+            panel.apply_voice_event(NariEvent::Transcript("hello wor".into()), cx);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "до hello wor после");
+            assert_eq!(panel.input.read(cx).snapshot().content, "до после");
+        });
+        vcx.update(|window, cx| {
+            let input = panel.read(cx).input.clone();
+            input.update(cx, |input, cx| {
+                input.set_caret(0, cx);
+                gpui::EntityInputHandler::replace_text_in_range(input, None, "🙂 ", window, cx);
+                input.set_caret(input.content.len(), cx);
+                gpui::EntityInputHandler::replace_text_in_range(input, None, "!", window, cx);
+            });
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.apply_voice_event(NariEvent::Transcript("hello earth".into()), cx);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "🙂 до hello earth после!");
+            panel.apply_voice_event(NariEvent::Finished(Ok("Hello earth.".into())), cx);
+            let input = panel.input.read(cx);
+            assert_eq!(input.content.as_ref(), "🙂 до Hello earth. после!");
+            assert_eq!(input.snapshot().content, "🙂 до Hello earth. после!");
+            assert_eq!(input.caret_offset(), input.content.len());
+        });
+    }
+
+    #[gpui::test]
     fn voice_streaming_revisions_preserve_typed_draft_and_stay_out_of_snapshots(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -1523,10 +1870,26 @@ mod tests {
             let snapshot = serde_json::to_string(&panel.snapshot(cx)).unwrap();
             assert!(!snapshot.contains("Hello world"));
             assert!(!snapshot.contains("live_transcript"));
+            // The revision is painted in the composer as dim text: never
+            // inserted, never part of the persisted snapshot.
+            panel.input.read_with(cx, |input, _| {
+                assert_eq!(input.voice_preview(), Some("Hello world."));
+            });
             let before = panel.items.len();
-            panel.apply_voice_event(NariEvent::Finished(Ok("Hello world.".into())), cx);
+            // `send` keeps its old contract: exactly one prompt, draft untouched.
+            panel.finish_voice_with_mode(
+                Ok("Hello world.".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert_eq!(panel.items.len(), before + 1, "sent exactly once");
+            panel.input.read_with(cx, |input, _| {
+                assert!(
+                    input.voice_preview().is_none(),
+                    "final words replace the preview"
+                )
+            });
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
         });
@@ -1540,7 +1903,9 @@ mod tests {
             panel
                 .input
                 .update(cx, |input, cx| input.set_content("keep".into(), cx));
+            panel.begin_inline_voice(cx);
             panel.apply_voice_event(NariEvent::Transcript("discard me".into()), cx);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "keep discard me");
             let token = panel.voice.canceled.clone();
             panel.cancel_voice(true, "cancel button", cx);
             assert!(token.load(Ordering::SeqCst));
@@ -1579,8 +1944,10 @@ mod tests {
         });
     }
 
+    /// Partials are visible while recording as dim composer text, and the
+    /// draft itself stays empty: nothing is inserted until the recording ends.
     #[gpui::test]
-    fn voice_meter_renders_without_streaming_into_composer(cx: &mut gpui::TestAppContext) {
+    fn voice_meter_and_dim_composer_partials_show_while_recording(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.voice.phase = Phase::Recording;
@@ -1588,9 +1955,16 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-live-transcript").is_none());
-        assert!(vcx.debug_bounds("voice-waveform").is_some());
+        assert!(vcx.debug_bounds("voice-overlay").is_none());
+        let stop = vcx.debug_bounds("voice-stop-icon").expect("stop element");
+        assert!(stop.size.width > px(0.) && stop.size.width == stop.size.height);
+        assert!(vcx.debug_bounds("voice-shortcut").is_none());
         panel.read_with(vcx, |panel, cx| {
-            assert!(panel.input.read(cx).content.is_empty())
+            assert!(panel.input.read(cx).content.is_empty());
+            assert_eq!(
+                panel.input.read(cx).voice_preview(),
+                Some("Streaming Nari words")
+            );
         });
     }
 
@@ -1642,7 +2016,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_footer_keeps_microphone_and_spacing_at_all_widths(cx: &mut gpui::TestAppContext) {
+    fn voice_footer_keeps_toggle_and_spacing_at_all_widths(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 320., 480., 800., 1440.] {
@@ -1662,8 +2036,14 @@ mod tests {
                 vcx.run_until_parked();
                 let input = vcx.debug_bounds("prompt-input").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
-                let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
-                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
+                let icon = vcx
+                    .debug_bounds(if phase == Phase::Recording {
+                        "voice-stop-icon"
+                    } else {
+                        "voice-microphone-icon"
+                    })
+                    .unwrap();
+                assert!(vcx.debug_bounds("voice-shortcut").is_none());
                 // The voice button sits inside the input box, at its right.
                 assert!(
                     button.left() >= input.left()
@@ -1677,14 +2057,7 @@ mod tests {
                     "voice hugs the input's right edge"
                 );
                 assert_eq!(button.size.height, px(VOICE_BUTTON_SIZE));
-                // Microphone and keybinding share one slot and alternate,
-                // rather than sitting side by side.
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
-                assert!(
-                    icon.right() > shortcut.left() && shortcut.right() > icon.left(),
-                    "faces overlap in one slot: {icon:?} {shortcut:?}"
-                );
                 if phase == Phase::Idle {
                     assert!(
                         vcx.debug_bounds("voice-ready-status").is_none(),
@@ -1732,7 +2105,7 @@ mod tests {
             assert!(vcx.debug_bounds("voice-toggle").is_some());
             if phase == Phase::Recording {
                 assert!(vcx.debug_bounds("voice-cancel").is_none());
-                assert!(vcx.debug_bounds("voice-stop").is_some());
+                assert!(vcx.debug_bounds("voice-stop").is_none());
                 panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
                 continue;
             }
@@ -1746,13 +2119,17 @@ mod tests {
 
     #[gpui::test]
     fn voice_insertion_is_undoable(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel
                 .input
                 .update(cx, |input, cx| input.set_content("original".into(), cx));
-            panel.finish_voice(Ok("dictated".into()), cx);
+            panel.finish_voice_with_mode(
+                Ok("dictated".into()),
+                jcode_base::protocol::TranscriptMode::Insert,
+                cx,
+            );
         });
         vcx.update(|window, cx| {
             let focus = panel.read(cx).input.read(cx).focus_handle.clone();
@@ -1762,6 +2139,174 @@ mod tests {
         panel.read_with(vcx, |panel, cx| {
             assert_eq!(panel.input.read(cx).content.as_ref(), "original")
         });
+    }
+
+    /// `[dictation] mode = "insert"` (the default): the words land at the
+    /// caret and nothing is sent, so the user edits and sends them.
+    #[gpui::test]
+    fn voice_insert_mode_lands_at_the_caret_and_never_sends(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            Panel::new(
+                "voice-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("fix the test".into(), cx);
+                input.set_caret("fix ".len(), cx);
+            });
+            let items = panel.items.len();
+            panel.finish_voice_with_mode(
+                Ok("flaky ".into()),
+                jcode_base::protocol::TranscriptMode::Insert,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert_eq!(input.content.as_ref(), "fix flaky the test");
+                assert_eq!(input.caret_offset(), "fix flaky ".len());
+            });
+            assert_eq!(panel.items.len(), items, "insert mode must not send");
+            assert!(panel.voice.error.is_none());
+            assert_eq!(panel.voice.phase, Phase::Idle);
+            assert!(panel.voice.live_transcript.is_empty());
+        });
+    }
+
+    /// `append` and `replace` also stay in the draft: they never submit.
+    #[gpui::test]
+    fn voice_append_and_replace_modes_stay_in_the_draft(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            Panel::new(
+                "voice-test".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("draft".into(), cx));
+            let items = panel.items.len();
+            panel.finish_voice_with_mode(
+                Ok("appended".into()),
+                jcode_base::protocol::TranscriptMode::Append,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(input.content.contains("appended"), "{}", input.content)
+            });
+            panel.finish_voice_with_mode(
+                Ok("replaced".into()),
+                jcode_base::protocol::TranscriptMode::Replace,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(input.content.contains("replaced"), "{}", input.content);
+                assert!(!input.content.contains("draft"), "{}", input.content);
+            });
+            assert_eq!(panel.items.len(), items, "draft modes must not send");
+        });
+    }
+
+    #[gpui::test]
+    fn focused_ask_comment_receives_shortcut_voice_and_recording_indicator(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-ask", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+        panel.update(vcx, |panel, cx| { panel.test_settled_conversation(1, cx); panel.apply(&event, cx); });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus(&panel.read(cx).focus_handle.clone(), cx));
+        vcx.simulate_keystrokes("2 n");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.dispatch_action(Box::new(ToggleVoice), cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.apply_voice_event(NariEvent::Transcript("partial".into()), cx);
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.comment_inputs[0][1].read(cx).voice_preview(), Some("partial"));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-voice-recording-indicator-0-2").is_some());
+        panel.update(vcx, |panel, cx| panel.finish_voice_with_mode(Ok("final words".into()), jcode_base::protocol::TranscriptMode::Insert, cx));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.comment_inputs[0][1].read(cx).snapshot().content, "final words");
+            assert!(card.other_inputs[0].read(cx).snapshot().content.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn global_voice_to_focused_free_answer_requires_permission(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-ask", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"}]}]}"#).unwrap();
+        panel.update(vcx, |panel, cx| { panel.test_settled_conversation(1, cx); panel.apply(&event, cx); });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let input = panel.read(cx).ask_card.as_ref().unwrap().other_inputs[0].clone();
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+            panel.update(cx, |panel, cx| assert!(panel.capture_focused_ask_voice_target(window, cx)));
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.prepare_voice_attempt(true);
+            panel.voice.global_capture = true;
+            panel.voice.phase = Phase::Transcribing;
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_global_voice_text(&attempt, "denied".into(), None, false, jcode_base::protocol::TranscriptMode::Insert, cx);
+            assert!(panel.ask_voice_input().unwrap().read(cx).snapshot().content.is_empty());
+            panel.prepare_voice_attempt(true);
+            panel.voice.global_capture = true;
+            panel.voice.phase = Phase::Transcribing;
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_global_voice_text(&attempt, "answer".into(), None, true, jcode_base::protocol::TranscriptMode::Insert, cx);
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| assert_eq!(panel.ask_voice_input().unwrap().read(cx).snapshot().content, "answer"));
+    }
+
+    #[gpui::test]
+    fn ask_dictation_in_send_mode_edits_answer_without_sending_chat(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| Panel::new("voice-ask".into(), None, None, bridge, cx));
+        let event: jcode_sdk::ApiEvent = serde_json::from_str(r#"{"ev":"ask_request","session_id":"voice-ask","request_id":"r","tool_call_id":"t","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#).unwrap();
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("original draft".into(), cx)
+            });
+            panel.apply(&event, cx);
+            panel.finish_voice_with_mode(
+                Ok("dictated answer".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, cx| {
+            let card = panel.ask_card.as_ref().unwrap();
+            assert_eq!(card.other[0].as_deref(), Some("dictated answer"));
+            assert_eq!(panel.input.read(cx).snapshot().content, "original draft");
+        });
+        assert!(
+            commands
+                .try_iter()
+                .all(|command| !matches!(command, Command::Send { .. }))
+        );
     }
 
     #[gpui::test]
@@ -1776,11 +2321,16 @@ mod tests {
             )
         });
         panel.update(cx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
             panel.input.update(cx, |input, cx| {
                 input.set_content("Typed while transcribing".into(), cx)
             });
             let items = panel.items.len();
-            panel.finish_voice(Ok("  dictated words  ".into()), cx);
+            panel.finish_voice_with_mode(
+                Ok("  dictated words  ".into()),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
                 "Typed while transcribing"
@@ -1792,7 +2342,11 @@ mod tests {
                 "voice sends only the trimmed utterance"
             );
             let items = panel.items.len();
-            panel.finish_voice(Err(VoiceError::Network), cx);
+            panel.finish_voice_with_mode(
+                Err(VoiceError::Network),
+                jcode_base::protocol::TranscriptMode::Send,
+                cx,
+            );
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
                 "Typed while transcribing"
@@ -1843,6 +2397,81 @@ mod tests {
                     .unwrap()
                     .contains("offline previews")
             );
+        });
+    }
+
+    /// `[dictation] mode = "replace"` discards a draft, so the discarded draft
+    /// must survive as one undo step. A draft restored after a restart has an
+    /// empty undo stack, so a replacement that merely overwrites the content
+    /// loses the draft for good.
+    #[gpui::test]
+    fn voice_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("original".into(), cx));
+            panel.finish_voice_with_mode(
+                Ok("dictated".into()),
+                jcode_base::protocol::TranscriptMode::Replace,
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(!input.content.contains("original"), "{}", input.content);
+                assert!(input.content.contains("dictated"), "{}", input.content);
+            });
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-z");
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "original",
+                "one undo restores the replaced draft"
+            )
+        });
+    }
+
+    /// `/dictate` from a command uses the same replacement rule.
+    #[gpui::test]
+    fn command_transcript_replacement_is_one_undoable_edit(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("half-typed draft".into(), cx)
+            });
+            panel.apply_command_transcript(
+                &jcode_voice::dictation::DictationRun {
+                    text: "spoken words".into(),
+                    mode: jcode_base::protocol::TranscriptMode::Replace,
+                },
+                cx,
+            );
+            panel.input.read_with(cx, |input, _| {
+                assert!(
+                    !input.content.contains("half-typed draft"),
+                    "{}",
+                    input.content
+                );
+                assert!(input.content.contains("spoken words"), "{}", input.content);
+            });
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-z");
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "half-typed draft",
+                "one undo restores the replaced draft"
+            )
         });
     }
 }

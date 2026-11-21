@@ -1,0 +1,20 @@
+{
+ "id": "session_ant_1794675020922_f6e720f45031cad8",
+ "parent_id": "session_microbe_1794670947943_2648f3bbec7c7e5e",
+ "title": "Add a native interactive `ask` tool to the user's jcode fork",
+ "created_at": "2026-11-14T16:50:20.922552Z",
+ "updated_at": "2026-11-14T18:01:23.651214Z",
+ "model_usage_turn_id": "session_ant_1794675020922_f6e720f45031cad8:message_1794675021034_13996817658231050397",
+ "provider_key": "claude-oauth@claude-otter",
+ "model": "claude-opus-5-5",
+ "route_api_method": "claude-oauth@claude-otter",
+ "reasoning_effort": "low",
+ "is_canary": false,
+ "working_dir": "/Users/xenking/projects/github.com/xenking/jcode",
+ "short_name": "ant",
+ "status": "Closed",
+ "last_pid": 53073,
+ "last_active_at": "2026-11-14T17:30:22.968098Z",
+ "is_debug": true,
+ "saved": false
+}

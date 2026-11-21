@@ -16,13 +16,15 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 use serde::{Deserialize, Serialize};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 #[path = "input_popup.rs"]
-mod popup;
+pub(crate) mod popup;
 
 #[path = "input_layout.rs"]
 mod layout;
+#[path = "input_live_dictation.rs"]
+mod live_dictation;
 
 #[path = "input_motion.rs"]
 mod motion;
@@ -31,13 +33,18 @@ use layout::PromptLayout;
 #[path = "input_file_drop.rs"]
 pub(crate) mod file_drop;
 #[path = "input_model_menu.rs"]
-mod model_menu;
+pub(crate) mod model_menu;
 #[path = "input_model_picker.rs"]
 mod model_picker;
 #[path = "input_model_search.rs"]
 mod model_search;
+#[path = "input_model_stage.rs"]
+mod model_stage;
+pub(crate) use model_stage::parse_model_pick;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
+#[path = "input_resize.rs"]
+mod resize;
 
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
@@ -72,7 +79,10 @@ actions!(
         Redo,
         HistoryPrev,
         HistoryNext,
+        GrowEditor,
+        ShrinkEditor,
         Clear,
+        Stash,
         Submit,
         Queue,
         InsertNewline,
@@ -145,7 +155,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-]", HistoryNext, Some("PromptInput")),
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
+        KeyBinding::new("alt-shift-up", GrowEditor, Some("PromptInput")),
+        KeyBinding::new("alt-shift-down", ShrinkEditor, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
+        KeyBinding::new("ctrl-s", Stash, Some("PromptInput")),
         // Falls through (propagates) unless ghost text is showing.
         KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
         KeyBinding::new("home", Home, Some("PromptInput")),
@@ -167,24 +180,38 @@ pub fn bind_keys(cx: &mut App) {
 
 pub struct PromptInput {
     pub focus_handle: FocusHandle,
+    #[cfg(target_os = "macos")]
+    ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
     pub content: SharedString,
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
+    last_layout_revision: u64,
+    vertical_caret: Option<VerticalCaret>,
     last_bounds: Option<Bounds<Pixels>>,
+    chip_positions: Vec<(usize, Bounds<Pixels>)>,
+    /// Row height the layout was shaped and painted with. Event handlers run
+    /// outside the element's text style, where `Window::line_height` differs.
+    last_line_height: Option<Pixels>,
     voice_preview: Option<String>,
+    live_dictation: Option<Range<usize>>,
+    /// Says what stopping the recording will do to the draft. Comes from
+    /// `[dictation] mode`, so the dim preview never promises a send the mode
+    /// will not perform.
+    voice_preview_hint: Option<SharedString>,
     voice_preview_scroll: gpui::ScrollHandle,
     composer_bounds: paste_preview::MeasuredBounds,
     visual_line_count: usize,
     is_selecting: bool,
-    undo: Vec<String>,
-    redo: Vec<String>,
+    undo: Vec<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
     history: Vec<String>,
     history_index: Option<usize>,
-    live_draft: String,
+    live_draft: Option<HistoryDraft>,
     attachments: Vec<Attachment>,
+    stashed_prompt: Option<(String, Range<usize>, Vec<Attachment>)>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
     /// Short-lived feedback such as `Effort: High`, cleared by a timer.
@@ -193,12 +220,35 @@ pub struct PromptInput {
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
+    preview_close_focus: FocusHandle,
+    preview_remove_focus: FocusHandle,
     preview_panel_bounds: paste_preview::MeasuredBounds,
-    on_submit: Box<dyn Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App)>,
+    file_attachments_enabled: bool,
+    queue_editor: bool,
+    #[allow(clippy::type_complexity)]
+    on_submit: Box<
+        dyn Fn(
+            SubmissionKind,
+            String,
+            Vec<(String, String)>,
+            Vec<SubmittedFile>,
+            bool,
+            &mut Window,
+            &mut App,
+        ),
+    >,
+    #[allow(clippy::type_complexity)]
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
+    #[allow(clippy::type_complexity)]
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
+    on_picker_outside: Option<popup::Dismiss>,
     command_models: Vec<String>,
+    command_skills: Vec<(String, String)>,
+    /// A standalone picker owns plain query text rather than a slash command.
+    picker_prefix: Option<&'static str>,
     command_completion: bool,
+    command_menu_closed: Option<(SharedString, CommandMenuClose)>,
+    command_selection_explicit: Option<String>,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
@@ -207,20 +257,33 @@ pub struct PromptInput {
     /// steady share of main-thread time in live profiles.
     applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
     expanded_model_groups: HashSet<String>,
+    /// Which step of the two-step model picker is showing.
+    model_stage: model_stage::ModelStage,
     current_model: Option<String>,
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
+    current_modes: Vec<String>,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
+    /// Level picked on a model row with the effort keys, sent with the
+    /// switch. Cleared when the model menu closes.
+    picker_effort: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
+    control_revision: u64,
     suggestions_cache: RefCell<Option<model_picker::SuggestionsCache>>,
     command_layout_key: Option<(SharedString, usize, gpui::Size<Pixels>)>,
     command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
-    revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
+    editor_wheel_gesture: std::cell::Cell<bool>,
+    editor_resize: resize::EditorResize,
+    revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>, bool)>,
     submission_enabled: bool,
+    host_handles_submission: bool,
+    empty_submit: bool,
     pending_session: bool,
     spacious: bool,
+    compact_padding: bool,
     /// Right padding reserved for a control the host floats inside the box
     /// (the chat composer's voice button).
     trailing_inset: f32,
@@ -249,6 +312,10 @@ struct GhostState {
     task: Option<gpui::Task<()>>,
     /// The backend refused (unsupported or signed out). Stop asking.
     disabled: bool,
+    /// Key includes draft, conversation and project, so results cannot leak across contexts.
+    cache: std::collections::VecDeque<(String, String)>,
+    #[cfg(test)]
+    request_counter: Option<std::rc::Rc<std::cell::Cell<usize>>>,
 }
 
 /// Example prompts chosen for one seed, project and personalized catalog.
@@ -304,8 +371,12 @@ struct CommandSuggestion {
     detail: Option<String>,
     header: Option<String>,
     toggle: Option<String>,
+    /// What Enter or a click does inside the model picker, in place of
+    /// submitting `value`.
+    action: Option<model_stage::StageStep>,
 }
 
+#[allow(dead_code)]
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
     command_suggestions_with_efforts(input, models, EffortMenu::default())
 }
@@ -342,6 +413,7 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                action: None,
             })
             .collect();
     }
@@ -360,12 +432,15 @@ fn command_suggestions_with_efforts(
                 value: format!("/effort {effort}"),
                 help: if efforts.current == Some(effort) {
                     "Current".into()
+                } else if effort == "swarm" {
+                    "Low-effort root that fans work out to workers".into()
                 } else {
                     "Set reasoning effort".into()
                 },
                 detail: None,
                 header: None,
                 toggle: None,
+                action: None,
             })
             .collect();
     }
@@ -380,7 +455,7 @@ fn command_suggestions_with_efforts(
             .then_some((command, help, command_lower.starts_with(&query)))
         })
         .collect::<Vec<_>>();
-    commands.sort_by_key(|(_, _, prefix)| !prefix);
+    commands.sort_by_key(|(name, _, prefix)| (name.to_ascii_lowercase() != query, !prefix));
     commands
         .into_iter()
         .map(|(value, help, _)| CommandSuggestion {
@@ -389,8 +464,59 @@ fn command_suggestions_with_efforts(
             detail: None,
             header: None,
             toggle: None,
+            action: None,
         })
         .collect()
+}
+
+fn mode_suggestions(
+    input: &str,
+    skills: &[(String, String)],
+    active: &[String],
+    catalog: &crate::mode_catalog::ModeCatalog,
+) -> Vec<CommandSuggestion> {
+    let query = input
+        .strip_prefix("/mode")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let mut rows = Vec::new();
+    let mut group = None;
+    let mut push = |section: &'static str, name: &str, help: &str| {
+        if !name.to_ascii_lowercase().contains(&query) {
+            return;
+        }
+        let header = (group.replace(section) != Some(section)).then(|| section.into());
+        rows.push(CommandSuggestion {
+            value: format!("/mode {name}"),
+            help: help.to_owned(),
+            detail: None,
+            header,
+            toggle: None,
+            action: None,
+        });
+    };
+    for name in active {
+        let help = skills
+            .iter()
+            .find(|(skill, _)| skill == name)
+            .map_or("Pinned in this session", |(_, help)| help);
+        push("Active", name, help);
+    }
+    for (section, modes) in [("Modes", true), ("Skills", false)] {
+        for (name, help) in skills {
+            if name != "off"
+                && !active.contains(name)
+                && crate::mode_catalog::is_mode(name, catalog.get(name)) == modes
+            {
+                push(section, name, help);
+            }
+        }
+    }
+    if !active.is_empty() {
+        push("Actions", "off", "Clear all active modes");
+    }
+    rows
 }
 
 fn accepted_command_submission(
@@ -400,19 +526,167 @@ fn accepted_command_submission(
     let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
     // Matching includes descriptions, not only command-name prefixes. Enter
     // must select the highlighted result for either kind of search.
-    suggestion
-        .toggle
-        .is_none()
-        .then(|| suggestion.value.clone())
+    (suggestion.toggle.is_none() && suggestion.action.is_none()).then(|| suggestion.value.clone())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmissionKind {
+    Message,
+    Command,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandMenuClose {
+    Completed,
+    Literal,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub(crate) struct SubmittedFile {
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub data: String,
 }
 
 #[derive(Clone)]
 struct Attachment {
-    media_type: String,
-    encoded: String,
     label: SharedString,
+    payload: AttachmentPayload,
+}
+
+#[derive(Clone)]
+enum AttachmentPayload {
+    Image {
+        media_type: String,
+        encoded: Arc<str>,
+        preview: Arc<gpui::Image>,
+    },
+    Text(Arc<str>),
+    Queued {
+        source: QueuedAttachment,
+        preview: Option<FileImage>,
+        replacement: String,
+    },
+    File {
+        path: std::path::PathBuf,
+        image: Option<FileImage>,
+        file: SubmittedFile,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum QueuedAttachment {
+    Image(String, String),
+    File(jcode_sdk::api::Attachment),
+}
+
+impl QueuedAttachment {
+    fn preview(&self) -> Option<FileImage> {
+        let (mime, data) = match self {
+            Self::Image(mime, data) => (mime, data),
+            Self::File(jcode_sdk::api::Attachment::File {
+                mime,
+                data: Some(data),
+                ..
+            }) => (mime, data),
+            Self::File(_) => return None,
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .ok()?;
+        Some(FileImage {
+            media_type: mime.clone(),
+            encoded: data.clone().into(),
+            preview: preview_image(mime, bytes)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct FileImage {
+    media_type: String,
+    encoded: Arc<str>,
     preview: Arc<gpui::Image>,
-    bounds: paste_preview::MeasuredBounds,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedFile {
+    path: std::path::PathBuf,
+    image: Option<(String, String)>,
+    file: SubmittedFile,
+}
+
+const FILE_MEDIA_TYPE: &str = "application/x-jcode-file-reference";
+
+const QUEUED_MEDIA_TYPE: &str = "application/x-jcode-queued-attachment";
+
+const SNIPPET_MEDIA_TYPE: &str = "application/x-jcode-pasted-text";
+
+impl Attachment {
+    fn snapshot(&self) -> AttachmentSnapshot {
+        let (media_type, encoded) = match &self.payload {
+            AttachmentPayload::Image {
+                media_type,
+                encoded,
+                ..
+            } => (media_type.clone(), encoded.to_string()),
+            AttachmentPayload::Queued {
+                source,
+                replacement,
+                ..
+            } => (
+                QUEUED_MEDIA_TYPE.to_string(),
+                base64::engine::general_purpose::STANDARD.encode(
+                    serde_json::to_vec(&(source, replacement)).expect("queued attachment snapshot"),
+                ),
+            ),
+            AttachmentPayload::Text(text) => (
+                SNIPPET_MEDIA_TYPE.to_string(),
+                base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+            ),
+            AttachmentPayload::File { path, image, file } => {
+                let saved = SavedFile {
+                    path: path.clone(),
+                    image: image
+                        .as_ref()
+                        .map(|image| (image.media_type.clone(), image.encoded.to_string())),
+                    file: file.clone(),
+                };
+                (
+                    FILE_MEDIA_TYPE.to_string(),
+                    base64::engine::general_purpose::STANDARD
+                        .encode(serde_json::to_vec(&saved).expect("file attachment snapshot")),
+                )
+            }
+        };
+        AttachmentSnapshot {
+            media_type,
+            encoded,
+            label: self.label.to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EditSnapshot {
+    content: String,
+    attachments: Vec<Attachment>,
+}
+
+struct HistoryDraft {
+    content: String,
+    selection: Range<usize>,
+    selection_reversed: bool,
+    attachments: Vec<Attachment>,
+}
+
+struct VerticalCaret {
+    offset: usize,
+    revision: u64,
+    goal_x: Pixels,
+    // At a soft wrap the same offset can also be the start of the next row.
+    downstream: bool,
 }
 
 fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
@@ -430,7 +704,27 @@ pub struct PromptInputSnapshot {
     pub selection_reversed: bool,
     pub history: Vec<String>,
     pub history_index: Option<usize>,
+    #[serde(default)]
     pub live_draft: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_draft: Option<HistoryDraftSnapshot>,
+    pub attachments: Vec<AttachmentSnapshot>,
+    #[serde(default)]
+    pub stashed_prompt: Option<StashedPromptSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct HistoryDraftSnapshot {
+    #[serde(flatten)]
+    draft: StashedPromptSnapshot,
+    selection_reversed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StashedPromptSnapshot {
+    pub content: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
     pub attachments: Vec<AttachmentSnapshot>,
 }
 
@@ -441,18 +735,205 @@ pub struct AttachmentSnapshot {
     pub label: String,
 }
 
+fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> {
+    attachments
+        .into_iter()
+        .filter_map(|attachment| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.encoded)
+                .ok()?;
+            let payload = if attachment.media_type == SNIPPET_MEDIA_TYPE {
+                AttachmentPayload::Text(String::from_utf8(bytes).ok()?.into())
+            } else if attachment.media_type == QUEUED_MEDIA_TYPE {
+                let (source, replacement): (QueuedAttachment, String) =
+                    serde_json::from_slice(&bytes).ok()?;
+                AttachmentPayload::Queued {
+                    preview: source.preview(),
+                    source,
+                    replacement,
+                }
+            } else if attachment.media_type == FILE_MEDIA_TYPE {
+                let saved: SavedFile = serde_json::from_slice(&bytes).ok()?;
+                let image = match saved.image {
+                    Some((media_type, encoded)) => {
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(&encoded)
+                            .ok()?;
+                        Some(FileImage {
+                            preview: preview_image(&media_type, bytes)?,
+                            media_type,
+                            encoded: encoded.into(),
+                        })
+                    }
+                    None => None,
+                };
+                AttachmentPayload::File {
+                    path: saved.path,
+                    image,
+                    file: saved.file,
+                }
+            } else {
+                let preview = preview_image(&attachment.media_type, bytes)?;
+                AttachmentPayload::Image {
+                    media_type: attachment.media_type,
+                    encoded: attachment.encoded.into(),
+                    preview,
+                }
+            };
+            Some(Attachment {
+                label: attachment.label.into(),
+                payload,
+            })
+        })
+        .collect()
+}
+
+/// Migrate pre-chip snapshots and preserve attachments when a draft is replaced.
+fn ensure_visible_chips(content: &mut String, attachments: &mut [Attachment]) {
+    for attachment in attachments {
+        let marker = attachment.label.as_ref();
+        if content.contains(marker) {
+            continue;
+        }
+        let marker = (1..)
+            .map(|n| format!("[#image {n}]"))
+            .find(|marker| !content.contains(marker))
+            .unwrap();
+        if !content.is_empty() && !content.ends_with(char::is_whitespace) {
+            content.push(' ');
+        }
+        content.push_str(&marker);
+        attachment.label = marker.into();
+    }
+}
+
+pub(crate) fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
+    content
+        .match_indices("[#")
+        .filter_map(|(start, _)| {
+            let rest = &content[start..];
+            let end = rest.find(']')?;
+            let marker = &rest[2..end];
+            let valid = marker.strip_prefix("image ").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            }) || marker.strip_prefix("img_").is_some_and(|hash| {
+                hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            valid.then_some(start..start + end + 1)
+        })
+        .collect()
+}
+
+pub(crate) struct PickerSettings {
+    models: Vec<String>,
+    details: HashMap<String, model_menu::ModelDetails>,
+    current_model: Option<String>,
+    effort_ladder: Vec<&'static str>,
+    current_effort: Option<String>,
+    skills: Vec<(String, String)>,
+    current_modes: Vec<String>,
+    mode_catalog: crate::mode_catalog::ModeCatalog,
+}
+
 impl PromptInput {
+    pub(crate) fn composer_proof_state(&self) -> serde_json::Value {
+        let bounds = self.editor_scroll.bounds();
+        serde_json::json!({
+            "command_menu": !self.command_suggestions().is_empty(),
+            "attachments": self.attachments.len(),
+            "editor_height": f32::from(bounds.size.height),
+            "editor_y": f32::from(self.editor_scroll.offset().y),
+        })
+    }
+
+    pub(crate) fn composer_wheel_position(&self) -> Point<Pixels> {
+        self.editor_scroll.bounds().center()
+    }
+
+    pub(crate) fn has_draft_images(&self) -> bool {
+        self.attachments
+            .iter()
+            .chain(self.live_draft.iter().flat_map(|draft| &draft.attachments))
+            .chain(
+                self.stashed_prompt
+                    .iter()
+                    .flat_map(|(_, _, attachments)| attachments),
+            )
+            .any(|attachment| {
+                matches!(
+                    attachment.payload,
+                    AttachmentPayload::Image { .. }
+                        | AttachmentPayload::File { image: Some(_), .. }
+                )
+            })
+    }
+
+    pub(crate) fn editor_wheel_ownership(
+        &self,
+        event: &gpui::ScrollWheelEvent,
+        in_composer: bool,
+    ) -> (bool, bool) {
+        let over_editor = in_composer && self.editor_scroll.bounds().contains(&event.position);
+        let owned_gesture = event.delta.precise()
+            && match event.touch_phase {
+                gpui::TouchPhase::Started => {
+                    self.editor_wheel_gesture.set(over_editor);
+                    over_editor
+                }
+                gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {
+                    self.editor_wheel_gesture.replace(false)
+                }
+                gpui::TouchPhase::Moved => self.editor_wheel_gesture.get(),
+            };
+        (over_editor, owned_gesture)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_editor_scroll(&self) -> gpui::ScrollHandle {
+        self.editor_scroll.clone()
+    }
+    pub(crate) fn picker_settings(&self) -> PickerSettings {
+        PickerSettings {
+            models: self.command_models.clone(),
+            details: self.model_details.clone(),
+            current_model: self.current_model.clone(),
+            effort_ladder: self.effort_ladder.clone(),
+            current_effort: self.current_effort.clone(),
+            skills: self.command_skills.clone(),
+            current_modes: self.current_modes.clone(),
+            mode_catalog: self.mode_catalog.clone(),
+        }
+    }
+
+    pub(crate) fn apply_picker_settings(
+        &mut self,
+        settings: PickerSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_models = settings.models;
+        self.model_details = settings.details;
+        self.current_model = settings.current_model;
+        self.effort_ladder = settings.effort_ladder;
+        self.current_effort = settings.current_effort;
+        self.command_skills = settings.skills;
+        self.current_modes = settings.current_modes;
+        self.mode_catalog = settings.mode_catalog;
+        self.suggestions_revision += 1;
+        cx.notify();
+    }
+
     pub fn snapshot(&self) -> PromptInputSnapshot {
         // A transient picker must never replace the user's persisted draft.
-        let (content, attachments) = self
-            .model_menu_draft
-            .as_ref()
-            .map(|(content, attachments)| (content, attachments))
-            .unwrap_or((&self.content, &self.attachments));
-        let selection = if self.model_menu_draft.is_some() {
-            content.len()..content.len()
-        } else {
-            self.selected_range.clone()
+        let (content, selection, attachments) = match &self.model_menu_draft {
+            Some((content, attachments)) => (
+                std::borrow::Cow::Borrowed(content.as_ref()),
+                content.len()..content.len(),
+                attachments,
+            ),
+            None => {
+                let (content, selection) = self.draft_without_live_dictation();
+                (content, selection, &self.attachments)
+            }
         };
         PromptInputSnapshot {
             content: content.to_string(),
@@ -461,22 +942,46 @@ impl PromptInput {
             selection_reversed: self.selection_reversed,
             history: self.history.clone(),
             history_index: self.history_index,
-            live_draft: self.live_draft.clone(),
-            attachments: attachments
-                .iter()
-                .map(|attachment| AttachmentSnapshot {
-                    media_type: attachment.media_type.clone(),
-                    encoded: attachment.encoded.clone(),
-                    label: attachment.label.to_string(),
-                })
-                .collect(),
+            live_draft: String::new(),
+            history_draft: self.live_draft.as_ref().map(|draft| HistoryDraftSnapshot {
+                draft: StashedPromptSnapshot {
+                    content: draft.content.clone(),
+                    selection_start: draft.selection.start,
+                    selection_end: draft.selection.end,
+                    attachments: draft.attachments.iter().map(Attachment::snapshot).collect(),
+                },
+                selection_reversed: draft.selection_reversed,
+            }),
+            attachments: attachments.iter().map(Attachment::snapshot).collect(),
+            stashed_prompt: self.stashed_prompt.as_ref().map(
+                |(content, selection, attachments)| StashedPromptSnapshot {
+                    content: content.clone(),
+                    selection_start: selection.start,
+                    selection_end: selection.end,
+                    attachments: attachments.iter().map(Attachment::snapshot).collect(),
+                },
+            ),
         }
     }
 
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
+        self.live_dictation = None;
         self.model_menu_draft = None;
-        let len = snapshot.content.len();
-        self.content = snapshot.content.into();
+        self.stashed_prompt = snapshot.stashed_prompt.map(|stash| {
+            let mut content = stash.content;
+            let mut attachments = restore_attachments(stash.attachments);
+            ensure_visible_chips(&mut content, &mut attachments);
+            let len = content.len();
+            let start = stash.selection_start.min(len);
+            let end = stash.selection_end.min(len);
+            (content, start.min(end)..start.max(end), attachments)
+        });
+        let mut content = snapshot.content;
+        self.attachments = restore_attachments(snapshot.attachments);
+        ensure_visible_chips(&mut content, &mut self.attachments);
+        let len = content.len();
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.content = content.into();
         self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
         if self.selected_range.end < self.selected_range.start {
             self.selected_range = self.selected_range.end..self.selected_range.start;
@@ -486,30 +991,38 @@ impl PromptInput {
         self.history_index = snapshot
             .history_index
             .filter(|index| *index < self.history.len());
-        self.live_draft = snapshot.live_draft;
-        self.attachments = snapshot
-            .attachments
-            .into_iter()
-            .filter_map(|attachment| {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&attachment.encoded)
-                    .ok()?;
-                let preview = preview_image(&attachment.media_type, bytes)?;
-                Some(Attachment {
-                    media_type: attachment.media_type,
-                    encoded: attachment.encoded,
-                    label: attachment.label.into(),
-                    preview,
-                    bounds: Default::default(),
-                })
+        self.live_draft = snapshot
+            .history_draft
+            .map(|snapshot| {
+                let mut content = snapshot.draft.content;
+                let mut attachments = restore_attachments(snapshot.draft.attachments);
+                ensure_visible_chips(&mut content, &mut attachments);
+                let boundary = |offset| content.floor_char_boundary(offset);
+                let start = boundary(snapshot.draft.selection_start);
+                let end = boundary(snapshot.draft.selection_end);
+                HistoryDraft {
+                    content,
+                    selection: start.min(end)..start.max(end),
+                    selection_reversed: snapshot.selection_reversed,
+                    attachments,
+                }
             })
-            .collect();
+            .or_else(|| {
+                self.history_index.map(|_| {
+                    let len = snapshot.live_draft.len();
+                    HistoryDraft {
+                        content: snapshot.live_draft,
+                        selection: len..len,
+                        selection_reversed: false,
+                        attachments: Vec::new(),
+                    }
+                })
+            });
+        if self.history_index.is_some() {
+            self.close_command_menu(CommandMenuClose::Literal);
+        }
         self.attachment_preview = None;
-        self.attachment_notice = match self.attachments.len() {
-            0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
-        };
+        self.attachment_notice = None;
         self.marked_range = None;
         self.undo.clear();
         self.redo.clear();
@@ -520,14 +1033,94 @@ impl PromptInput {
         if index >= self.attachments.len() {
             return;
         }
-        self.attachments.remove(index);
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        let attachment = self.attachments.remove(index);
+        if let Some(range) = self.chip_range(&attachment) {
+            let mut content = self.content.to_string();
+            content.replace_range(range.clone(), "");
+            self.rebase_live_dictation_after_edit(&range, 0);
+            self.control_revision = self.control_revision.wrapping_add(1);
+            self.content = content.into();
+            self.selected_range = range.start..range.start;
+        }
         self.attachment_preview = None;
-        self.attachment_notice = match self.attachments.len() {
-            0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
-        };
+        self.attachment_notice = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
+    }
+
+    fn edit_snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            content: self.draft_without_live_dictation().0.into_owned(),
+            attachments: self.attachments.clone(),
+        }
+    }
+
+    fn chip_range(&self, attachment: &Attachment) -> Option<Range<usize>> {
+        let marker = attachment.label.as_ref();
+        let start = self.content.find(marker)?;
+        Some(start..start + marker.len())
+    }
+
+    fn chip_ranges(&self) -> Vec<(usize, Range<usize>)> {
+        self.attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                self.chip_range(attachment).map(|range| (index, range))
+            })
+            .collect()
+    }
+
+    fn image_chip_numbers(&self) -> Vec<Option<usize>> {
+        let mut ranges = self.chip_ranges();
+        ranges.sort_unstable_by_key(|(_, range)| range.start);
+        let mut numbers = vec![None; self.attachments.len()];
+        let mut number = 0;
+        for (index, _) in ranges {
+            if matches!(
+                self.attachments[index].payload,
+                AttachmentPayload::Image { .. }
+                    | AttachmentPayload::Queued {
+                        source: QueuedAttachment::Image(..),
+                        ..
+                    }
+            ) {
+                number += 1;
+                numbers[index] = Some(number);
+            }
+        }
+        numbers
+    }
+
+    fn expanded_chip_range(&self, mut edit: Range<usize>) -> Range<usize> {
+        for (_, chip) in self.chip_ranges() {
+            if (edit.start < chip.end && edit.end > chip.start)
+                || (edit.is_empty() && edit.start > chip.start && edit.start < chip.end)
+            {
+                edit.start = edit.start.min(chip.start);
+                edit.end = edit.end.max(chip.end);
+            }
+        }
+        edit
+    }
+
+    fn remove_chips_in_range(&mut self, range: &Range<usize>) {
+        let remove: Vec<usize> = self
+            .chip_ranges()
+            .into_iter()
+            .filter_map(|(index, chip)| {
+                (range.start < chip.end && range.end > chip.start).then_some(index)
+            })
+            .collect();
+        for index in remove.into_iter().rev() {
+            self.attachments.remove(index);
+        }
+        self.attachment_preview = None;
     }
 
     pub fn new(
@@ -545,16 +1138,48 @@ impl PromptInput {
         placeholder: impl Into<SharedString>,
         on_submit: impl Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App) + 'static,
     ) -> Self {
+        let mut input = Self::new_with_queue_files(
+            cx,
+            placeholder,
+            move |_, text, images, _, queued, window, cx| {
+                on_submit(text, images, queued, window, cx)
+            },
+        );
+        input.file_attachments_enabled = false;
+        input
+    }
+
+    pub(crate) fn new_with_queue_files(
+        cx: &mut Context<Self>,
+        placeholder: impl Into<SharedString>,
+        on_submit: impl Fn(
+            SubmissionKind,
+            String,
+            Vec<(String, String)>,
+            Vec<SubmittedFile>,
+            bool,
+            &mut Window,
+            &mut App,
+        ) + 'static,
+    ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            #[cfg(target_os = "macos")]
+            ime_log_focus_subscriptions: None,
             content: "".into(),
             placeholder: placeholder.into(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
             last_layout: None,
+            last_layout_revision: 0,
+            vertical_caret: None,
             last_bounds: None,
+            chip_positions: Vec::new(),
+            last_line_height: None,
             voice_preview: None,
+            live_dictation: None,
+            voice_preview_hint: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
             composer_bounds: Default::default(),
             visual_line_count: 1,
@@ -563,36 +1188,56 @@ impl PromptInput {
             redo: Vec::new(),
             history: Vec::new(),
             history_index: None,
-            live_draft: String::new(),
+            live_draft: None,
             attachments: Vec::new(),
+            stashed_prompt: None,
             model_menu_draft: None,
             attachment_notice: None,
             transient_notice: None,
             transient_notice_generation: 0,
             attachment_preview: None,
+            preview_close_focus: cx.focus_handle(),
+            preview_remove_focus: cx.focus_handle(),
             preview_panel_bounds: Default::default(),
+            file_attachments_enabled: true,
+            queue_editor: false,
             on_submit: Box::new(on_submit),
             on_change: None,
             on_overlay_cancel: None,
+            on_picker_outside: None,
             command_models: Vec::new(),
+            command_skills: Vec::new(),
+            picker_prefix: None,
             command_completion: true,
+            command_menu_closed: None,
+            command_selection_explicit: None,
             command_selection: 0,
             model_details: HashMap::new(),
             applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
+            model_stage: Default::default(),
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
+            current_modes: Vec::new(),
+            mode_catalog: Default::default(),
+            picker_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
+            control_revision: 0,
             suggestions_cache: RefCell::new(None),
             command_layout_key: None,
             command_entrance: jcode_desktop_motion::MenuEntrance::default(),
             editor_scroll: gpui::ScrollHandle::new(),
+            editor_wheel_gesture: Default::default(),
+            editor_resize: Default::default(),
             revealed_caret: None,
             submission_enabled: true,
+            host_handles_submission: false,
+            empty_submit: false,
             pending_session: false,
             spacious: false,
+            compact_padding: false,
             trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
@@ -600,6 +1245,172 @@ impl PromptInput {
             motion: Default::default(),
             ghost: None,
         }
+    }
+
+    /// An editor for one queued message, embedded in its queue row. It shows
+    /// the message exactly as queued, with its images, files and pasted text
+    /// as chips, and never submits by itself: the queue saves it in place.
+    pub(crate) fn queued_editor(
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut input =
+            Self::new_with_queue_files(cx, "Edit queued message…", |_, _, _, _, _, _, _| {});
+        input.queue_editor = true;
+        input.command_completion = false;
+        let mut text = content;
+        let markers: Vec<String> = image_marker_ranges(&text)
+            .into_iter()
+            .map(|range| text[range].to_string())
+            .collect();
+        let mut chips: Vec<(String, QueuedAttachment, String)> = Vec::new();
+        let mut appended: Vec<(String, QueuedAttachment)> = Vec::new();
+        for (index, (mime, data)) in images.into_iter().enumerate() {
+            let source = QueuedAttachment::Image(mime, data);
+            match markers.get(index) {
+                Some(marker) if !chips.iter().any(|(label, ..)| label == marker) => {
+                    chips.push((marker.clone(), source, marker.clone()));
+                }
+                _ => appended.push(("[#image 1]".into(), source)),
+            }
+        }
+        for attachment in attachments {
+            let base = match &attachment {
+                jcode_sdk::api::Attachment::File { name, size, .. } => {
+                    format!("[#{}, {size} B]", name.replace(['[', ']', '\n', '\r'], " "))
+                }
+                jcode_sdk::api::Attachment::PastedText { text } => {
+                    format!("[Pasted text, {} chars]", text.encode_utf16().count())
+                }
+                jcode_sdk::api::Attachment::Unknown => "[#attachment]".into(),
+            };
+            appended.push((base, QueuedAttachment::File(attachment)));
+        }
+        // Attachments the message text does not name get a chip at the end.
+        // Saving removes that chip and the space before it again, so an
+        // untouched message round-trips byte for byte.
+        for (base, source) in appended {
+            let label = (1..)
+                .map(|n| match (n, base.strip_prefix("[#image ")) {
+                    (_, Some(_)) => format!("[#image {n}]"),
+                    (1, None) => base.clone(),
+                    (n, None) => format!("{} #{n}]", &base[..base.len() - 1]),
+                })
+                .find(|label| {
+                    !text.contains(label.as_str()) && !chips.iter().any(|(used, ..)| used == label)
+                })
+                .expect("an unused chip label");
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&label);
+            chips.push((label, source, String::new()));
+        }
+        input.attachments = chips
+            .into_iter()
+            .map(|(label, source, replacement)| Attachment {
+                label: label.into(),
+                payload: AttachmentPayload::Queued {
+                    preview: source.preview(),
+                    source,
+                    replacement,
+                },
+            })
+            .collect();
+        input.set_content(text, cx);
+        input
+    }
+
+    /// What a queue editor saves: its text, then every image and attachment it
+    /// still shows. Attachments the user did not touch go back exactly as they
+    /// were queued, whether inline bytes or a path on the runtime's machine.
+    pub(crate) fn queued_edit_payload(
+        &self,
+    ) -> (
+        String,
+        Vec<(String, String)>,
+        Vec<jcode_sdk::api::Attachment>,
+    ) {
+        let mut located: Vec<_> = self
+            .attachments
+            .iter()
+            .map(|attachment| (self.chip_range(attachment), attachment))
+            .collect();
+        located.sort_by_key(|(range, _)| range.as_ref().map_or(usize::MAX, |range| range.start));
+        let mut images = Vec::new();
+        let mut files = Vec::new();
+        let mut edits = Vec::new();
+        for (range, attachment) in located {
+            let replacement = match &attachment.payload {
+                AttachmentPayload::Queued {
+                    source,
+                    replacement,
+                    ..
+                } => {
+                    match source {
+                        QueuedAttachment::Image(mime, data) => {
+                            images.push((mime.clone(), data.clone()))
+                        }
+                        QueuedAttachment::File(file) => files.push(file.clone()),
+                    }
+                    (replacement.as_str() != attachment.label.as_ref()).then(|| replacement.clone())
+                }
+                AttachmentPayload::Image {
+                    media_type,
+                    encoded,
+                    ..
+                } => {
+                    images.push((media_type.clone(), encoded.to_string()));
+                    None
+                }
+                AttachmentPayload::Text(text) => Some(text.to_string()),
+                AttachmentPayload::File { path, file, .. } => {
+                    files.push(jcode_sdk::api::Attachment::File {
+                        name: file.name.clone(),
+                        mime: file.mime.clone(),
+                        size: file.size,
+                        data: Some(file.data.clone()),
+                        path: None,
+                    });
+                    Some(if path.as_os_str().is_empty() {
+                        String::new()
+                    } else {
+                        file_drop::path_text(std::slice::from_ref(path))
+                    })
+                }
+            };
+            if let (Some(range), Some(replacement)) = (range, replacement) {
+                edits.push((range, replacement));
+            }
+        }
+        let mut content = self.content.to_string();
+        for (range, replacement) in edits.into_iter().rev() {
+            let start = if replacement.is_empty() && content[..range.start].ends_with(' ') {
+                range.start - 1
+            } else {
+                range.start
+            };
+            content.replace_range(start..range.end, &replacement);
+        }
+        (content, images, files)
+    }
+
+    /// A preview dialog is open over this field, so Esc closes it first.
+    pub(crate) fn has_open_preview(&self) -> bool {
+        self.attachment_preview.is_some()
+    }
+
+    /// Test hook: laid-out line count and how far the editor can scroll.
+    #[cfg(test)]
+    pub(crate) fn editor_layout(&self) -> (usize, Pixels) {
+        (self.visual_line_count, self.editor_scroll.max_offset().y)
+    }
+
+    pub(crate) fn with_empty_submit(mut self) -> Self {
+        self.empty_submit = true;
+        self
     }
 
     /// Suggest inline completions (ghost text, Tab accepts) when enabled in
@@ -614,6 +1425,9 @@ impl PromptInput {
                 context: Box::new(context),
                 task: None,
                 disabled: false,
+                cache: Default::default(),
+                #[cfg(test)]
+                request_counter: None,
             });
         }
         self
@@ -623,9 +1437,20 @@ impl PromptInput {
         self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
     }
 
+    /// Put the caret at a byte offset for dictation fixtures.
+    pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset, cx);
+    }
+
+    /// Test hook: current caret byte offset.
+    #[cfg(test)]
+    pub(crate) fn caret_offset(&self) -> usize {
+        self.cursor_offset()
+    }
+
     /// Suggested remainder to paint after the caret.
     pub(crate) fn ghost_text(&self) -> Option<&str> {
-        if self.marked_range.is_some() {
+        if self.marked_range.is_some() || self.content.trim_start().starts_with('/') {
             return None;
         }
         self.ghost
@@ -657,12 +1482,44 @@ impl PromptInput {
         if ghost.disabled {
             return;
         }
+        // GPUI's deterministic scheduler cannot be woken by Tokio's real
+        // network thread. Tests explicitly opt into a fake request counter.
+        #[cfg(test)]
+        if ghost.request_counter.is_none() {
+            return;
+        }
         let context = (ghost.context)(cx);
         let settings = &crate::config::get().completions;
-        let debounce = Duration::from_millis(settings.debounce_ms);
+        let debounce = Duration::from_millis(settings.debounce_ms.max(400));
         let model = settings.model.clone();
+        #[cfg(test)]
+        let request_counter = ghost.request_counter.clone();
+        let project = working_dir.as_deref().and_then(|dir| {
+            std::path::Path::new(dir)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        let request = crate::prompt_completion::Request {
+            draft,
+            context,
+            cwd: working_dir,
+            project,
+            model,
+        };
+        let cache_key = serde_json::to_string(&request).unwrap_or_default();
+        if let Some((_, completion)) = ghost.cache.iter().find(|(key, _)| key == &cache_key) {
+            if ghost.machine.on_response(generation, completion) {
+                cx.notify();
+            }
+            return;
+        }
         ghost.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(debounce).await;
+            #[cfg(test)]
+            if let Some(counter) = request_counter {
+                counter.set(counter.get() + 1);
+                return;
+            }
             let Some(key) = jcode_base::subscription_catalog::configured_api_key()
                 .map(|key| key.trim().to_owned())
                 .filter(|key| !key.is_empty())
@@ -670,28 +1527,29 @@ impl PromptInput {
                 return;
             };
             let base = jcode_base::subscription_api::configured_api_base();
-            let project = working_dir.as_deref().and_then(|dir| {
-                std::path::Path::new(dir)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            });
-            let request = crate::prompt_completion::Request {
-                draft,
-                context,
-                cwd: working_dir,
-                project,
-                model,
-            };
-            let result = cx
+            let reserved = cx
                 .background_executor()
-                .spawn(async move { crate::prompt_completion::fetch(&base, &key, &request) })
+                .spawn(async { crate::prompt_completion::reserve_daily_request() })
                 .await;
+            if !reserved {
+                return;
+            }
+            let result = match crate::prompt_completion::fetch(base, key, request) {
+                Ok(mut task) => task.result().await,
+                Err(error) => Err(error),
+            };
             let _ = this.update(cx, |input, cx| {
                 let Some(ghost) = input.ghost.as_mut() else {
                     return;
                 };
                 match result {
                     Ok(completion) => {
+                        if ghost.machine.is_current(generation) {
+                            if ghost.cache.len() >= 32 {
+                                ghost.cache.pop_front();
+                            }
+                            ghost.cache.push_back((cache_key, completion.clone()));
+                        }
                         if ghost.machine.on_response(generation, &completion) {
                             cx.notify();
                         }
@@ -713,15 +1571,65 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.attachments.is_empty()
+            && let Some(name) = self.selected_mode_name()
+        {
+            self.toggle_mode_row(&name, window, cx);
+            return;
+        }
+        if self.complete_slash_command(cx) {
+            return;
+        }
         let at_end = self.cursor_at_end() && self.marked_range.is_none();
         let accepted = self
             .ghost
             .as_mut()
             .and_then(|ghost| ghost.machine.accept(&self.content, at_end));
         match accepted {
-            Some(suffix) => self.replace_text_in_range(None, &suffix, window, cx),
+            Some(suffix) => {
+                self.replace_text_in_range(None, &suffix, window, cx);
+                self.dismiss_ghost();
+            }
             None => cx.propagate(),
         }
+    }
+
+    /// Tab on a visible slash popup accepts its highlighted row.
+    fn complete_slash_command(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.picker_prefix.is_some() {
+            return false;
+        }
+        if !self.command_completion || !self.attachments.is_empty() {
+            return false;
+        }
+        let suggestions = self.command_suggestions();
+        let Some(row) = suggestions.get(self.command_selection) else {
+            return false;
+        };
+        if row.toggle.is_some()
+            || (row.action.is_some()
+                && !(self.model_stage == model_stage::ModelStage::Models
+                    && row.value.starts_with("/model ")))
+        {
+            return false;
+        }
+        let value = row.value.clone();
+        let embedded = self.embedded_command_token();
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        if let Some((range, _)) = embedded {
+            let caret = range.start + value.len();
+            let mut draft = self.content.to_string();
+            draft.replace_range(range, &value);
+            self.set_content(draft, cx);
+            self.selected_range = caret..caret;
+            self.close_command_menu(CommandMenuClose::Literal);
+        } else {
+            self.set_content(value, cx);
+            self.close_command_menu(CommandMenuClose::Completed);
+        }
+        cx.notify();
+        true
     }
 
     /// Chat composers show animated example prompts while empty.
@@ -751,8 +1659,10 @@ impl PromptInput {
                 && picked.working_dir == self.working_dir
         });
         if !fresh {
-            let personal = crate::example_prompts::for_dir(cx, self.working_dir.as_deref());
-            let prompts = motion::pick_prompts(&personal, state.seed).map(SharedString::from);
+            // A shared project is not a session boundary: another session's
+            // unfinished todos must never become this composer's examples.
+            let prompts =
+                motion::pick_prompts(&[] as &[SharedString], state.seed).map(SharedString::from);
             if state
                 .prompts
                 .as_ref()
@@ -796,6 +1706,21 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn has_draft(&self) -> bool {
+        !self.content.is_empty() || !self.attachments.is_empty()
+    }
+
+    pub(crate) fn has_user_draft(&self) -> bool {
+        !self.content.trim().is_empty()
+            || !self.attachments.is_empty()
+            || self
+                .stashed_prompt
+                .as_ref()
+                .is_some_and(|(text, _, attachments)| {
+                    !text.trim().is_empty() || !attachments.is_empty()
+                })
+    }
+
     pub(crate) fn working_dir(&self) -> Option<&str> {
         self.working_dir.as_deref()
     }
@@ -804,10 +1729,6 @@ impl PromptInput {
     /// change anything. Checked before updating while a frame is drawn.
     pub(crate) fn needs_layout_update(&self, spacious: bool, trailing_inset: f32) -> bool {
         self.spacious != spacious || self.trailing_inset != trailing_inset
-    }
-
-    pub(crate) fn has_voice_preview(&self) -> bool {
-        self.voice_preview.is_some()
     }
 
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
@@ -829,6 +1750,20 @@ impl PromptInput {
     pub(crate) fn without_chrome(mut self) -> Self {
         self.chrome = false;
         self
+    }
+
+    pub(crate) fn with_compact_padding(mut self) -> Self {
+        self.compact_padding = true;
+        self
+    }
+
+    pub(crate) fn embedded_editor(cx: &mut Context<Self>, placeholder: &'static str) -> Self {
+        let mut editor = Self::new(cx, placeholder, |_, _, _, _| {})
+            .without_command_completion()
+            .without_chrome()
+            .with_compact_padding();
+        editor.host_handles_submission = true;
+        editor
     }
 
     /// Plain metadata editors should not interpret titles as slash commands.
@@ -859,6 +1794,17 @@ impl PromptInput {
 
     pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) -> bool + 'static) -> Self {
         self.on_overlay_cancel = Some(Box::new(cancel));
+        self
+    }
+
+    pub(crate) fn with_on_picker_outside(
+        mut self,
+        dismiss: impl Fn(&FocusHandle, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let focus = self.focus_handle.clone();
+        self.on_picker_outside = Some(std::rc::Rc::new(move |window, cx| {
+            dismiss(&focus, window, cx);
+        }));
         self
     }
 
@@ -906,20 +1852,18 @@ impl PromptInput {
         if let Some(model) = selected
             .as_ref()
             .and_then(|row| row.value.strip_prefix("/model "))
-        {
-            if !self
+            && !self
                 .command_suggestions()
                 .iter()
                 .any(|row| row.value == format!("/model {model}"))
-                && self
-                    .command_models
-                    .iter()
-                    .any(|candidate| candidate == model)
-            {
-                self.expanded_model_groups
-                    .insert(model_menu::group_key(model, &self.model_details));
-                self.suggestions_revision += 1;
-            }
+            && self
+                .command_models
+                .iter()
+                .any(|candidate| candidate == model)
+        {
+            self.expanded_model_groups
+                .insert(model_menu::group_key(model, &self.model_details));
+            self.suggestions_revision += 1;
         }
         // A background usage update must not move Enter onto a different model.
         if let Some(index) = selected.and_then(|selected| {
@@ -975,10 +1919,41 @@ impl PromptInput {
         current: Option<&str>,
     ) -> Option<String> {
         provider_route_spec_in(&self.model_details, provider, current)
+            .or_else(|| provider_fallback_spec(provider))
+    }
+
+    /// A picker accepts either its search argument or the full slash command.
+    /// Both the rows and Enter must interpret that text identically.
+    fn command_content(&self) -> String {
+        let Some(prefix) = self.picker_prefix else {
+            return self.content.to_string();
+        };
+        let content = self.content.trim_start();
+        let strip = |command: &str| {
+            content
+                .strip_prefix(command)
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        };
+        let query = strip(prefix)
+            .or_else(|| {
+                (prefix == "/model"
+                    && matches!(self.model_stage, model_stage::ModelStage::Efforts { .. }))
+                .then(|| strip("/effort"))
+                .flatten()
+            })
+            .unwrap_or(content);
+        format!("{prefix} {}", query.trim_start())
     }
 
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
         if !self.command_completion {
+            return Vec::new();
+        }
+        let command_content = self.embedded_command_token().map_or_else(
+            || self.command_content(),
+            |(range, cursor)| self.content[range.start..cursor].to_owned(),
+        );
+        if !command_content.starts_with('/') || command_content.contains(['\n', '\r']) {
             return Vec::new();
         }
         let now = model_menu::now_unix_secs();
@@ -987,55 +1962,121 @@ impl PromptInput {
             &self.command_models,
             &self.model_details,
         );
-        let trimmed = self.content.trim_start();
-        let suggestions =
-            if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
-                let query = trimmed.strip_prefix("/model").unwrap_or_default();
-                model_menu::grouped_rows(
-                    &self.command_models,
-                    &self.model_details,
-                    self.current_model.as_deref(),
-                    &self.expanded_model_groups,
-                    query,
-                )
-                .into_iter()
-                .map(|row| CommandSuggestion {
-                    value: row.value,
-                    help: String::new(),
-                    detail: None,
-                    header: row.header,
-                    toggle: row.toggle,
+        let trimmed = command_content.trim_end();
+        let first = trimmed.split_whitespace().next().unwrap_or_default();
+        if first == "/mode" {
+            let modes = mode_suggestions(
+                trimmed,
+                &self.command_skills,
+                &self.current_modes,
+                &self.mode_catalog,
+            );
+            if !modes.is_empty() || self.picker_prefix.is_some() {
+                return modes;
+            }
+        }
+        let mut suggestions = if first == "/model" {
+            let query = trimmed.strip_prefix("/model").unwrap_or_default();
+            self.model_stage_rows(query)
+        } else {
+            command_suggestions_with_efforts(
+                &command_content,
+                &self.command_models,
+                EffortMenu {
+                    ladder: Some(&self.effort_ladder),
+                    current: self.current_effort.as_deref(),
+                },
+            )
+        };
+        if self.picker_prefix.is_none()
+            && first.len() > 1
+            && first != "/model"
+            && (first != "/effort" || suggestions.is_empty())
+            && (first != trimmed || suggestions.is_empty())
+            && let Some(help) = crate::commands::registered_command(first)
+                .map(|command| command.help.to_owned())
+                .or_else(|| {
+                    self.command_skills.iter().find_map(|(name, help)| {
+                        (first.strip_prefix('/') == Some(name)).then(|| help.clone())
+                    })
                 })
-                .collect()
-            } else {
-                command_suggestions_with_efforts(
-                    &self.content,
-                    &self.command_models,
-                    EffortMenu {
-                        ladder: Some(&self.effort_ladder),
-                        current: self.current_effort.as_deref(),
-                    },
-                )
-            };
+        {
+            suggestions.insert(
+                0,
+                CommandSuggestion {
+                    value: trimmed.to_owned(),
+                    help,
+                    detail: None,
+                    header: None,
+                    toggle: None,
+                    action: None,
+                },
+            );
+        }
+        if self.picker_prefix.is_none()
+            && trimmed.starts_with('/')
+            && !trimmed.contains(char::is_whitespace)
+        {
+            let query = trimmed.to_ascii_lowercase();
+            for (name, description) in &self.command_skills {
+                let value = format!("/{name}");
+                if value.to_ascii_lowercase().starts_with(&query)
+                    && !suggestions.iter().any(|row| row.value == value)
+                {
+                    suggestions.push(CommandSuggestion {
+                        value,
+                        help: description.clone(),
+                        detail: Some("Skill".into()),
+                        header: None,
+                        toggle: None,
+                        action: None,
+                    });
+                }
+            }
+            if trimmed != "/model" && trimmed != "/effort" {
+                suggestions.sort_by_key(|row| {
+                    let value = row.value.to_ascii_lowercase();
+                    (value != query, !value.starts_with(&query))
+                });
+            }
+        }
         suggestions
             .into_iter()
             .map(|mut suggestion| {
                 if let Some(model) = suggestion.value.strip_prefix("/model ") {
+                    let managing = self.model_stage == model_stage::ModelStage::Manage;
                     suggestion.detail = Some(
                         self.model_details
                             .get(model)
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    suggestion.help = if current == Some(model) {
-                        "Current".into()
-                    } else {
-                        String::new()
-                    };
+                    if !managing {
+                        suggestion.help = if current == Some(model) {
+                            "Current".into()
+                        } else {
+                            String::new()
+                        };
+                    }
                 }
                 suggestion
             })
             .collect()
+    }
+
+    fn embedded_command_token(&self) -> Option<(Range<usize>, usize)> {
+        if self.picker_prefix.is_some() || self.content.starts_with('/') {
+            return None;
+        }
+        let (start, cursor) =
+            jcode_slash_command::active_token_before_cursor(&self.content, self.cursor_offset())?;
+        if self.content[..start].trim().is_empty() {
+            return None;
+        }
+        let end = self.content[cursor..]
+            .find(char::is_whitespace)
+            .map_or(self.content.len(), |offset| cursor + offset);
+        Some((start..end, cursor))
     }
 
     fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
@@ -1056,7 +2097,31 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_prefix == Some("/mode") {
+            if let Some(close) = &self.on_overlay_cancel {
+                close(cx);
+            }
+            return;
+        }
         self.submit_prompt(false, window, cx);
+    }
+
+    fn stash(&mut self, _: &Stash, _: &mut Window, cx: &mut Context<Self>) {
+        let (draft, selection) = self.draft_without_live_dictation();
+        let draft = draft.into_owned();
+        let current = (!draft.is_empty() || !self.attachments.is_empty()).then(|| {
+            (draft, selection, std::mem::take(&mut self.attachments))
+        });
+        let previous = std::mem::replace(&mut self.stashed_prompt, current);
+        let (text, selection, attachments) = previous.unwrap_or_default();
+        self.set_content(text, cx);
+        self.selected_range = selection;
+        self.attachments = attachments;
+        self.marked_range = None;
+        self.attachment_notice = None;
+        self.attachment_preview = None;
+        self.undo.clear();
+        self.redo.clear();
     }
 
     fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
@@ -1075,76 +2140,278 @@ impl PromptInput {
         self.submit_prompt(true, window, cx);
     }
 
+    pub(crate) fn control_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.live_dictation.is_some()
+            || !self.submission_enabled
+            || self.queue_editor
+            || self.content.trim().is_empty()
+        {
+            return false;
+        }
+        self.dispatch_submission(
+            SubmissionKind::Message,
+            Self::literal_submission(&self.content),
+            false,
+            window,
+            cx,
+        );
+        self.content.is_empty()
+    }
+
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.submission_enabled {
+        if self.live_dictation.is_some() {
+            self.set_transient_notice("Stop voice recording before sending".into(), cx);
+            return;
+        }
+        if !self.submission_enabled || self.queue_editor {
+            return;
+        }
+        let raw_content = self.command_content();
+        let content = raw_content.trim().to_string();
+        if content.is_empty() && self.attachments.is_empty() {
+            if self.empty_submit && !queued {
+                (self.on_submit)(
+                    SubmissionKind::Message,
+                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    window,
+                    cx,
+                );
+            }
+            return;
+        }
+        if self.command_completion && self.attachments.is_empty() {
+            if self.current_command_menu_close() == Some(CommandMenuClose::Completed) {
+                self.submit_command(content, queued, window, cx);
+                return;
+            }
+            let suggestions = self.command_suggestions();
+            let embedded = self.embedded_command_token();
+            let picker_command = raw_content.starts_with('/')
+                && !raw_content.contains(['\n', '\r'])
+                && matches!(
+                    content.split_whitespace().next(),
+                    Some("/model" | "/mode" | "/effort")
+                );
+            if let Some(row) = suggestions.get(self.command_selection)
+                && (self.picker_prefix.is_some()
+                    || ((!queued || embedded.is_none())
+                        && self.command_selection_explicit.as_ref() == Some(&row.value))
+                    || row.value == content
+                    || picker_command)
+            {
+                if let Some(key) = row.toggle.clone() {
+                    self.toggle_model_group(key, cx);
+                } else if let Some(step) = row.action.clone() {
+                    self.run_stage_step(step, queued, window, cx);
+                } else if let Some(command) =
+                    accepted_command_submission(&suggestions, self.command_selection)
+                {
+                    self.submit_command(command, queued, window, cx);
+                }
+                return;
+            }
+            if picker_command
+                && content.split_whitespace().next() == Some("/model")
+                && self.current_command_menu_close().is_none()
+            {
+                self.set_transient_notice("No matching models".into(), cx);
+                return;
+            }
+        }
+        if self.picker_prefix.is_none() {
+            self.dispatch_submission(
+                SubmissionKind::Message,
+                Self::literal_submission(&raw_content),
+                queued,
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn literal_submission(text: &str) -> String {
+        if text.contains('/') {
+            text.to_owned()
+        } else {
+            text.trim().to_owned()
+        }
+    }
+
+    fn submit_command(
+        &mut self,
+        command: String,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.submission_enabled || self.queue_editor {
+            return;
+        }
+        if let Some(crate::panel::workspace_commands::parse::WorkspaceCommand::Invalid(usage)) =
+            crate::panel::workspace_commands::parse::parse(&command)
+        {
+            self.set_transient_notice(usage.into(), cx);
             return;
         }
         if self.pending_session
-            && self.command_completion
-            && self.content.trim_start().starts_with('/')
-            && !(self.attachments.is_empty()
-                && (crate::commands::is_resume_command(&self.content)
-                    || crate::commands::is_accounts_command(&self.content)
-                    || crate::commands::reset_command(&self.content).is_some()))
+            && !(crate::commands::is_resume_command(&command)
+                || crate::commands::is_accounts_command(&command)
+                || crate::commands::reset_command(&command).is_some()
+                || crate::panel::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();
             return;
         }
-        let raw_content = self.content.to_string();
-        let mut content = raw_content.trim().to_string();
-        if content.is_empty() && self.attachments.is_empty() {
-            return;
-        }
-        if self.command_completion && self.attachments.is_empty() {
-            let suggestions = self.command_suggestions();
-            if let Some(key) = suggestions
-                .get(self.command_selection)
-                .and_then(|row| row.toggle.clone())
-            {
-                self.toggle_model_group(key, cx);
-                return;
-            }
-            if (raw_content.trim_start() == "/model"
-                || raw_content.trim_start().starts_with("/model "))
-                && suggestions.is_empty()
-            {
-                return;
-            }
-            if let Some(accepted) =
-                accepted_command_submission(&suggestions, self.command_selection)
-            {
-                content = accepted;
+        self.dispatch_submission(SubmissionKind::Command, command, queued, window, cx);
+    }
+
+    /// Run what Enter or a click on a picker row means.
+    fn run_stage_step(
+        &mut self,
+        step: model_stage::StageStep,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match step {
+            model_stage::StageStep::Goto(stage) => self.go_to_model_stage(stage, cx),
+            model_stage::StageStep::ToggleHidden(spec) => self.toggle_model_hidden(&spec, cx),
+            model_stage::StageStep::Submit(command) => {
+                self.submit_command(command, queued, window, cx)
             }
         }
+    }
+
+    /// Clear the composer and hand `content` to the host.
+    fn dispatch_submission(
+        &mut self,
+        kind: SubmissionKind,
+        content: String,
+        queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let content = if content.is_empty() {
             "[image]".to_string()
         } else {
             content
         };
-        let images = std::mem::take(&mut self.attachments)
-            .into_iter()
-            .map(|image| (image.media_type, image.encoded))
-            .collect();
+        let remaining_draft = (kind == SubmissionKind::Command)
+            .then(|| self.embedded_command_token())
+            .flatten()
+            .map(|(token, _)| {
+                let mut draft = self.content.to_string();
+                let caret = token.start;
+                draft.replace_range(token, "");
+                (draft, caret)
+            });
+        let mut attachments = if remaining_draft.is_none() {
+            std::mem::take(&mut self.attachments)
+        } else {
+            Vec::new()
+        };
+        attachments.sort_by_key(|a| content.find(a.label.as_ref()).unwrap_or(usize::MAX));
+        let normalize_images = attachments.iter().any(|attachment| {
+            matches!(
+                &attachment.payload,
+                AttachmentPayload::File { image: Some(_), .. }
+            )
+        });
+        let mut images = Vec::new();
+        let mut files = Vec::new();
+        let mut replacements = Vec::new();
+        let mut history_content = content.clone();
+        for attachment in attachments {
+            let range = content
+                .find(attachment.label.as_ref())
+                .map(|start| start..start + attachment.label.len());
+            match attachment.payload {
+                AttachmentPayload::Image {
+                    media_type,
+                    encoded,
+                    ..
+                } => {
+                    images.push((media_type, encoded.to_string()));
+                    if let Some(range) = range {
+                        let output = normalize_images.then(|| format!("[#image {}]", images.len()));
+                        replacements.push((range, output, String::new()));
+                    }
+                }
+                // Only queue editors hold these, and they never submit.
+                AttachmentPayload::Queued { .. } => {}
+                AttachmentPayload::Text(text) => {
+                    if let Some(range) = range {
+                        replacements.push((range, Some(text.to_string()), text.to_string()));
+                    }
+                }
+                AttachmentPayload::File { path, image, file } => {
+                    let path = file_drop::path_text(&[path]);
+                    let mut reference = path.clone();
+                    if self.file_attachments_enabled {
+                        files.push(file);
+                    } else if let Some(image) = image {
+                        images.push((image.media_type, image.encoded.to_string()));
+                        reference.push_str(&format!(" [#image {}]", images.len()));
+                    }
+                    if let Some(range) = range {
+                        replacements.push((range, Some(reference), path));
+                    }
+                }
+            }
+        }
+        let mut content = content;
+        for (range, output, history) in replacements.into_iter().rev() {
+            if let Some(output) = output {
+                content.replace_range(range.clone(), &output);
+            }
+            history_content.replace_range(range, &history);
+        }
         self.attachment_notice = None;
+        self.transient_notice = None;
         self.attachment_preview = None;
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = "".into();
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
         self.expanded_model_groups.clear();
+        self.model_stage = Default::default();
+        self.picker_effort = None;
         self.suggestions_revision += 1;
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
         self.visual_line_count = 1;
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.history.push(content.clone());
-        self.history_index = None;
-        self.live_draft.clear();
+        if !history_content.trim().is_empty() {
+            self.history.push(history_content);
+        }
+        if remaining_draft.is_none() {
+            self.history_index = None;
+        }
         self.command_selection = 0;
-        (self.on_submit)(content, images, queued, window, cx);
+        (self.on_submit)(kind, content, images, files, queued, window, cx);
+        if let Some((text, caret)) = remaining_draft {
+            self.set_content(text, cx);
+            self.selected_range = caret..caret;
+        } else if let Some(draft) = self.live_draft.take() {
+            self.restore_history_draft(draft, cx);
+        } else if let Some((text, selection, attachments)) = self.stashed_prompt.take() {
+            self.set_content(text, cx);
+            self.selected_range = selection;
+            self.attachments = attachments;
+        }
         cx.notify();
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        // On a model row, ←/→ pick the level the switch will use.
+        if self.step_picker_effort(-1, cx) {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -1153,6 +2420,9 @@ impl PromptInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.step_picker_effort(1, cx) {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
@@ -1203,46 +2473,276 @@ impl PromptInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn attach_image(
+    pub(crate) fn attach_image(
         &mut self,
         image: crate::clipboard_image::ClipboardImage,
         cx: &mut Context<Self>,
     ) {
-        let label = image.label();
         let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
             self.attachment_notice = Some("could not preview pasted image".into());
             cx.notify();
             return;
         };
+        let mut number = 1;
+        let marker = loop {
+            let marker = format!("[#image {number}]");
+            if !self.content.contains(&marker)
+                && !self.attachments.iter().any(|a| a.label.as_ref() == marker)
+            {
+                break marker;
+            }
+            number += 1;
+        };
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        self.remove_chips_in_range(&range);
+        let mut content = self.content.to_string();
+        content.replace_range(range.clone(), &marker);
+        self.rebase_live_dictation_after_edit(&range, marker.len());
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.content = content.into();
+        let cursor = range.start + marker.len();
+        self.selected_range = cursor..cursor;
         self.attachments.push(Attachment {
-            media_type: image.media_type,
-            encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
-            label: label.clone().into(),
-            preview,
-            bounds: Default::default(),
+            label: marker.into(),
+            payload: AttachmentPayload::Image {
+                media_type: image.media_type,
+                encoded: base64::engine::general_purpose::STANDARD
+                    .encode(image.bytes)
+                    .into(),
+                preview,
+            },
         });
-        self.attachment_preview = Some(paste_preview::Preview::new(self.attachments.len() - 1));
-        self.attachment_notice = Some(match self.attachments.len() {
-            1 => format!("image attached ({label})").into(),
-            count => format!("{count} images attached").into(),
-        });
+        self.attachment_preview = None;
+        self.attachment_notice = None;
+        self.marked_range = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        match crate::clipboard_image::read() {
-            Ok(Some(image)) => {
+        match crate::clipboard_image::read_paste() {
+            Ok(crate::clipboard_image::ClipboardContent::Files(paths)) => {
+                self.attach_pasted_files(&paths, window, cx);
+                return;
+            }
+            Ok(crate::clipboard_image::ClipboardContent::Image(image)) => {
                 self.attach_image(image, cx);
                 return;
             }
-            Ok(None) => {}
+            Ok(crate::clipboard_image::ClipboardContent::Empty) => {}
             Err(error) => {
                 self.attachment_notice = Some(format!("image paste unavailable: {error}").into());
             }
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            self.insert_pasted_text(&text, window, cx);
         }
+    }
+
+    fn insert_pasted_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if is_large_paste(text) {
+            self.attach_pasted_text(text, cx);
+        } else {
+            self.replace_text_in_range(None, text, window, cx);
+        }
+        if self.picker_prefix.is_none() && self.content.starts_with('/') {
+            self.close_command_menu(CommandMenuClose::Literal);
+        }
+        self.dismiss_ghost();
+    }
+
+    /// Files copied in the file manager. Only images are read, so the model
+    /// can see them. Any other file, a folder or an oversized image is named
+    /// by path: pasting a file points at it, it does not upload it.
+    fn attach_pasted_files(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (paths, referenced): (Vec<_>, Vec<_>) = paths.iter().cloned().partition(|path| {
+            file_drop::image_media_type(path).is_some()
+                && std::fs::metadata(path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() <= 10 * 1024 * 1024)
+        });
+        self.reference_paths(&referenced, paths.is_empty(), window, cx);
+        let paths = &paths;
+        let mut attached_size: u64 = self
+            .attachments
+            .iter()
+            .filter_map(|attachment| match &attachment.payload {
+                AttachmentPayload::File { file, .. } => Some(file.size),
+                AttachmentPayload::Queued {
+                    source: QueuedAttachment::File(jcode_sdk::api::Attachment::File { size, .. }),
+                    ..
+                } => Some(*size),
+                _ => None,
+            })
+            .sum();
+        for path in paths {
+            let metadata = match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() <= 10 * 1024 * 1024 => {
+                    metadata
+                }
+                Ok(_) => {
+                    self.attachment_notice =
+                        Some("File must be at most 10 MiB and not a directory".into());
+                    continue;
+                }
+                Err(error) => {
+                    self.attachment_notice = Some(format!("Cannot read file: {error}").into());
+                    continue;
+                }
+            };
+            if attached_size.saturating_add(metadata.len()) > 20 * 1024 * 1024 {
+                self.attachment_notice = Some("File attachments exceed 20 MiB total".into());
+                continue;
+            }
+            let bytes = match std::fs::File::open(path).and_then(|file| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(file, 10 * 1024 * 1024 + 1),
+                    &mut bytes,
+                )?;
+                Ok(bytes)
+            }) {
+                Ok(bytes) if bytes.len() as u64 == metadata.len() => bytes,
+                Ok(_) => {
+                    self.attachment_notice = Some("File changed while attaching".into());
+                    continue;
+                }
+                Err(error) => {
+                    self.attachment_notice = Some(format!("Cannot read file: {error}").into());
+                    continue;
+                }
+            };
+            attached_size += metadata.len();
+            let size = Some(metadata.len());
+            let file = SubmittedFile {
+                name: path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                mime: mime_guess::from_path(path)
+                    .first_or_octet_stream()
+                    .to_string(),
+                size: metadata.len(),
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            };
+            let name = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .replace(['[', ']', '\n', '\r'], " ");
+            let size_label =
+                size.map_or_else(|| "unknown size".to_string(), |size| format!("{size} B"));
+            let description = format!("{name}, {size_label}");
+            let mut marker = format!("[#{description}]");
+            let mut n = 2;
+            while self.content.contains(&marker) {
+                marker = format!("[#{description} #{n}]");
+                n += 1;
+            }
+            let image = file_drop::image_media_type(path).and_then(|media_type| {
+                if !size.is_some_and(|size| size <= 20 * 1024 * 1024) {
+                    return None;
+                }
+                let image =
+                    crate::clipboard_image::from_bytes(media_type.to_owned(), bytes.clone())
+                        .ok()?;
+                let preview = preview_image(&image.media_type, image.bytes.clone())?;
+                Some(FileImage {
+                    media_type: image.media_type,
+                    encoded: base64::engine::general_purpose::STANDARD
+                        .encode(image.bytes)
+                        .into(),
+                    preview,
+                })
+            });
+            self.undo.push(self.edit_snapshot());
+            self.redo.clear();
+            let range =
+                self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+            self.remove_chips_in_range(&range);
+            let mut content = self.content.to_string();
+            let mut inserted = String::new();
+            if content[..range.start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace())
+            {
+                inserted.push(' ');
+            }
+            inserted.push_str(&marker);
+            inserted.push(' ');
+            content.replace_range(range.clone(), &inserted);
+            self.rebase_live_dictation_after_edit(&range, inserted.len());
+            self.content = content.into();
+            self.control_revision = self.control_revision.wrapping_add(1);
+            let cursor = range.start + inserted.len();
+            self.selected_range = cursor..cursor;
+            self.attachments.push(Attachment {
+                label: marker.into(),
+                payload: AttachmentPayload::File {
+                    path: path.clone(),
+                    image,
+                    file,
+                },
+            });
+        }
+        self.attachment_preview = None;
+        self.marked_range = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
+        cx.notify();
+    }
+
+    fn attach_pasted_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let lines = text.split('\n').count();
+        let description = if lines > 10 {
+            format!("Pasted text, {lines} lines")
+        } else {
+            format!("Pasted text, {} chars", text.encode_utf16().count())
+        };
+        let mut marker = format!("[{description}]");
+        let mut n = 2;
+        while self.content.contains(&marker)
+            || self.attachments.iter().any(|a| a.label.as_ref() == marker)
+        {
+            marker = format!("[{description} #{n}]");
+            n += 1;
+        }
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        self.remove_chips_in_range(&range);
+        let mut content = self.content.to_string();
+        content.replace_range(range.clone(), &marker);
+        self.rebase_live_dictation_after_edit(&range, marker.len());
+        self.content = content.into();
+        self.control_revision = self.control_revision.wrapping_add(1);
+        let cursor = range.start + marker.len();
+        self.selected_range = cursor..cursor;
+        self.attachments.push(Attachment {
+            label: marker.into(),
+            payload: AttachmentPayload::Text(text.into()),
+        });
+        self.attachment_preview = None;
+        self.attachment_notice = None;
+        self.marked_range = None;
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
+        cx.notify();
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -1314,72 +2814,138 @@ impl PromptInput {
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(previous) = self.undo.pop() {
-            self.redo.push(self.content.to_string());
-            self.set_content(previous, cx);
+            self.redo.push(self.edit_snapshot());
+            self.attachments = previous.attachments;
+            self.set_content(previous.content, cx);
         }
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(next) = self.redo.pop() {
-            self.undo.push(self.content.to_string());
-            self.set_content(next, cx);
+            self.undo.push(self.edit_snapshot());
+            self.attachments = next.attachments;
+            self.set_content(next.content, cx);
         }
     }
 
     fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
-            self.command_selection = self.command_selection.saturating_sub(1);
+            self.command_selection = self
+                .command_selection
+                .saturating_sub(1)
+                .min(suggestions.len() - 1);
+            self.command_selection_explicit =
+                Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);
             cx.notify();
             return;
         }
-        if self.history.is_empty() {
+        if self.move_visual_row(-1, cx) || self.history.is_empty() {
+            return;
+        }
+        if self.history_index.is_some() && !self.attachments.is_empty() {
+            self.set_transient_notice("Remove or send images before browsing history".into(), cx);
             return;
         }
         let index = match self.history_index {
             Some(index) => index.saturating_sub(1),
             None => {
-                self.live_draft = self.content.to_string();
+                let (content, selection) = self.draft_without_live_dictation();
+                self.live_draft = Some(HistoryDraft {
+                    content: content.into_owned(),
+                    selection,
+                    selection_reversed: self.selection_reversed,
+                    attachments: std::mem::take(&mut self.attachments),
+                });
+                self.attachment_preview = None;
+                self.attachment_notice = None;
                 self.history.len() - 1
             }
         };
-        self.history_index = Some(index);
-        self.set_content(self.history[index].clone(), cx);
+        self.show_history_entry(index, cx);
     }
 
     fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
+            self.command_selection_explicit =
+                Some(suggestions[self.command_selection].value.clone());
             self.reveal_command(self.command_selection);
             cx.notify();
+            return;
+        }
+        if self.move_visual_row(1, cx) {
             return;
         }
         let Some(index) = self.history_index else {
             return;
         };
+        if !self.attachments.is_empty() {
+            self.set_transient_notice("Remove or send images before browsing history".into(), cx);
+            return;
+        }
         if index + 1 < self.history.len() {
-            self.history_index = Some(index + 1);
-            self.set_content(self.history[index + 1].clone(), cx);
+            self.show_history_entry(index + 1, cx);
         } else {
             self.history_index = None;
-            self.set_content(self.live_draft.clone(), cx);
+            if let Some(draft) = self.live_draft.take() {
+                self.restore_history_draft(draft, cx);
+            }
         }
     }
 
-    fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+    fn show_history_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.history_index = Some(index);
+        self.marked_range = None;
+        self.set_content(self.history[index].clone(), cx);
+        self.close_command_menu(CommandMenuClose::Literal);
+    }
+
+    fn restore_history_draft(&mut self, draft: HistoryDraft, cx: &mut Context<Self>) {
+        self.attachments = draft.attachments;
+        self.set_content(draft.content, cx);
+        self.selected_range = draft.selection;
+        self.selection_reversed = draft.selection_reversed;
+    }
+
+    fn clear(&mut self, _: &Clear, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_preview.is_some() {
+            self.close_attachment_preview(window, cx);
+            return;
+        }
         if self.ghost_text().is_some() {
             self.dismiss_ghost();
             cx.notify();
             return;
         }
-        if let Some(cancel) = &self.on_overlay_cancel {
-            if cancel(cx) {
-                return;
-            }
+        // Inside the picker, Esc steps back before it closes.
+        let in_model_menu = self.picker_prefix == Some("/model")
+            || self.content.trim() == "/model"
+            || self.content.starts_with("/model ");
+        if in_model_menu && self.model_stage_back(cx) {
+            return;
+        }
+        if self.picker_prefix.is_none()
+            && self.current_command_menu_close() != Some(CommandMenuClose::Literal)
+            && (in_model_menu
+                || self.current_command_menu_close() == Some(CommandMenuClose::Completed)
+                || !self.command_suggestions().is_empty())
+        {
+            self.close_command_menu(CommandMenuClose::Literal);
+            cx.notify();
+            return;
+        }
+        if let Some(cancel) = &self.on_overlay_cancel
+            && cancel(cx)
+        {
+            return;
         }
         if !self.content.is_empty() {
+            self.undo.push(self.edit_snapshot());
+            self.redo.clear();
+            self.attachments.clear();
             self.set_content(String::new(), cx);
         }
     }
@@ -1416,6 +2982,79 @@ impl PromptInput {
         }
     }
 
+    /// Test hook: the dim recognition partial currently shown, if any.
+    #[cfg(test)]
+    pub(crate) fn voice_preview(&self) -> Option<&str> {
+        self.voice_preview.as_deref()
+    }
+
+    /// One dim line above the partials saying where the words will land.
+    pub(crate) fn set_voice_preview_hint(&mut self, hint: Option<&str>, cx: &mut Context<Self>) {
+        let hint = hint.filter(|hint| !hint.is_empty()).map(SharedString::from);
+        if self.voice_preview_hint != hint {
+            self.voice_preview_hint = hint;
+            cx.notify();
+        }
+    }
+
+    /// Insert dictated text at the caret as one undoable edit. This is what
+    /// `[dictation] mode = "insert"` means: the words arrive where the user was
+    /// typing (replacing a selection, like typing over it), the caret lands
+    /// after them, and nothing is submitted. Words are separated from adjacent
+    /// text so two dictated phrases do not fuse into one token.
+    pub(crate) fn insert_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
+        let mut insert = String::with_capacity(text.len() + 2);
+        if self.content[..range.start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            insert.push(' ');
+        }
+        insert.push_str(text);
+        if self.content[range.end..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            insert.push(' ');
+        }
+        let caret = range.start + insert.len();
+        let edited = self.content[..range.start].to_owned() + &insert + &self.content[range.end..];
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.rebase_live_dictation_after_edit(&range, insert.len());
+        self.content = edited.into();
+        self.marked_range = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.reset_model_groups_after_exit();
+        self.command_selection = 0;
+        self.reveal_command(0);
+        self.dismiss_ghost();
+        // Dictation completes inside a parent Panel update. Run its callback
+        // after that lease ends, just as a later native edit would.
+        let input = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = input.update(cx, |input, cx| {
+                if let Some(on_change) = &input.on_change {
+                    on_change(&input.content, cx);
+                }
+            });
+        });
+        cx.notify();
+    }
+
     /// Append asynchronous dictation on a new line as one undoable edit,
     /// without replacing newer edits or attachments.
     pub(crate) fn append_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -1423,7 +3062,7 @@ impl PromptInput {
         if text.is_empty() {
             return;
         }
-        self.undo.push(self.content.to_string());
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
         let mut draft = self.content.to_string();
         if !draft.is_empty() && !draft.ends_with('\n') {
@@ -1431,7 +3070,9 @@ impl PromptInput {
         }
         draft.push_str(text);
         self.marked_range = None;
-        self.history_index = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
         self.set_content(draft, cx);
         // Dictation completes inside a parent Panel update. Run its callback
         // after that lease ends, just as a later native edit would.
@@ -1445,14 +3086,75 @@ impl PromptInput {
         });
     }
 
+    /// Replace the whole draft with dictated text as one undoable edit. This is
+    /// what `[dictation] mode = "replace"` means: the utterance stands where the
+    /// draft was, the discarded draft stays one undo away, and redo is cleared
+    /// because the new content is not a step back toward the old future.
+    pub(crate) fn replace_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        self.marked_range = None;
+        if self.live_draft.is_none() {
+            self.history_index = None;
+        }
+        let mut content = text.to_owned();
+        ensure_visible_chips(&mut content, &mut self.attachments);
+        self.set_content(content, cx);
+        // Dictation completes inside a parent Panel update. Run its callback
+        // after that lease ends, just as a later native edit would.
+        let input = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = input.update(cx, |input, cx| {
+                if let Some(on_change) = &input.on_change {
+                    on_change(&input.content, cx);
+                }
+            });
+        });
+    }
+
     fn reset_model_groups_after_exit(&mut self) {
+        if self.picker_prefix == Some("/model") {
+            return;
+        }
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
+            self.model_stage = Default::default();
+            self.picker_effort = None;
             self.suggestions_revision += 1;
         }
     }
 
+    pub(crate) fn start_picker_search(
+        &mut self,
+        prefix: &'static str,
+        fallback_models: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_models.is_empty() {
+            self.set_command_models(fallback_models, cx);
+        }
+        self.picker_prefix = Some(prefix);
+        self.model_stage = Default::default();
+        self.picker_effort = None;
+        self.suggestions_revision += 1;
+        self.set_content(String::new(), cx);
+        if prefix == "/effort"
+            && let Some(index) = self
+                .command_suggestions()
+                .iter()
+                .position(|row| row.help == "Current" || row.detail.as_deref() == Some("Current"))
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_model_menu(&mut self, fallback_models: Vec<String>, cx: &mut Context<Self>) {
         // Offline/reconnected inputs may not have received route metadata yet.
         // Never replace the canonical grouped routes once they are available.
@@ -1463,30 +3165,13 @@ impl PromptInput {
             && !(self.content.trim() == "/model"
                 || self.content.trim_start().starts_with("/model "))
         {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            let draft = self.draft_without_live_dictation().0.into_owned();
+            self.model_menu_draft = Some((draft.into(), std::mem::take(&mut self.attachments)));
             self.attachment_preview = None;
         }
+        self.model_stage = Default::default();
+        self.suggestions_revision += 1;
         self.set_content("/model ".into(), cx);
-    }
-
-    /// Show the `/effort` suggestions, stashing the draft like the model menu.
-    pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu_draft.is_none() && !self.effort_menu_open() {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
-            self.attachment_preview = None;
-        }
-        self.set_content("/effort ".into(), cx);
-        // Open on the current level so Enter keeps it and arrows step from it.
-        if let Some(index) = self
-            .command_suggestions()
-            .iter()
-            .position(|row| row.help == "Current")
-        {
-            self.command_selection = index;
-            self.reveal_command(index);
-        }
     }
 
     /// Short feedback under the composer that clears itself, e.g. after an
@@ -1556,6 +3241,46 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn append_queued_files(
+        &mut self,
+        files: Vec<SubmittedFile>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut content = self.content.to_string();
+        for file in files {
+            let name = file.name.replace(['[', ']', '\n', '\r'], " ");
+            let mut marker = format!("[#{name}, {} B]", file.size);
+            let mut index = 2;
+            while content.contains(&marker) {
+                marker = format!("[#{name}, {} B #{index}]", file.size);
+                index += 1;
+            }
+            let image = base64::engine::general_purpose::STANDARD
+                .decode(&file.data)
+                .ok()
+                .and_then(|bytes| preview_image(&file.mime, bytes))
+                .map(|preview| FileImage {
+                    media_type: file.mime.clone(),
+                    encoded: file.data.clone().into(),
+                    preview,
+                });
+            if !content.is_empty() && !content.ends_with(char::is_whitespace) {
+                content.push(' ');
+            }
+            content.push_str(&marker);
+            // The recalled prompt already contains the original path.
+            self.attachments.push(Attachment {
+                label: marker.into(),
+                payload: AttachmentPayload::File {
+                    path: std::path::PathBuf::new(),
+                    image,
+                    file,
+                },
+            });
+        }
+        self.set_content(content, cx);
+    }
+
     /// Put a recalled queued prompt back into the composer for editing. Any
     /// existing draft is kept ahead of it so nothing typed is lost.
     pub(crate) fn recall_prompt(
@@ -1564,13 +3289,15 @@ impl PromptInput {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
-        let draft = self.content.trim_end();
-        let merged = if draft.is_empty() {
-            content.to_string()
-        } else {
-            format!("{draft}\n\n{content}")
-        };
-        for (media_type, encoded) in images {
+        let draft = self.content.trim_end().to_string();
+        let ranges = image_marker_ranges(content);
+        let mut recalled = content.to_string();
+        let mut replacements = Vec::new();
+        let mut used: HashSet<String> = image_marker_ranges(&draft)
+            .into_iter()
+            .map(|range| draft[range].to_string())
+            .collect();
+        for (index, (media_type, encoded)) in images.into_iter().enumerate() {
             let Some(bytes) = base64::engine::general_purpose::STANDARD
                 .decode(&encoded)
                 .ok()
@@ -1580,19 +3307,56 @@ impl PromptInput {
             let Some(preview) = preview_image(&media_type, bytes) else {
                 continue;
             };
+            let original = ranges
+                .get(index)
+                .map(|range| content[range.clone()].to_string());
+            let marker = original
+                .clone()
+                .filter(|marker| !used.contains(marker))
+                .unwrap_or_else(|| {
+                    (1..)
+                        .map(|n| format!("[#image {n}]"))
+                        .find(|marker| !used.contains(marker) && !content.contains(marker))
+                        .unwrap()
+                });
+            used.insert(marker.clone());
+            if let Some(range) = ranges.get(index) {
+                if original.as_deref() != Some(marker.as_str()) {
+                    replacements.push((range.clone(), marker.clone()));
+                }
+            } else {
+                replacements.push((content.len()..content.len(), format!(" {marker}")));
+            }
             self.attachments.push(Attachment {
-                label: format!("image {}", self.attachments.len() + 1).into(),
-                media_type,
-                encoded,
-                preview,
-                bounds: Default::default(),
+                label: marker.into(),
+                payload: AttachmentPayload::Image {
+                    media_type,
+                    encoded: encoded.into(),
+                    preview,
+                },
             });
         }
+        for (range, marker) in replacements.into_iter().rev() {
+            recalled.replace_range(range, &marker);
+        }
+        let merged = if draft.is_empty() {
+            recalled
+        } else {
+            format!("{draft}\n\n{recalled}")
+        };
         self.set_content(merged, cx);
     }
 
+    pub(crate) fn control_revision(&self) -> u64 {
+        self.control_revision
+    }
+
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.live_dictation = None;
         self.dismiss_ghost();
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
+        self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
@@ -1600,6 +3364,102 @@ impl PromptInput {
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         cx.notify();
+    }
+
+    pub(crate) fn set_skills(&mut self, skills: Vec<(String, String)>, cx: &mut Context<Self>) {
+        self.command_skills = skills;
+        self.suggestions_revision += 1;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_suggestion_values(&self) -> Vec<String> {
+        self.command_suggestions()
+            .iter()
+            .map(|row| row.value.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_command_value(&self) -> Option<String> {
+        self.command_suggestions()
+            .get(self.command_selection)
+            .map(|row| row.value.clone())
+    }
+
+    pub(crate) fn set_current_modes(
+        &mut self,
+        modes: Vec<String>,
+        catalog: crate::mode_catalog::ModeCatalog,
+        cx: &mut Context<Self>,
+    ) {
+        if self.current_modes == modes && self.mode_catalog == catalog {
+            return;
+        }
+        let selected = self.selected_mode_name();
+        self.current_modes = modes;
+        self.mode_catalog = catalog;
+        self.suggestions_revision += 1;
+        if let Some(index) = selected.and_then(|name| {
+            self.command_suggestions()
+                .iter()
+                .position(|row| row.value.strip_prefix("/mode ") == Some(&name))
+        }) {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn mode_rows_for_control(&self) -> Vec<serde_json::Value> {
+        self.command_suggestions()
+            .iter()
+            .filter_map(|row| {
+                let name = row.value.strip_prefix("/mode ")?;
+                Some(serde_json::json!({
+                    "name": name, "section": row.header,
+                    "active": self.current_modes.iter().any(|active| active == name),
+                    "icon": crate::mode_catalog::icon(name, self.mode_catalog.get(name)).name(),
+                }))
+            })
+            .collect()
+    }
+
+    fn selected_mode_name(&self) -> Option<String> {
+        self.command_suggestions()
+            .get(self.command_selection)?
+            .value
+            .strip_prefix("/mode ")
+            .map(str::to_owned)
+    }
+
+    fn toggle_mode_row(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let command = if name == "off" {
+            "/mode off".to_owned()
+        } else {
+            format!("/mode toggle {name}")
+        };
+        (self.on_submit)(
+            SubmissionKind::Command,
+            command,
+            Vec::new(),
+            Vec::new(),
+            false,
+            window,
+            cx,
+        );
+    }
+
+    fn current_command_menu_close(&self) -> Option<CommandMenuClose> {
+        self.command_menu_closed
+            .as_ref()
+            .filter(|(draft, _)| draft == &self.content)
+            .map(|(_, close)| *close)
+    }
+
+    fn close_command_menu(&mut self, close: CommandMenuClose) {
+        self.command_menu_closed = Some((self.content.clone(), close));
+        self.command_selection_explicit = None;
     }
 
     fn on_mouse_down(
@@ -1614,7 +3474,24 @@ impl PromptInput {
         window.focus(&self.focus_handle, cx);
         cx.stop_propagation();
         self.is_selecting = true;
-        let offset = self.index_for_mouse_position(event.position, window.line_height());
+        let offset = self.index_for_mouse_position(event.position, window);
+        let clicked_chip = self.last_bounds.as_ref().and_then(|text_bounds| {
+            let relative = event.position - text_bounds.origin;
+            self.chip_positions
+                .iter()
+                .find_map(|(index, bounds)| bounds.contains(&relative).then_some(*index))
+        });
+        if !event.modifiers.shift
+            && let Some(index) = clicked_chip.or_else(|| {
+                self.chip_ranges()
+                    .into_iter()
+                    .find_map(|(index, range)| range.contains(&offset).then_some(index))
+            })
+        {
+            self.is_selecting = false;
+            self.activate_attachment(index, window, cx);
+            return;
+        }
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else if event.click_count == 2 {
@@ -1624,6 +3501,29 @@ impl PromptInput {
         } else {
             self.move_to(offset, cx)
         }
+    }
+
+    fn activate_attachment(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(attachment) = self.attachments.get(index) else {
+            return;
+        };
+        match &attachment.payload {
+            AttachmentPayload::Text(text) => {
+                if let Some(range) = self.chip_range(attachment) {
+                    let text = text.clone();
+                    window.focus(&self.focus_handle, cx);
+                    self.selected_range = range;
+                    self.marked_range = None;
+                    self.replace_text_in_range(None, &text, window, cx);
+                }
+            }
+            AttachmentPayload::Image { .. } | AttachmentPayload::File { image: Some(_), .. } => {
+                self.attachment_preview = Some(paste_preview::Preview::new(index));
+                window.focus(&self.preview_close_focus, cx);
+            }
+            _ => return,
+        }
+        cx.notify();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -1637,17 +3537,103 @@ impl PromptInput {
         cx: &mut Context<Self>,
     ) {
         if self.is_selecting {
-            self.select_to(
-                self.index_for_mouse_position(event.position, window.line_height()),
-                cx,
-            );
+            self.select_to(self.index_for_mouse_position(event.position, window), cx);
         }
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_caret = None;
         let offset = offset.min(self.content.len());
         self.selected_range = offset..offset;
+        self.selection_reversed = false;
         cx.notify()
+    }
+
+    fn vertical_caret(&self) -> Option<&VerticalCaret> {
+        self.vertical_caret.as_ref().filter(|caret| {
+            caret.revision == self.control_revision
+                && self.selected_range.is_empty()
+                && caret.offset == self.cursor_offset()
+        })
+    }
+
+    fn caret_position(&self, layout: &PromptLayout, line_height: Pixels) -> Option<Point<Pixels>> {
+        layout.position_for_caret(
+            self.cursor_offset(),
+            line_height,
+            self.vertical_caret().is_some_and(|caret| caret.downstream),
+        )
+    }
+
+    /// False means the caret is already at the edge in this direction.
+    fn move_visual_row(&mut self, step: isize, cx: &mut Context<Self>) -> bool {
+        if self.content.is_empty() {
+            return false;
+        }
+        let (Some(layout), Some(height)) = (&self.last_layout, self.last_line_height) else {
+            return true;
+        };
+        if self.last_layout_revision != self.control_revision {
+            return true;
+        }
+        let Some(caret) = self.caret_position(layout, height) else {
+            return true;
+        };
+        let Some(end) = layout.position_for_index(self.content.len(), height) else {
+            return true;
+        };
+        let row = |y: Pixels| (y / height).round() as isize;
+        let goal_x = self.vertical_caret().map_or(caret.x, |caret| caret.goal_x);
+        let mut target = row(caret.y) + step;
+        let last = row(end.y);
+        let chips = self.chip_ranges();
+        while (0..=last).contains(&target) {
+            let offset = layout
+                .closest_index_for_position(point(goal_x, height * (target as f32 + 0.5)), height)
+                .unwrap_or_else(|offset| offset)
+                .min(self.content.len());
+            let mut grapheme = GraphemeCursor::new(offset, self.content.len(), true);
+            let candidates = if let Some((_, chip)) = chips
+                .iter()
+                .find(|(_, range)| range.start < offset && offset < range.end)
+            {
+                [chip.start, chip.end]
+            } else if grapheme.is_boundary(&self.content, 0).unwrap_or(false) {
+                [offset, offset]
+            } else {
+                let before = grapheme.prev_boundary(&self.content, 0).ok().flatten();
+                let mut grapheme = GraphemeCursor::new(offset, self.content.len(), true);
+                let after = grapheme.next_boundary(&self.content, 0).ok().flatten();
+                [
+                    before.unwrap_or_default(),
+                    after.unwrap_or(self.content.len()),
+                ]
+            };
+            let nearest = candidates
+                .into_iter()
+                .flat_map(|offset| [(offset, false), (offset, true)])
+                .filter_map(|(offset, downstream)| {
+                    let position = layout.position_for_caret(offset, height, downstream)?;
+                    (row(position.y) == target).then_some((
+                        offset,
+                        downstream,
+                        f32::from((position.x - goal_x).abs()),
+                    ))
+                })
+                .min_by(|a, b| a.2.total_cmp(&b.2));
+            if let Some((offset, downstream, _)) = nearest {
+                self.move_to(offset, cx);
+                self.vertical_caret = Some(VerticalCaret {
+                    offset,
+                    revision: self.control_revision,
+                    goal_x,
+                    downstream,
+                });
+                return true;
+            }
+            target += step;
+        }
+        false
     }
 
     fn cursor_offset(&self) -> usize {
@@ -1658,7 +3644,13 @@ impl PromptInput {
         }
     }
 
-    fn index_for_mouse_position(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
+    fn painted_line_height(&self, window: &Window) -> Pixels {
+        self.last_line_height
+            .unwrap_or_else(|| window.line_height())
+    }
+
+    fn index_for_mouse_position(&self, position: Point<Pixels>, window: &Window) -> usize {
+        let line_height = self.painted_line_height(window);
         if self.content.is_empty() {
             return 0;
         }
@@ -1679,6 +3671,7 @@ impl PromptInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_caret = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -1745,6 +3738,13 @@ impl PromptInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
+        if let Some((_, range)) = self
+            .chip_ranges()
+            .into_iter()
+            .find(|(_, range)| offset > range.start && offset <= range.end)
+        {
+            return range.start;
+        }
         self.content
             .grapheme_indices(true)
             .rev()
@@ -1753,6 +3753,13 @@ impl PromptInput {
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
+        if let Some((_, range)) = self
+            .chip_ranges()
+            .into_iter()
+            .find(|(_, range)| offset >= range.start && offset < range.end)
+        {
+            return range.end;
+        }
         self.content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
@@ -1871,8 +3878,14 @@ impl EntityInputHandler for PromptInput {
             .map(|range| self.clamp_byte_range(range))
             .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
-        self.undo.push(self.content.to_string());
+        let range = self.expanded_chip_range(range);
+        self.undo.push(self.edit_snapshot());
         self.redo.clear();
+        self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
+        self.rebase_live_dictation_after_edit(&range, new_text.len());
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -1903,6 +3916,12 @@ impl EntityInputHandler for PromptInput {
             .map(|range| self.clamp_byte_range(range))
             .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
+        let range = self.expanded_chip_range(range);
+        self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
+        self.rebase_live_dictation_after_edit(&range, new_text.len());
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -1946,14 +3965,12 @@ impl EntityInputHandler for PromptInput {
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = last_layout.position_for_index(range.start, window.line_height())?;
-        let end = last_layout.position_for_index(range.end, window.line_height())?;
+        let line_height = self.painted_line_height(window);
+        let start = last_layout.position_for_index(range.start, line_height)?;
+        let end = last_layout.position_for_index(range.end, line_height)?;
         Some(Bounds::from_corners(
             bounds.origin + start,
-            point(
-                bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
-            ),
+            point(bounds.left() + end.x, bounds.top() + end.y + line_height),
         ))
     }
 
@@ -1966,7 +3983,7 @@ impl EntityInputHandler for PromptInput {
         let local = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
         let utf8_index = last_layout
-            .closest_index_for_position(local, _window.line_height())
+            .closest_index_for_position(local, self.painted_line_height(_window))
             .unwrap_or_else(|index| index)
             .min(self.content.len());
         Some(self.offset_to_utf16(utf8_index))
@@ -1999,6 +4016,16 @@ fn selection_quads(
     bounds: Bounds<Pixels>,
     line_height: Pixels,
 ) -> Vec<PaintQuad> {
+    range_quads(line, range, bounds, line_height, Theme::global().SELECTION)
+}
+
+fn range_quads(
+    line: &PromptLayout,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    color: gpui::Rgba,
+) -> Vec<PaintQuad> {
     let Some(start) = line.position_for_index(range.start, line_height) else {
         return Vec::new();
     };
@@ -2020,7 +4047,7 @@ fn selection_quads(
                     point(bounds.left() + left, bounds.top() + line_height * row),
                     size((right - left).max(px(0.)), line_height),
                 ),
-                to_hsla(Theme::global().SELECTION),
+                to_hsla(color),
             )
         })
         .collect()
@@ -2091,12 +4118,13 @@ impl Element for TextElement {
             // Only an active window animates. Background windows show the
             // whole example rather than freezing mid-word.
             placeholder_live = live && window.is_window_active();
-            if live && !placeholder_live {
-                if let Some(full) = &full {
-                    text = full.clone();
-                }
+            if live
+                && !placeholder_live
+                && let Some(full) = &full
+            {
+                text = full.clone();
             }
-            (text, to_hsla(Theme::global().TEXT_DIM))
+            (text, to_hsla(Theme::global().composer_secondary()))
         } else {
             (content, style.color)
         };
@@ -2155,25 +4183,73 @@ impl Element for TextElement {
             vec![run]
         };
         let mut runs: Vec<TextRun> = runs;
+        // Preserve source byte offsets for editing and submission, but never
+        // paint marker glyphs. The positioned pill paints the whole marker.
+        if !input.content.is_empty() {
+            let hidden: Vec<_> = input
+                .chip_ranges()
+                .into_iter()
+                .map(|(_, range)| range)
+                .collect();
+            let mut offset = 0;
+            runs = runs
+                .into_iter()
+                .flat_map(|run| {
+                    let start = offset;
+                    let end = start + run.len;
+                    offset = end;
+                    let mut cuts = vec![start, end];
+                    for range in &hidden {
+                        if range.start > start && range.start < end {
+                            cuts.push(range.start);
+                        }
+                        if range.end > start && range.end < end {
+                            cuts.push(range.end);
+                        }
+                    }
+                    cuts.sort_unstable();
+                    cuts.dedup();
+                    cuts.windows(2)
+                        .map(|pair| {
+                            let mut part = run.clone();
+                            part.len = pair[1] - pair[0];
+                            if hidden
+                                .iter()
+                                .any(|range| range.start <= pair[0] && pair[1] <= range.end)
+                            {
+                                part.color.a = 0.;
+                            }
+                            part
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        }
         if let Some(ghost) = &ghost {
             runs.push(TextRun {
                 len: ghost.len(),
-                color: to_hsla(Theme::global().TEXT_FAINT),
+                color: to_hsla(Theme::global().composer_secondary()),
                 ..ghost_run
             });
         }
+
+        // Shape a same-length word in place of each ASCII marker. GPUI's
+        // wrapper breaks on punctuation and even non-breaking spaces, but not
+        // inside this word. Byte offsets stay identical to the stored text.
+        let shaped = crate::image_chip::mask_markers(
+            &display_text,
+            input.chip_ranges().into_iter().map(|(_, range)| range),
+        );
 
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = PromptLayout::new(
             window
                 .text_system()
-                .shape_text(display_text, font_size, &runs, Some(wrap_width), None)
+                .shape_text(shaped.into(), font_size, &runs, Some(wrap_width), None)
                 .expect("prompt text should shape"),
         );
         let line_height = window.line_height();
-        let target = line
-            .position_for_index(cursor, line_height)
-            .unwrap_or_default();
+        let target = input.caret_position(&line, line_height).unwrap_or_default();
         let mut visual_line_count = line.visual_line_count();
         if let Some(full) = placeholder_full.filter(|full| !full.is_empty()) {
             // Reserve the fully typed prompt's height so typing never resizes
@@ -2291,6 +4367,13 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
+        #[cfg(target_os = "macos")]
+        if focus_handle.is_focused(window) {
+            crate::ime_log::record(format_args!(
+                "composer-handler-register entity={:?}",
+                self.input.entity_id()
+            ));
+        }
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -2315,14 +4398,43 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            let positions: Vec<_> = input
+                .chip_ranges()
+                .into_iter()
+                .filter_map(|(index, range)| {
+                    let mut start = line.position_for_index(range.start, window.line_height())?;
+                    let end = line.position_for_index(range.end, window.line_height())?;
+                    // GPUI assigns a boundary index to the preceding row even
+                    // when its first glyph is on the next visual row.
+                    if start.y != end.y {
+                        let next =
+                            line.position_for_index(range.start + 1, window.line_height())?;
+                        if next.y == end.y {
+                            start = point(px(0.), next.y);
+                        }
+                    }
+                    (start.y == end.y).then_some((
+                        index,
+                        Bounds::new(start, size(end.x - start.x, window.line_height())),
+                    ))
+                })
+                .collect();
+            if input.chip_positions != positions {
+                input.chip_positions = positions;
+                let entity = _cx.entity();
+                _cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
             // Reveal edits and keyboard navigation, but do not undo wheel scrolling
             // on every paint. Include viewport size so resizing reveals the caret.
             let viewport = input.editor_scroll.bounds();
-            let caret_key = (input.cursor_offset(), input.content.clone(), viewport.size);
+            let caret_key = (
+                input.cursor_offset(),
+                input.content.clone(),
+                viewport.size,
+                input.vertical_caret().is_some_and(|caret| caret.downstream),
+            );
             if input.revealed_caret.as_ref() != Some(&caret_key) {
-                if let Some(caret) =
-                    line.position_for_index(input.cursor_offset(), window.line_height())
-                {
+                if let Some(caret) = input.caret_position(&line, window.line_height()) {
                     let top = prepaint.text_bounds.top() + caret.y;
                     let bottom = top + window.line_height();
                     let adjustment = if top < viewport.top() {
@@ -2344,7 +4456,9 @@ impl Element for TextElement {
                 input.revealed_caret = Some(caret_key);
             }
             input.last_layout = Some(line);
+            input.last_layout_revision = input.control_revision;
             input.last_bounds = Some(prepaint.text_bounds);
+            input.last_line_height = Some(window.line_height());
             let needs_ticker = {
                 let state = input.motion.borrow();
                 state.next.is_some() && state.ticker.is_none()
@@ -2401,19 +4515,36 @@ impl Element for TextElement {
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("PromptInput");
+        let image_chip_numbers = self.image_chip_numbers();
         #[cfg(test)]
         crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
-        let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
-        let spacious = self.spacious
-            && self.voice_preview.is_none()
-            && window.viewport_size().height >= px(400.);
+        #[cfg(target_os = "macos")]
+        if crate::ime_log::enabled() && self.ime_log_focus_subscriptions.is_none() {
+            let id = cx.entity_id();
+            crate::ime_log::record(format_args!(
+                "composer-focus-initial entity={id:?} focused={focused}"
+            ));
+            let focus = cx.on_focus(&self.focus_handle, window, move |_, _, _| {
+                crate::ime_log::record(format_args!("composer-focus entity={id:?}"));
+            });
+            let blur = cx.on_blur(&self.focus_handle, window, move |_, _, _| {
+                crate::ime_log::record(format_args!("composer-blur entity={id:?}"));
+            });
+            self.ime_log_focus_subscriptions = Some(vec![focus, blur]);
+        }
+        let editor_height = self.editor_height(window);
+        let show_resize = self.can_resize_editor(window);
+        let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
         }
         let command_visible = self.command_completion
-            && (!suggestions.is_empty() || self.content.trim_start().starts_with("/model "));
+            && self.current_command_menu_close().is_none()
+            && (!suggestions.is_empty()
+                || self.picker_prefix.is_some()
+                || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
             crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
@@ -2441,72 +4572,18 @@ impl Render for PromptInput {
                 let _ = input.update(cx, |_, cx| cx.notify());
             });
         }
-        let attachment_overlay = self.render_paste_preview(window);
-        let preview_index = attachment_overlay.as_ref().and_then(|_| {
-            self.attachment_preview
-                .as_ref()
-                .map(|preview| preview.index)
-        });
-        let attachments = self.attachments.iter().enumerate().map(|(index, image)| {
-            div()
-                .id(("attachment", index))
-                .max_w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_1()
-                .rounded_md()
-                .p_1()
-                .bg(Theme::global().USER_BG)
-                .text_size(px(11.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .w(px(64.0))
-                        .h(px(52.0))
-                        .child(
-                            img(crate::image_cache::source(image.preview.clone()))
-                                .size_full()
-                                .opacity(if preview_index == Some(index) {
-                                    0.0
-                                } else {
-                                    1.0
-                                })
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .rounded_sm(),
-                        )
-                        .child(paste_preview::bounds_marker(image.bounds.clone())),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .gap_1()
-                        .child(div().truncate().child(image.label.clone()))
-                        .child(
-                            div()
-                                .text_color(Theme::global().TEXT_FAINT)
-                                .child("remove ×"),
-                        ),
-                )
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.remove_attachment(index, cx);
-                    }),
-                )
-        });
+        let attachment_overlay = self.render_paste_preview(window, cx);
         div()
             .debug_selector(|| "prompt-input".into())
             .children(attachment_overlay)
             .flex()
             .flex_col()
-            .key_context("PromptInput")
-            .track_focus(&self.focus_handle(cx))
+            .key_context(if self.queue_editor {
+                "PromptInput QueueEditor"
+            } else {
+                "PromptInput"
+            })
+            .track_focus(&self.focus_handle(cx).tab_index(0).tab_stop(true))
             .relative()
             .child({
                 let measured = self.composer_bounds.clone();
@@ -2528,81 +4605,102 @@ impl Render for PromptInput {
             })
             .when(command_visible, |el| {
                 el.child(
-                    gpui::deferred(popup::Popup::new(
-                        div()
-                            .id("slash-command-suggestions")
-                            .debug_selector(|| "slash-command-overlay".into())
-                            .w_full()
-                            .max_h_full()
-                            .opacity(0.65 + 0.35 * menu_progress)
-                            .flex()
-                            .flex_col()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .bg(Theme::global().HEADER_BG)
-                            .shadow_lg()
-                            .occlude()
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex()
-                                    .flex_col()
-                                    .min_h_0()
-                                    .p_1()
-                                    .child(
-                                        div()
-                                            .id("slash-command-scroll")
-                                            .debug_selector(|| "slash-command-scroll".into())
-                                            .min_h_0()
-                                            .flex()
-                                            .flex_col()
-                                            .max_h(popup::scroll_height(
-                                                window.viewport_size().height,
-                                                self.content.trim_start().starts_with("/model"),
-                                            ))
-                                            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
-                                            .pr(px(crate::scrollbar::GUTTER - 4.0))
-                                            .when(suggestions.is_empty(), |el| {
-                                                el.child(
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(px(12.0))
-                                                        .text_color(Theme::global().TEXT_FAINT)
-                                                        .child("No models match"),
-                                                )
-                                            })
-                                            .when(!suggestions.is_empty(), |el| {
-                                                let input = cx.entity();
-                                                el.child(
-                                                    gpui::list(
-                                                        self.command_scroll.clone(),
-                                                        move |index, _, cx| {
-                                                            input.update(cx, |input, cx| {
-                                                                input.render_command_row(
-                                                                    index,
-                                                                    suggestions[index].clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                        },
+                    gpui::deferred(
+                        popup::Popup::new(
+                            div()
+                                .id("slash-command-suggestions")
+                                .debug_selector(|| "slash-command-overlay".into())
+                                .w_full()
+                                .max_h_full()
+                                .opacity(0.65 + 0.35 * menu_progress)
+                                .flex()
+                                .flex_col()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                                .bg(Theme::global().HEADER_BG)
+                                .shadow_lg()
+                                .occlude()
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex()
+                                        .flex_col()
+                                        .min_h_0()
+                                        .p_1()
+                                        .child(
+                                            div()
+                                                .id("slash-command-scroll")
+                                                .debug_selector(|| "slash-command-scroll".into())
+                                                .min_h_0()
+                                                .flex()
+                                                .flex_col()
+                                                .max_h(popup::scroll_height(
+                                                    window.viewport_size().height,
+                                                    self.picker_prefix == Some("/model")
+                                                        || self
+                                                            .content
+                                                            .trim_start()
+                                                            .starts_with("/model"),
+                                                ))
+                                                .on_scroll_wheel(cx.listener(|_, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    cx.notify();
+                                                }))
+                                                .pr(px(crate::scrollbar::GUTTER - 4.0))
+                                                .when(suggestions.is_empty(), |el| {
+                                                    el.child(
+                                                        div()
+                                                            .px_3()
+                                                            .py_2()
+                                                            .text_size(px(12.0))
+                                                            .text_color(
+                                                                Theme::global()
+                                                                    .composer_secondary(),
+                                                            )
+                                                            .child(match self.picker_prefix {
+                                                                Some("/effort") => {
+                                                                    "No effort levels match"
+                                                                }
+                                                                Some("/mode") => {
+                                                                    "No modes or skills match"
+                                                                }
+                                                                _ => "No models match",
+                                                            }),
                                                     )
-                                                    .with_sizing_behavior(
-                                                        gpui::ListSizingBehavior::Infer,
+                                                })
+                                                .when(!suggestions.is_empty(), |el| {
+                                                    let input = cx.entity();
+                                                    el.child(
+                                                        gpui::list(
+                                                            self.command_scroll.clone(),
+                                                            move |index, _, cx| {
+                                                                input.update(cx, |input, cx| {
+                                                                    input.render_command_row(
+                                                                        index,
+                                                                        suggestions[index].clone(),
+                                                                        cx,
+                                                                    )
+                                                                })
+                                                            },
+                                                        )
+                                                        .with_sizing_behavior(
+                                                            gpui::ListSizingBehavior::Infer,
+                                                        )
+                                                        .min_h_0()
+                                                        .w_full(),
                                                     )
-                                                    .min_h_0()
-                                                    .w_full(),
-                                                )
-                                            }),
-                                    )
-                                    .child(crate::scrollbar::vertical_list(
-                                        &self.command_scroll,
-                                        "slash-command-scrollbar",
-                                    )),
-                            ),
-                        px(4.0 + 6.0 * (1.0 - menu_progress)),
-                    ))
+                                                }),
+                                        )
+                                        .child(crate::scrollbar::vertical_list(
+                                            &self.command_scroll,
+                                            "slash-command-scrollbar",
+                                        )),
+                                ),
+                            px(4.0 + 6.0 * (1.0 - menu_progress)),
+                        )
+                        .dismiss_outside(self.on_picker_outside.clone()),
+                    )
                     .with_priority(1),
                 )
             })
@@ -2613,6 +4711,26 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            // Inside the model menu the effort keys set the highlighted
+            // row's level instead of the running session's.
+            .capture_action(
+                cx.listener(|this, _: &crate::effort::IncreaseEffort, _, cx| {
+                    if this.step_picker_effort(1, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .capture_action(
+                cx.listener(|this, _: &crate::effort::DecreaseEffort, _, cx| {
+                    if this.step_picker_effort(-1, cx) {
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
@@ -2633,10 +4751,15 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
+            .on_action(cx.listener(Self::grow_editor))
+            .on_action(cx.listener(Self::shrink_editor))
             .on_action(cx.listener(Self::clear))
+            .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
-            .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(Self::queue))
+            .when(!self.host_handles_submission, |el| {
+                el.on_action(cx.listener(Self::submit))
+                    .on_action(cx.listener(Self::queue))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -2657,20 +4780,6 @@ impl Render for PromptInput {
             // 18px radius reads as fully round while multi-line drafts keep
             // straight sides instead of turning into an ellipse.
             .rounded(px(18.0))
-            .when(!self.attachments.is_empty(), |el| {
-                el.child(
-                    div()
-                        .id("prompt-attachments")
-                        .max_h(px(editor_height))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1()
-                        .px_2()
-                        .pt_2()
-                        .children(attachments),
-                )
-            })
             .children(
                 self.attachment_notice
                     .clone()
@@ -2681,10 +4790,21 @@ impl Render for PromptInput {
                             .px_3()
                             .pt_1()
                             .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_FAINT)
+                            .text_color(Theme::global().composer_secondary())
                             .child(notice)
                     }),
             )
+            .when(self.stashed_prompt.is_some(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "prompt-stashed".into())
+                        .px_3()
+                        .pt_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().composer_secondary())
+                        .child("Prompt stashed · Ctrl+S to restore"),
+                )
+            })
             .child(
                 div()
                     .w_full()
@@ -2692,6 +4812,7 @@ impl Render for PromptInput {
                     .items_start()
                     .px_4()
                     .py_2()
+                    .when(self.compact_padding, |el| el.py(px(3.)))
                     .text_size(px(14.0))
                     .when(spacious, |el| {
                         // One line of 16px text plus padding.
@@ -2709,36 +4830,96 @@ impl Render for PromptInput {
                             .debug_selector(|| "prompt-editor".into())
                             .flex_1()
                             .min_w_0()
-                            .max_h(px(editor_height))
+                            .max_h(editor_height)
                             .overflow_y_scroll()
                             .track_scroll(&self.editor_scroll)
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    if this.compact_padding {
+                                        let delta = event.delta.pixel_delta(window.line_height()).y;
+                                        let before = this.editor_scroll.offset().y - delta;
+                                        let max = this.editor_scroll.max_offset().y;
+                                        if (delta < px(0.) && before > -max)
+                                            || (delta > px(0.) && before < px(0.))
+                                        {
+                                            cx.stop_propagation();
+                                        }
+                                    } else {
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .text_color(Theme::global().TEXT)
-                            .child(TextElement { input: cx.entity() }),
+                            .child(
+                                div()
+                                    .relative()
+                                    .child(TextElement { input: cx.entity() })
+                                    .children(self.chip_positions.iter().filter_map(
+                                        |(index, bounds)| {
+                                            let attachment = self.attachments.get(*index)?;
+                                            let index = *index;
+                                            let chip = crate::image_chip::chip_with_label(
+                                                match &attachment.payload {
+                                                    AttachmentPayload::Image {
+                                                        preview, ..
+                                                    } => Some(preview.clone()),
+                                                    AttachmentPayload::Text(_) => None,
+                                                    AttachmentPayload::File { image, .. }
+                                                    | AttachmentPayload::Queued {
+                                                        preview: image,
+                                                        ..
+                                                    } => image
+                                                        .as_ref()
+                                                        .map(|image| image.preview.clone()),
+                                                },
+                                                image_chip_numbers[index].map_or_else(
+                                                    || crate::image_chip::label(&attachment.label),
+                                                    crate::image_chip::numbered_label,
+                                                ),
+                                                "composer-image-chip",
+                                                "composer-image-thumbnail",
+                                                "composer-image-label",
+                                            )
+                                            .absolute()
+                                            .left(bounds.origin.x)
+                                            .top(bounds.origin.y)
+                                            .w(bounds.size.width)
+                                            .h(bounds.size.height);
+                                            let chip = if matches!(
+                                                attachment.payload,
+                                                AttachmentPayload::Image { .. }
+                                                    | AttachmentPayload::File {
+                                                        image: Some(_),
+                                                        ..
+                                                    }
+                                                    | AttachmentPayload::Text(_)
+                                            ) {
+                                                crate::keyboard::button(
+                                                    chip.id(("composer-attachment", index)),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |this, event, window, cx| {
+                                                        if matches!(
+                                                            event,
+                                                            gpui::ClickEvent::Keyboard(_)
+                                                        ) {
+                                                            this.activate_attachment(
+                                                                index, window, cx,
+                                                            );
+                                                        }
+                                                    },
+                                                ))
+                                                .into_any_element()
+                                            } else {
+                                                chip.into_any_element()
+                                            };
+                                            Some(chip)
+                                        },
+                                    )),
+                            ),
                     ),
             )
-            .children(self.voice_preview.as_ref().map(|preview| {
-                div()
-                    .id("prompt-voice-preview")
-                    .debug_selector(|| "voice-live-transcript".into())
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .max_h(px(120.0))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.voice_preview_scroll)
-                    .px_3()
-                    .pb_2()
-                    .text_size(px(14.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .when(!self.content.is_empty(), |el| {
-                        el.child(div().text_size(px(10.0)).child("Appending on a new line"))
-                    })
-                    .child(div().flex_none().child(if preview.trim().is_empty() {
-                        "Listening…".to_owned()
-                    } else {
-                        preview.clone()
-                    }))
-            }))
+            .when(show_resize, |el| el.child(self.render_editor_resize(cx)))
     }
 }
 
@@ -2748,10 +4929,638 @@ impl Focusable for PromptInput {
     }
 }
 
+fn is_large_paste(text: &str) -> bool {
+    text.split('\n').count() > 10 || text.encode_utf16().count() > 1000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::{TestAppContext, WindowOptions};
+
+    #[test]
+    fn large_paste_threshold_matches_omp() {
+        assert!(!is_large_paste(&"a".repeat(1000)));
+        assert!(is_large_paste(&"a".repeat(1001)));
+        assert!(!is_large_paste(&"a\n".repeat(9)));
+        assert!(is_large_paste(&"a\n".repeat(10)));
+        assert!(is_large_paste(&"😀".repeat(501)));
+    }
+
+    #[gpui::test]
+    fn long_paste_is_collapsed_restored_and_sent_in_full(cx: &mut TestAppContext) {
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let result = sent.clone();
+        let text = "a line\n".repeat(12);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", move |text, _, _, _| {
+                *result.borrow_mut() = Some(text)
+            });
+            input.insert_pasted_text(&text, window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            assert_eq!(input.content.as_ref(), "[Pasted text, 13 lines]");
+            let snapshot = input.snapshot();
+            input.restore(snapshot, cx);
+            assert_eq!(input.content.as_ref(), "[Pasted text, 13 lines]");
+        });
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
+        });
+        assert_eq!(sent.borrow().as_deref(), Some(text.as_str()));
+    }
+
+    #[gpui::test]
+    fn clicking_pasted_text_chip_expands_the_original_text(cx: &mut TestAppContext) {
+        let text = "line\n".repeat(12);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.insert_pasted_text(&text, window, cx);
+            input
+        });
+        vcx.run_until_parked();
+        let chip = vcx
+            .debug_bounds("composer-image-chip")
+            .expect("pasted text chip");
+        vcx.simulate_click(chip.center(), Default::default());
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), text);
+            assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn pasted_file_chip_keeps_path_and_image_file_bytes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("real picture.png");
+        let bytes = include_bytes!("../../../assets/previews/image-preview.png");
+        std::fs::write(&path, bytes).unwrap();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = sent.clone();
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *result.borrow_mut() = Some((text, images))
+            });
+            input.attach_pasted_files(std::slice::from_ref(&path), window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            assert!(input.content.contains("real picture.png"));
+            assert!(input.content.contains(&format!("{} B", bytes.len())));
+            let snapshot = input.snapshot();
+            input.restore(snapshot, cx);
+        });
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
+        });
+        let sent = sent.borrow();
+        let (text, images) = sent.as_ref().unwrap();
+        assert!(text.contains(path.to_str().unwrap()));
+        assert_eq!(images.len(), 1);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&images[0].1)
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[gpui::test]
+    fn recalled_file_keeps_captured_bytes(cx: &mut TestAppContext) {
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = sent.clone();
+        let file = SubmittedFile {
+            name: "notes.txt".into(),
+            mime: "text/plain".into(),
+            size: 8,
+            data: base64::engine::general_purpose::STANDARD.encode(b"original"),
+        };
+        let expected = file.clone();
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            let mut input =
+                PromptInput::new_with_queue_files(cx, "test", move |_, text, _, files, _, _, _| {
+                    *result.borrow_mut() = Some((text, files))
+                });
+            input.recall_prompt("/tmp/notes.txt", Vec::new(), cx);
+            input.append_queued_files(vec![file], cx);
+            input
+        });
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
+        });
+        let files = sent.borrow();
+        let (text, files) = files.as_ref().unwrap();
+        assert_eq!(text.trim(), "/tmp/notes.txt");
+        let actual = &files[0];
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.data, expected.data);
+    }
+
+    /// Pasting a file from the file manager points at it. A zip, a folder or
+    /// a 3 GB dump is named by path and never read or uploaded.
+    #[gpui::test]
+    fn pasted_non_image_files_are_referenced_by_path(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("build output.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        file.set_len(11 * 1024 * 1024).unwrap();
+        let folder = dir.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, b"original").unwrap();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = sent.clone();
+        let pasted = [archive.clone(), folder.clone(), notes.clone()];
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new_with_queue_files(
+                cx,
+                "test",
+                move |_, text, images, files, _, _, _| {
+                    *result.borrow_mut() = Some((text, images, files))
+                },
+            );
+            input.attach_pasted_files(&pasted, window, cx);
+            input
+        });
+        input.read_with(vcx, |input, _| {
+            assert!(input.attachments.is_empty(), "no file may be read");
+            assert_eq!(
+                input.attachment_notice.as_deref(),
+                Some("3 file paths added"),
+                "a size or directory refusal must not appear"
+            );
+        });
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
+        });
+        let sent = sent.borrow();
+        let (text, images, files) = sent.as_ref().unwrap();
+        assert_eq!(
+            text.trim(),
+            format!(
+                "\"{}\" {} {}",
+                archive.display(),
+                folder.display(),
+                notes.display()
+            )
+        );
+        assert!(images.is_empty() && files.is_empty(), "nothing is uploaded");
+    }
+
+    #[gpui::test]
+    fn pasted_file_and_clipboard_images_keep_their_submission_order(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("real picture.png");
+        let bytes = include_bytes!("../../../assets/previews/image-preview.png");
+        std::fs::write(&path, bytes).unwrap();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let result = sent.clone();
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *result.borrow_mut() = Some((text, images))
+            });
+            input.attach_pasted_files(std::slice::from_ref(&path), window, cx);
+            input.attach_image(
+                crate::clipboard_image::from_bytes("image/png".into(), bytes.to_vec()).unwrap(),
+                cx,
+            );
+            input
+        });
+        input.update_in(vcx, |input, window, cx| {
+            input.dispatch_submission(
+                SubmissionKind::Message,
+                input.content.to_string(),
+                false,
+                window,
+                cx,
+            )
+        });
+        let sent = sent.borrow();
+        let (text, images) = sent.as_ref().unwrap();
+        assert!(text.contains("[#image 1]"));
+        assert!(text.contains("[#image 2]"));
+        assert_eq!(images.len(), 2);
+    }
+
+    #[test]
+    fn session_image_marker_is_a_chip() {
+        let text = "before [#img_0123456789abcdef0123456789abcdef] after [#image 1]";
+        let markers: Vec<_> = image_marker_ranges(text)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
+        assert_eq!(
+            markers,
+            vec!["[#img_0123456789abcdef0123456789abcdef]", "[#image 1]"]
+        );
+    }
+
+    #[gpui::test]
+    fn image_paste_is_an_inline_chip_at_the_cursor_and_backspace_removes_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("before after".into(), cx);
+            input.selected_range = 7..7;
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            assert_eq!(input.content.as_ref(), "before [#image 1]after");
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-attachments").is_none());
+        let chip = vcx.debug_bounds("composer-image-chip").expect("chip");
+        let label = vcx.debug_bounds("composer-image-label").expect("label");
+        let thumb = vcx
+            .debug_bounds("composer-image-thumbnail")
+            .expect("thumbnail");
+        assert!(
+            thumb.right() < label.left(),
+            "thumbnail and label have a gap"
+        );
+        assert!(
+            label.right() <= chip.right(),
+            "label must fit inside chip: {label:?} {chip:?}"
+        );
+        vcx.simulate_keystrokes("backspace");
+        vcx.run_until_parked();
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "before after");
+            assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn composer_thumbnail_opens_its_image(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("before ".into(), cx);
+            input.selected_range = 7..7;
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 1000,
+                    height: 600,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.run_until_parked();
+        let thumbnail = vcx
+            .debug_bounds("composer-image-thumbnail")
+            .expect("thumbnail is painted");
+        assert_eq!(thumbnail.size, size(px(14.), px(14.)));
+        assert!(
+            vcx.debug_bounds("prompt-editor")
+                .unwrap()
+                .contains(&thumbnail.center())
+        );
+        vcx.simulate_click(thumbnail.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_some()));
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn clicking_end_of_composer_chip_opens_preview(cx: &mut TestAppContext) {
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(vcx, |input, cx| {
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        let chip = vcx.debug_bounds("composer-image-chip").unwrap();
+        vcx.simulate_click(
+            point(chip.right() - px(1.), chip.center().y),
+            Default::default(),
+        );
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+    }
+
+    #[gpui::test]
+    fn image_chip_opens_from_tab_and_escape_returns_to_editor(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus_next(cx));
+        vcx.run_until_parked();
+        assert!(!vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_some());
+        assert!(vcx.update(|window, cx| input.read(cx).preview_close_focus.is_focused(window)));
+        vcx.simulate_keystrokes("tab");
+        assert!(vcx.update(|window, cx| input.read(cx).preview_remove_focus.is_focused(window)));
+        vcx.simulate_keystrokes("shift-tab");
+        assert!(vcx.update(|window, cx| input.read(cx).preview_close_focus.is_focused(window)));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-dialog").is_none());
+        assert!(vcx.update(|window, cx| input.read(cx).focus_handle.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn composer_image_chip_never_disappears_at_wrap_boundary(cx: &mut TestAppContext) {
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(240.), px(400.)));
+        for n in 1..45 {
+            input.update(vcx, |input, cx| {
+                input.attachments.clear();
+                input.set_content(format!("{} ", "x".repeat(n)), cx);
+                input.attach_image(
+                    crate::clipboard_image::ClipboardImage {
+                        media_type: "image/png".into(),
+                        bytes: include_bytes!("../../../assets/previews/image-preview.png")
+                            .to_vec(),
+                        width: 640,
+                        height: 480,
+                    },
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("composer-image-chip").is_some(),
+                "prefix length {n}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn composer_image_modal_is_bounded_and_dismissible(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 1000,
+                    height: 600,
+                },
+                cx,
+            );
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let modal = vcx.debug_bounds("paste-image-preview-dialog").unwrap();
+        assert!(modal.size.width <= px(640.) && modal.size.height <= px(480.));
+        assert!((modal.center().x - px(400.)).abs() < px(1.));
+        assert!((modal.center().y - px(300.)).abs() < px(1.));
+        vcx.simulate_click(point(px(5.), px(5.)), Default::default());
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_none()));
+        input.update(vcx, |input, cx| {
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(input.read_with(vcx, |input, _| input.attachment_preview.is_none()));
+    }
+
+    #[gpui::test]
+    fn image_preview_remove_is_undoable(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            input.attachment_preview = Some(paste_preview::Preview::new(0));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let remove = vcx
+            .debug_bounds("paste-image-preview-remove")
+            .unwrap()
+            .center();
+        vcx.simulate_click(remove, Default::default());
+        input.read_with(vcx, |input, _| {
+            assert!(input.content.is_empty());
+            assert!(input.attachments.is_empty());
+        });
+        vcx.simulate_keystrokes("cmd-z");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "[#image 1]");
+            assert_eq!(input.attachments.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn image_history_never_replays_a_chip_without_its_image(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("describe ".into(), cx);
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        vcx.simulate_keystrokes("enter up");
+        input.read_with(vcx, |input, _| {
+            assert!(!input.content.contains("[#image"));
+            assert!(input.attachments.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn image_draft_round_trips_through_history_navigation(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.history.push("old prompt".into());
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        let draft = input.read_with(vcx, |input, _| input.snapshot());
+        vcx.simulate_keystrokes("up");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "old prompt");
+            assert!(input.attachments.is_empty());
+        });
+        let persisted = input.read_with(vcx, |input, _| input.snapshot());
+        input.update(vcx, |input, cx| input.restore(persisted, cx));
+        vcx.simulate_keystrokes("down");
+        input.read_with(vcx, |input, _| {
+            let restored = input.snapshot();
+            assert_eq!(restored.content, draft.content);
+            assert_eq!(restored.attachments, draft.attachments);
+            assert_eq!(restored.selection_start, draft.selection_start);
+            assert_eq!(restored.selection_end, draft.selection_end);
+        });
+    }
+
+    #[gpui::test]
+    fn image_chips_preview_undo_and_submit_in_text_order(cx: &mut TestAppContext) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let output = seen.clone();
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let input = PromptInput::new(cx, "test", move |text, images, _, _| {
+                *output.lock().unwrap() = Some((text, images));
+            });
+            input.focus_handle.focus(window, cx);
+            input
+        });
+        input.update(vcx, |input, cx| {
+            let image = |byte| crate::clipboard_image::ClipboardImage {
+                media_type: "image/png".into(),
+                bytes: vec![byte],
+                width: 1,
+                height: 1,
+            };
+            input.set_content("AB".into(), cx);
+            input.selected_range = 2..2;
+            input.attach_image(image(1), cx);
+            input.selected_range = 0..0;
+            input.attach_image(image(2), cx);
+            assert_eq!(input.image_chip_numbers(), [Some(2), Some(1)]);
+        });
+        vcx.run_until_parked();
+        let position = input.read_with(vcx, |input, _| {
+            let bounds = input.last_bounds.unwrap();
+            bounds.origin
+                + input
+                    .last_layout
+                    .as_ref()
+                    .unwrap()
+                    .position_for_index(4, input.last_line_height.unwrap())
+                    .unwrap()
+                + point(px(0.), input.last_line_height.unwrap() / 2.)
+        });
+        vcx.simulate_click(position, Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-content").is_some());
+        let close = vcx
+            .debug_bounds("paste-image-preview-close")
+            .unwrap()
+            .center();
+        vcx.simulate_click(close, Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paste-image-preview-content").is_none());
+        input.update(vcx, |input, cx| {
+            let end = input.chip_ranges()[1].1.end;
+            input.selected_range = end..end;
+            cx.notify();
+        });
+        vcx.simulate_keystrokes("backspace");
+        vcx.simulate_keystrokes("cmd-z");
+        input.read_with(vcx, |input, _| assert_eq!(input.attachments.len(), 2));
+        vcx.simulate_keystrokes("enter");
+        let (text, images) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(text, "[#image 2]AB[#image 1]");
+        assert_eq!(
+            images,
+            vec![
+                ("image/png".into(), "Ag==".into()),
+                ("image/png".into(), "AQ==".into())
+            ]
+        );
+    }
 
     #[test]
     fn double_click_word_ranges_are_unicode_safe_and_exclude_adjacent_space() {
@@ -2832,7 +5641,7 @@ mod tests {
     }
 
     fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}))
@@ -2845,6 +5654,144 @@ mod tests {
             })
             .unwrap();
         window
+    }
+
+    #[gpui::test]
+    fn arrow_history_waits_for_the_edge_of_a_soft_wrapped_prompt(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let draft = "界 👩‍💻 Привет Jcode ".repeat(80);
+        window
+            .update(cx, |input, _, cx| {
+                input.history.push("older prompt".into());
+                input.set_content(draft.clone(), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(*window, "up");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str());
+                assert!(input.cursor_offset() < draft.len());
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "down");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str());
+                assert_eq!(input.cursor_offset(), draft.len());
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "home up");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "older prompt")
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(*window, "down");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), draft.as_str())
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_keeps_its_column_across_short_and_empty_lines(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let draft = "abcdef\n\nx\nabcdef";
+        window
+            .update(cx, |input, _, cx| input.set_content(draft.into(), cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        for (key, expected) in [
+            ("up", 9),
+            ("up", 7),
+            ("up", 6),
+            ("down", 7),
+            ("down", 9),
+            ("down", draft.len()),
+        ] {
+            cx.simulate_keystrokes(*window, key);
+            window
+                .update(cx, |input, _, _| {
+                    assert_eq!(input.cursor_offset(), expected, "{key}")
+                })
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_uses_reflowed_rows_after_resize(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let draft = "word word ".repeat(12);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.history.push("old prompt".into());
+            input.set_content(draft.clone(), cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        vcx.simulate_resize(size(px(180.), px(500.)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("home down");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), draft.as_str());
+            assert!((1..draft.len()).contains(&input.cursor_offset()));
+        });
+        vcx.simulate_keystrokes("up");
+        input.read_with(vcx, |input, _| assert_eq!(input.cursor_offset(), 0));
+
+        vcx.simulate_resize(size(px(1600.), px(500.)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("end up");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "old prompt")
+        });
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_does_not_split_image_or_file_chips(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-file.png");
+        let png = include_bytes!("../../../assets/previews/image-preview.png");
+        std::fs::write(&path, png).unwrap();
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: png.to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.replace_text_in_range(None, "\n", window, cx);
+            input.attach_pasted_files(&[path], window, cx);
+            input.replace_text_in_range(None, "\nabc", window, cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        vcx.run_until_parked();
+        let before = input.read_with(vcx, |input, _| input.snapshot());
+        for label in ["test-file.png", "[#image"] {
+            vcx.simulate_keystrokes("up");
+            input.read_with(vcx, |input, _| {
+                let (_, chip) = input
+                    .chip_ranges()
+                    .into_iter()
+                    .find(|(_, range)| input.content[range.clone()].contains(label))
+                    .unwrap();
+                assert!([chip.start, chip.end].contains(&input.cursor_offset()));
+            });
+        }
+        vcx.simulate_keystrokes("down down");
+        assert_eq!(input.read_with(vcx, |input, _| input.snapshot()), before);
     }
 
     #[gpui::test]
@@ -2880,6 +5827,55 @@ mod tests {
                 shift_event.modifiers.shift = true;
                 input.on_mouse_down(&shift_event, window, cx);
                 assert_eq!(input.selected_range, 0..2);
+            })
+            .unwrap();
+    }
+
+    /// Mouse handlers run outside paint, where `window.line_height()` reflects
+    /// the window default rather than the composer's 14px text style. The hit
+    /// test must use the row height the layout was actually painted with.
+    #[gpui::test]
+    fn composer_click_on_each_line_places_caret_on_that_line(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        handle
+            .update(cx, |input, _, cx| {
+                input.set_content("first\nsecond\nthird".into(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                assert_eq!(input.visual_line_count, 3);
+                let row_height = bounds.size.height / 3.;
+                for (row, line_start) in [(0, 0), (1, 6), (2, 13)] {
+                    // Just inside the top edge: a taller handler-time line
+                    // height would map this to the row above.
+                    let position = bounds.origin + point(px(1.), row_height * row as f32 + px(1.));
+                    let event = MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    input.on_mouse_down(&event, window, cx);
+                    assert_eq!(
+                        input.selected_range,
+                        line_start..line_start,
+                        "click at the top of row {row}"
+                    );
+                    input.on_mouse_up(
+                        &MouseUpEvent {
+                            button: MouseButton::Left,
+                            position,
+                            modifiers: Default::default(),
+                            click_count: 1,
+                        },
+                        window,
+                        cx,
+                    );
+                }
             })
             .unwrap();
     }
@@ -2934,7 +5930,11 @@ mod tests {
                 assert_eq!(input.content.as_ref(), "zh");
                 input.replace_text_in_range(Some(1..1000), "中", window, cx);
                 assert_eq!(input.content.as_ref(), "z中");
-                input.replace_text_in_range(Some(5..2), "文", window, cx);
+                // Deliberately inverted: the handler must clamp the range
+                // instead of slicing blindly, which is the case under test.
+                #[allow(clippy::reversed_empty_ranges)]
+                let inverted = 5..2;
+                input.replace_text_in_range(Some(inverted), "文", window, cx);
                 assert_eq!(input.content.as_ref(), "z中文");
                 let mut actual = None;
                 assert_eq!(
@@ -2945,6 +5945,59 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
+    }
+
+    /// `[dictation] mode = "insert"`: the words arrive at the caret, not after
+    /// a newline, and one undo removes the whole insertion.
+    #[gpui::test]
+    fn dictation_inserts_at_the_caret_as_one_undo_step(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        for (draft, caret, spoken, expected, caret_after) in [
+            ("", 0, "run the suite", "run the suite", 13),
+            ("fix the test", 4, "flaky ", "fix flaky the test", 10),
+            ("fix the test", 12, "now", "fix the test now", 16),
+            ("keep", 0, "please ", "please keep", 7),
+            ("один два", 9, "три", "один три два", 16),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_content(draft.into(), cx);
+                input.selected_range = caret..caret;
+                input.undo.clear();
+                input.redo = vec![EditSnapshot {
+                    content: "old redo".into(),
+                    attachments: vec![],
+                }];
+                input.insert_dictation(spoken, cx);
+                assert_eq!(input.content.as_ref(), expected);
+                assert_eq!(input.selected_range, caret_after..caret_after);
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![draft.to_owned()],
+                    "one undo step"
+                );
+                assert!(input.redo.is_empty());
+                assert!(input.marked_range.is_none());
+                assert!(input.history_index.is_none());
+            });
+        }
+    }
+
+    /// A selection is replaced the way typing over it would, so dictation into
+    /// a highlighted word does not duplicate it.
+    #[gpui::test]
+    fn dictation_insert_replaces_the_selection(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("keep drop tail".into(), cx);
+            input.selected_range = 5..9;
+            input.insert_dictation("spare", cx);
+            assert_eq!(input.content.as_ref(), "keep spare tail");
+            assert_eq!(input.selected_range, 10..10);
+        });
     }
 
     #[gpui::test]
@@ -2962,19 +6015,199 @@ mod tests {
             input.update(cx, |input, cx| {
                 input.set_content(before.into(), cx);
                 input.undo.clear();
-                input.redo = vec!["old redo".into()];
+                input.redo = vec![EditSnapshot {
+                    content: "old redo".into(),
+                    attachments: vec![],
+                }];
                 input.selected_range = 0..input.content.len();
                 input.marked_range = Some(0..input.content.len());
                 input.history_index = Some(0);
                 input.append_dictation("  spoken words\n", cx);
                 assert_eq!(input.content.as_ref(), expected);
-                assert_eq!(input.undo, vec![before.to_owned()]);
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![before.to_owned()]
+                );
                 assert!(input.redo.is_empty());
                 assert_eq!(input.selected_range, expected.len()..expected.len());
                 assert!(input.marked_range.is_none());
                 assert!(input.history_index.is_none());
             });
         }
+    }
+
+    /// `[dictation] mode = "replace"` throws a draft away, so it must be one
+    /// undoable edit: the discarded draft comes back with a single undo, and a
+    /// stale redo from before the replacement is cleared.
+    #[gpui::test]
+    fn dictation_replace_is_one_undoable_edit(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        for draft in ["", "half typed", "多行\n草稿", "  keep spacing  "] {
+            input.update(cx, |input, cx| {
+                input.set_content(draft.into(), cx);
+                input.selected_range = 0..input.content.len();
+                input.marked_range = Some(0..2);
+                input.history_index = Some(0);
+                input.undo.clear();
+                input.redo = vec![EditSnapshot {
+                    content: "stale redo".into(),
+                    attachments: vec![],
+                }];
+                input.replace_dictation("  spoken words  ", cx);
+                assert_eq!(input.content.as_ref(), "spoken words");
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![draft.to_owned()],
+                    "one undo step"
+                );
+                assert!(input.redo.is_empty(), "a replacement clears redo");
+                assert_eq!(input.selected_range, 12..12);
+                assert!(input.marked_range.is_none());
+                assert!(input.history_index.is_none());
+            });
+        }
+    }
+
+    /// An empty utterance never wipes the draft and never touches undo history.
+    #[gpui::test]
+    fn empty_replace_dictation_keeps_the_draft(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("keep me".into(), cx);
+            input.undo = vec![EditSnapshot {
+                content: "previous".into(),
+                attachments: vec![],
+            }];
+            input.redo = vec![EditSnapshot {
+                content: "next".into(),
+                attachments: vec![],
+            }];
+            input.selected_range = 0..3;
+            input.replace_dictation("   ", cx);
+            assert_eq!(input.content.as_ref(), "keep me");
+            assert_eq!(input.selected_range, 0..3);
+            assert_eq!(
+                input
+                    .undo
+                    .iter()
+                    .map(|s| s.content.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["previous"]
+            );
+            assert_eq!(
+                input
+                    .redo
+                    .iter()
+                    .map(|s| s.content.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["next"]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn ghost_does_not_start_real_requests_in_gpui_tests(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, _| {
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: Default::default(),
+                    request_counter: None,
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "a realistic draft");
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.ghost.as_ref().unwrap().task.is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ghost_burst_sends_once_and_programmatic_edits_send_nothing(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let counter = std::rc::Rc::new(std::cell::Cell::new(0));
+        let test_counter = counter.clone();
+        window
+            .update(cx, |input, _, _| {
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: Default::default(),
+                    request_counter: Some(test_counter),
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "abcd");
+        for _ in 0..5 {
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.simulate_input(*window, "e");
+        }
+        assert_eq!(counter.get(), 0);
+        cx.executor().advance_clock(Duration::from_millis(401));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 1);
+
+        window
+            .update(cx, |input, window, cx| {
+                input.set_content("restored draft".into(), cx);
+                input.insert_dictation("dictated words", cx);
+                input.insert_pasted_text(" pasted contents", window, cx);
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 1);
+    }
+
+    #[gpui::test]
+    fn ghost_identical_request_uses_cache_without_network(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let counter = std::rc::Rc::new(std::cell::Cell::new(0));
+        let test_counter = counter.clone();
+        window
+            .update(cx, |input, _, _| {
+                let request = crate::prompt_completion::Request {
+                    draft: "abcd".into(),
+                    context: vec![],
+                    cwd: None,
+                    project: None,
+                    model: crate::config::get().completions.model.clone(),
+                };
+                input.ghost = Some(GhostState {
+                    machine: Default::default(),
+                    context: Box::new(|_| Vec::new()),
+                    task: None,
+                    disabled: false,
+                    cache: [(serde_json::to_string(&request).unwrap(), " cached".into())].into(),
+                    request_counter: Some(test_counter),
+                });
+            })
+            .unwrap();
+        cx.simulate_input(*window, "abcd");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.ghost_text(), Some(" cached"))
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(counter.get(), 0);
     }
 
     /// Simulate a completion arriving for the current draft, bypassing network.
@@ -2985,9 +6218,64 @@ mod tests {
             context: Box::new(|_| Vec::new()),
             task: None,
             disabled: true,
+            cache: Default::default(),
+            request_counter: None,
         });
         let generation = ghost.machine.on_edit(&draft, true).unwrap();
         assert!(ghost.machine.on_response(generation, suffix));
+    }
+
+    #[gpui::test]
+    fn typing_keeps_composer_focus_across_ghost_and_snapshot_frames(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let initial_focus = window
+            .update(cx, |input, _, _| input.focus_handle.clone())
+            .unwrap();
+        for (index, letter) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            cx.simulate_input(*window, letter);
+            window
+                .update(cx, |input, window, cx| {
+                    assert_eq!(input.focus_handle, initial_focus);
+                    assert!(initial_focus.is_focused(window));
+                    assert_eq!(input.snapshot().content, "abcde"[..=index]);
+                    if index >= 3 {
+                        show_ghost(input, " suggestion");
+                    }
+                    cx.notify();
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |input, window, _| {
+                    assert_eq!(input.focus_handle, initial_focus);
+                    assert!(initial_focus.is_focused(window));
+                })
+                .unwrap();
+        }
+        window
+            .update(cx, |input, _, _| assert_eq!(&*input.content, "abcde"))
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn slash_draft_hides_existing_ghost_and_does_not_request_completion(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "previous draft");
+        window
+            .update(cx, |input, _, _| show_ghost(input, " old suggestion"))
+            .unwrap();
+        window
+            .update(cx, |input, _, cx| input.set_content(String::new(), cx))
+            .unwrap();
+        cx.simulate_input(*window, "/effort high");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.ghost_text(), None);
+                assert!(input.ghost.as_ref().unwrap().task.is_none());
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -3041,6 +6329,158 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tab_completes_the_selected_slash_command(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/eff");
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/effort")
+            })
+            .unwrap();
+
+        window
+            .update(cx, |input, _, cx| input.set_content(String::new(), cx))
+            .unwrap();
+        cx.simulate_input(*window, "/re");
+        let expected: Vec<String> = window
+            .update(cx, |input, _, _| {
+                input
+                    .command_suggestions()
+                    .iter()
+                    .take(2)
+                    .map(|row| row.value.clone())
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(expected.len(), 2);
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), expected[0])
+            })
+            .unwrap();
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.command_suggestions().is_empty())
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn escape_hides_slash_menu_before_overlay_cancel(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let cancels = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = cancels.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    PromptInput::new(cx, "test", |_, _, _, _| {}).with_on_overlay_cancel(
+                        move |_| {
+                            seen.set(seen.get() + 1);
+                            true
+                        },
+                    )
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
+            .unwrap();
+        cx.simulate_input(*window, "/swarm");
+        window
+            .update(cx, |input, _, _| {
+                assert!(!input.command_suggestions().is_empty())
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "escape");
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.command_suggestions().is_empty(), "menu hidden");
+                assert_eq!(input.content.as_ref(), "/swarm", "draft kept");
+            })
+            .unwrap();
+        assert_eq!(cancels.get(), 0, "first Esc must not stop the agent");
+        cx.simulate_keystrokes(*window, "escape");
+        assert_eq!(cancels.get(), 1, "with no menu, Esc stops as before");
+    }
+
+    #[gpui::test]
+    fn tab_accepts_highlighted_exact_command_without_sending(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "/help");
+        window
+            .update(cx, |input, _, _| {
+                assert!(!input.command_suggestions().is_empty())
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "tab");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/help");
+                assert!(input.history.is_empty());
+                assert!(input.command_suggestions().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn registered_slash_commands_submit_or_keep_the_draft_with_feedback(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        for command in crate::commands::REGISTERED_COMMANDS {
+            let model_step_visible = |input: &PromptInput| {
+                command.name == "/model"
+                    && (input.model_stage != model_stage::ModelStage::Models
+                        || !input.expanded_model_groups.is_empty())
+                    && !input.command_suggestions().is_empty()
+            };
+            window
+                .update(cx, |input, _, cx| {
+                    input.history.clear();
+                    input.transient_notice = None;
+                    input.model_stage = Default::default();
+                    input.expanded_model_groups.clear();
+                    input.set_content(command.name.into(), cx);
+                })
+                .unwrap();
+            // Enter may first accept the visible completion and leave it in
+            // the editor. A second Enter must not make it silently disappear.
+            let mut confirmed = command.name.to_owned();
+            for _ in 0..2 {
+                confirmed = window
+                    .update(cx, |input, _, _| input.content.to_string())
+                    .unwrap();
+                cx.simulate_keystrokes(*window, "enter");
+                if window
+                    .update(cx, |input, _, _| {
+                        input.content.is_empty()
+                            || input.transient_notice.is_some()
+                            || model_step_visible(input)
+                    })
+                    .unwrap()
+                {
+                    break;
+                }
+            }
+            window
+                .update(cx, |input, _, _| {
+                    assert!(
+                        input.history.last().is_some_and(|entry| entry == confirmed.trim() || entry.strip_prefix(confirmed.trim()).is_some_and(|argument| argument.starts_with(' ')))
+                            || (!input.content.is_empty() && input.transient_notice.is_some())
+                            || model_step_visible(input),
+                        "{} was neither submitted nor retained with feedback: draft={:?}, history={:?}, notice={:?}, stage={:?}, expanded={:?}",
+                        command.name, input.content, input.history, input.transient_notice,
+                        input.model_stage, input.expanded_model_groups,
+                    );
+                })
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
     fn tab_without_ghost_leaves_draft_alone(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.simulate_input(*window, "hello");
@@ -3060,11 +6500,12 @@ mod tests {
         window
             .update(cx, |input, _, cx| {
                 input.attachments.push(Attachment {
-                    media_type: "image/png".into(),
-                    encoded: "cG5n".into(),
                     label: "4×3".into(),
-                    preview: preview_image("image/png", Vec::new()).unwrap(),
-                    bounds: Default::default(),
+                    payload: AttachmentPayload::Image {
+                        media_type: "image/png".into(),
+                        encoded: "cG5n".into(),
+                        preview: preview_image("image/png", Vec::new()).unwrap(),
+                    },
                 });
                 let previous_edits = input.undo.len();
                 input.append_dictation("first line\nsecond line", cx);
@@ -3083,7 +6524,7 @@ mod tests {
         window
             .update(cx, |input, _, _| {
                 assert_eq!(input.content.as_ref(), "typed\nfirst line\nsecond line");
-                assert_eq!(input.attachments[0].encoded, "cG5n");
+                assert!(matches!(&input.attachments[0].payload, AttachmentPayload::Image { encoded, .. } if encoded.as_ref() == "cG5n"));
             })
             .unwrap();
     }
@@ -3094,11 +6535,12 @@ mod tests {
         input.update(cx, |input, cx| {
             input.set_content("unfinished prompt".into(), cx);
             input.attachments.push(Attachment {
-                media_type: "image/png".into(),
-                encoded: "cG5n".into(),
                 label: "4×3".into(),
-                preview: preview_image("image/png", Vec::new()).unwrap(),
-                bounds: Default::default(),
+                payload: AttachmentPayload::Image {
+                    media_type: "image/png".into(),
+                    encoded: "cG5n".into(),
+                    preview: preview_image("image/png", Vec::new()).unwrap(),
+                },
             });
             for selected in [false, true] {
                 input.open_model_menu(Vec::new(), cx);
@@ -3114,7 +6556,7 @@ mod tests {
                 input.close_model_menu(cx);
                 assert_eq!(input.content.as_ref(), "unfinished prompt");
                 assert_eq!(input.attachments.len(), 1);
-                assert_eq!(input.attachments[0].encoded, "cG5n");
+                assert!(matches!(&input.attachments[0].payload, AttachmentPayload::Image { encoded, .. } if encoded.as_ref() == "cG5n"));
             }
         });
     }
@@ -3125,16 +6567,36 @@ mod tests {
         input.update(cx, |input, cx| {
             input.set_content("keep this ".into(), cx);
             input.selected_range = 0..4;
-            input.undo = vec!["previous".into()];
-            input.redo = vec!["next".into()];
+            input.undo = vec![EditSnapshot {
+                content: "previous".into(),
+                attachments: vec![],
+            }];
+            input.redo = vec![EditSnapshot {
+                content: "next".into(),
+                attachments: vec![],
+            }];
             input.append_dictation(" \n\t", cx);
             for preview in [Some(String::new()), Some("partial words".into()), None] {
                 input.set_voice_preview(preview.clone(), cx);
                 assert_eq!(input.voice_preview, preview);
                 assert_eq!(input.content.as_ref(), "keep this ");
                 assert_eq!(input.selected_range, 0..4);
-                assert_eq!(input.undo, vec!["previous"]);
-                assert_eq!(input.redo, vec!["next"]);
+                assert_eq!(
+                    input
+                        .undo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["previous"]
+                );
+                assert_eq!(
+                    input
+                        .redo
+                        .iter()
+                        .map(|s| s.content.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["next"]
+                );
             }
         });
     }
@@ -3155,7 +6617,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_preview_renders_below_editor_and_uses_measured_composer(cx: &mut TestAppContext) {
+    fn voice_preview_never_adds_lines_to_composer(cx: &mut TestAppContext) {
         let (input, vcx) =
             cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         input.update(vcx, |input, cx| {
@@ -3163,11 +6625,7 @@ mod tests {
             input.set_voice_preview(Some(String::new()), cx);
         });
         vcx.run_until_parked();
-        let editor = vcx.debug_bounds("prompt-editor").unwrap();
-        let preview = vcx.debug_bounds("voice-live-transcript").unwrap();
-        assert!(preview.top() >= editor.bottom());
-        assert!(preview.top() - editor.bottom() <= px(20.0));
-        assert!(preview.size.height <= px(120.0));
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
         let composer = vcx.debug_bounds("prompt-input").unwrap();
         input.read_with(vcx, |input, _| {
             assert_eq!(input.voice_bounds(), Some(composer));
@@ -3177,15 +6635,8 @@ mod tests {
                 input.set_voice_preview(Some("recognized words\n".repeat(lines)), cx);
             });
             vcx.run_until_parked();
-            assert!(
-                vcx.debug_bounds("voice-live-transcript")
-                    .unwrap()
-                    .size
-                    .height
-                    <= px(120.0)
-            );
+            assert!(vcx.debug_bounds("voice-live-transcript").is_none());
             input.read_with(vcx, |input, _| {
-                assert!(input.voice_preview_scroll.offset().y < px(0.0));
                 assert!(input.content.is_empty());
                 assert!(input.undo.is_empty());
             });
@@ -3242,6 +6693,7 @@ mod tests {
                 );
             })
             .unwrap();
+        // One Enter switches. No level is in force here, so none is forced.
         cx.simulate_keystrokes(*window, "enter");
         window
             .update(cx, |input, _, _| {
@@ -3289,13 +6741,16 @@ mod tests {
         };
         window
             .update(cx, |input, _, cx| {
-                input.set_model_routes(Vec::new(), &routes("atlas-1"), None, cx);
+                // The current route is pinned first, then newest releases.
+                input.set_model_routes(Vec::new(), &routes("atlas-1"), Some("atlas-1".into()), cx);
                 input.set_content("/model".into(), cx);
                 assert_eq!(
                     input.command_suggestions()[0].value,
                     "/model openai-oauth:atlas-1"
                 );
-                input.set_model_routes(Vec::new(), &routes("atlas-5"), None, cx);
+                // The catalog changes and atlas-1 is no longer current, so it
+                // drops out of the top three. The highlight must follow it.
+                input.set_model_routes(Vec::new(), &routes("atlas-5"), Some("atlas-5".into()), cx);
                 assert_eq!(
                     input.command_suggestions()[input.command_selection].value,
                     "/model openai-oauth:atlas-1"
@@ -3357,10 +6812,12 @@ mod tests {
                     cx,
                 );
                 let suggestions = input.command_suggestions();
-                assert_eq!(input.command_selection, 1);
+                // The highlight follows the route, not the slot, when usage
+                // reorders the list.
+                assert_eq!(suggestions[input.command_selection].value, "/model a-rare");
                 assert_eq!(
-                    accepted_command_submission(&suggestions, input.command_selection).as_deref(),
-                    Some("/model a-rare")
+                    suggestions[input.command_selection].action,
+                    Some(model_stage::StageStep::Submit("/model a-rare".into()))
                 );
                 input.set_content("/model favorite".into(), cx);
                 assert_eq!(input.command_suggestions()[0].value, "/model z-favorite");
@@ -3451,7 +6908,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         window
-            .update(cx, |input, window, _| {
+            .update(cx, |input, _window, _| {
                 let height =
                     input.last_bounds.unwrap().size.height / input.visual_line_count as f32;
                 let caret = input
@@ -3493,7 +6950,7 @@ mod tests {
     #[gpui::test]
     fn ctrl_b_moves_by_word_in_the_prompt_despite_the_sidebar_shortcut(cx: &mut TestAppContext) {
         let window = input_window(cx);
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         cx.simulate_input(*window, "one two three");
         cx.run_until_parked();
 
@@ -3568,11 +7025,12 @@ mod tests {
         assert!(submitted.lock().unwrap().is_empty());
         input.update(vcx, |input, cx| {
             input.attachments.push(Attachment {
-                media_type: "image/png".into(),
-                encoded: "cG5n".into(),
                 label: "4×3".into(),
-                preview: preview_image("image/png", Vec::new()).unwrap(),
-                bounds: Default::default(),
+                payload: AttachmentPayload::Image {
+                    media_type: "image/png".into(),
+                    encoded: "cG5n".into(),
+                    preview: preview_image("image/png", Vec::new()).unwrap(),
+                },
             });
             input.set_submission_enabled(false, cx);
         });
@@ -3602,7 +7060,7 @@ mod tests {
     fn history_and_escape_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {
@@ -3631,7 +7089,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closed_session_todos_become_the_rendered_example_prompts(cx: &mut TestAppContext) {
+    fn other_sessions_todos_never_become_composer_examples(cx: &mut TestAppContext) {
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-example-prompts-{}-{}",
             std::process::id(),
@@ -3688,13 +7146,8 @@ mod tests {
             })
         };
         let (first, second) = picked(vcx);
-        let mut shown = [first.as_str(), second.as_str()];
-        shown.sort();
-        assert_eq!(
-            shown,
-            ["Fix the parser crash", "Ship the onboarding flow"],
-            "closed-session todos replace the generic examples, without running or done work"
-        );
+        assert!(motion::FALLBACK_PROMPTS.contains(&first.as_str()));
+        assert!(motion::FALLBACK_PROMPTS.contains(&second.as_str()));
 
         // A composer in another project falls back to the generic catalog.
         input.update(vcx, |input, cx| {
@@ -3735,6 +7188,70 @@ mod tests {
     }
 
     #[gpui::test]
+    fn prompt_stash_survives_snapshot_restart(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| window.focus(&input.focus_handle, cx))
+        });
+        vcx.simulate_keystrokes("a ctrl-s");
+        let encoded = input.read_with(vcx, |input, _| {
+            serde_json::to_string(&input.snapshot()).unwrap()
+        });
+        let snapshot = serde_json::from_str(&encoded).unwrap();
+        let (restarted, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            restarted.update(cx, |input, cx| {
+                input.restore(snapshot, cx);
+                window.focus(&input.focus_handle, cx);
+            })
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-stashed").is_some());
+        vcx.simulate_keystrokes("ctrl-s");
+        restarted.read_with(vcx, |input, _| assert_eq!(input.content.as_ref(), "a"));
+    }
+
+    #[gpui::test]
+    fn prompt_stash_returns_after_send(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "saved draft");
+        cx.simulate_keystrokes(*window, "ctrl-s");
+        window
+            .update(cx, |input, _, _| assert!(input.content.is_empty()))
+            .unwrap();
+        cx.simulate_input(*window, "send this");
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "saved draft")
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn prompt_stash_swaps_and_keeps_indicator(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| window.focus(&input.focus_handle, cx))
+        });
+        vcx.simulate_keystrokes("a ctrl-s");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-stashed").is_some());
+        vcx.simulate_keystrokes("b ctrl-s");
+        input.update(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "a");
+            assert_eq!(input.stashed_prompt.as_ref().unwrap().0, "b");
+        });
+        vcx.simulate_keystrokes("ctrl-s");
+        input.update(vcx, |input, _| assert_eq!(input.content.as_ref(), "b"));
+    }
+
+    #[gpui::test]
     fn submitting_wrapped_prompt_resets_height_before_the_next_paint(cx: &mut TestAppContext) {
         let (input, vcx) =
             cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
@@ -3756,7 +7273,7 @@ mod tests {
     fn image_only_prompt_submits_the_attachment_and_clears_the_composer(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
-        cx.update(|cx| bind_keys(cx));
+        cx.update(bind_keys);
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {
@@ -3770,11 +7287,12 @@ mod tests {
         window
             .update(cx, |input, window, cx| {
                 input.attachments.push(Attachment {
-                    media_type: "image/png".into(),
-                    encoded: "cG5n".into(),
                     label: "4×3".into(),
-                    preview: preview_image("image/png", Vec::new()).unwrap(),
-                    bounds: Default::default(),
+                    payload: AttachmentPayload::Image {
+                        media_type: "image/png".into(),
+                        encoded: "cG5n".into(),
+                        preview: preview_image("image/png", Vec::new()).unwrap(),
+                    },
                 });
                 window.focus(&input.focus_handle, cx);
             })
@@ -3804,17 +7322,18 @@ mod tests {
             .update(cx, |input, _, cx| {
                 for label in ["4×3", "8×6"] {
                     input.attachments.push(Attachment {
-                        media_type: "image/png".into(),
-                        encoded: "cG5n".into(),
                         label: label.into(),
-                        preview: preview_image("image/png", Vec::new()).unwrap(),
-                        bounds: Default::default(),
+                        payload: AttachmentPayload::Image {
+                            media_type: "image/png".into(),
+                            encoded: "cG5n".into(),
+                            preview: preview_image("image/png", Vec::new()).unwrap(),
+                        },
                     });
                 }
                 input.remove_attachment(0, cx);
                 assert_eq!(input.attachments.len(), 1);
                 assert_eq!(input.attachments[0].label.as_ref(), "8×6");
-                assert_eq!(input.attachment_notice.as_deref(), Some("1 image attached"));
+                assert_eq!(input.attachment_notice.as_deref(), None);
             })
             .unwrap();
     }
@@ -3899,6 +7418,14 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+#[cfg(test)]
+#[path = "input_model_order_tests.rs"]
+mod model_order_tests;
+
+#[cfg(test)]
+#[path = "input_model_stage_tests.rs"]
+mod model_stage_tests;
 
 /// Pick the route spec to switch to when the user selects `provider`.
 ///
@@ -4011,6 +7538,29 @@ mod provider_route_spec_tests {
             Some("copilot:claude-opus-4.6")
         );
     }
+}
+
+/// A route for a signed-in provider the session catalog does not list yet.
+///
+/// A session's catalog follows its current runtime, so after a switch to one
+/// provider the others can be missing from it. Without this the picker had no
+/// way back: every other row was inert until the user signed in again.
+pub(crate) fn provider_fallback_spec(provider: &str) -> Option<String> {
+    let prefix = match provider {
+        "claude" => "claude-oauth",
+        "anthropic-api" => "claude-api",
+        "openai" => "openai-oauth",
+        "openai-api" => "openai-api",
+        "copilot" | "cursor" | "gemini" | "antigravity" => provider,
+        other => {
+            let profile = jcode_base::provider_catalog::openai_compatible_profile_by_id(other)?;
+            return profile
+                .default_model
+                .map(|model| format!("{}:{model}", profile.id));
+        }
+    };
+    let model = jcode_base::auth::lifecycle::default_model_for_provider(provider)?;
+    Some(format!("{prefix}:{model}"))
 }
 
 fn provider_route_methods(provider: &str) -> Vec<String> {

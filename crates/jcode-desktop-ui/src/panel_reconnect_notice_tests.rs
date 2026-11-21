@@ -57,11 +57,38 @@ fn footer_count(panel: &Panel) -> usize {
 }
 
 #[gpui::test]
+fn attach_timeout_reconnect_keeps_transcript_free_of_error_cards(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
+    panel.update(vcx, |panel, cx| {
+        panel.connection_lost("timeout: no reply to attach_session within 30s; reconnecting", cx);
+        assert!(panel.status.starts_with("lost:"));
+        assert!(notices(panel).is_empty(), "temporary reconnect must not stop the turn");
+        assert!(!panel.items.iter().any(|item| matches!(item, Item::Error(_) | Item::RuntimeError { .. })));
+        replay_processing_and_usage(panel, cx);
+        assert!(notices(panel).is_empty());
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("response-stop-notice").is_none());
+}
+
+fn provisional_stop(panel: &mut Panel, reason: &str) {
+    panel.record_stop(StopNotice {
+        title: "Provisional stop".into(),
+        detail: "Outcome unknown".into(),
+        provider_stop_reason: None,
+        failure: false,
+        provisional: true,
+        raw: Some(reason.into()),
+        retry: AutoRetry::None,
+    });
+}
+
+#[gpui::test]
 fn reconnect_notice_tests_replayed_processing_and_stats_coalesce(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {
         replay_processing_and_usage(panel, cx);
-        panel.connection_lost("Socket closed", cx);
+        provisional_stop(panel, "Socket closed");
         assert_eq!(footer_count(panel), 1);
         // History/accounting replay can put a stats row after the notice too.
         panel
@@ -70,7 +97,7 @@ fn reconnect_notice_tests_replayed_processing_and_stats_coalesce(cx: &mut gpui::
         let footers = footer_count(panel);
         for _ in 0..4 {
             replay_processing_and_usage(panel, cx);
-            panel.connection_lost("Socket closed again", cx);
+            provisional_stop(panel, "Socket closed again");
             assert_eq!(notices(panel).len(), 1);
             assert_eq!(footer_count(panel), footers);
         }
@@ -87,7 +114,7 @@ fn reconnect_notice_tests_confirmed_replaces_across_stats_and_survives_provision
 ) {
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {
-        panel.connection_lost("Socket closed", cx);
+        provisional_stop(panel, "Socket closed");
         panel
             .items
             .push(Item::ResponseStats(response_stats::fixture()));
@@ -101,7 +128,7 @@ fn reconnect_notice_tests_confirmed_replaces_across_stats_and_survives_provision
         assert_eq!(notices(panel), vec![&confirmed]);
         let footers = footer_count(panel);
         replay_processing_and_usage(panel, cx);
-        panel.connection_lost("Another disconnect", cx);
+        provisional_stop(panel, "Another disconnect");
         assert_eq!(notices(panel), vec![&confirmed]);
         assert_eq!(footer_count(panel), footers);
     });
@@ -111,7 +138,7 @@ fn reconnect_notice_tests_confirmed_replaces_across_stats_and_survives_provision
 fn reconnect_notice_tests_real_output_and_new_user_are_boundaries(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {
-        panel.connection_lost("Initial disconnect", cx);
+        provisional_stop(panel, "Initial disconnect");
         for boundary in [
             Item::Assistant("New answer".into()),
             Item::Reasoning("New reasoning".into()),
@@ -129,7 +156,7 @@ fn reconnect_notice_tests_real_output_and_new_user_are_boundaries(cx: &mut gpui:
             let footers = footer_count(panel);
             panel.items.push(boundary);
             replay_processing_and_usage(panel, cx);
-            panel.connection_lost("New disconnect", cx);
+            provisional_stop(panel, "New disconnect");
             assert_eq!(notices(panel).len(), count + 1);
             assert_eq!(footer_count(panel), footers + 1);
         }
@@ -143,7 +170,7 @@ fn reconnect_notice_tests_real_output_and_new_user_are_boundaries(cx: &mut gpui:
                 panel.streaming_text = "Fresh streamed answer".into();
             }
             replay_processing_and_usage(panel, cx);
-            panel.connection_lost("Disconnect after new output", cx);
+            provisional_stop(panel, "Disconnect after new output");
             assert_eq!(notices(panel).len(), count + 1);
             assert_eq!(footer_count(panel), footers + 1);
         }

@@ -53,8 +53,7 @@ impl Workspace {
         });
     }
 
-    /// Offline screenshot fixture: a self-development panel with the Publish
-    /// button beside a tracker partway through the pipeline.
+    /// Offline screenshot fixture for a tracker partway through the pipeline.
     pub(super) fn open_publish_fixture(&mut self, cx: &mut Context<Self>) {
         let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .display()
@@ -92,6 +91,7 @@ impl Workspace {
             session_id,
             content: publish::session_prompt(&root),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
     }
 }
@@ -129,13 +129,12 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         }
     }
 
     #[gpui::test]
-    fn publish_button_needs_confirmation_and_opens_a_tracked_session(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn selfdev_publish_command_replaces_the_footer_button(cx: &mut gpui::TestAppContext) {
         let checkout = desktop_checkout();
         let nested = checkout.path().join("crates/jcode-desktop-ui/src");
         let root = checkout
@@ -145,6 +144,7 @@ mod tests {
             .display()
             .to_string();
         cx.update(crate::bind_workspace_keys);
+        cx.update(crate::input::bind_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -162,21 +162,21 @@ mod tests {
             });
             panel
         });
+        vcx.update(|window, cx| {
+            let handle = source.read(cx).input_focus_handle(cx);
+            window.focus(&handle, cx);
+        });
         vcx.run_until_parked();
         while commands.try_recv().is_ok() {}
 
-        // First click only arms. Nothing is created or sent.
-        let button = vcx
-            .debug_bounds("publish-desktop")
-            .expect("selfdev panels show the Publish button");
-        vcx.simulate_click(button.center(), gpui::Modifiers::none());
-        vcx.run_until_parked();
-        assert!(commands.try_recv().is_err(), "one click must not publish");
+        assert!(vcx.debug_bounds("composer-trailing").is_some());
+        assert!(vcx.debug_bounds("publish-desktop").is_none());
+        vcx.simulate_input("/publish");
+        assert!(vcx.debug_bounds("slash-command-row-0").is_some());
+        assert!(commands.try_recv().is_err(), "typing must not publish");
         assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
 
-        // Second click opens the tracker draft in the checkout root.
-        let button = vcx.debug_bounds("publish-desktop").unwrap();
-        vcx.simulate_click(button.center(), gpui::Modifiers::none());
+        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         let request_id = match commands.try_recv() {
             Ok(Command::CreateSession {
@@ -249,22 +249,41 @@ mod tests {
     }
 
     #[gpui::test]
-    fn ordinary_projects_never_show_the_publish_button(cx: &mut gpui::TestAppContext) {
+    fn ordinary_projects_cannot_start_publish(cx: &mut gpui::TestAppContext) {
         let other = tempfile::tempdir().unwrap();
+        cx.update(crate::bind_workspace_keys);
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.remotes.default_host = None;
             w.push_test_panel("project", cx);
             w.restore_focus(window, cx);
             w
         });
-        workspace.update(vcx, |w, cx| {
-            w.slots[0].panel.update(cx, |panel, cx| {
+        let source = workspace.update(vcx, |w, cx| {
+            let panel = w.slots[0].panel.clone();
+            panel.update(cx, |panel, cx| {
                 panel.working_dir = Some(other.path().display().to_string());
                 cx.notify();
             });
+            panel
+        });
+        vcx.update(|window, cx| {
+            let handle = source.read(cx).input_focus_handle(cx);
+            window.focus(&handle, cx);
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("composer").is_some());
+        while commands.try_recv().is_ok() {}
+        assert!(vcx.debug_bounds("composer-trailing").is_some());
         assert!(vcx.debug_bounds("publish-desktop").is_none());
+        for command in ["/publish", "/fast-release"] {
+            vcx.simulate_input(command);
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+            assert!(commands.try_recv().is_err(), "{command}");
+            assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
+        }
     }
 }

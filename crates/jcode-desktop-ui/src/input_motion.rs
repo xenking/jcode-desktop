@@ -61,11 +61,11 @@ pub(super) fn pick_prompts<S: AsRef<str>>(personal: &[S], seed: usize) -> [&str;
 /// The first prompt is typed, held and deleted, then the second is typed
 /// and stays. Returns the visible prefix, the prompt it belongs to, and
 /// whether the placeholder is still animating.
-pub(super) fn placeholder_at<'a>(
+pub(super) fn placeholder_at(
     elapsed: Duration,
-    prompts: [&'a str; SHOWN_PROMPTS],
+    prompts: [&str; SHOWN_PROMPTS],
     reduce_motion: bool,
-) -> (&'a str, &'a str, bool) {
+) -> (&str, &str, bool) {
     let pick = |step: usize| prompts[step];
     let last = pick(SHOWN_PROMPTS - 1);
     if reduce_motion {

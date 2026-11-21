@@ -10,6 +10,7 @@ use jcode_base::usage::{PendingAnthropicLimitReset, PendingOpenAiUsageReset};
 
 /// A prepared redemption. Holds credentials, so it never leaves this module.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Pending {
     OpenAi(PendingOpenAiUsageReset),
     Claude(PendingAnthropicLimitReset),
@@ -57,6 +58,7 @@ pub(super) struct Dialog {
     _task: Option<gpui::Task<()>>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PrepareResult {
     Ready(Pending),
     Nothing(String),
@@ -177,6 +179,10 @@ impl Workspace {
             account_label,
             // Availability is unknown until the read-only check answers.
             available_count: 0,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: false,
             next_available_at: None,
         };
@@ -485,6 +491,10 @@ mod tests {
             provider: ResetProvider::Claude,
             account_label: None,
             available_count: u64::from(available),
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached: true,
             next_available_at: None,
         }
@@ -568,6 +578,10 @@ mod tests {
             provider: ResetProvider::OpenAi,
             account_label: Some("work".into()),
             available_count: 2,
+            usable_count: None,
+            expires_at: None,
+            cached_source: None,
+            session_reset_available: None,
             limit_reached,
             next_available_at: None,
         };

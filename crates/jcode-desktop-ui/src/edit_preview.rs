@@ -191,7 +191,7 @@ impl TimedPreview {
         let row = &self.rows[index];
         let line = &row.text;
         let base = div()
-            .debug_selector(move || format!("edit-preview-line-{index}").into())
+            .debug_selector(move || format!("edit-preview-line-{index}"))
             .h(px(LINE_HEIGHT))
             .min_h(px(LINE_HEIGHT))
             .w_full()
@@ -222,7 +222,7 @@ impl TimedPreview {
         let (plain, highlights) = &self.syntax[index];
         let gutter = |number: &str| {
             div()
-                .debug_selector(move || format!("edit-preview-number-{index}").into())
+                .debug_selector(move || format!("edit-preview-number-{index}"))
                 .w(px(self.gutter_width))
                 .flex_none()
                 .text_right()
@@ -394,7 +394,7 @@ impl Render for TimedPreview {
             let index = self.index;
             el.child(
                 div()
-                    .debug_selector(move || format!("edit-preview-footer-{index}").into())
+                    .debug_selector(move || format!("edit-preview-footer-{index}"))
                     .rounded_b_lg()
                     .bg(theme.CODE_BG)
                     .px_3()

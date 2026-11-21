@@ -153,7 +153,9 @@ fn action_pill(id: &'static str, index: usize, label: &'static str) -> gpui::Sta
 impl Panel {
     fn can_resume_error(&self, index: usize, message: &str) -> bool {
         let confirmed_failure = match self.items.get(index) {
-            Some(Item::Error(current)) => current == message,
+            Some(Item::RuntimeError {
+                message: current, ..
+            }) => current == message,
             Some(Item::Stopped(notice)) => {
                 notice.shows_error() && !notice.provisional && notice.detail == message
             }
@@ -193,9 +195,12 @@ impl Panel {
     }
 
     pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A draft borrows the list another session reported; opening it must
+        // not create this one.
+        self.seed_draft_models(cx);
         if self.recovery_picker_open {
             self.recovery_picker_open = false;
-        } else if self.model_picker_open {
+        } else if self.model_picker_open && self.picker_search.is_some() {
             self.close_model_picker(cx);
         } else {
             self.open_recovery_models(cx);
@@ -221,9 +226,10 @@ impl Panel {
             .flex_none()
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .gap_1()
+            .px_2()
+            .py_1p5()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
             .child(
@@ -285,11 +291,22 @@ impl Panel {
         &self,
         index: usize,
         message: &str,
+        runtime_error: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let kind = recovery_kind(message);
+        let kind = if runtime_error {
+            recovery_kind(message)
+        } else {
+            RecoveryKind::Other
+        };
         let details = message.to_string();
+        // The native summary above is a rewrite of the provider's text. Keep
+        // the original one click away, in full, instead of only on the
+        // clipboard.
+        let key = expandable::key::details(index);
+        let expanded = self.expanded_regions.contains(&key);
+        let raw_truncated = expandable::preview(&details, expandable::NOTICE).is_some();
         div()
             .debug_selector(|| "recovery-error".into())
             .flex()
@@ -304,15 +321,45 @@ impl Panel {
             .child(text_selection::plain(
                 self.transcript_selection.clone(),
                 format!("{index}-error"),
-                native_error_message(message),
+                if runtime_error {
+                    native_error_message(message)
+                } else {
+                    message.to_owned()
+                },
                 window,
                 cx,
             ))
+            .when(expanded, |el| {
+                el.child(expandable::scrolled(
+                    format!("{index}-error-raw-scroll").into(),
+                    expandable::MAX_HEIGHT,
+                    text_selection::plain(
+                        self.transcript_selection.clone(),
+                        format!("{index}-error-raw"),
+                        details.clone(),
+                        window,
+                        cx,
+                    ),
+                ))
+            })
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_1p5()
+                    .when(raw_truncated, |el| {
+                        let key = key.clone();
+                        el.child(expandable::toggle(
+                            format!("{index}-error-expand").into(),
+                            expanded,
+                            "▸ Show details",
+                            "▾ Hide details",
+                            cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_line(&key, cx);
+                            }),
+                        ))
+                    })
                     .child(copy_pill("recovery-copy", index, details))
                     .when(self.can_resume_error(index, message), |el| {
                         let message = message.to_owned();

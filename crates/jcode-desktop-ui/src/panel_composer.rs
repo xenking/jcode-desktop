@@ -1,15 +1,19 @@
 //! Composer chrome: the input with one row of compact pills below it.
 //!
-//! Nothing sits above the input. The bottom row holds the model pill, a
-//! separate reasoning effort pill, the credential method pill and the context
-//! ring on the left, and the publish button plus the location (repo or
-//! directory) on the right. The voice button lives inside the input box.
+//! Mode, model and effort, and context are on the left. Location is on the
+//! right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
-//! prompt cards, so nothing reads as a folder tab.
+//! prompt cards, so nothing reads as a folder tab, but they are filled with a
+//! lift of the pane surface: prompt paper is only a few steps away from the
+//! focused pane's background in several palettes, and a pill that vanishes on
+//! the pane you are typing in is not a pill.
 use super::*;
 
 /// Pill height.
 pub(super) const TAB_HEIGHT: f32 = 22.;
+/// One size for every drawn mark in the bar: the context ring, the effort
+/// circle, the worker cluster, the wait mark and the cache timer.
+pub(crate) const BAR_ICON: f32 = 13.;
 /// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
 /// Distance from the input's right edge to the in-box voice button.
@@ -30,6 +34,31 @@ pub(super) const VOICE_TRAILING_SPACE: f32 = 52.;
 pub(super) const VOICE_TRAILING_SPACE: f32 = 128.;
 
 impl Panel {
+    /// The composer's identity pills: the model label and the effort, from the
+    /// runtime when it has answered and from the session record otherwise.
+    ///
+    /// A headless swarm worker's panel is served by its daemon, which answers
+    /// no model probe on attach. The record already names both, so a worker
+    /// reads "DeepSeek V4.1 Flash · high" instead of "Choose model" with no
+    /// effort at all. The runtime always wins once it says anything.
+    pub(super) fn composer_identity(&self) -> (String, Option<String>) {
+        let record = self.worker_record.as_ref();
+        let model = self
+            .model
+            .as_deref()
+            .or_else(|| record.and_then(|record| record.model.as_deref()));
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .or_else(|| record.and_then(|record| record.effort.as_deref()))
+            .map(str::trim)
+            .filter(|effort| {
+                !effort.is_empty() && (model.is_some() || self.draft_config.effort.is_some())
+            })
+            .map(str::to_string);
+        (pretty_model_label(model), effort)
+    }
+
     /// Prompt input with its pill row below. Every composer location
     /// (fresh session, startup layout, docked) uses this so the pills never
     /// drift apart from the input they label.
@@ -38,53 +67,47 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let _ = window;
         let theme = Theme::global();
-        let screenshot_mode = crate::config::display().screenshot_mode;
-        let account_label = if screenshot_mode {
-            "Account hidden".to_string()
-        } else {
-            serving_account_label(
-                self.provider.as_deref(),
-                self.auth_method.as_deref(),
-                self.account_label.as_deref(),
-            )
-        };
-        let model_label = pretty_model_label(self.model.as_deref());
-        let limits = (!screenshot_mode)
-            .then(|| self.limits_summary(cx))
-            .flatten();
-        let effort = self
-            .reasoning_effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|effort| !effort.is_empty() && self.model.is_some())
-            .map(str::to_string);
+        let screenshot_mode = crate::config::display().screenshot_mode
+            && !crate::fixture_control_targets::draft_session();
+        let (mut model_label, effort) = self.composer_identity();
+        if self.session_deferred() && self.model.is_none() {
+            model_label = "Models".into();
+        }
+        let effort = effort.or_else(|| {
+            (self.session_deferred() && self.model.is_some() && !self.effort_ladder().is_empty())
+                .then(|| "default".to_owned())
+        });
         let remote_machine = (!screenshot_mode)
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
             .map(|host| {
-                if host == crate::managed_cloud::HOST {
-                    "Jcode Cloud".to_string()
-                } else {
-                    host
-                }
+                crate::managed_cloud::Destination::parse(&host)
+                    .map(|target| target.label().to_owned())
+                    .unwrap_or(host)
             });
         let location = self
             .working_dir
             .as_deref()
             .filter(|dir| !screenshot_mode && !dir.is_empty())
-            .map(|dir| {
-                if remote_machine.is_some() {
-                    remote_location_label(dir)
-                } else {
-                    location_label(dir)
-                }
-            });
+            .map(|dir| (location_label(dir), dir.to_owned()));
         let can_switch_location = remote_machine.is_none() && self.offers_directory_switch();
-        // Build info, usage limits and status share the pill row, so the
-        // panel needs no separate footer bar below the composer.
+        let location = location.or_else(|| {
+            (can_switch_location && self.session_deferred() && !screenshot_mode)
+                .then(|| ("Choose folder".into(), "Choose a working folder".into()))
+        });
+        // Usage limits and status share the pill row, so the panel needs no
+        // separate footer bar below the composer. The build label is gone from
+        // the footer entirely: the version lives in Settings → About and the
+        // account popup.
         let status_line = self.status_line();
+        // Worker count (only while workers run), the prompt-cache countdown,
+        // then the activity icon. All three are leaf views, so their animation
+        // and ticks never rebuild the composer.
+        let workers_pill = self.render_swarm_indicator(cx);
+        let cache_pill = self.render_cache_pill(cx);
+        let rig_hud = self.render_rig_hud(cx);
+        let activity_icon = self.render_activity_icon(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
             .flex_shrink(4.)
@@ -100,7 +123,7 @@ impl Panel {
             .whitespace_nowrap()
             .text_size(px(10.0))
             .font_family(theme.FONT_MONO)
-            .text_color(theme.TEXT_FAINT)
+            .text_color(theme.composer_secondary())
             .child(
                 div()
                     .debug_selector(|| "panel-status".into())
@@ -110,23 +133,36 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
+                    .when(self.ask_card.is_some(), |el| {
+                        el.child(
+                            div()
+                                .id("composer-ask-pending")
+                                .debug_selector(|| "composer-ask-pending".into())
+                                .flex_none()
+                                .size(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(theme.ACCENT_DIM)
+                                .text_color(theme.ACCENT)
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        super::usage::MeterTooltip("Waiting for your answer".into())
+                                    })
+                                    .into()
+                                })
+                                .child("?"),
+                        )
+                    })
+                    .children(workers_pill)
+                    .children(rig_hud)
+                    .children(cache_pill)
+                    .children(activity_icon)
                     .children(self.render_voice_status(status_line))
-                    .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
-            )
-            .when(self.show_build_footer && !screenshot_mode, |el| {
-                el.child(
-                    div()
-                        .id("panel-build")
-                        .debug_selector(|| "panel-build".into())
-                        .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
-                        // Build metadata yields space to the identity pills.
-                        .flex_shrink_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(crate::build_info::label()),
-                )
-            });
+            );
         let pills = div()
             .debug_selector(|| "composer-tabs".into())
             .w_full()
@@ -147,62 +183,44 @@ impl Panel {
                     .items_center()
                     .gap_1()
                     .overflow_hidden()
-                    .child(
-                        composer_pill("panel-model")
-                            .flex_shrink_1()
-                            .min_w(px(56.))
-                            .child(
-                                div()
-                                    .debug_selector(|| "panel-model-name".into())
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(model_label),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_model_picker(window, cx);
-                                cx.stop_propagation();
-                            })),
-                    )
-                    .children(effort.map(|effort| {
-                        composer_pill("panel-model-effort")
+                    .children((!self.mode_names().is_empty() || !self.skills.is_empty() || self.session_deferred()).then(|| {
+                        let names = self.mode_names();
+                        let hover = if names.is_empty() {
+                            "Choose session modes".to_owned()
+                        } else {
+                            format!("Active modes: {}", names.join(", "))
+                        };
+                        let label = match names {
+                            [] => Some("Mode".to_owned()),
+                            [name] => Some(name.strip_suffix("-mode").unwrap_or(name).to_owned()),
+                            _ => None,
+                        };
+                        let icons = names.iter().enumerate().map(|(index, name)| {
+                            let icon = crate::mode_catalog::icon(name, self.mode_catalog.get(name));
+                            div()
+                                .debug_selector(move || format!("panel-mode-icon-{}-{index}", icon.name()))
+                                .flex_none()
+                                .flex()
+                                .child(icon.render(BAR_ICON, theme.composer_secondary()))
+                        });
+                        crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "panel-mode".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
-                            .min_w(px(24.))
-                            .text_color(theme.TEXT_FAINT)
-                            .child(div().min_w_0().truncate().child(effort))
+                            .min_w(px(46.))
+                            .max_w(relative(0.4))
+                            .overflow_hidden()
+                            .children(icons)
+                            .children(label.map(|mode| div().min_w_0().truncate().child(mode)))
+                            .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_effort_picker(window, cx);
+                                this.toggle_mode_picker(window, cx);
+                                this.remember_picker_trigger(PickerKind::Mode);
                                 cx.stop_propagation();
                             }))
                     }))
-                    .child(
-                        // Icon only: the model pill and quota chips already
-                        // name the route, so the method text lives in the
-                        // tooltip. The pill stays because it switches provider.
-                        composer_pill("panel-login")
-                            .flex_none()
-                            .px_2()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(account_pill_icon(self.provider.as_deref(), theme.TEXT_DIM))
-                            .tooltip(move |_, cx| {
-                                let method = account_label.clone();
-                                match limits.clone() {
-                                    Some(summary) => cx
-                                        .new(|_| super::usage::LimitsTooltip { method, summary })
-                                        .into(),
-                                    None => cx.new(|_| super::usage::MeterTooltip(method)).into(),
-                                }
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_provider_picker(window, cx);
-                                cx.stop_propagation();
-                            })),
-                    )
-                    .children(self.render_context_meter())
-                    .children(
-                        (!screenshot_mode)
-                            .then(|| self.render_provider_usage_footer(cx))
-                            .flatten(),
-                    ),
+                    .child(self.render_model_control(model_label, effort, cx))
+                    .children(self.render_context_meter(cx)),
             )
             .child(
                 div()
@@ -216,7 +234,6 @@ impl Panel {
                     .gap_1()
                     .overflow_hidden()
                     .child(meta)
-                    .children(self.render_publish_button(cx))
                     .children(remote_machine.map(|machine| {
                         // Remote sessions name their machine first, so a cloud
                         // chat never reads like a local one.
@@ -237,9 +254,11 @@ impl Panel {
                             .whitespace_nowrap()
                             .child(machine)
                     }))
-                    .children(location.map(|(name, detail)| {
+                    .children(location.map(|(name, full_path)| {
                         div()
                             .id("composer-location")
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "composer-location".into(), || Some(self.session_id.clone())))
                             .debug_selector(|| "composer-location".into())
                             .flex_shrink_1()
                             .min_w_0()
@@ -252,12 +271,14 @@ impl Panel {
                             .whitespace_nowrap()
                             .text_size(px(11.5))
                             .rounded_full()
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| LocationTooltip(full_path.clone())).into()
+                            })
                             // The folder browser reads this computer's disk,
                             // so only local sessions offer the switch.
                             .when(can_switch_location, |el| {
                                 el.cursor_pointer()
-                                    .hover(|el| el.bg(theme.USER_BG))
-                                    .tooltip(|_, cx| cx.new(|_| LocationTooltip).into())
+                                    .hover(|el| el.bg(theme.chip_active_background()))
                                     .on_click(cx.listener(|_, _, window, cx| {
                                         cx.stop_propagation();
                                         window.dispatch_action(
@@ -271,52 +292,141 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_color(theme.TEXT_DIM)
+                                    .text_color(theme.composer_secondary())
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(name),
                             )
-                            .children(detail.map(|detail| {
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(10.5))
-                                    .font_family(theme.FONT_MONO)
-                                    .text_color(theme.TEXT_FAINT)
-                                    .child(detail)
-                            }))
                     })),
             );
         let strips = self.render_composer_applets(window, cx);
+        let ask = self.render_ask_card(window, cx);
         div()
             .debug_selector(|| "composer".into())
+            .relative()
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .children(self.render_swarm_strip(cx))
+            .children(self.render_context_usage(cx))
+            .children(self.render_swarm_list(window, cx))
             .children(strips)
             .children(self.render_provider_picker(window, cx))
-            .child(
-                // The voice button floats inside the input's right edge. The
-                // input reserves matching trailing space for it.
+            .children(self.picker_search.as_ref().map(|(_, search)| {
                 div()
-                    .relative()
-                    .w_full()
-                    .min_w_0()
-                    .child(self.render_voice_input_slot(cx))
-                    .child(
+                    .debug_selector(|| "picker-search".into())
+                    .child(search.clone())
+            }))
+            .children(ask)
+            .when(
+                self.ask_card.is_none()
+                    && (self.picker_search.is_none() || self.input.read(cx).has_draft()),
+                |el| {
+                    el.child(
+                        // The voice button floats inside the input's right edge. The
+                        // input reserves matching trailing space for it.
                         div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right(px(VOICE_INSET))
-                            .flex()
-                            .items_center()
-                            .child(self.render_voice_tab(cx)),
-                    ),
+                            .debug_selector(|| "composer-text-slot".into())
+                            .relative()
+                            .w_full()
+                            .min_w_0()
+                            .child(self.render_voice_input_slot(cx))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right(px(VOICE_INSET))
+                                    .flex()
+                                    .items_center()
+                                    .child(self.render_voice_tab(cx)),
+                            ),
+                    )
+                },
             )
             .child(pills)
             .into_any_element()
+    }
+
+    fn render_model_control(
+        &self,
+        model_label: String,
+        effort: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        const MODEL_MIN: f32 = 56.;
+        const EFFORT_MIN: f32 = BAR_ICON + 12.;
+        div()
+            .debug_selector(|| "panel-model-control".into())
+            .flex()
+            .items_center()
+            .flex_shrink_1()
+            .min_w(px(MODEL_MIN + if effort.is_some() { EFFORT_MIN } else { 0. }))
+            .rounded_full()
+            .bg(Theme::global().chip_background())
+            .child(
+                crate::keyboard::popover_trigger(composer_button("panel-model"), &self.picker_triggers[PickerKind::Model as usize])
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
+                    .flex_shrink_1()
+                    .min_w(px(MODEL_MIN))
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-model-name".into())
+                            .min_w_0()
+                            .truncate()
+                            .child(model_label),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_model_picker(window, cx);
+                        this.remember_picker_trigger(PickerKind::Model);
+                        cx.stop_propagation();
+                    })),
+            )
+            .children(effort.map(|effort| {
+                let hover = crate::effort::tooltip(&effort);
+                let mark = crate::effort_icon::icon(&effort, BAR_ICON);
+                let word = mark.is_none().then(|| {
+                    div().min_w_0().truncate().child(if effort == "default" {
+                        "Effort".to_owned()
+                    } else {
+                        crate::effort::label(&effort).to_string()
+                    })
+                });
+                crate::keyboard::popover_trigger(composer_button("panel-model-effort"), &self.picker_triggers[PickerKind::Effort as usize])
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
+                    .flex_shrink(3.)
+                    .min_w(px(EFFORT_MIN))
+                    .gap_1()
+                    .px_1p5()
+                    .children(mark)
+                    .children(word)
+                    .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_effort_picker(window, cx);
+                        this.remember_picker_trigger(PickerKind::Effort);
+                        cx.stop_propagation();
+                    }))
+            }))
+    }
+
+    fn remember_picker_trigger(&mut self, kind: PickerKind) {
+        self.composer_popover_trigger = self.picker_search.as_ref().and_then(|(opened, _)| {
+            (*opened == kind).then(|| self.picker_triggers[kind as usize].clone())
+        });
+    }
+
+    pub(super) fn render_composer_cards(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Iterator<Item = gpui::AnyElement> {
+        [
+            self.render_side_question_card(cx),
+            self.render_prompt_queue(cx),
+            self.render_voice_pending(),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// The ordinary composer, floating over the bottom of the transcript.
@@ -336,6 +446,31 @@ impl Panel {
             ..background
         };
         let panel = cx.entity().downgrade();
+        let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
+            self.input.read(cx).focus_handle.is_focused(window)
+                || (card.submitting && self.ask_editor_focused(window, cx))
+        });
+        if should_focus_ask {
+            let panel = panel.clone();
+            window.defer(cx, move |window, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    let focus = {
+                        let panel = panel.read(cx);
+                        panel
+                            .ask_card
+                            .as_ref()
+                            .is_some_and(|card| {
+                                panel.input.read(cx).focus_handle.is_focused(window)
+                                    || (card.submitting && panel.ask_editor_focused(window, cx))
+                            })
+                            .then(|| panel.focus_handle.clone())
+                    };
+                    if let Some(focus) = focus {
+                        window.focus(&focus, cx);
+                    }
+                }
+            });
+        }
         div()
             .debug_selector(|| "composer-dock".into())
             .absolute()
@@ -354,7 +489,11 @@ impl Panel {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     if !this.owns_keyboard_focus(window, cx) {
-                        this.focus_input(window, cx);
+                        if this.ask_card.is_some() {
+                            window.focus(&this.focus_handle, cx);
+                        } else {
+                            this.focus_input(window, cx);
+                        }
                     }
                 }),
             )
@@ -374,7 +513,7 @@ impl Panel {
                     .w_full()
                     .min_w_0()
                     .px_2()
-                    .pb_2()
+                    .pb(px(COMPOSER_BOTTOM_INSET))
                     .bg(veil(DOCK_VEIL_ALPHA))
                     .when(self.recovery_picker_open, |el| {
                         el.child(self.render_recovery_model_picker(cx))
@@ -390,11 +529,15 @@ impl Panel {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .children(self.render_ask_card(cx))
-                            .children(self.render_prompt_queue(cx))
-                            .children(self.render_voice_pending())
+                            .when(
+                                self.has_visible_queued_prompts() && self.ask_card.is_none(),
+                                |el| el.gap_0(),
+                            )
+                            .children(self.render_composer_cards(cx))
                             .child(self.render_composer(window, cx))
-                            .child(startup::input_marker(input_bounds)),
+                            .when(self.ask_card.is_none(), |el| {
+                                el.child(startup::input_marker(input_bounds))
+                            }),
                     ),
             )
             .child(
@@ -465,7 +608,7 @@ impl Panel {
 }
 
 /// A compact rounded pill, filled like the transcript's user prompt cards.
-struct LocationTooltip;
+struct LocationTooltip(String);
 
 impl Render for LocationTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -478,7 +621,26 @@ impl Render for LocationTooltip {
             .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
             .text_color(Theme::global().TEXT)
-            .child("Switch folder")
+            .child(self.0.clone())
+    }
+}
+
+/// Hover for the effort pill: the pill shows the dot alone, so the level name
+/// has to live here.
+struct EffortTooltip(String);
+
+impl Render for EffortTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("EffortTooltip");
+        div()
+            .debug_selector(|| "composer-effort-tooltip".into())
+            .max_w(px(300.))
+            .p_2()
+            .rounded_md()
+            .bg(Theme::global().HEADER_BG)
+            .text_size(px(12.))
+            .text_color(Theme::global().TEXT)
+            .child(self.0.clone())
     }
 }
 
@@ -504,7 +666,7 @@ impl Panel {
             && !self.awaiting_persisted
             && !self.restored_transcript
             && self.provisional_items == 0
-            && self.items.is_empty()
+            && (self.session_deferred() || self.items.is_empty())
             && self.pending_users.is_empty()
             && !self.has_queued_prompts()
             && !self.activity_active()
@@ -521,57 +683,28 @@ impl Panel {
         let previous = std::mem::replace(&mut self.session_id, request_id);
         self.working_dir = Some(directory);
         self.title = "New session".into();
-        self.status = "Starting session · you can type now".into();
+        self.draft_session = super::DraftSession::Deferred;
+        self.status = super::DEFERRED_SESSION_STATUS.into();
         self.connection_phase.clear();
         self.history_loaded = false;
-        self.input
-            .update(cx, |input, cx| input.set_pending_session(true, cx));
+        let directory = self.working_dir.as_deref();
+        self.input.update(cx, |input, cx| {
+            input.set_pending_session(true, cx);
+            input.set_working_dir(directory);
+        });
+        self.load_draft_skills(cx);
         cx.notify();
         previous
     }
 }
 
-/// Logo id for the serving provider, so the method pill can be icon only.
-pub(super) fn account_logo_id(provider: Option<&str>) -> Option<&'static str> {
-    let provider = provider?.trim().to_ascii_lowercase();
-    let id = match provider.as_str() {
-        "claude" | "anthropic" => "claude",
-        "openai" | "chatgpt" | "openai-api" => "openai",
-        other => [
-            "anthropic-api",
-            "jcode",
-            "gemini",
-            "copilot",
-            "openrouter",
-            "cursor",
-            "bedrock",
-            "azure",
-            "xai",
-            "mistral",
-            "deepseek",
-            "groq",
-        ]
-        .into_iter()
-        .find(|id| *id == other)?,
-    };
-    Some(id)
-}
-
-fn account_pill_icon(provider: Option<&str>, color: gpui::Rgba) -> gpui::Svg {
-    let bytes = account_logo_id(provider)
-        .and_then(crate::accounts::logo)
-        .unwrap_or(include_bytes!("../../../assets/icons/account.svg"));
-    gpui::svg()
-        .data(bytes)
-        .size(px(12.))
-        .flex_none()
-        .text_color(color)
-}
-
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    composer_button(id).bg(Theme::global().chip_background())
+}
+
+fn composer_button(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
-    div()
-        .id(id)
+    div().id(id)
         .debug_selector(move || id.into())
         .h(px(TAB_HEIGHT))
         .px_2p5()
@@ -579,13 +712,12 @@ pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .gap_1p5()
         .rounded_full()
-        .bg(theme.prompt_background(usize::MAX))
         .text_size(px(10.5))
         .font_family(theme.FONT_MONO)
-        .text_color(theme.TEXT_DIM)
+        .text_color(theme.composer_secondary())
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|el| el.text_color(theme.TEXT).bg(theme.USER_BG))
+        .hover(|el| el.text_color(theme.TEXT).bg(theme.chip_active_background()))
 }
 
 /// `claude-opus-4-8` reads `Opus 4.8`. The provider already appears in the
@@ -602,132 +734,124 @@ pub(super) fn pretty_model_label(model: Option<&str>) -> String {
     }
 }
 
-/// Model label plus effort, used where a single string is needed.
-#[cfg(test)]
-pub(super) fn model_tab_label(model: Option<&str>, effort: Option<&str>) -> String {
-    let pretty = pretty_model_label(model);
-    match effort.map(str::trim).filter(|effort| !effort.is_empty()) {
-        Some(effort) if model.is_some_and(|m| !m.trim().is_empty()) => format!("{pretty} {effort}"),
-        _ => pretty,
-    }
-}
-
-/// Repo name (the last path component) plus its home-relative parent path.
-/// `/home/me/src/jcode` reads `jcode` then `~/src`. Windows paths split on
-/// either separator, so `C:\Users\me\src\jcode` reads `jcode` then `~\src`.
-pub(super) fn location_label(path: &str) -> (String, Option<String>) {
+/// Last path component. The full path is kept in the hover card.
+fn location_label(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
-        return ("/".into(), None);
+        return "/".into();
     }
-    if crate::platform_dirs::tilde(trimmed) == "~" {
-        return ("~".into(), None);
-    }
-    let (parent, name) = match trimmed.rsplit_once(['/', '\\']) {
-        Some((parent, name)) => (parent, name),
-        None => return (trimmed.into(), None),
+    let name = match trimmed.rsplit_once(['/', '\\']) {
+        Some((_, name)) => name,
+        None => return trimmed.into(),
     };
-    // `C:\` keeps its separator so the parent of `C:\repo` is not `C:`.
-    let parent = if parent.is_empty() {
-        "/".to_string()
-    } else if parent.ends_with(':') {
-        trimmed[..parent.len() + 1].to_string()
-    } else {
-        crate::platform_dirs::tilde(parent)
-    };
-    (name.to_string(), Some(parent))
-}
-
-/// Repo name plus its full parent path on another machine. The local `$HOME`
-/// says nothing about the remote user's home, so nothing is abbreviated
-/// except the managed cloud's own home directory.
-pub(super) fn remote_location_label(path: &str) -> (String, Option<String>) {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return ("/".into(), None);
-    }
-    let cloud_home = "/home/ec2-user";
-    if trimmed == cloud_home {
-        return ("~".into(), None);
-    }
-    let Some((parent, name)) = trimmed.rsplit_once('/') else {
-        return (trimmed.into(), None);
-    };
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let parent = match parent.strip_prefix(cloud_home) {
-        Some("") => "~".to_string(),
-        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
-        _ => parent.to_string(),
-    };
-    (name.to_string(), Some(parent))
+    name.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn model_tab_uses_pretty_names_and_effort() {
-        assert_eq!(model_tab_label(None, Some("high")), "Choose model");
-        assert_eq!(model_tab_label(Some(" "), None), "Choose model");
-        assert_eq!(model_tab_label(Some("claude-opus-4-8"), None), "Opus 4.8");
-        assert_eq!(
-            model_tab_label(Some("gpt-5.5"), Some("high")),
-            "GPT-5.5 high"
+    /// A headless worker panel has no runtime identity, so its record's model
+    /// and effort fill the footer. Without this the pills read "Choose model"
+    /// and no effort at all, which is what "unset" looked like.
+    #[gpui::test]
+    fn a_worker_panel_takes_its_model_and_effort_from_its_record(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("worker-panel", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+
+        let record = jcode_sdk::WorkerMeta {
+            model: Some("deepseek-v4.1-flash".into()),
+            provider: Some("opencode-go".into()),
+            effort: Some("high".into()),
+            ..jcode_sdk::WorkerMeta::default()
+        };
+        let identity = panel.update(vcx, |panel, cx| {
+            panel.set_worker_record(Some(record.clone()), cx);
+            panel.composer_identity()
+        });
+        assert_ne!(identity.0, "Choose model", "the record names the model");
+        assert!(identity.0.contains("4.1"), "{}", identity.0);
+        assert_eq!(identity.1.as_deref(), Some("high"));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("panel-model-effort").is_some(),
+            "the effort pill exists once a model is known"
         );
-        assert_eq!(model_tab_label(None, Some("high")), "Choose model");
-        assert_eq!(
-            model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
-            "GPT-5.1 Codex Max"
-        );
+
+        // The runtime wins once it answers.
+        let identity = panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-opus-5-5".into());
+            panel.reasoning_effort = Some("max".into());
+            panel.set_worker_record(Some(record), cx);
+            panel.composer_identity()
+        });
+        assert!(identity.0.contains("Opus 5.5"), "{}", identity.0);
+        assert_eq!(identity.1.as_deref(), Some("max"));
+    }
+
+    /// The bar's effort mark is drawn (canvas), not a `◑` glyph: the level's
+    /// shape sits in the pill at the context ring's size, and an unknown
+    /// level keeps its word instead of inventing a rung.
+    #[gpui::test]
+    fn the_effort_pill_draws_the_level_at_the_context_ring_size(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            panel.update(vcx, |panel, cx| {
+                panel.model = Some("gpt-5.6-sol".into());
+                panel.provider = Some("openai".into());
+                panel.reasoning_effort = Some(level.into());
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill");
+            let selector: &'static str = Box::leak(format!("effort-icon-{level}").into_boxed_str());
+            let icon = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{level} icon"));
+            let ring = vcx.debug_bounds("panel-context-ring").expect("ring");
+            assert!(icon.left() >= pill.left() && icon.right() <= pill.right());
+            assert_eq!(icon.size, ring.size, "{level} matches the context ring");
+        }
+        assert!(crate::effort_icon::icon("future", BAR_ICON).is_none());
     }
 
     #[test]
-    fn remote_location_keeps_the_remote_path() {
-        assert_eq!(
-            remote_location_label("/home/ec2-user/workspaces"),
-            ("workspaces".into(), Some("~".into()))
-        );
-        assert_eq!(
-            remote_location_label("/home/ec2-user/workspaces/app/"),
-            ("app".into(), Some("~/workspaces".into()))
-        );
-        assert_eq!(
-            remote_location_label("/srv/app"),
-            ("app".into(), Some("/srv".into()))
-        );
-        assert_eq!(remote_location_label("/home/ec2-user"), ("~".into(), None));
-        assert_eq!(
-            remote_location_label("/home/ec2-userx/a"),
-            ("a".into(), Some("/home/ec2-userx".into()))
-        );
-    }
-
-    #[test]
-    fn location_label_splits_repo_name_from_parent() {
+    fn location_label_only_shows_the_last_component() {
         let home = std::env::var("HOME").unwrap();
-        assert_eq!(
-            location_label(&format!("{home}/jcode")),
-            ("jcode".into(), Some("~".into()))
-        );
-        assert_eq!(
-            location_label(&format!("{home}/src/jcode/")),
-            ("jcode".into(), Some("~/src".into()))
-        );
-        assert_eq!(location_label(&home), ("~".into(), None));
-        assert_eq!(
-            location_label("/srv/app"),
-            ("app".into(), Some("/srv".into()))
-        );
-        assert_eq!(location_label("/"), ("/".into(), None));
-        assert_eq!(
-            location_label(r"D:\work\jcode\"),
-            ("jcode".into(), Some(r"D:\work".into()))
-        );
-        assert_eq!(
-            location_label(r"C:\repo"),
-            ("repo".into(), Some(r"C:\".into()))
-        );
+        assert_eq!(location_label(&format!("{home}/jcode")), "jcode");
+        assert_eq!(location_label(&format!("{home}/src/jcode/")), "jcode");
+        assert_eq!(location_label(&home), home.rsplit('/').next().unwrap());
+        assert_eq!(location_label("/srv/app"), "app");
+        assert_eq!(location_label("/"), "/");
+        assert_eq!(location_label(r"D:\work\jcode\"), "jcode");
+        assert_eq!(location_label(r"C:\repo"), "repo");
+    }
+
+    #[gpui::test]
+    fn composer_location_shows_basename_and_keeps_full_path_for_hover(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.working_dir = Some("/srv/projects/jcode".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let location = vcx
+            .debug_bounds("composer-location")
+            .expect("location visible");
+        assert_eq!(location_label("/srv/projects/jcode"), "jcode");
+        vcx.update(|window, cx| window.simulate_mouse_move(location.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-location-tooltip").is_some());
     }
 
     #[gpui::test]
@@ -741,6 +865,7 @@ mod tests {
                 panel.reasoning_effort = Some("high".into());
                 panel.provider = Some("anthropic".into());
                 panel.auth_method = Some("oauth".into());
+                panel.pinned_modes = vec!["selfdev".into(), "swarm".into()];
                 panel.working_dir = Some("/srv/projects/jcode".into());
                 *panel.items = vec![Item::User("Hello".into())];
                 cx.notify();
@@ -748,26 +873,40 @@ mod tests {
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             let editor = vcx.debug_bounds("prompt-editor").unwrap();
+            let identity = vcx.debug_bounds("panel-identity").unwrap();
+            let mode = vcx.debug_bounds("panel-mode").unwrap();
+            let control = vcx.debug_bounds("panel-model-control").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
             let name = vcx.debug_bounds("panel-model-name").unwrap();
             let effort = vcx.debug_bounds("panel-model-effort").unwrap();
-            let login = vcx.debug_bounds("panel-login").unwrap();
             let context = vcx.debug_bounds("panel-context-meter").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            for (tab_name, tab) in [("model", model), ("login", login), ("context", context)] {
+            for (tab_name, tab) in [
+                ("mode", mode),
+                ("model and effort", control),
+                ("context", context),
+            ] {
                 assert!(
                     tab.top() > input.bottom(),
                     "{tab_name} pill sits below the input at {width}: {tab:?} {input:?}"
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
-            assert!(name.right() <= model.right());
-            assert!(model.right() <= effort.left(), "effort follows the model");
-            assert!(effort.right() <= login.left(), "method follows effort");
-            assert!(
-                login.right() <= context.left(),
-                "context ring follows method"
+            assert_eq!(mode.left(), identity.left(), "mode is first at {width}");
+            assert_eq!(
+                control.left() - mode.right(),
+                px(4.),
+                "only the pill gap follows mode"
             );
+            assert_eq!(model.left(), control.left());
+            assert_eq!(
+                model.right(),
+                effort.left(),
+                "segments share one surface"
+            );
+            assert_eq!(effort.right(), control.right());
+            assert!(name.right() <= model.right());
+            assert!(control.right() <= context.left());
             // The voice button lives inside the input box, on its right, and
             // the editor never runs underneath it.
             assert!(
@@ -789,6 +928,44 @@ mod tests {
                     input.right() - location.right() < px(12.),
                     "location hugs the right edge at {width}: {location:?} {input:?}"
                 );
+            }
+        }
+    }
+
+    /// The model pill keeps the same padding and the same place whether its
+    /// pane owns focus or not. Only the fill used to change, and once that fill
+    /// matched the focused pane's background the label looked flush with the
+    /// row's edge, as if the padding had gone. Pin the inset in both states so
+    /// a later fill change cannot hide the padding again.
+    #[gpui::test]
+    fn the_model_pill_keeps_its_inset_when_the_pane_loses_focus(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.provider = Some("openai".into());
+            panel.model = Some("gpt-6.2-sol".into());
+            panel.reasoning_effort = Some("high".into());
+            cx.notify();
+        });
+        let mut focused_inset = None;
+        for focused in [true, false] {
+            panel.update(vcx, |panel, cx| {
+                panel.set_surface_focused(focused, cx);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let pill = vcx.debug_bounds("panel-model").expect("model pill");
+            let name = vcx.debug_bounds("panel-model-name").expect("model name");
+            assert!(
+                name.left() - pill.left() >= px(9.),
+                "focused={focused}: the label keeps its left padding: {name:?} in {pill:?}"
+            );
+            assert!(
+                pill.right() - name.right() >= px(9.),
+                "focused={focused}: the label keeps its right padding: {name:?} in {pill:?}"
+            );
+            match focused_inset {
+                None => focused_inset = Some(pill.left()),
+                Some(left) => assert_eq!(pill.left(), left, "the row does not move with focus"),
             }
         }
     }

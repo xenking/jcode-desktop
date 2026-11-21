@@ -10,7 +10,11 @@ pub struct TranscriptSnapshot {
     status: String,
     connection_phase: String,
     #[serde(default)]
-    expanded_tools: HashSet<String>,
+    expanded_regions: HashSet<String>,
+    #[serde(default)]
+    user_times: HashMap<usize, i64>,
+    #[serde(default)]
+    history_paging: Option<history_paging::HistoryPaging>,
 }
 
 impl PartialEq for TranscriptImage {
@@ -38,7 +42,9 @@ impl Panel {
             history_loaded: self.history_loaded,
             status: self.status.clone(),
             connection_phase: self.connection_phase.clone(),
-            expanded_tools: self.expanded_tools.clone(),
+            expanded_regions: self.expanded_regions.clone(),
+            user_times: self.user_times.clone(),
+            history_paging: self.history_paging.clone(),
         }
     }
 
@@ -53,7 +59,12 @@ impl Panel {
             && (!snapshot.items.is_empty()
                 || !snapshot.streaming_text.is_empty()
                 || !snapshot.streaming_reasoning.is_empty());
-        self.expanded_tools = snapshot.expanded_tools;
+        self.expanded_regions = snapshot.expanded_regions;
+        self.user_times = snapshot.user_times;
+        self.history_paging = snapshot.history_paging;
+        if let Some(paging) = &mut self.history_paging {
+            paging.in_flight = false;
+        }
         *self.items = snapshot.items;
         for item in &mut self.items {
             if let Item::Image(image) = item {
@@ -91,6 +102,11 @@ impl Panel {
             .iter()
             .filter_map(|item| match item {
                 Item::User(text) => Some(text.as_str()),
+                Item::AgentMessage {
+                    from_session,
+                    message,
+                    ..
+                } if from_session.is_empty() => Some(message.as_str()),
                 _ => None,
             })
             .collect();
@@ -116,9 +132,22 @@ impl Panel {
                     .map_or(0, |index| index + 1)
             });
         let mut prefix = Vec::new();
+        let mut prefix_times = HashMap::new();
         for message in &messages[..end] {
             match message.role.as_str() {
-                "user" => prefix.push(Item::User(message.content.clone())),
+                "user" => {
+                    let item = agent_message::history_user_item(
+                        message.content.clone(),
+                        !message.attachments.is_empty(),
+                        message.timestamp_ms,
+                    );
+                    if let Some(at) = message.timestamp_ms
+                        && matches!(item, Item::User(_))
+                    {
+                        prefix_times.insert(prefix.len(), at);
+                    }
+                    prefix.push(item);
+                }
                 "assistant" if !message.content.trim().is_empty() => {
                     prefix.push(Item::Assistant(message.content.clone()))
                 }
@@ -131,6 +160,8 @@ impl Panel {
         for index in &mut self.pending_users {
             *index += offset;
         }
+        self.shift_user_times(offset, 0);
+        self.user_times.extend(prefix_times);
         self.accepted_users = std::mem::take(&mut self.accepted_users)
             .into_iter()
             .map(|(index, at)| (index + offset, at))
@@ -147,6 +178,11 @@ impl Panel {
             .iter()
             .filter_map(|item| match item {
                 Item::User(text) => Some(text.as_str()),
+                Item::AgentMessage {
+                    from_session,
+                    message,
+                    ..
+                } if from_session.is_empty() => Some(message.as_str()),
                 _ => None,
             })
             .collect();
@@ -184,7 +220,19 @@ impl Panel {
             self.flush_streaming();
             for message in &messages[next_user..=latest_user] {
                 match message.role.as_str() {
-                    "user" => self.items.push(Item::User(message.content.clone())),
+                    "user" => {
+                        let item = agent_message::history_user_item(
+                            message.content.clone(),
+                            !message.attachments.is_empty(),
+                            message.timestamp_ms,
+                        );
+                        if let Some(at) = message.timestamp_ms
+                            && matches!(item, Item::User(_))
+                        {
+                            self.user_times.insert(self.items.len(), at);
+                        }
+                        self.items.push(item);
+                    }
                     "assistant" if !message.content.trim().is_empty() => {
                         self.items.push(Item::Assistant(message.content.clone()))
                     }
@@ -210,8 +258,10 @@ impl Panel {
                 if let Some(stats) = response.response_stats {
                     self.finish_response();
                     let mut restored: response_stats::ResponseStats = stats.into();
+                    restored.at_ms = response.timestamp_ms;
                     if let Some(Item::ResponseStats(existing)) = self.items.last_mut() {
                         restored.duration_secs = restored.duration_secs.or(existing.duration_secs);
+                        restored.at_ms = restored.at_ms.or(existing.at_ms);
                         restored.tool_calls = existing.tool_calls;
                         *existing = restored;
                     } else if !restored.is_empty() {

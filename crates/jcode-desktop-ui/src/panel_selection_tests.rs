@@ -119,10 +119,52 @@ fn transcript_selection_stops_after_release_outside_panel(cx: &mut gpui::TestApp
 }
 
 fn drag_copy(vcx: &mut gpui::VisualTestContext, key: &'static str) -> String {
+    drag_copy_between(vcx, key, key)
+}
+
+#[gpui::test]
+fn answered_decision_question_and_answer_are_selectable(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "decision-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        *panel.items = vec![Item::Tool {
+            call_id: "decision".into(),
+            name: "ask".into(),
+            input:
+                r#"{"questions":[{"question":"Which database?","options":[{"label":"Postgres"}]}]}"#
+                    .into(),
+            output: "User answers:\n1. Which database? -> Postgres (comment: reliable)".into(),
+            done: true,
+            error: None,
+        }];
+        panel
+    });
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-decision-question-0-0"),
+        "Which database?"
+    );
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-decision-answer-0-0"),
+        "✓ Postgres\nUser comment: reliable"
+    );
+}
+
+fn drag_copy_between(
+    vcx: &mut gpui::VisualTestContext,
+    first: &'static str,
+    last: &'static str,
+) -> String {
     vcx.run_until_parked();
-    let bounds = vcx.debug_bounds(key).unwrap();
-    let start = point(bounds.left() + px(1.), bounds.top() + px(2.));
-    let end = point(bounds.right() + px(20.), bounds.bottom() - px(2.));
+    let first = vcx.debug_bounds(first).unwrap();
+    let last = vcx.debug_bounds(last).unwrap();
+    let start = point(first.left() + px(1.), first.top() + px(2.));
+    let end = point(last.right() + px(20.), last.bottom() - px(2.));
     vcx.simulate_event(gpui::MouseDownEvent {
         button: gpui::MouseButton::Left,
         position: start,
@@ -169,33 +211,32 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
             done: true,
             error: Some("A useful error".into()),
         }];
-        panel.expanded_tools.insert("call".into());
+        panel.expanded_regions.insert("call".into());
         panel
     });
     assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-summary-0"),
-        "printf βeta"
+        drag_copy_between(
+            vcx,
+            "selectable-text-tool-detail-0",
+            "selectable-text-tool-bash-output-0"
+        ),
+        format!(
+            "{}\n\nError\nA useful error",
+            tool_detail("bash", input, output)
+        )
     );
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-detail-0"),
-        tool_detail("bash", input, output)
-    );
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-tool-error-0"),
-        "A useful error"
-    );
-    assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
     // Text gestures must not steal the adjacent disclosure control.
     let toggle = vcx.debug_bounds("tool-output-size").unwrap();
     vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert!(!panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(!panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]
 fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
-    let (panel, vcx) = cx.add_window_view(|_, cx| {
+    let (_panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
             "todo-selection".into(),
             None,
@@ -211,6 +252,8 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
                 blocked_by: vec![],
                 confidence: None,
                 completion_confidence: None,
+                stage: None,
+                assigned_to: None,
             }],
             plan: TodoCardPlan {
                 user_intention: Some("Copy task text".into()),
@@ -237,7 +280,54 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
-fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppContext) {
+fn pinned_todos_show_phase_lane_and_assignee(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("todo-owner".into(), None, None, crate::harness::spawn_inert(), cx);
+        let payload = parse_todo_tool_output(r#"[{"content":"Ship","status":"in_progress","group":"desktop","stage":2,"assigned_to":"session_fox_123_a"}]"#).unwrap();
+        assert_eq!(payload.todos[0].stage, Some(2));
+        assert_eq!(payload.todos[0].assigned_to.as_deref(), Some("session_fox_123_a"));
+        let legacy = parse_todo_tool_output(r#"[{"content":"Legacy","status":"pending","lane":"desktop","phase":"Phase 2"}]"#).unwrap();
+        assert_eq!(legacy.todos[0].stage, Some(2));
+        assert_eq!(legacy.todos[0].group.as_deref(), Some("desktop"));
+        *panel.items = vec![Item::Todos(payload)];
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pinned-todo-phase-2").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-assignee-0-0").is_some());
+}
+
+#[gpui::test]
+fn markdown_tool_output_copies_rendered_text(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "tool-markdown-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        *panel.items = vec![Item::Tool {
+            call_id: "md".into(),
+            name: "webfetch".into(),
+            input: "{}".into(),
+            output: "# Report\n\nA **useful** result.".into(),
+            done: true,
+            error: None,
+        }];
+        panel.expanded_regions.insert("md".into());
+        panel
+    });
+    let key = format!("selectable-text-{}-1", tool_output::markdown_row(0));
+    assert_eq!(
+        drag_copy(vcx, Box::leak(key.into_boxed_str())),
+        "A useful result."
+    );
+}
+
+#[gpui::test]
+fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
@@ -251,17 +341,15 @@ fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppCont
             task_id: "task".into(),
             label: "Run tests".into(),
             summary: "All tests passed".into(),
+            detail: Some("**Background task** `task`\n\n```text\nAll tests passed\n```".into()),
             percent: Some(100.),
             done: true,
         }];
+        panel.expanded_regions.insert(expandable::key::task("task"));
         panel
     });
     assert_eq!(
-        drag_copy(vcx, "selectable-text-background-label-0"),
-        "Run tests"
-    );
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-background-summary-0"),
+        drag_copy(vcx, "selectable-text-background-detail-0"),
         "All tests passed"
     );
 }
@@ -451,7 +539,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
             },
             Item::Assistant("```rust\nlet βeta = 1;\n```\n\nDone.".into()),
         ];
-        panel.expanded_tools.insert("call".into());
+        panel.expanded_regions.insert("call".into());
         panel
     });
     vcx.run_until_parked();
@@ -466,7 +554,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
             tool_detail("bash", input, "Finished")
         )
     );
-    assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+    assert!(panel.read_with(vcx, |panel, _| panel.expanded_regions.contains("call")));
 }
 
 #[gpui::test]

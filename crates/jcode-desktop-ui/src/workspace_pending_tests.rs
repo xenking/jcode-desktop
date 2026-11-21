@@ -1,6 +1,7 @@
 //! Real native editor tests with deliberately withheld backend creation replies.
 use super::*;
 use base64::Engine as _;
+use std::sync::mpsc::Receiver;
 
 fn created(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
@@ -20,10 +21,28 @@ fn created(id: &str) -> jcode_sdk::SessionInfo {
         agent_label: None,
         swarm_status: None,
         edit_stats: None,
+        context: None,
     }
 }
 
-fn request(commands: &std::sync::mpsc::Receiver<Command>) -> (String, Option<String>) {
+/// The create request of the oldest draft. A draft still waiting for its
+/// first prompt must have sent nothing, and is then committed.
+fn request(
+    workspace: &Entity<Workspace>,
+    cx: &mut gpui::VisualTestContext,
+    commands: &std::sync::mpsc::Receiver<Command>,
+) -> (String, Option<String>) {
+    if workspace.read_with(cx, |w, cx| {
+        w.slots
+            .iter()
+            .any(|slot| slot.panel.read(cx).session_deferred())
+    }) {
+        assert!(
+            commands.try_recv().is_err(),
+            "an open draft must not create a session before its first prompt"
+        );
+        workspace.update(cx, |w, cx| w.request_deferred_sessions(cx));
+    }
     match commands
         .try_recv()
         .expect("native panel must request creation")
@@ -71,6 +90,49 @@ fn add_image(input: &Entity<PromptInput>, cx: &mut gpui::VisualTestContext) {
 }
 
 #[gpui::test]
+fn workspace_restart_restores_session_stash_and_indicator(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _) = setup(cx);
+    let original = workspace.read_with(vcx, |w, cx| w.slots[0].panel.read(cx).input.clone());
+    add_image(&original, vcx);
+    vcx.simulate_input("saved draft");
+    vcx.simulate_keystrokes("shift-left ctrl-s");
+    vcx.simulate_input("other draft");
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.push_test_panel("other-session", cx);
+            let encoded = w.snapshot(window, cx).unwrap().encode().unwrap();
+            w.apply_snapshot(WorkspaceSnapshot::decode(&encoded).unwrap(), cx);
+            w.restore_focus(window, cx);
+        });
+    });
+    workspace.read_with(vcx, |w, cx| {
+        let first = w.slots[0].panel.read(cx).input.read(cx).snapshot();
+        let second = w.slots[1].panel.read(cx).input.read(cx).snapshot();
+        assert_eq!(first.content, "other draft");
+        let stash = first.stashed_prompt.unwrap();
+        assert_eq!(stash.content, "saved draft[#image 1]");
+        assert_eq!((stash.selection_start, stash.selection_end), (10, 11));
+        assert_eq!(stash.attachments.len(), 1);
+        assert!(second.stashed_prompt.is_none());
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.active = 0;
+            w.restore_focus(window, cx);
+        })
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-stashed").is_some());
+    vcx.simulate_keystrokes("ctrl-s");
+    workspace.read_with(vcx, |w, cx| {
+        let draft = w.slots[0].panel.read(cx).input.read(cx).snapshot();
+        assert_eq!(draft.content, "saved draft[#image 1]");
+        assert_eq!(draft.attachments.len(), 1);
+        assert_eq!(draft.stashed_prompt.unwrap().content, "other draft");
+    });
+}
+
+#[gpui::test]
 fn local_draft_entrance_slides_a_full_width_editor(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
     workspace.update(vcx, |w, cx| {
@@ -108,10 +170,9 @@ fn local_draft_entrance_slides_a_full_width_editor(cx: &mut gpui::TestAppContext
             );
         }
     });
-    request(&commands);
     assert!(
         commands.try_recv().is_err(),
-        "motion must not wait for a backend reply"
+        "motion must not wait for a backend, and an untouched draft creates nothing"
     );
 }
 
@@ -144,7 +205,9 @@ fn repeated_local_drafts_keep_earlier_entrances_and_focus_the_latest_editor(
         }
         w.set_active(3, cx);
     });
-    let ids: Vec<_> = (0..3).map(|_| request(&commands).0).collect();
+    let ids: Vec<_> = (0..3)
+        .map(|_| request(&workspace, vcx, &commands).0)
+        .collect();
     assert!(ids.windows(2).all(|pair| pair[0] != pair[1]));
     vcx.run_until_parked();
     vcx.simulate_input("latest draft");
@@ -168,7 +231,7 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     let start = Instant::now();
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (id, _) = request(&commands);
+    let (id, _) = request(&workspace, vcx, &commands);
     let panel = workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert_eq!(w.active, 1);
@@ -191,7 +254,7 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
         "optimistic native panel request-to-editable: {:?} (backend reply withheld)",
         start.elapsed()
     );
-    assert_eq!(before.content, "first second");
+    assert_eq!(before.content, "first second[#image 1]");
     assert_eq!(before.attachments.len(), 1);
     assert_ne!(before.selection_start, before.selection_end);
     assert!(
@@ -215,11 +278,13 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     vcx.simulate_keystrokes("ctrl-z");
     assert_eq!(
         input.read_with(vcx, |i, _| i.content.to_string()),
-        "first secon"
+        "first secon[#image 1]"
     );
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images }) if session_id == "ready" && content == "first secon" && images.len() == 1)
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images, .. }) if session_id == "ready" && content == "first secon[#image 1]" && images.len() == 1)
     );
 }
 
@@ -228,11 +293,11 @@ fn concurrent_drafts_attach_out_of_order_without_stealing_focus(cx: &mut gpui::T
     let (workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (first, _) = request(&commands);
+    let (first, _) = request(&workspace, vcx, &commands);
     vcx.simulate_input("first draft");
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (second, _) = request(&commands);
+    let (second, _) = request(&workspace, vcx, &commands);
     assert_ne!(first, second);
     vcx.simulate_input("second draft");
     workspace.update(vcx, |w, cx| {
@@ -258,6 +323,12 @@ fn concurrent_drafts_attach_out_of_order_without_stealing_focus(cx: &mut gpui::T
     });
     vcx.simulate_input(" stays focused");
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[2]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "second-ready" && content == "second draft stays focused")
     );
@@ -271,7 +342,7 @@ fn closed_pending_draft_never_resurrects_even_during_close_animation(
     for during_animation in [true, false] {
         vcx.simulate_keystrokes("super-n");
         vcx.run_until_parked();
-        let (id, _) = request(&commands);
+        let (id, _) = request(&workspace, vcx, &commands);
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
@@ -311,7 +382,7 @@ fn pending_failure_is_visible_and_keeps_draft_unsent(cx: &mut gpui::TestAppConte
     let (workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
-    let (id, _) = request(&commands);
+    let (id, _) = request(&workspace, vcx, &commands);
     vcx.simulate_input("do not lose me");
     workspace.update(vcx, |w, cx| {
         w.apply(Update::CommandFailed { session_id: id, reason: "agent init failed".into() }, cx);
@@ -347,7 +418,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
         w.open_local_draft(Some("/pinned/local".into()), cx)
     });
     vcx.run_until_parked();
-    let (old, _) = request(&commands);
+    let (old, _) = request(&workspace, vcx, &commands);
     let input = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
     add_image(&input, vcx);
     vcx.simulate_input("restored draft");
@@ -361,7 +432,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
         w.active = 1;
         w.remotes.default_host = Some("different-machine".into());
     });
-    let (closed, _) = request(&commands);
+    let (closed, _) = request(&workspace, vcx, &commands);
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| {
             let encoded = w.snapshot(window, cx).unwrap().encode().unwrap();
@@ -376,7 +447,7 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     assert!(
         matches!(commands.try_recv(), Ok(Command::Watch { session_id }) if session_id == "existing")
     );
-    let (new, directory) = request(&commands);
+    let (new, directory) = request(&workspace, vcx, &commands);
     assert_eq!(directory.as_deref(), Some("/pinned/local"));
     assert_ne!(old, new);
     assert!(commands.try_recv().is_err());
@@ -413,8 +484,14 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     vcx.simulate_keystrokes("end");
     vcx.simulate_input(" after reload");
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[1]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft after reload")
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft[#image 1] after reload")
     );
 }
 
@@ -424,9 +501,9 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| w.new_help_session(&NewHelpSession, window, cx))
     });
-    let (help, _) = request(&commands);
+    let (help, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
-    let (other, _) = request(&commands);
+    let (other, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| {
         w.apply(
             Update::SessionCreated {
@@ -456,7 +533,7 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
             w.close_panel(&ClosePanel, window, cx);
         })
     });
-    let (closed, _) = request(&commands);
+    let (closed, _) = request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, cx| {
         w.apply(
             Update::SessionCreated {
@@ -497,7 +574,7 @@ fn pending_editor_accepts_input_during_motion_and_settles_visible_from_full_widt
                 // finishes, without waiting for a backend creation reply.
                 vcx.simulate_keystrokes("super-n");
                 vcx.run_until_parked();
-                request(&commands);
+                request(&workspace, vcx, &commands);
                 let early_canvas = vcx.debug_bounds("workspace-canvas").unwrap();
                 let early_input = vcx.debug_bounds("prompt-input").unwrap();
                 let visible_width = early_input.right().min(early_canvas.right())
@@ -569,7 +646,7 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
     assert!(vcx.debug_bounds("empty-strip-shortcut").is_some());
     vcx.simulate_keystrokes("super-enter");
     vcx.run_until_parked();
-    request(&commands);
+    request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, _| {
         let indices = w.row_indices(1).collect::<Vec<_>>();
         assert_eq!(indices.len(), 1);
@@ -580,7 +657,7 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
     assert!(vcx.debug_bounds("empty-strip-hint").is_none());
     vcx.simulate_keystrokes("super-enter");
     vcx.run_until_parked();
-    request(&commands);
+    request(&workspace, vcx, &commands);
     workspace.update(vcx, |w, _| {
         let widths = w
             .row_indices(1)
@@ -589,4 +666,426 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
         assert_eq!(widths, vec![0.5, 0.5]);
         assert_eq!(w.slots[0].width_fraction, DEFAULT_WIDTH);
     });
+}
+
+#[gpui::test]
+fn new_draft_without_a_directory_can_choose_one_in_place(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _commands) = setup(cx);
+    workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
+    vcx.executor().advance_clock(Duration::from_secs(2));
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let id = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+    let location = vcx
+        .debug_bounds("composer-location")
+        .expect("location on fresh draft");
+    vcx.simulate_click(location.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+    let dir = tempfile::tempdir().unwrap();
+    workspace.update(vcx, |w, cx| {
+        assert!(w.switch_source_directory(
+            w.folder_picker_source,
+            dir.path().to_str().unwrap(),
+            cx
+        ));
+        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots[w.active].panel.entity_id(), panel.entity_id());
+        assert_eq!(panel.read(cx).session_id, id);
+        assert_eq!(panel.read(cx).working_dir.as_deref(), dir.path().to_str());
+    });
+}
+
+#[gpui::test]
+fn opening_the_model_picker_on_a_first_draft_does_not_create_a_session(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    assert!(panel.read_with(vcx, |panel, _| panel.session_deferred()));
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::DraftModels {
+                current: Some("gpt-5.6-terra".into()),
+                routes: vec![jcode_sdk::ModelRouteInfo {
+                    model: "gpt-5.6-terra".into(),
+                    provider: "openai".into(),
+                    api_method: "openai-api".into(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                }],
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("panel-model-effort").is_some());
+    assert!(vcx.debug_bounds("panel-mode").is_some());
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel.composer_identity_for_test().0.contains("5.6")
+    }));
+    assert!(
+        !commands
+            .try_iter()
+            .any(|cmd| matches!(cmd, Command::CreateSession { .. }))
+    );
+}
+
+#[gpui::test]
+fn resume_only_lists_pending_panels_with_user_content(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, _commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let draft = workspace.read_with(vcx, |w, cx| {
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert!(!workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+    vcx.simulate_input("saved draft");
+    vcx.run_until_parked();
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+    vcx.simulate_keystrokes("ctrl-s");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-stashed").is_some());
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.resume_sessions(cx).iter().any(|s| s.session_id == draft)
+    }));
+}
+
+#[gpui::test]
+fn a_session_is_created_by_the_first_prompt_not_by_opening_the_panel(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let draft = workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[w.active].panel.read(cx);
+        assert!(panel.is_pending_session());
+        assert!(panel.session_deferred());
+        panel.session_id.clone()
+    });
+    vcx.simulate_input("hello there");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "opening a panel and typing must not register a session"
+    );
+
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    match commands.try_recv() {
+        Ok(Command::CreateSession {
+            request_id: Some(id),
+            ..
+        }) => assert_eq!(id, draft, "the first prompt creates this draft's session"),
+        _ => panic!("the first prompt must create the session"),
+    }
+    assert!(commands.try_recv().is_err(), "one create per draft");
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        let active = w.active;
+        w.slots[active]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "ready" && content == "hello there")
+    );
+}
+
+#[gpui::test]
+fn closing_an_untouched_draft_never_reaches_the_runtime(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    vcx.simulate_input("changed my mind");
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.close_panel(&ClosePanel, window, cx);
+            w.remove_finished_closing_panels(Instant::now() + Duration::from_secs(2), window, cx);
+            assert_eq!(w.slots.len(), 1);
+        })
+    });
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "an abandoned draft must leave no session behind"
+    );
+}
+
+#[gpui::test]
+fn typing_a_runtime_command_does_not_create_an_empty_session(cx: &mut gpui::TestAppContext) {
+    let (_workspace, vcx, commands) = setup(cx);
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    vcx.simulate_input("/resume");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "/resume opens another session and must not create this one"
+    );
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("/compact");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "typing a command must not create an empty session"
+    );
+}
+
+/// Setting effort and model is how a new session usually starts. Neither may
+/// register the session: both wait for the first prompt and reach the runtime
+/// ahead of it.
+#[gpui::test]
+fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    // An earlier session reported the model catalog, as any used app has.
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| {
+            panel.apply(
+                &jcode_sdk::ApiEvent::RuntimeInfo {
+                    session_id: "existing".into(),
+                    provider: Some("openai".into()),
+                    model: Some("openai:gpt-5.6-terra".into()),
+                    reasoning_effort: None,
+                    auth_method: None,
+                    account_label: None,
+                    routes: ["gpt-5.6-terra", "gpt-5.6-sol"]
+                        .into_iter()
+                        .map(|model| jcode_sdk::ModelRouteInfo {
+                            usage: None,
+                            model: model.into(),
+                            provider: "openai".into(),
+                            api_method: "openai".into(),
+                            available: true,
+                            detail: String::new(),
+                        })
+                        .collect(),
+                },
+                cx,
+            )
+        })
+    });
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let draft = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+
+    // The picker's second step asks for an effort too. `/effort` then
+    // overrides it, as the user does.
+    vcx.simulate_input("/model gpt-5.6-sol");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("/effort high");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "choosing effort or model must not register a session"
+    );
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.session_deferred());
+        let (model, effort) = panel.composer_identity_for_test();
+        assert!(
+            model.to_lowercase().contains("5.6") && !model.contains(':'),
+            "the draft shows the picked model by name: {model}"
+        );
+        assert_eq!(effort.as_deref(), Some("high"), "and the picked effort");
+    });
+
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
+    vcx.simulate_keystrokes("cmd-a backspace");
+    vcx.simulate_input("first prompt");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { request_id: Some(id), .. }) if id == draft)
+    );
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        let active = w.active;
+        w.slots[active]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    let sent: Vec<Command> = commands.try_iter().collect();
+    let order: Vec<&str> = sent
+        .iter()
+        .filter_map(|command| match command {
+            Command::SetModel { session_id, model }
+                if session_id == "ready" && model.ends_with("gpt-5.6-sol") =>
+            {
+                Some("model")
+            }
+            Command::SessionOperation {
+                session_id,
+                operation: harness::SessionOperation::SetEffort(effort),
+            } if session_id == "ready" && effort == "high" => Some("effort"),
+            Command::Send {
+                session_id,
+                content,
+                ..
+            } if session_id == "ready" && content == "first prompt" => Some("prompt"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        order,
+        ["model", "effort", "prompt"],
+        "the picked model and effort reach the new session before its prompt"
+    );
+}
+
+fn fable_draft(
+    cx: &mut gpui::TestAppContext,
+) -> (
+    Entity<Workspace>,
+    &mut gpui::VisualTestContext,
+    Receiver<Command>,
+) {
+    cx.update(crate::input::bind_keys);
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::DraftModels {
+                current: Some("claude-opus-5-5".into()),
+                routes: ["claude-opus-5-5", "claude-fable-5-2"]
+                    .into_iter()
+                    .map(|model| jcode_sdk::ModelRouteInfo {
+                        model: model.into(),
+                        provider: "claude".into(),
+                        api_method: "claude-oauth".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    })
+                    .collect(),
+            },
+            cx,
+        );
+        w.open_new_session(cx);
+    });
+    vcx.executor().advance_clock(Duration::from_secs(2));
+    vcx.run_until_parked();
+    (workspace, vcx, commands)
+}
+
+fn click_draft_control(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
+    let bound = vcx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    vcx.simulate_click(bound.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+}
+
+#[gpui::test]
+fn draft_pickers_show_the_selected_fable_low_and_mode_before_the_first_prompt(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = fable_draft(cx);
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let draft = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+    click_draft_control(vcx, "panel-model");
+    vcx.simulate_input("fable");
+    vcx.run_until_parked();
+    click_draft_control(vcx, "model-row-effort-0-low");
+    panel.read_with(vcx, |panel, _| {
+        let (model, effort) = panel.composer_identity_for_test();
+        assert!(model.contains("Fable"), "model pill says {model}");
+        assert_eq!(effort.as_deref(), Some("low"));
+    });
+
+    panel.update(vcx, |panel, cx| {
+        panel.apply(&jcode_sdk::ApiEvent::RuntimeCommandResult {
+            session_id: draft.clone(), command: jcode_sdk::api::RuntimeCommand::Skills,
+            data: serde_json::json!({"pinned_skills": [], "skills": [
+                {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "moon"}
+            ]}), message: String::new(),
+        }, cx);
+    });
+    vcx.run_until_parked();
+    click_draft_control(vcx, "panel-mode");
+    click_draft_control(vcx, "slash-command-row-0");
+    assert!(vcx.debug_bounds("panel-mode-icon-moon-0").is_some());
+    assert!(commands.try_recv().is_err());
+
+    click_draft_control(vcx, "panel-mode");
+    assert!(vcx.debug_bounds("slash-command-row-0").is_none());
+    click_draft_control(vcx, "prompt-editor");
+    vcx.simulate_input("first prompt");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let create = commands.try_recv();
+    assert!(
+        matches!(&create, Ok(Command::CreateSession { request_id: Some(id), .. }) if id == &draft),
+        "unexpected first command (channel error: {:?})",
+        create.err()
+    );
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "ready" && model == "claude-oauth:claude-fable-5-2")
+    );
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SessionOperation { session_id, operation: harness::SessionOperation::SetEffort(effort) }) if session_id == "ready" && effort == "low")
+    );
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::Mode, args }) if session_id == "ready" && args == ["toggle", "quiet"])
+    );
+    // Promotion may subscribe before the queued prompt is dispatched.
+    assert!(commands.try_iter().any(|cmd| matches!(cmd, Command::Send { session_id, content, .. } if session_id == "ready" && content == "first prompt")));
+}
+
+#[gpui::test]
+fn model_and_effort_chosen_on_a_draft_are_used_on_the_next_new_draft(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = fable_draft(cx);
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    panel.update(vcx, |panel, cx| {
+        panel
+            .handle_slash_command_for_test("/model claude-oauth:claude-fable-5-2 --effort low", cx);
+    });
+    let selected = panel.read_with(vcx, |panel, _| panel.composer_identity_for_test());
+    assert!(selected.0.contains("Fable"));
+    assert_eq!(selected.1.as_deref(), Some("low"));
+    workspace.update(vcx, |w, cx| w.open_new_session(cx));
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        let next = &w.slots[w.active].panel;
+        assert_ne!(next, &panel);
+        assert_eq!(next.read(cx).composer_identity_for_test(), selected);
+    });
+    assert!(commands.try_recv().is_err());
 }

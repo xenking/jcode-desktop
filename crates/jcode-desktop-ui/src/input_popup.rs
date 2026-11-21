@@ -11,7 +11,7 @@ const CHROME: f32 = 10.;
 /// Room for a group header and about three model rows.
 const MIN_ABOVE: f32 = 200.;
 
-pub(super) fn scroll_height(viewport: Pixels, model: bool) -> Pixels {
+pub(crate) fn scroll_height(viewport: Pixels, model: bool) -> Pixels {
     let height = f32::from(viewport);
     px((height * if model { 0.6 } else { 0.35 })
         .min(if model { 480. } else { 280. })
@@ -52,17 +52,38 @@ fn available_side(composer: Bounds<Pixels>, viewport: Size<Pixels>, gap: Pixels)
     }
 }
 
-pub(super) struct Popup {
+pub(crate) struct Popup {
     child: AnyElement,
     gap: Pixels,
+    dismiss: Option<Dismiss>,
+    anchor: Anchor,
 }
 
+enum Anchor {
+    SearchInput,
+    Composer,
+}
+
+pub(crate) type Dismiss = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
+
 impl Popup {
-    pub(super) fn new(child: impl IntoElement, gap: Pixels) -> Self {
+    pub(crate) fn new(child: impl IntoElement, gap: Pixels) -> Self {
         Self {
             child: child.into_any_element(),
             gap,
+            dismiss: None,
+            anchor: Anchor::SearchInput,
         }
+    }
+
+    pub(crate) fn at_composer(mut self) -> Self {
+        self.anchor = Anchor::Composer;
+        self
+    }
+
+    pub(crate) fn dismiss_outside(mut self, dismiss: Option<Dismiss>) -> Self {
+        self.dismiss = dismiss;
+        self
     }
 }
 
@@ -75,13 +96,14 @@ impl IntoElement for Popup {
 
 impl Element for Popup {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Bounds<Pixels>;
     fn id(&self) -> Option<ElementId> {
         None
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
     }
+    #[allow(clippy::field_reassign_with_default)]
     fn request_layout(
         &mut self,
         _: Option<&GlobalElementId>,
@@ -105,7 +127,7 @@ impl Element for Popup {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Bounds<Pixels> {
         let viewport = window.viewport_size();
         let width = bounds
             .size
@@ -122,28 +144,37 @@ impl Element for Popup {
             window,
             cx,
         );
-        let anchor = if above {
-            bounds.origin
+        let y = if above {
+            bounds.top()
         } else {
-            point(
-                bounds.left(),
-                bounds.bottom() + self.gap + measured.height + self.gap,
-            )
+            bounds.bottom() + measured.height + self.gap * 2.
         };
-        self.child
-            .prepaint_at(origin(anchor, measured, viewport, self.gap), window, cx);
+        let origin = origin(point(bounds.left(), y), measured, viewport, self.gap);
+        self.child.prepaint_at(origin, window, cx);
+        Bounds::new(origin, measured)
     }
     fn paint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        anchor: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        popup: &mut Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        if let Some(dismiss) = self.dismiss.clone() {
+            let dismiss = move |window: &mut Window, cx: &mut App| dismiss(window, cx);
+            match self.anchor {
+                Anchor::SearchInput => {
+                    crate::popover::dismiss_outside(window, [anchor, *popup], dismiss)
+                }
+                // The main composer is the positioning reference, not part of
+                // this popover's interactive surface.
+                Anchor::Composer => crate::popover::dismiss_outside(window, [*popup], dismiss),
+            }
+        }
     }
 }
 

@@ -1,0 +1,42 @@
+{
+  "kind": "rig",
+  "name": "code-review",
+  "raw": "version: \"0.2\"\nname: code-review\nsummary: >\n  Dual independent reviewers with an orchestrator. Each reviewer\n  analyzes the code independently, then the orchestrator synthesizes\n  their findings. Disagreements surface real issues.\n\npods:\n  - id: orch\n    label: Orchestration\n    members:\n      - id: lead\n        agent_ref: \"local:../../../agents/orchestration/orchestrator\"\n        runtime: claude-code\n        profile: default\n        cwd: \".\"\n    edges: []\n\n  - id: review\n    label: Review Team\n    members:\n      - id: r1\n        agent_ref: \"local:../../../agents/review/independent-reviewer\"\n        runtime: claude-code\n        profile: default\n        cwd: \".\"\n      - id: r2\n        agent_ref: \"local:../../../agents/review/independent-reviewer\"\n        runtime: codex\n        profile: default\n        cwd: \".\"\n    edges: []\n\nedges:\n  - kind: delegates_to\n    from: orch.lead\n    to: review.r1\n  - kind: delegates_to\n    from: orch.lead\n    to: review.r2\n",
+  "format": "pod_aware",
+  "pods": [
+    {
+      "id": "orch",
+      "label": "Orchestration",
+      "members": [
+        {
+          "id": "lead",
+          "agentRef": "local:../../../agents/orchestration/orchestrator",
+          "runtime": "claude-code",
+          "profile": "default"
+        }
+      ],
+      "edges": []
+    },
+    {
+      "id": "review",
+      "label": "Review Team",
+      "members": [
+        {
+          "id": "r1",
+          "agentRef": "local:../../../agents/review/independent-reviewer",
+          "runtime": "claude-code",
+          "profile": "default"
+        },
+        {
+          "id": "r2",
+          "agentRef": "local:../../../agents/review/independent-reviewer",
+          "runtime": "codex",
+          "profile": "default"
+        }
+      ],
+      "edges": []
+    }
+  ],
+  "summary": "Dual independent reviewers with an orchestrator. Each reviewer analyzes the code independently, then the orchestrator synthesizes their findings. Disagreements surface real issues.\n",
+  "libraryEntryId": "0a25241dadbcaf2d"
+}

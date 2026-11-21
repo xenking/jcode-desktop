@@ -95,6 +95,59 @@ fn sidebar_navigation_opens_orchestration(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn todo_pill_loads_a_session_plan_without_resuming_the_session(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = open(cx);
+    let (bridge, commands) = harness::spawn_recording();
+    workspace.update(vcx, |w, cx| {
+        w.set_test_bridge(bridge);
+        let mut background = super::tests::session_info("background", Some("Background project"));
+        background.user_connected = true;
+        w.sessions.push(background);
+        w.sidebar_todo_progress.insert("background".into(), (0, 1));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let row = workspace.read_with(vcx, |w, _| {
+        w.sidebar_session_layout
+            .iter()
+            .position(|row| row.session_id == "background")
+            .unwrap()
+    });
+    let pill = vcx
+        .debug_bounds(format!("sidebar-todos-{row}").leak())
+        .unwrap();
+    vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots[w.active].panel.read(cx).session_id, SESSION_ID);
+        assert!(
+            w.slots
+                .iter()
+                .all(|slot| slot.panel.read(cx).session_id != "background")
+        );
+    });
+    let (session_id, reply) = commands
+        .try_iter()
+        .find_map(|command| match command {
+            Command::ReadTodoSnapshot { session_id, reply } => Some((session_id, reply)),
+            _ => None,
+        })
+        .expect("requested the selected session's todo state");
+    assert_eq!(session_id, "background");
+    let snapshot = serde_json::from_value(serde_json::json!({
+        "session_id": session_id,
+        "todos": [{"id": "check", "content": "Check", "priority": "high", "status": "in_progress", "stage": 3, "group": "Validation"}]
+    })).unwrap();
+    assert!(reply.try_send(Some(snapshot)).is_ok());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("orchestration-todos-background").is_some());
+    assert!(vcx.debug_bounds("pinned-todo-phase-3").is_some());
+    click_sidebar_navigation(&workspace, vcx, "sidebar-orchestration");
+    assert!(vcx.debug_bounds("orchestration-todos-background").is_none());
+    workspace.read_with(vcx, |w, _| assert_eq!(w.slots.len(), 2));
+}
+
+#[gpui::test]
 fn clicking_a_live_session_focuses_its_chat(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = open(cx);
     vcx.simulate_keystrokes("super-shift-a");

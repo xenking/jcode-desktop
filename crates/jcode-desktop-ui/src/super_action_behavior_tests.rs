@@ -321,6 +321,7 @@ fn super_shift_slash_creates_correlated_help_and_records_its_prompt(cx: &mut gpu
                         agent_label: None,
                         swarm_status: None,
                         edit_stats: None,
+                        context: None,
                     },
                     request_id: Some(request_id),
                 },
@@ -328,7 +329,7 @@ fn super_shift_slash_creates_correlated_help_and_records_its_prompt(cx: &mut gpu
             )
         });
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { session_id: id, content, images })
+            matches!(commands.try_recv(), Ok(Command::Send { session_id: id, content, images, .. })
             if id == session_id && content == HELP_SESSION_PROMPT && images.is_empty())
         );
         assert!(

@@ -162,9 +162,12 @@ impl Panel {
         // arbitrary commands to the normal dispatcher (terminal/files/integrations).
         if !self.login_command(content.trim(), cx) {
             if matches!(content.trim(), "/model" | "/models") {
-                self.open_model_picker(cx);
-            } else if let Some(model) = content.trim().strip_prefix("/model ") {
-                if self
+                self.open_model_picker_deferred(cx);
+            } else if let Some((model, _)) = content
+                .trim()
+                .strip_prefix("/model ")
+                .map(crate::input::parse_model_pick)
+                && self
                     .available_models
                     .iter()
                     .any(|available| available == model)
@@ -175,7 +178,6 @@ impl Panel {
                     )));
                     self.close_model_picker(cx);
                 }
-            }
         }
         cx.notify();
         true

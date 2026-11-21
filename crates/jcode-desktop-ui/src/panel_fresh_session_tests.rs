@@ -16,6 +16,7 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
     let panel = workspace
         .read_with(vcx, |workspace, _| workspace.test_panel(0))
         .unwrap();
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     vcx.update(|window, cx| {
         let focus = panel.read(cx).input.read(cx).focus_handle.clone();
         window.focus(&focus, cx);
@@ -209,7 +210,7 @@ fn fresh_session_tall_prompt_starts_at_top_then_follows_response(cx: &mut gpui::
             "middle line\n\n".repeat(100)
         )));
         // Long prompts collapse by default. This covers an expanded tall one.
-        panel.expanded_prompts.insert((0, false));
+        panel.expanded_prompts.insert(0);
         panel.transcript_list.scroll_to_end(); // submit normally requests the tail
         cx.notify();
     });
@@ -228,10 +229,6 @@ fn fresh_session_tall_prompt_starts_at_top_then_follows_response(cx: &mut gpui::
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(
-        panel
-            .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())
-            .unwrap()
-    );
+    assert!(panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
     assert!(vcx.debug_bounds("transcript-row-1").is_some());
 }

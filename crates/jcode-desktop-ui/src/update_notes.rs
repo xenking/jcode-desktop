@@ -141,6 +141,7 @@ pub(crate) fn history() -> Vec<Group> {
 
 pub(crate) struct Summary {
     pub heading: String,
+    #[allow(dead_code)]
     pub description: &'static str,
     pub entries: Vec<String>,
     pub remaining: usize,

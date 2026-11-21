@@ -3,9 +3,6 @@
 //! only. It never closes, moves, or reorders panels.
 use super::*;
 
-#[path = "sidebar_project_dock.rs"]
-mod dock;
-
 /// Key for sessions without any working directory.
 pub(super) const OTHER: &str = "";
 
@@ -85,10 +82,14 @@ impl State {
     }
 
     fn root(&mut self, directory: &str) -> Option<PathBuf> {
-        self.roots
-            .entry(directory.to_owned())
-            .or_insert_with(|| git_root(Path::new(directory)))
-            .clone()
+        // Borrow the key on cache hits rather than allocating it for entry().
+        // A cached negative result is authoritative too.
+        if let Some(root) = self.roots.get(directory) {
+            return root.clone();
+        }
+        let root = git_root(Path::new(directory));
+        self.roots.insert(directory.to_owned(), root.clone());
+        root
     }
 
     /// The session's project and, when it differs, its directory inside it.
@@ -476,6 +477,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cached_missing_repository_is_not_probed_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().to_str().unwrap();
+        let mut state = State::default();
+        assert_eq!(state.root(directory), None);
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+        assert_eq!(git_root(temp.path()), Some(temp.path().to_path_buf()));
+        assert_eq!(state.root(directory), None);
+        assert_eq!(state.roots.len(), 1);
+    }
+
+    #[test]
     fn repositories_group_subdirectories_and_linked_worktrees() {
         let temp = tempfile::tempdir().unwrap();
         let repo = std::fs::canonicalize(temp.path()).unwrap().join("repo");
@@ -594,6 +607,11 @@ mod tests {
         );
         let alpha = vcx.debug_bounds("sidebar-project-0").unwrap();
         let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        assert!(
+            vcx.debug_bounds("sidebar-project-dock").is_none(),
+            "projects already have clickable headers in the session list"
+        );
+        assert!(vcx.debug_bounds("sidebar-account").is_some());
         assert!(alpha.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
         assert!(vcx.debug_bounds("sidebar-session-2").unwrap().bottom() <= beta.top());
         assert!(
@@ -606,6 +624,13 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-project-1").is_some());
         assert!(vcx.debug_bounds("sidebar-session-title-3").is_none());
+        let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        vcx.simulate_click(beta.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-title-3").is_some());
+        let beta = vcx.debug_bounds("sidebar-project-1").unwrap();
+        vcx.simulate_click(beta.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(
                 w.slots[w.active].panel.read(cx).session_id,

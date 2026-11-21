@@ -14,9 +14,11 @@ fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTest
 fn history(rows: &[(&str, &str)]) -> Vec<jcode_sdk::HistoryMessage> {
     rows.iter()
         .map(|(role, content)| jcode_sdk::HistoryMessage {
+            attachments: Vec::new(),
             role: (*role).into(),
             content: (*content).into(),
             response_stats: None,
+            timestamp_ms: None,
             tool: None,
         })
         .collect()
@@ -224,12 +226,12 @@ fn reload_before_first_history_preserves_echo_and_stream_without_duplicates(
         panel.history_loaded = false;
         *panel.items = vec![Item::User("new".into())];
         panel.streaming_text = "part".into();
-        panel.expanded_tools.insert("tool-1".into());
+        panel.expanded_regions.insert("tool-1".into());
         let saved =
             serde_json::from_slice(&serde_json::to_vec(&panel.snapshot_for_reload(cx)).unwrap())
                 .unwrap();
         panel.restore_snapshot(saved, cx);
-        assert!(panel.expanded_tools.contains("tool-1"));
+        assert!(panel.expanded_regions.contains("tool-1"));
         panel.load_history(vec![], vec![], cx);
         assert_eq!(panel.items.len(), 1);
         assert!(

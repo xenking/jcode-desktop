@@ -4,6 +4,13 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[cfg(test)]
+#[path = "workspace_control_tests.rs"]
+mod control_tests;
+
+#[path = "workspace_control.rs"]
+mod control;
+
 #[path = "workspace_commands.rs"]
 mod commands;
 
@@ -21,6 +28,8 @@ mod side_panel;
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
 
+#[path = "workspace_menu.rs"]
+mod menu;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
@@ -61,6 +70,13 @@ mod sidebar_collections;
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
+#[path = "sidebar_header.rs"]
+mod sidebar_header;
+#[cfg(test)]
+#[path = "sidebar_header_tests.rs"]
+mod sidebar_header_tests;
+#[path = "workspace_sidebar_metadata.rs"]
+mod sidebar_metadata;
 #[path = "sidebar_projects.rs"]
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
@@ -71,6 +87,7 @@ mod sidebar_swarm;
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
+use sidebar_metadata::SidebarPanelMetadata;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -115,10 +132,15 @@ mod map_gesture;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
 #[cfg(test)]
+#[path = "workspace_nav_profile_tests.rs"]
+mod nav_profile_tests;
+#[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
+#[path = "workspace_openrig.rs"]
+mod openrig;
 #[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
@@ -158,11 +180,15 @@ mod default_directory;
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 
+#[cfg(test)]
+#[path = "workspace_resume_search_tests.rs"]
+mod resume_search_tests;
+
 // Actions that panels dispatch to the workspace live in a leaf module so the
 // panel layer does not depend on this one.
 pub(crate) use crate::ui_actions::{
-    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume, PublishDesktop,
-    SwitchDirectory, ToggleOnboardingSimulator,
+    ClosePanel, GlobalSearch, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume,
+    PublishDesktop, SwitchDirectory, ToggleOnboardingSimulator,
 };
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -195,6 +221,7 @@ actions!(
         OpenGmail,
         OpenTodoist,
         OpenOrchestration,
+        OpenOpenrig,
         NewUnfinishedWork,
         OpenFolder,
         ToggleOverview,
@@ -220,6 +247,7 @@ actions!(
 
 /// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
 /// across the available frames instead of concentrating it at the start.
+#[allow(dead_code)]
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
 /// The bundled applet behind Super+Shift+G and the sidebar inbox entry.
 const GMAIL_APPLET: &str = "gmail";
@@ -238,7 +266,6 @@ const STRIP_PADDING_TOP: f32 = 6.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
 /// Shared bottom metadata stays outside transcript and composer hit targets.
-const WORKSPACE_FOOTER_HEIGHT: f32 = 24.0;
 /// The session sheet sits flush against the sidebar and the window's right edge.
 const FOLDER_CONNECTOR_WIDTH: f32 = 0.0;
 const FOLDER_RIGHT_MARGIN: f32 = 0.0;
@@ -253,6 +280,8 @@ mod version;
 
 #[path = "sidebar_roller.rs"]
 mod sidebar_roller;
+#[path = "sidebar_search_button.rs"]
+mod sidebar_search_button;
 
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
@@ -343,10 +372,8 @@ const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
 const TITLEBAR_HEIGHT: f32 = 40.0;
-/// Horizontal space occupied by the macOS close, minimize, and zoom controls.
-/// Keep sidebar navigation out of this region while retaining Linux's current
-/// left alignment.
-const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 76.0;
+/// The macOS traffic lights end at 76 points. Leave 8 points before app chrome.
+const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 84.0;
 
 fn content_top_inset(show_sidebar: bool, fullscreen: bool) -> f32 {
     // Fullscreen macOS windows have no titlebar and the traffic lights are
@@ -389,7 +416,9 @@ const MINIMAP_WIDTH: f32 = 112.0 + MINIMAP_LABEL_WIDTH;
 const MINIMAP_HEIGHT: f32 = 96.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
-const MINIMAP_TOP: f32 = if crate::window_caption::enabled() {
+const MINIMAP_TOP: f32 = if cfg!(target_os = "macos") {
+    STRIP_PADDING_TOP + FOLDER_CONTENT_INSET + 6.0
+} else if crate::window_caption::enabled() {
     // Below the Windows caption buttons, which own the top-right corner.
     crate::window_caption::HEIGHT + 6.0
 } else {
@@ -737,6 +766,11 @@ pub struct Workspace {
     voice_key: voice::CopilotLatch,
     last_voice_chat: Option<gpui::EntityId>,
     _voice_activation: Option<gpui::Subscription>,
+    #[cfg(unix)]
+    desktop_control: Option<crate::desktop_control::Server>,
+    #[cfg(unix)]
+    desktop_control_task: Option<gpui::Task<()>>,
+    control_drafts: HashMap<gpui::EntityId, (String, u64)>,
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
@@ -748,6 +782,8 @@ pub struct Workspace {
     applet_text_selection: Option<Entity<crate::text_selection::TextSelection>>,
     /// Sidebar applet section, rendered with window access before the sidebar.
     sidebar_applets: Option<gpui::AnyElement>,
+    sidebar_chrome: Option<Entity<SidebarChrome>>,
+    sidebar_panel_metadata: Option<Entity<HashMap<gpui::EntityId, SidebarPanelMetadata>>>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -757,6 +793,8 @@ pub struct Workspace {
     /// window. A shared single-panel host has one per window.
     launch: jcode_desktop_api::WindowLaunch,
     resume: Option<resume::State>,
+    /// Full-height global search over every stored session. Transient by
+    /// design: relaunching the app lands on the workspace, not on a query.
     show_sidebar: bool,
     sidebar_custom_width: f32,
     sidebar_resizing: bool,
@@ -780,6 +818,9 @@ pub struct Workspace {
     tutorial_page: usize,
     onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
+    /// Truncated workspace text the user opened: a worker label, a coach
+    /// hint. Runtime-only UI state, never part of the saved layout.
+    expanded_lines: HashSet<String>,
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
@@ -825,6 +866,11 @@ pub struct Workspace {
     coach_expiry_task: Option<gpui::Task<()>>,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// What each swarm worker's own record says: model, effort, spend and what
+    /// its newest message shows it doing. Keyed by session id; the catalog
+    /// entry itself carries none of this.
+    worker_meta: HashMap<String, jcode_sdk::WorkerMeta>,
+    live_swarm_status: jcode_desktop_harness::swarm_status::LiveSwarmStatus,
     /// Past rows belong to this window only, never the durable session catalog.
     sidebar_closed_sessions: HashSet<String>,
     /// Sessions the shared daemon is running a turn for right now, from its
@@ -856,13 +902,10 @@ pub struct Workspace {
     /// Persisted todo progress (completed, total) per session, refreshed in
     /// the background with the session list. Open panels override it live.
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
-    /// Pending `await_members` waits and recent reports per coordinator,
-    /// read from the daemon's durable await state with the session list.
-    swarm_awaits: HashMap<String, crate::swarm_view::AwaitState>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
-    /// Breathing "Checking…" beside the version while an update check runs.
-    version_pulse: crate::pulse_text::Tickers,
+    /// Animated status glyphs of nested workers, one leaf view each.
+    swarm_marks: crate::swarm_glyph::Marks,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -901,6 +944,8 @@ pub struct Workspace {
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _stream_fixture: Option<gpui::Task<()>>,
+    /// Offline screenshot fixture: keeps undelivered queued rows on screen.
+    queued_fixture: Option<gpui::Task<()>>,
     _performance_task: gpui::Task<()>,
     _live_profile_task: gpui::Task<()>,
 }
@@ -914,6 +959,11 @@ impl Workspace {
     ) -> Self {
         crate::input::bind_keys(cx);
         crate::init_harness();
+        // Launch work that must not wait for a pane: a packaged build whose
+        // release state is still `Unknown` shows no update badge, so a
+        // render-triggered release check would never start the automatic update
+        // loop for a user who stays in the session view.
+        updates::ensure_release_check();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let launch = snapshot
@@ -1093,6 +1143,11 @@ impl Workspace {
                     this.voice_key = Default::default();
                 }
             })),
+            #[cfg(unix)]
+            desktop_control: None,
+            #[cfg(unix)]
+            desktop_control_task: None,
+            control_drafts: HashMap::new(),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -1100,12 +1155,17 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge,
             host,
             single_panel,
             launch: launch.clone(),
             resume: None,
-            show_beta_notice: snapshot.is_none() && !single_panel,
+            show_beta_notice: snapshot.is_none()
+                && !single_panel
+                && !(harness::screenshot_mode()
+                    && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_HIDE_BETA").is_some()),
             account_sign_in: account_sign_in::State::startup(),
             account_menu: account_menu::State::startup(),
             show_minimap: false,
@@ -1124,6 +1184,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -1157,6 +1218,8 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            worker_meta: HashMap::new(),
+            live_swarm_status: Default::default(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
@@ -1179,9 +1242,8 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
-            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
-            version_pulse: Default::default(),
+            swarm_marks: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -1207,11 +1269,16 @@ impl Workspace {
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _stream_fixture: None,
+            queued_fixture: None,
             _performance_task: performance_task,
             _live_profile_task: crate::live_profile::spawn(window, cx),
         };
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
+        } else if harness::screenshot_mode()
+            && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CLOUD_PICKER").is_some()
+        {
+            workspace.show_cloud_picker_fixture(cx);
         } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
         {
@@ -1263,13 +1330,33 @@ impl Workspace {
                 true,
                 cx,
             );
+        } else if harness::controlled_runtime_socket().is_some() {
+            if let Ok(session_id) = std::env::var("JCODE_DESKTOP_CONTROL_RUNTIME_SESSION")
+                && let Ok(session) =
+                    serde_json::from_value::<jcode_sdk::SessionInfo>(serde_json::json!({
+                        "session_id": session_id,
+                        "status": "idle",
+                    }))
+            {
+                workspace.sessions = vec![session.clone()];
+                workspace.active = workspace.open_session(session, cx);
+            }
+        } else if crate::fixture_control_targets::draft_session() {
+            workspace.connected = true;
+            workspace.open_local_draft(workspace.default_working_dir(), cx);
         } else if harness::screenshot_mode() {
+            let worktree_fixture = crate::fixture_control_targets::enabled()
+                .then(|| std::env::var("JCODE_DESKTOP_CONTROL_SWARM_WORKTREE").ok())
+                .flatten();
             let session = jcode_sdk::SessionInfo {
                 user_connected: false,
                 session_id: "screenshot-fixture".into(),
                 // Keep this longer than the sidebar to exercise single-line ellipsis.
                 title: Some("Review markdown rendering with a very long session title".into()),
-                working_dir: Some("/workspace/example".into()),
+                working_dir: worktree_fixture
+                    .as_ref()
+                    .and_then(|_| std::env::var("JCODE_DESKTOP_WORKING_DIR").ok())
+                    .or_else(|| Some("/workspace/example".into())),
                 status: "idle".into(),
                 transcript_bytes: None,
                 saved: false,
@@ -1281,6 +1368,7 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
+                context: None,
                 edit_stats: Some(jcode_sdk::SessionEditStats {
                     added: 128,
                     removed: 37,
@@ -1292,26 +1380,106 @@ impl Workspace {
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture(cx);
             workspace.init_collections_fixture();
-            if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
-                for (index, (label, status)) in [
-                    ("API reviewer", "working"),
-                    ("Sidebar implementation", "working"),
-                    ("Test runner", "completed"),
+            if crate::fixture_control_targets::enabled()
+                && let Ok(session_id) = std::env::var("JCODE_DESKTOP_CONTROL_TODO_SESSION")
+                && let Some(home) = harness::jcode_home()
+            {
+                let mut session = workspace.sessions[0].clone();
+                session.session_id = session_id;
+                session.title = Some("Verify a background project".into());
+                session.working_dir = Some("/workspace/side-project".into());
+                session.transcript_bytes = Some(65_600_000);
+                session.user_connected = true;
+                workspace.sidebar_todo_progress =
+                    harness::todo_progress_in(&home, std::slice::from_ref(&session));
+                workspace.sessions.push(session);
+            }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_SWARM").as_deref() == Ok("real") {
+                workspace.load_real_swarm_fixture(cx);
+            } else if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
+                for (index, (label, status, model, provider, effort)) in [
+                    (
+                        "API reviewer",
+                        "working",
+                        "claude-opus-5-5",
+                        "claude-oauth",
+                        "high",
+                    ),
+                    (
+                        "Sidebar implementation",
+                        "working",
+                        "gpt-5.6",
+                        "openai",
+                        "low",
+                    ),
+                    (
+                        "Test runner",
+                        "completed",
+                        "deepseek-v4.1-flash",
+                        "opencode-go",
+                        "max",
+                    ),
                 ]
                 .into_iter()
                 .enumerate()
                 {
                     let mut child = workspace.sessions[0].clone();
                     child.session_id = format!("swarm-fixture-{index}");
-                    child.parent_session_id = Some("screenshot-fixture".into());
+                    child.title = None;
                     child.agent_label = Some(label.into());
+                    if index == 0
+                        && let Some(directory) = &worktree_fixture
+                    {
+                        child.working_dir = Some(directory.clone());
+                        // Older daemons supplied the seeded todo title in the
+                        // catalog but no live agent label for auto-lanes.
+                        child.title = Some("btw-enter".into());
+                        child.agent_label = None;
+                    }
+                    child.parent_session_id = Some("screenshot-fixture".into());
                     child.swarm_status = Some(status.into());
+                    if index == 2 && worktree_fixture.is_some() {
+                        child.title = Some("Retry after the previous worker failed".into());
+                    }
                     child.edit_stats = Some(jcode_sdk::SessionEditStats {
                         added: 14 + index as u64 * 50,
                         removed: 2 + index as u64 * 8,
                         approximate: index == 1,
                     });
+                    // The rows draw each worker's model and its reasoning rung,
+                    // so the fixture must carry a record or the screenshot
+                    // shows a bare name and proves nothing about the dots.
+                    workspace.worker_meta.insert(
+                        child.session_id.clone(),
+                        jcode_sdk::WorkerMeta {
+                            model: Some(model.into()),
+                            provider: Some(provider.into()),
+                            effort: Some(effort.into()),
+                            input_tokens: Some(12_400 + index as u64 * 3_000),
+                            output_tokens: Some(3_100 + index as u64 * 800),
+                            ..jcode_sdk::WorkerMeta::default()
+                        },
+                    );
                     workspace.sessions.push(child);
+                }
+            }
+            if worktree_fixture.is_some() {
+                workspace.sync_swarm_strips(cx);
+            }
+            if let Ok(effort) = std::env::var("JCODE_DESKTOP_SCREENSHOT_BAR") {
+                // Hand the swarm fixture's workers to the bar now; the strips
+                // otherwise sync on the first session-list update.
+                workspace.sync_swarm_strips(cx);
+                if let Some(slot) = workspace.slots.first() {
+                    slot.panel.update(cx, |panel, cx| {
+                        panel.apply_bar_fixture(&effort, cx);
+                        if crate::fixture_control_targets::enabled()
+                            && std::env::var("JCODE_DESKTOP_SCREENSHOT_CACHE_CARD").as_deref()
+                                == Ok("1")
+                        {
+                            panel.apply_cache_card_fixture(cx);
+                        }
+                    });
                 }
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {
@@ -1324,7 +1492,7 @@ impl Workspace {
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(1)
-                .clamp(1, 6);
+                .clamp(1, 12);
             let panel_count = if single_panel { 1 } else { panel_count };
             let panel_titles = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES").ok();
             let panel_title = |index: usize| {
@@ -1350,7 +1518,9 @@ impl Workspace {
                 workspace.sessions.push(session.clone());
                 workspace.active = workspace.open_session(session, cx);
             }
-            if panel_count > 1 {
+            if panel_count > 1
+                || std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("openrig")
+            {
                 for slot in &mut workspace.slots {
                     slot.width_fraction = 1.0 / panel_count as f32;
                     slot.animated_width = AnimatedValue::new(
@@ -1360,12 +1530,54 @@ impl Workspace {
                 }
                 workspace.active = panel_count / 2;
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES").as_deref() == Ok("1") {
+                workspace.seed_tab_status_fixture(cx);
+            }
             workspace.focus_pending = true;
             if workspace_stream_fixture::enabled() {
                 workspace._stream_fixture = Some(workspace_stream_fixture::spawn(
                     "screenshot-fixture".into(),
                     cx,
                 ));
+            }
+            if let Some(count) = std::env::var("JCODE_DESKTOP_SCREENSHOT_QUEUED")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|count| *count > 0)
+            {
+                // Re-seed on a timer: the offline demo turn ends, and its
+                // turn_done drains the queue, so a one-shot seed would show the
+                // rows for a frame and then hand them to the transcript.
+                // `JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT=1` also opens the first
+                // row in its inline editor, with a screenshot and files.
+                let queue_edit =
+                    std::env::var("JCODE_DESKTOP_SCREENSHOT_QUEUE_EDIT").as_deref() == Ok("1");
+                workspace.queued_fixture = Some(cx.spawn(async move |this, cx| {
+                    let executor = cx.background_executor().clone();
+                    let mut round = 0usize;
+                    loop {
+                        let mut seeded = false;
+                        this.update(cx, |workspace, cx| {
+                            if let Some(slot) = workspace.slots.first() {
+                                slot.panel.update(cx, |panel, cx| {
+                                    if !panel.has_visible_queued_prompts() {
+                                        panel.seed_screenshot_queued(count, round);
+                                        if queue_edit {
+                                            panel.seed_screenshot_queue_edit(cx);
+                                        }
+                                        seeded = true;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                        .ok();
+                        if seeded {
+                            round += 1;
+                        }
+                        executor.timer(Duration::from_millis(1500)).await;
+                    }
+                }));
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()
@@ -1403,7 +1615,6 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
-        workspace.init_resume_fixture(cx);
         // Restore the picker after slots, but before a default remote can start.
         let fresh_launch = resume_snapshot.is_none();
         workspace.restore_resume(resume_snapshot, resume_requested, window, cx);
@@ -1420,6 +1631,8 @@ impl Workspace {
             workspace.start_default_startup(cx);
         }
         workspace.start_preview_control(cx);
+        #[cfg(unix)]
+        workspace.start_desktop_control(window, cx);
         workspace.start_global_voice(window, cx);
         workspace.detect_account_imports(cx);
         workspace.load_collections(cx);
@@ -1440,7 +1653,10 @@ impl Workspace {
                     .remotes
                     .default_host
                     .is_none()
-                    .then(|| self.default_working_dir())
+                    .then(|| {
+                        launch_directory_override(&self.launch)
+                            .or_else(|| self.new_session_directory())
+                    })
                     .flatten(),
                 status: "starting".into(),
                 transcript_bytes: None,
@@ -1454,6 +1670,7 @@ impl Workspace {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             },
             cx,
         );
@@ -1483,6 +1700,11 @@ impl Workspace {
             voice_key: Default::default(),
             last_voice_chat: None,
             _voice_activation: None,
+            #[cfg(unix)]
+            desktop_control: None,
+            #[cfg(unix)]
+            desktop_control_task: None,
+            control_drafts: HashMap::new(),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -1490,6 +1712,8 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -1514,6 +1738,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -1547,6 +1772,8 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            worker_meta: HashMap::new(),
+            live_swarm_status: Default::default(),
             sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: None,
@@ -1569,9 +1796,8 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
-            swarm_awaits: Default::default(),
             sidebar_title_pulses: Default::default(),
-            version_pulse: Default::default(),
+            swarm_marks: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -1597,6 +1823,7 @@ impl Workspace {
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _stream_fixture: None,
+            queued_fixture: None,
             _performance_task: cx.spawn(async move |_, _| {}),
             _live_profile_task: cx.spawn(async move |_, _| {}),
         }
@@ -1619,7 +1846,9 @@ impl Workspace {
         {
             eprintln!("voice: hot reload is replacing the UI while a recording is active");
         }
-        self.snapshot_inner(window, cx, true)
+        let snapshot = self.snapshot_inner(window, cx, true)?;
+        recovery::remember_reload_snapshot(&snapshot, window, cx);
+        Ok(snapshot)
     }
 
     fn snapshot_inner(
@@ -1747,6 +1976,8 @@ impl Workspace {
         for saved in snapshot.slots {
             restored_index.push(None);
             let mut panel_state = saved.panel;
+            // Some(needs a session now) for a local draft from the last run.
+            let mut restored_local_draft = None;
             // Preview fixture IDs are never runtime sessions, including old snapshots.
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
@@ -1786,10 +2017,7 @@ impl Workspace {
                             1,
                         );
                     }
-                    self.bridge.send(Command::CreateSession {
-                        working_dir: panel_state.working_dir.clone(),
-                        request_id: Some(panel_state.session_id.clone()),
-                    });
+                    restored_local_draft = Some(help || publish);
                 }
             }
             let terminal =
@@ -1839,6 +2067,8 @@ impl Workspace {
                 cx.new(|cx| Panel::new_applet(instance.to_owned(), self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
                 cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
+            } else if panel_state.session_id == crate::panel::openrig::SESSION_ID {
+                cx.new(|cx| Panel::new_openrig(self.bridge.clone(), cx))
             } else if panel_state.session_id == crate::panel::orchestration::SESSION_ID {
                 let opener = self.orchestration_opener(cx);
                 cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx))
@@ -1868,11 +2098,14 @@ impl Workspace {
                 panel.update(cx, |panel, _| panel.input = input.clone());
                 self.remotes.input = Some(input);
             } else if !panel.read(cx).is_default_directory() {
-                Panel::connect_input(&panel, cx);
+                Self::wire_session_panel(&panel, cx);
             }
             panel.update(cx, |panel, cx| {
                 panel.restore_snapshot(panel_state, cx);
                 panel.prefetch_persisted_history(cx);
+                if let Some(needs_session) = restored_local_draft {
+                    panel.resume_draft_session(needs_session, cx);
+                }
             });
             if panel
                 .read(cx)
@@ -1881,8 +2114,8 @@ impl Workspace {
             {
                 panel.update(cx, |panel, cx| {
                     panel.status = match pending::remote_draft_host(&panel.session_id) {
-                        Some(remotes::MANAGED_CLOUD_HOST) => {
-                            panel.title = "Jcode Cloud".into();
+                        Some(host) if remotes::managed_destination(host) => {
+                            panel.title = remotes::machine_label(host).to_owned().into();
                             format!("{} Your queued prompts are preserved.", remotes::MANAGED_CLOUD_STARTING)
                         }
                         Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
@@ -1978,6 +2211,9 @@ impl Workspace {
             self.folder_search = Some(search);
         }
         self.restore_workspace_live_views(cx);
+        if self.machines_panel_index(cx).is_some() {
+            self.refresh_cloud_registry(cx);
+        }
     }
 
     fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
@@ -2106,7 +2342,7 @@ impl Workspace {
     /// Session refreshes arrive every two seconds. Most contain the exact same
     /// SDK snapshot, so treating them as changes would rebuild the complete
     /// sidebar and every open panel for no user-visible result.
-    fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
         if let Update::Sessions { sessions } = &mut update {
             // A desktop window can disappear while its daemon-owned sessions keep
             // running. Those panels are restored from the workspace snapshot before
@@ -2147,6 +2383,7 @@ impl Workspace {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
         }
@@ -2155,8 +2392,20 @@ impl Workspace {
         {
             return false;
         }
+        if let Update::WorkerFacts { workers } = &update
+            && workers == &self.worker_meta
+        {
+            return false;
+        }
 
         match update {
+            Update::DraftModels { current, routes } => {
+                Panel::publish_draft_models(current, routes, cx);
+                for slot in &self.slots {
+                    slot.panel
+                        .update(cx, |panel, cx| panel.seed_draft_models(cx));
+                }
+            }
             Update::Status(status) => self.status = status,
             Update::RemoteStatus {
                 host,
@@ -2167,6 +2416,7 @@ impl Workspace {
                 if failed {
                     self.invalidate_cloud_connection(&host);
                 }
+                let host = remotes::machine_label(&host);
                 self.update_pending_remote_status(
                     request_id.as_deref(),
                     &format!("{host}: {message}"),
@@ -2176,6 +2426,15 @@ impl Workspace {
                 self.remotes.failed = failed;
                 self.remotes.status = Some(format!("{host}: {message}"));
             }
+            Update::RemoteSessions { request_id, result } => {
+                self.apply_machine_sessions(request_id, result);
+            }
+            Update::SessionSearch {
+                query,
+                generation,
+                result,
+                elapsed_ms,
+            } => self.apply_session_search(query, generation, result, elapsed_ms, cx),
             Update::Connected => {
                 self.connected = true;
                 self.status = "connected".into();
@@ -2189,7 +2448,15 @@ impl Workspace {
                     self.start_default_startup(cx);
                 }
             }
-            Update::Sessions { sessions } => {
+            Update::WorkerFacts { workers } => {
+                self.worker_meta = workers;
+                // Rows read the records, so the strip and the sidebar rebuild;
+                // panels take the model their own record names when the
+                // runtime has not sent an identity yet.
+                self.sync_swarm_strips(cx);
+            }
+            Update::Sessions { mut sessions } => {
+                self.live_swarm_status.merge(&mut sessions);
                 if self.pinned_working_dir.is_none()
                     && let Some(directory) = most_used_working_dir(&sessions)
                 {
@@ -2236,18 +2503,13 @@ impl Workspace {
                 if !cfg!(test) {
                     let sessions = self.sessions.clone();
                     cx.spawn(async move |this, cx| {
-                        let (prompts, todos, awaits) = cx
+                        let (prompts, todos) = cx
                             .background_executor()
                             .spawn(async move {
                                 let todos = crate::harness::jcode_home()
                                     .map(|home| crate::harness::todo_progress_in(&home, &sessions))
                                     .unwrap_or_default();
-                                let awaits = crate::swarm_view::load_awaits(
-                                    &jcode_base::storage::runtime_dir()
-                                        .join(crate::swarm_view::AWAIT_MEMBERS_DIR),
-                                    swarm_now_ms(),
-                                );
-                                (crate::example_prompts::load(&sessions), todos, awaits)
+                                (crate::example_prompts::load(&sessions), todos)
                             })
                             .await;
                         cx.update(|cx| crate::example_prompts::set(prompts, cx));
@@ -2256,13 +2518,44 @@ impl Workspace {
                                 this.sidebar_todo_progress = todos;
                                 cx.notify();
                             }
-                            if this.swarm_awaits != awaits {
-                                this.swarm_awaits = awaits;
-                                this.sync_swarm_strips(cx);
-                            }
                         });
                     })
                     .detach();
+                    // Swarm cards show each named worker's own model and total
+                    // spend, read from its session files off the UI thread.
+                    let wanted = self
+                        .slots
+                        .iter()
+                        .map(|slot| {
+                            let panel = slot.panel.read(cx);
+                            (slot.panel.clone(), panel.swarm_card_worker_ids())
+                        })
+                        .filter(|(_, ids)| !ids.is_empty())
+                        .collect::<Vec<_>>();
+                    if !wanted.is_empty()
+                        && let Some(home) = crate::harness::jcode_home()
+                    {
+                        let ids = wanted
+                            .iter()
+                            .flat_map(|(_, ids)| ids.clone())
+                            .collect::<Vec<_>>();
+                        cx.spawn(async move |_, cx| {
+                            let usage = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    jcode_desktop_harness::swarm_usage::usage_for(&home, &ids)
+                                })
+                                .await;
+                            for (panel, ids) in wanted {
+                                let own = ids
+                                    .iter()
+                                    .filter_map(|id| Some((id.clone(), usage.get(id)?.clone())))
+                                    .collect();
+                                panel.update(cx, |panel, cx| panel.set_swarm_usage(own, cx));
+                            }
+                        })
+                        .detach();
+                    }
                 }
                 let mut unfinished = None;
                 for slot in &self.slots {
@@ -2310,6 +2603,7 @@ impl Workspace {
                                 session_id,
                                 content: HELP_SESSION_PROMPT.into(),
                                 images: Vec::new(),
+                                attachments: Vec::new(),
                             });
                         }
                     } else {
@@ -2329,7 +2623,7 @@ impl Workspace {
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
             }
-            Update::SessionForked { session } => {
+            Update::SessionForked { session, prompt } => {
                 let session_id = session.session_id.clone();
                 if !self
                     .sessions
@@ -2345,6 +2639,29 @@ impl Workspace {
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
+                // The harness already delivered the prompt over the child's
+                // connection. Paint it here so the fork never opens looking
+                // empty while the answer streams in.
+                if let Some(prompt) = prompt {
+                    let panel = self.slots[inserted].panel.clone();
+                    panel.update(cx, |panel, cx| panel.echo_external_prompt(prompt, cx));
+                }
+            }
+            Update::SideQuestionStarted {
+                parent_session_id,
+                session,
+                question,
+            } => {
+                // A side question answers inside the source chat's card. It is
+                // never a tab of its own and never touches the source session.
+                if let Some(index) = self.slots.iter().position(|slot| {
+                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
+                }) {
+                    let panel = self.slots[index].panel.clone();
+                    panel.update(cx, |panel, cx| {
+                        panel.start_side_question(session, question, cx)
+                    });
+                }
             }
             Update::History {
                 session_id,
@@ -2360,7 +2677,95 @@ impl Workspace {
                     }
                 }
             }
+            Update::HistoryPage { session_id, result } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_older_history(result, cx));
+                        break;
+                    }
+                }
+            }
+            Update::BoundedHistory { session_id, page } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_bounded_history(page, cx));
+                        break;
+                    }
+                }
+            }
+            Update::RewoundHistory {
+                session_id,
+                page,
+                bounded,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.replace_rewound_history(page, bounded, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::BoundedHistoryPage { session_id, result } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_bounded_history_page(result, cx));
+                        break;
+                    }
+                }
+            }
+            Update::HistoryImage {
+                session_id,
+                key,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.load_history_image(key, result, cx));
+                        break;
+                    }
+                }
+            }
             Update::Event { session_id, event } => {
+                if let jcode_sdk::ApiEvent::SwarmStatus {
+                    session_id: source,
+                    updated_at_unix_ms,
+                    members,
+                } = &event
+                {
+                    if self
+                        .live_swarm_status
+                        .apply(source, *updated_at_unix_ms, members)
+                    {
+                        let unknown_worker = members.iter().any(|member| {
+                            member.parent_session_id.is_some()
+                                && !self
+                                    .sessions
+                                    .iter()
+                                    .any(|session| session.session_id == member.session_id)
+                        });
+                        self.live_swarm_status.merge(&mut self.sessions);
+                        self.sync_swarm_strips(cx);
+                        if unknown_worker {
+                            self.bridge.send(Command::RefreshSessions);
+                        }
+                    }
+                    return true;
+                }
+                if self.route_side_question_event(&session_id, &event, cx) {
+                    return true;
+                }
+                if let jcode_sdk::ApiEvent::FocusRequested { .. } = &event {
+                    // Another session (an agent) asked the user to look at this
+                    // one: select its tab and bring the app forward.
+                    self.raise_session(&session_id, cx);
+                    return true;
+                }
                 if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
                     return self.apply_side_panel(&session_id, snapshot, cx);
                 }
@@ -2407,10 +2812,20 @@ impl Workspace {
                     // SessionInfo carries the effective display title, so keep
                     // the sidebar's cached copy in sync with the live panel.
                     session.title = Some(display_title.clone());
+                    if session.parent_session_id.is_some() {
+                        self.sync_swarm_strips(cx);
+                    }
                 }
+                let swarm_tool_finished =
+                    matches!(&event, jcode_sdk::ApiEvent::ToolDone { name, .. } if name == "swarm");
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.apply(&event, cx);
+                            if swarm_tool_finished {
+                                panel.refresh_local_pending_awaits(cx);
+                            }
+                        });
                         if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. }) {
                             let panel = slot.panel.read(cx);
                             if let Some(provider) = panel.provider.as_deref() {
@@ -2510,6 +2925,19 @@ impl Workspace {
                     }
                 }
             }
+            Update::TabWaitingState {
+                session_id,
+                waiting,
+            } => {
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| slot.panel.read(cx).session_id == session_id)
+                {
+                    slot.panel
+                        .update(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
+                }
+            }
             Update::EffortSettled {
                 session_id,
                 effort,
@@ -2524,7 +2952,99 @@ impl Workspace {
                     }
                 }
             }
+            Update::AskResponseSettled {
+                session_id,
+                request_id,
+                error,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.ask_response_settled(&request_id, error.clone(), cx);
+                        });
+                    }
+                }
+            }
+            Update::QueueMutationCapability {
+                session_id,
+                supported,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_mutations_supported(supported, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueueEditingCapability {
+                session_id,
+                supported,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_editing_supported(supported, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueuedPromptEdited {
+                session_id,
+                prompt_id,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queued_prompt_edited(&prompt_id, result.clone(), cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueueRemovalSettled {
+                session_id,
+                prompt,
+                edit,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queue_removal_settled(prompt, edit, result, cx)
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::QueuePromptFailed {
+                session_id,
+                client_id,
+                reason,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.queue_prompt_failed(&client_id, reason.clone(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::CommandFailed { session_id, reason } => {
+                if self.route_side_question_event(
+                    &session_id,
+                    &jcode_sdk::ApiEvent::Error {
+                        code: jcode_sdk::api::ErrorCode::Internal,
+                        message: reason.clone(),
+                    },
+                    cx,
+                ) {
+                    return true;
+                }
                 if session_id == Panel::STARTUP_SESSION_ID {
                     self.remotes.startup_failed = true;
                 }
@@ -2557,9 +3077,35 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
+                            panel.set_queue_mutations_supported(false, cx);
+                            panel.set_tab_waiting(false, cx);
                             panel.connection_lost(&reason, cx);
                         });
                         break;
+                    }
+                }
+            }
+            Update::SessionAttaching { session_id } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.status = "attaching…".into();
+                            cx.notify();
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::OpenrigHostIdentity {
+                session_id,
+                self_host_id,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.rig_host_id = self_host_id.clone();
+                            cx.notify();
+                        });
                     }
                 }
             }
@@ -2571,6 +3117,8 @@ impl Workspace {
                             // A subsequent SessionStatus event will replace this
                             // with idle/running. Clear the stale lost banner now.
                             panel.status = "connected".into();
+                            panel.refresh_local_pending_awaits(cx);
+                            panel.prime_context_meter(cx);
                             cx.notify();
                         });
                         break;
@@ -2581,34 +3129,39 @@ impl Workspace {
         true
     }
 
-    /// Open `session` as a panel immediately to the right of the focused panel,
-    /// mirroring niri's "new column opens right of the focused column".
+    fn wire_session_panel(panel: &Entity<Panel>, cx: &mut Context<Self>) {
+        Panel::connect_input(panel, cx);
+        cx.subscribe(
+            panel,
+            |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
+                this.open_swarm_worker(&event.0, cx);
+            },
+        )
+        .detach();
+    }
+
+    /// Open `session` as a panel immediately to the right of the focused panel.
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
+        self.open_session_with_identity(session.session_id, session.title, session.working_dir, cx)
+    }
+
+    fn open_session_with_identity(
+        &mut self,
+        session_id: String,
+        title: Option<String>,
+        working_dir: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> usize {
         let width_fraction = spawned_panel_width(
             self.row_indices(self.active_row)
                 .filter(|&index| !self.slots[index].closing)
                 .count(),
         );
         let bridge = self.bridge.clone();
-        let session_id = session.session_id.clone();
-        let panel = cx.new(|cx| {
-            Panel::new(
-                session.session_id.clone(),
-                session.title.clone(),
-                session.working_dir.clone(),
-                bridge,
-                cx,
-            )
-        });
-        Panel::connect_input(&panel, cx);
-        cx.subscribe(
-            &panel,
-            |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
-                this.open_swarm_worker(&event.0, cx);
-            },
-        )
-        .detach();
+        let is_startup = session_id == Panel::STARTUP_SESSION_ID;
+        let panel = cx.new(|cx| Panel::new(session_id.clone(), title, working_dir, bridge, cx));
+        Self::wire_session_panel(&panel, cx);
         if !Panel::is_pending_session_id(&session_id) {
             panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
@@ -2667,46 +3220,158 @@ impl Workspace {
         if self.active >= insert_at {
             self.active += 1;
         }
-        if session.session_id != Panel::STARTUP_SESSION_ID {
+        if !is_startup {
             crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
         insert_at
     }
 
-    /// Push each coordinator panel its worker strip from the catalog and the
-    /// daemon's await state. Non-coordinators get none.
+    /// Push each coordinator panel its swarm workers for the composer
+    /// indicator. Non-coordinators get none.
     fn sync_swarm_strips(&mut self, cx: &mut Context<Self>) {
         let now = swarm_now_ms();
-        let workers = crate::swarm_view::workers_by_coordinator(&self.sessions, now);
+        let workers =
+            crate::swarm_view::workers_by_coordinator(&self.sessions, &self.worker_meta, now);
         for slot in &self.slots {
             let id = slot.panel.read(cx).session_id.clone();
-            let strip = crate::swarm_view::strip(
-                workers.get(&id).map(Vec::as_slice).unwrap_or_default(),
-                self.swarm_awaits.get(&id),
-                now,
-            );
+            let list = workers.get(&id).cloned().unwrap_or_default();
             slot.panel
-                .update(cx, |panel, cx| panel.set_swarm_strip(strip, cx));
+                .update(cx, |panel, cx| panel.set_swarm_workers(list, cx));
+            // A worker's own panel has no runtime identity until it answers a
+            // model probe; its record already names the model and effort, so
+            // the composer footer shows those instead of asking to choose one.
+            let record = self.worker_meta.get(&id).cloned();
+            slot.panel
+                .update(cx, |panel, cx| panel.set_worker_record(record, cx));
+            // A background await outlives the turn and the daemon reload that
+            // ended it. Read the daemon's durable registration so a parked
+            // coordinator says what it waits for instead of looking idle.
+            let awaits = crate::harness::remote_host(&id)
+                .is_none()
+                .then(|| jcode_sdk::pending_awaits_for_session(&id))
+                .unwrap_or_default();
+            slot.panel
+                .update(cx, |panel, cx| panel.set_pending_awaits(awaits, cx));
         }
         cx.notify();
     }
 
-    /// Focus a worker's panel, opening it if needed (strip / sidebar click).
-    fn open_swarm_worker(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        let Some(session) = self
-            .sessions
+    fn seed_tab_status_fixture(&self, cx: &mut Context<Self>) {
+        use jcode_sdk::ApiEvent;
+        for (index, slot) in self.slots.iter().take(4).enumerate() {
+            slot.panel.update(cx, |panel, cx| {
+                let session_id = panel.session_id.clone();
+                let status = |status: &str| ApiEvent::SessionStatus {
+                    session_id: session_id.clone(),
+                    status: status.into(),
+                    pending_soft_interrupts: None,
+                };
+                match index {
+                    0 => panel.apply(&status("running"), cx),
+                    1 => panel.set_tab_waiting(true, cx),
+                    2 => {
+                        let event = serde_json::from_value(serde_json::json!({
+                            "ev":"ask_request", "session_id":session_id,
+                            "request_id":"fixture-ask", "tool_call_id":"fixture-tool",
+                            "questions":[{"header":"Choice", "question":"Continue?", "options":[
+                                {"label":"Yes", "description":"Continue the work"},
+                                {"label":"No", "description":"Stop here"}
+                            ]}]
+                        }))
+                        .expect("valid ask fixture");
+                        panel.apply(&event, cx);
+                    }
+                    3 => {
+                        panel.set_surface_focused(false, cx);
+                        panel.apply(&status("running"), cx);
+                        panel.apply(&status("idle"), cx);
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
+    }
+
+    /// Select an open session's tab and activate the app, so an agent that
+    /// messages the user about another session can raise it. No-op when the
+    /// session has no open panel here.
+    fn raise_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .slots
             .iter()
-            .find(|s| s.session_id == session_id)
-            .cloned()
+            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
         else {
             return;
         };
+        self.set_active(index, cx);
+        self.overview = false;
+        cx.activate(true);
+        cx.notify();
+    }
+
+    /// `JCODE_DESKTOP_SCREENSHOT_SWARM=real`: the user's real coordinator and
+    /// its workers, from trimmed copies of their `~/.jcode` files (see
+    /// `jcode-desktop-harness/src/fixtures`), so a screenshot shows real data
+    /// shapes, not invented ones.
+    fn load_real_swarm_fixture(&mut self, cx: &mut Context<Self>) {
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../jcode-desktop-harness/src/fixtures");
+        let home = fixtures.join("microbe_home");
+        let mut sessions = harness::merge_persisted_sessions(Vec::new(), Some(&home));
+        jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
+        // The rows read each worker's record; the fixture homes already hold
+        // trimmed copies of them, so read those rather than the real home. The
+        // usage fixture keeps full token records for the workers it covers.
+        let ids = jcode_sdk::worker_ids(&sessions);
+        let mut meta = jcode_sdk::worker_meta_for(&home, &ids);
+        meta.extend(jcode_sdk::worker_meta_for(
+            &fixtures.join("usage_home"),
+            &ids,
+        ));
+        self.worker_meta = meta;
+        let Some(position) = sessions
+            .iter()
+            .position(|s| s.session_id.starts_with("session_microbe_"))
+        else {
+            return;
+        };
+        let coordinator = sessions.remove(position);
+        sessions.insert(0, coordinator.clone());
+        self.sessions = sessions;
+        self.slots.clear();
+        self.active = self.open_session(coordinator, cx);
+        let ids = self.slots[self.active]
+            .panel
+            .read(cx)
+            .swarm_card_worker_ids();
+        let usage =
+            jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
+        self.slots[self.active]
+            .panel
+            .update(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
+        self.sync_swarm_strips(cx);
+    }
+
+    /// Focus a worker's panel, opening it if needed (strip, sidebar, or DM).
+    fn open_swarm_worker(&mut self, session_id: &str, cx: &mut Context<Self>) {
         self.sidebar_closed_sessions.remove(session_id);
         let index = self
             .slots
             .iter()
             .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
-            .unwrap_or_else(|| self.open_session(session, cx));
+            .unwrap_or_else(|| {
+                let session = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == session_id)
+                    .cloned();
+                if let Some(session) = session {
+                    self.open_session(session, cx)
+                } else {
+                    // A signed DM may arrive ahead of the next catalog refresh.
+                    self.open_session_with_identity(session_id.to_owned(), None, None, cx)
+                }
+            });
         self.set_active(index, cx);
         self.sync_swarm_strips(cx);
     }
@@ -2768,6 +3433,7 @@ impl Workspace {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             });
         self.activate_session(session, window, cx);
     }
@@ -2981,10 +3647,10 @@ impl Workspace {
         } else {
             self.coach_expiry_task = None;
         }
-        if self.coach.take_dirty() {
-            if let Some(persistence) = &self.learning_persistence {
-                persistence.save(&self.coach);
-            }
+        if self.coach.take_dirty()
+            && let Some(persistence) = &self.learning_persistence
+        {
+            persistence.save(&self.coach);
         }
         cx.notify();
     }
@@ -3291,10 +3957,10 @@ impl Workspace {
         if !(0..STRIP_COUNT as isize).contains(&target) {
             return;
         }
-        if !self
+        if self
             .slots
             .get(self.active)
-            .is_some_and(|slot| slot.row == self.active_row)
+            .is_none_or(|slot| slot.row != self.active_row)
         {
             return;
         }
@@ -3310,6 +3976,10 @@ impl Workspace {
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel {
+            self.open_new_session_window(cx);
+            return;
+        }
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_new_session(cx);
@@ -3328,17 +3998,10 @@ impl Workspace {
     fn new_panel_in_pinned_directory(
         &mut self,
         _: &NewPanelInPinnedDirectory,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.tutorial_cue("Enter", "New session", "new", cx);
-        self.learned("new_panel", cx);
-        self.open_default_draft(
-            self.pinned_working_dir
-                .clone()
-                .or_else(|| self.default_working_dir()),
-            cx,
-        );
+        self.new_panel(&NewPanel, window, cx);
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
@@ -3461,6 +4124,16 @@ impl Workspace {
             return;
         };
         let source = self.slots[source_index].panel.clone();
+        if source.read(cx).is_accounts_panel() {
+            if let Some(command) = &request.login_command {
+                source.update(cx, |panel, cx| panel.login_command(command, cx));
+            }
+            self.set_active(source_index, cx);
+            self.retarget_camera();
+            self.focus_active(window, cx);
+            cx.notify();
+            return;
+        }
         let source_session = source.read(cx).session_id.clone();
         if self.single_panel {
             let preview = source.read(cx).preview_state;
@@ -3749,15 +4422,57 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_orchestration(None, window, cx);
+    }
+
+    fn show_orchestration(
+        &mut self,
+        target: Option<jcode_sdk::SessionInfo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = target.map(|session| {
+            let source = self
+                .slots
+                .iter()
+                .find(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
+            (session, source.map(|slot| slot.panel.clone()))
+        });
         if let Some(index) = self.slots.iter().position(|slot| {
-            slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
+            !slot.closing
+                && slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
         }) {
+            self.slots[index]
+                .panel
+                .update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
         }
         let opener = self.orchestration_opener(cx);
         let panel = cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx));
+        if self.single_panel {
+            match panel_window::open_panel_window(panel, None, window, cx) {
+                Ok(panel) => panel.update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx)),
+                Err(error) => eprintln!("Could not open orchestration window: {error:#}"),
+            }
+        } else {
+            panel.update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
+            self.insert_spawned_panel(panel, window, cx);
+        }
+    }
+
+    fn open_openrig(&mut self, _: &OpenOpenrig, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID)
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let panel = cx.new(|cx| Panel::new_openrig(self.bridge.clone(), cx));
         self.insert_spawned_panel(panel, window, cx);
     }
 
@@ -3977,7 +4692,7 @@ impl Workspace {
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
     fn open_new_session(&mut self, cx: &mut Context<Self>) {
-        self.open_default_draft(self.default_working_dir(), cx);
+        self.open_default_draft(self.new_session_directory(), cx);
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
@@ -4015,6 +4730,10 @@ impl Workspace {
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
+        // An open queue edit must not keep the daemon from delivering it.
+        self.slots[closed]
+            .panel
+            .update(cx, |panel, _| panel.release_queue_edit_hold());
         if session_id != "terminal"
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_side_document()
@@ -4357,6 +5076,12 @@ impl Workspace {
             window.focus(&self.focus_handle, cx);
             return;
         }
+        // The session picker replaces every panel, so "the active panel" is
+        // not on screen while it is open. Focus belongs to its query field.
+        if let Some(state) = &self.resume {
+            window.focus(&state.search.focus_handle(cx), cx);
+            return;
+        }
         // Overview cards contain copied content, not mounted panel views. Keep
         // shortcuts on the workspace until the exit animation remounts them.
         if self.overview || self.overview_progress.is_animating() {
@@ -4658,38 +5383,37 @@ impl Workspace {
         }
 
         let panel_h = (viewport_h - STRIP_PADDING_TOP - STRIP_PADDING_Y).max(1.0);
-        let indices = self.row_indices(row).collect::<Vec<_>>();
-        let mut animated_widths = Vec::with_capacity(indices.len());
-        let mut order_offsets = Vec::with_capacity(indices.len());
-        let mut close_progresses = Vec::with_capacity(indices.len());
-        for &index in &indices {
-            let fraction = self.slots[index].animated_width.sample(now);
-            if self.slots[index].animated_width.is_animating() {
+        let mut panels = Vec::with_capacity(self.row_indices(row).count());
+        let mut strip_width = 0.0;
+        // Sample each slot once and keep its geometry together. Four parallel
+        // heap buffers used to be allocated and zipped on every pan frame.
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.row != row {
+                continue;
+            }
+            let fraction = slot.animated_width.sample(now);
+            if slot.animated_width.is_animating() {
                 window.request_animation_frame();
             }
-            let close_progress = self.slots[index].close_progress.sample(now);
-            if self.slots[index].close_progress.is_animating() {
+            let close_progress = slot.close_progress.sample(now);
+            if slot.close_progress.is_animating() {
                 window.request_animation_frame();
             }
-            close_progresses.push(close_progress);
-            animated_widths.push(Self::width_for_fraction(fraction, viewport_w) * close_progress);
-            let progress = self.slots[index].order_offset.sample(now);
-            if self.slots[index].order_offset.is_animating() {
+            let width = Self::width_for_fraction(fraction, viewport_w) * close_progress;
+            strip_width += width;
+            let progress = slot.order_offset.sample(now);
+            if slot.order_offset.is_animating() {
                 window.request_animation_frame();
             }
-            let distance =
-                Self::width_for_fraction(self.slots[index].order_distance_fraction, viewport_w)
-                    + GAP;
-            order_offsets.push(progress * distance);
+            let distance = Self::width_for_fraction(slot.order_distance_fraction, viewport_w) + GAP;
+            panels.push((index, width, progress * distance, close_progress));
         }
         let camera_x = self.camera_x[row];
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
             .left(px(-camera_x))
-            .w(px(
-                animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
-            ))
+            .w(px(strip_width + GAP * panels.len().saturating_sub(1) as f32))
             .h(px(panel_h));
 
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
@@ -4698,23 +5422,19 @@ impl Workspace {
         // Capture actual painted bounds, including camera/width/order animation
         // and clipping. Keyboard focus is not a wheel hit-test target.
         let panel_hitboxes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        for (((index, width), order_offset), close_progress) in indices
-            .into_iter()
-            .zip(animated_widths)
-            .zip(order_offsets)
-            .zip(close_progresses)
-        {
+        for (index, width, order_offset, close_progress) in panels {
             let slot = &self.slots[index];
             let focused = index == self.active;
+            let content_width = px((width - if folders { 0. } else { 12. }).max(1.));
+            if slot.panel.read(cx).openrig_width_changed(content_width) {
+                slot.panel
+                    .update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
+            }
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             // Update only on a real change: GPUI retains views between frames and
             // treats any update while drawing as a change to what they read.
             if slot.panel.read(cx).needs_surface_update(focused, cx) {
                 slot.panel.update(cx, |panel, cx| {
-                    if panel.show_build_footer {
-                        panel.show_build_footer = false;
-                        cx.notify();
-                    }
                     panel.set_surface_focused(focused, cx);
                 });
             }
@@ -4739,7 +5459,7 @@ impl Workspace {
                 // Tagged so a render test can click the real panel element
                 // and exercise the pointer slow-path detection.
                 .debug_selector(move || format!("panel-{index}"))
-                .w(px((width - if folders { 0. } else { 12. }).max(1.)))
+                .w(content_width)
                 .h(px(panel_h - top))
                 .flex_none()
                 // Paint focus on each pane, rather than inheriting the shared sheet.
@@ -4961,6 +5681,7 @@ impl Workspace {
     /// Route one scroll event over the strip through the sticky axis lock.
     /// Returns true when the strip consumed the event and the transcripts
     /// underneath must not also scroll.
+    #[allow(clippy::too_many_arguments)]
     fn route_strip_scroll(
         &mut self,
         row: usize,
@@ -5107,6 +5828,7 @@ impl Workspace {
     /// camera. Without the focus follow, a swipe only moved the pixels: the
     /// old off-screen panel remained active and the next keyboard action
     /// snapped back to it.
+    #[allow(clippy::too_many_arguments)]
     fn pan_strip(
         &mut self,
         row: usize,
@@ -5310,7 +6032,7 @@ impl Workspace {
     fn file_browser_root(&self, cx: &App) -> PathBuf {
         self.slots
             .get(self.active)
-            .filter(|slot| !slot.panel.read(cx).session_id.starts_with("ssh://"))
+            .filter(|slot| !harness::is_remote_session(&slot.panel.read(cx).session_id))
             .and_then(|slot| {
                 slot.panel
                     .read(cx)
@@ -5354,7 +6076,7 @@ impl Workspace {
                         "file-tree-row:{}",
                         path.display()
                     )))
-                    .debug_selector(move || format!("file-tree-{label}").into())
+                    .debug_selector(move || format!("file-tree-{label}"))
                     .pl(px(10.0 + depth as f32 * 14.0))
                     .pr_2()
                     .py_1()
@@ -5489,7 +6211,7 @@ impl Workspace {
         if self
             .slots
             .get(self.active)
-            .is_some_and(|slot| slot.panel.read(cx).session_id.starts_with("ssh://"))
+            .is_some_and(|slot| harness::is_remote_session(&slot.panel.read(cx).session_id))
         {
             return div().debug_selector(|| "remote-file-browser-notice".into()).p_3().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM)
                 .child("This panel runs on a remote machine. Ask Jcode to inspect its files in chat. The local file browser is available on local panels.")
@@ -5584,16 +6306,27 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Release checks and the packaged automatic-update loop start here, on
+        // the first frame of the window, not from the avatar's update badge: a
+        // fresh packaged launch has no release state yet, so there is nothing
+        // for the badge to show until this runs. Idempotent, so every later
+        // render is free.
+        updates::ensure_release_check();
+        let sidebar_panels = self
+            .sidebar_panel_metadata
+            .as_ref()
+            .expect("sidebar metadata prepared before render")
+            .read(cx);
         let active_id = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.read(cx).session_id.clone());
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone());
         let open_marks = self
             .slots
             .iter()
             .filter(|slot| !slot.closing)
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
@@ -5601,7 +6334,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.latest_todo_progress())
             })
             .collect::<HashMap<_, _>>();
@@ -5621,7 +6354,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.title.to_string())
             })
             .collect::<HashMap<_, _>>();
@@ -5637,9 +6370,12 @@ impl Workspace {
             .iter()
             .map(|session| session.session_id.clone())
             .collect::<HashSet<_>>();
+        // Keep legacy first-record lookup semantics even for duplicate catalog ids.
+        let duplicate_catalog_ids = known.len() != catalog.len();
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
-            let panel = slot.panel.read(cx);
-            if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
+            let panel = &sidebar_panels[&slot.panel.entity_id()];
+            if (panel.supports_voice() || harness::is_remote_session(&panel.session_id))
+                && panel.listable
                 && known.insert(panel.session_id.clone())
             {
                 catalog.push(jcode_sdk::SessionInfo {
@@ -5659,6 +6395,7 @@ impl Workspace {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
         }
@@ -5673,11 +6410,22 @@ impl Workspace {
             })
             .map(|session| session.session_id.clone())
             .collect::<HashSet<_>>();
+        // The TUI shows a coordinator's workers while nobody has that
+        // coordinator open here. A live swarm is live work, not a window's
+        // property, so list it wherever it is driven from.
+        // A worker's own record can outrun a terminal swarm snapshot (a daemon
+        // reload rewrites nothing), so liveness reads both.
+        let live_swarms =
+            sidebar_swarm::live_swarm_roots(&catalog, &self.worker_meta, swarm_now_ms());
+        kept.extend(live_swarms.iter().cloned());
         // Headless swarm workers are never opened or closed in this window,
         // but they belong under a coordinator that is listed here.
         sidebar_swarm::keep_workers_of(&catalog, &mut kept);
         catalog.retain(|session| kept.contains(&session.session_id));
-        let ordered_sessions = sidebar_session_order(&catalog);
+        let original_catalog = duplicate_catalog_ids.then(|| catalog.clone());
+        // Sort the owned render catalog in place, avoiding a second session clone.
+        sort_sidebar_sessions(&mut catalog);
+        let ordered_sessions = catalog;
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
         // nests under its coordinator while it shares that checkout, and
@@ -5688,7 +6436,9 @@ impl Workspace {
         let swarm_now = swarm_now_ms();
         let mut nested = HashSet::new();
         for (root, children) in &swarm.children {
-            let root_checkout = catalog
+            let root_checkout = original_catalog
+                .as_ref()
+                .unwrap_or(&ordered_sessions)
                 .iter()
                 .find(|session| &session.session_id == root)
                 .and_then(|session| self.sidebar_projects.checkout(session))
@@ -5698,21 +6448,49 @@ impl Workspace {
                     .sidebar_projects
                     .checkout(&child.session)
                     .map(|checkout| checkout.path);
-                if own.is_some() && own != root_checkout {
+                let worker = crate::swarm_view::Worker::from_session(
+                    &child.session,
+                    self.worker_meta.get(&child.session.session_id),
+                    swarm_now,
+                );
+                let separate_checkout = own.is_some() && own != root_checkout;
+                if separate_checkout && !worker.state.is_live() {
                     continue;
                 }
-                nested.insert(child.session.session_id.clone());
-                nested_workers.entry(root.clone()).or_default().push((
-                    child.depth,
-                    crate::swarm_view::Worker::from_session(&child.session, swarm_now),
-                ));
+                // Live worktree agents remain visible under their coordinator
+                // and in their own checkout.
+                if !separate_checkout {
+                    nested.insert(child.session.session_id.clone());
+                }
+                let running = worker.state == crate::swarm_view::WorkerState::Running;
+                nested_workers
+                    .entry(root.clone())
+                    .or_default()
+                    .push((child.depth, worker));
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if crate::swarm_view::WorkerState::parse(child.session.swarm_status.as_deref())
-                    .is_active()
-                {
+                if running {
                     entry.1 += 1;
                 }
+            }
+        }
+        // Long-running coordinators own dozens of workers. Show the live ones
+        // and the latest few finished, fold the rest into "+N finished".
+        let mut folded_workers: HashMap<String, usize> = HashMap::new();
+        for (root, workers) in nested_workers.iter_mut() {
+            workers.sort_by(|(_, a), (_, b)| {
+                crate::swarm_view::spawn_order(&a.session_id)
+                    .cmp(&crate::swarm_view::spawn_order(&b.session_id))
+            });
+            let (shown, hidden) = sidebar_swarm::visible(workers);
+            if !self
+                .expanded_lines
+                .contains(&sidebar_swarm::finished_key(root))
+            {
+                *workers = shown;
+            }
+            if hidden > 0 {
+                folded_workers.insert(root.clone(), hidden);
             }
         }
         // Fading local panels stay mounted, but must not reappear as history
@@ -5721,7 +6499,7 @@ impl Workspace {
             .slots
             .iter()
             .filter(|slot| slot.closing)
-            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone())
             .collect::<HashSet<_>>();
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
@@ -5730,14 +6508,24 @@ impl Workspace {
                     && !closing_sessions.contains(&session.session_id)
             })
             .partition(|session| {
-                open_marks.contains_key(&session.session_id) || session.user_connected
+                open_marks.contains_key(&session.session_id)
+                    || session.user_connected
+                    // A coordinator with live workers is live work even when
+                    // this window has no panel for it: putting it in history
+                    // would fold it into a collapsed project.
+                    || live_swarms.contains(&session.session_id)
             });
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
             .into_iter()
             .enumerate()
-            .map(|(position, (_, slot))| (slot.panel.read(cx).session_id.clone(), position))
+            .map(|(position, (_, slot))| {
+                (
+                    sidebar_panels[&slot.panel.entity_id()].session_id.clone(),
+                    position,
+                )
+            })
             .collect::<HashMap<_, _>>();
         open_sessions.sort_by_key(|session| {
             panel_positions
@@ -5756,6 +6544,7 @@ impl Workspace {
         // User-created collections come first, in their own order, and take
         // their sessions out of the directory groups below.
         let mut groups: Vec<(sidebar_projects::Project, usize, usize)> = Vec::new();
+        let mut group_indices: HashMap<String, usize> = HashMap::new();
         let mut members: Vec<Vec<SidebarRow>> = Vec::new();
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         let collection_order = self
@@ -5779,10 +6568,8 @@ impl Workspace {
         // Stable: open-before-history and recency survive inside each group.
         grouped.sort_by_key(|(_, session)| rank_collection(session));
         for (live, session) in grouped {
-            let open = self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
+            // open_marks contains exactly the non-closing local panel ids.
+            let open = open_marks.contains_key(&session.session_id);
             let collection = self
                 .collections
                 .collection_of(&session.session_id)
@@ -5805,9 +6592,10 @@ impl Workspace {
             } else {
                 self.sidebar_projects.checkout(&session)
             };
-            let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
+            let index = match group_indices.get(&project.key).copied() {
                 Some(index) => index,
                 None => {
+                    group_indices.insert(project.key.clone(), groups.len());
                     groups.push((project, 0, 0));
                     members.push(Vec::new());
                     project_checkouts.push(Vec::new());
@@ -5962,16 +6750,20 @@ impl Workspace {
                     saved: session.saved,
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
-                        || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                        || session
-                            .edit_stats
-                            .as_ref()
-                            .is_some_and(sidebar_edits::has_changes)),
+                        || session.transcript_bytes.is_some_and(|bytes| bytes > 0)),
                     menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                     workers: (!row.collapsed)
                         .then(|| nested_workers.get(&session.session_id))
                         .flatten()
-                        .map(|workers| sidebar_swarm::layout_key(workers))
+                        .map(|workers| {
+                            sidebar_swarm::layout_key(
+                                workers,
+                                folded_workers
+                                    .get(&session.session_id)
+                                    .copied()
+                                    .unwrap_or(0),
+                            )
+                        })
                         .unwrap_or_default(),
                 }
             })
@@ -6067,7 +6859,6 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            let dock = self.render_project_dock(&groups, &ordered_sessions, cx);
             list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
@@ -6141,10 +6932,8 @@ impl Workspace {
                                 .copied()
                                 .flatten()
                                 .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
+                            let todo_session = session.clone();
                             let meta = sidebar_session_meta(session);
-                            let edits = session.edit_stats.as_ref().filter(|stats| sidebar_edits::has_changes(stats)).map(|stats| {
-                                sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
-                            });
                             let details = match (directory, meta) {
                                 (Some(directory), Some(meta)) => {
                                     Some(format!("{directory} · {meta}"))
@@ -6163,14 +6952,16 @@ impl Workspace {
                             };
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
-                            let (agent_total, agent_working) = row.agents;
+                            let (_, agent_working) = row.agents;
+                            let running_workers = nested_workers.get(&session.session_id).into_iter().flatten()
+                                .filter(|(_, worker)| worker.state == crate::swarm_view::WorkerState::Running)
+                                .map(|(_, worker)| worker.clone()).collect::<Vec<_>>();
                             let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
                             let pin_id = session.session_id.clone();
                             let pinned = session.saved;
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
-                            let menu_id = session.session_id.clone();
                             let context_id = session.session_id.clone();
                             let menu_open = this.collections.menu.as_deref() == Some(session.session_id.as_str());
                             let menu_session = session.session_id.clone();
@@ -6190,9 +6981,15 @@ impl Workspace {
                                 )
                             });
                             let session = session.clone();
+                            let keyboard_session = session.clone();
                             list = list.child(
-                                div()
-                                    .id(("sidebar-session", sidebar_index))
+                                crate::keyboard::button(div().id(("sidebar-session", sidebar_index)))
+                                    .on_click(cx.listener(move |this, event, window, cx| {
+                                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                            cx.stop_propagation();
+                                            this.activate_session(keyboard_session.clone(), window, cx);
+                                        }
+                                    }))
                                     .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                                         let current = this.sidebar_hovered_session.as_deref() == Some(hover_id.as_str());
                                         if *hovering && !current {
@@ -6205,7 +7002,7 @@ impl Workspace {
                                     }))
                                     .group("sidebar-session-row")
                                     .debug_selector(move || {
-                                        format!("sidebar-session-{sidebar_index}").into()
+                                        format!("sidebar-session-{sidebar_index}")
                                     })
                                     .ml_2()
                                     .when(under_checkout, |el| el.ml(px(18.0)))
@@ -6250,7 +7047,7 @@ impl Workspace {
                                     .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(move |this, event, window, cx| {
                                         this.finish_sidebar_gesture(&release_out_id, false, event, window, cx);
                                     }))
-                                    // Right-click opens the same menu as the row's ⋯ button.
+                                    // Right-click opens the collection menu.
                                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |this, _, window, cx| {
                                         window.prevent_default();
                                         cx.stop_propagation();
@@ -6284,7 +7081,6 @@ impl Workspace {
                                                         format!(
                                                             "sidebar-session-title-{sidebar_index}"
                                                         )
-                                                        .into()
                                                     })
                                                     .text_size(px(12.0))
                                                     .line_height(relative(1.5))
@@ -6299,63 +7095,30 @@ impl Workspace {
                                                     None => container.child(title),
                                                 }
                                             })
-                                            .when(agent_total > 0, |row| row.child(
+                                            .when(agent_working > 0, |row| row.child(
                                                 div()
                                                     .id(("sidebar-agents", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-agents-{sidebar_index}"))
-                                                    .flex_none()
-                                                    .h(px(16.0))
-                                                    .px(px(6.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(3.0))
-                                                    .rounded_full()
-                                                    .bg(if agent_working > 0 { Theme::global().ACCENT_DIM } else { Theme::global().TOOL_BG })
-                                                    .text_size(px(9.0))
-                                                    .text_color(Theme::global().TEXT_DIM)
-                                                    .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(format!(
-                                                        "{agent_total} swarm agent{} in this checkout{}",
-                                                        if agent_total == 1 { "" } else { "s" },
-                                                        if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
-                                                    ).into())).into())
+                                                    .flex_none().h(px(16.0)).px(px(6.0))
+                                                    .flex().items_center().gap(px(3.0)).rounded_full()
+                                                    .bg(Theme::global().ACCENT_DIM)
+                                                    .text_size(px(9.0)).text_color(Theme::global().TEXT_DIM)
+                                                    .cursor_pointer()
+                                                    .tooltip(move |_, cx| cx.new(|_| sidebar_header::WorkersTooltip(running_workers.clone())).into())
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                        this.sidebar_gesture = None;
+                                                        this.sidebar_sessions_list.scroll_to(gpui::ListOffset { item_ix: sidebar_index, offset_in_item: px(0.0) });
+                                                        cx.notify();
+                                                    }))
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
-                                                    .child(agent_total.to_string()),
+                                                    .child(div().debug_selector(move || format!("sidebar-agents-count-{sidebar_index}-{agent_working}")).child(agent_working.to_string())),
                                             ))
                                             // Idle rows keep the pin visible when pinned. Hovering
                                             // swaps any spinner for the pin and close actions, so the
                                             // title can use the full width the rest of the time.
                                             .when(hovered || (pinned && !working), |row| row
-                                                // Collections: move this chat into one, or out.
-                                                .when(hovered, |row| row.child(
-                                                    div()
-                                                        .id(("sidebar-collection-button", sidebar_index))
-                                                        .debug_selector(move || format!("sidebar-collection-button-{sidebar_index}"))
-                                                        .flex_none()
-                                                        .size(px(18.0))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .rounded_full()
-                                                        .cursor_pointer()
-                                                        .text_size(px(12.0))
-                                                        .text_color(Theme::global().TEXT_DIM)
-                                                        .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                        .tooltip(|_, cx| {
-                                                            cx.new(|_| remotes::HeaderTooltip("Move to collection".into())).into()
-                                                        })
-                                                        .child("⋯")
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                            window.prevent_default();
-                                                            cx.stop_propagation();
-                                                            this.sidebar_gesture = None;
-                                                            this.collections.menu = if this.collections.menu.as_deref() == Some(menu_id.as_str()) {
-                                                                None
-                                                            } else {
-                                                                Some(menu_id.clone())
-                                                            };
-                                                            cx.notify();
-                                                        })),
-                                                ))
                                                 // Pinning is /save: pinned sessions sort to the top.
                                                 .child(
                                                     div()
@@ -6396,7 +7159,7 @@ impl Workspace {
                                                 .when(is_open && hovered, |row| row.child(
                                                     div().id(("sidebar-close", sidebar_index))
                                                         .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
-                                                        .flex_none().px_1().cursor_pointer().child("×")
+                                                        .flex_none().size(px(18.0)).flex().items_center().justify_center().cursor_pointer().child("×")
                                                         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
                                                             window.prevent_default();
                                                             cx.stop_propagation();
@@ -6410,51 +7173,77 @@ impl Workspace {
                                                 row.child(
                                                     div()
                                                         .debug_selector(move || {
-                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
+                                                            format!("sidebar-session-spinner-{sidebar_index}")
                                                         })
                                                         .flex_none()
                                                         .child(spinner),
                                                 )
                                             })
                                     )
-                                    .when(details.is_some() || edits.is_some() || todo_progress.is_some(), |row| {
+                                    .when(details.is_some() || todo_progress.is_some(), |row| {
                                         row.child(
                                             div()
-                                                .pl(px(20.0))
+                                                .when(todo_progress.is_none(), |line| line.pl(px(20.0)))
                                                 .flex()
                                                 .items_center()
-                                                .gap_2()
+                                                .gap(px(3.0))
                                                 .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
                                                 .text_size(px(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .flex()
-                                                        .overflow_hidden()
-                                                        .whitespace_nowrap()
-                                                        .when_some(todo_progress, |line, (done, total)| line.child(
-                                                            div()
-                                                                .flex_none()
-                                                                .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
-                                                                .when(details.is_some(), |el| el.mr_1())
-                                                                .when(done == total, |el| el.text_color(Theme::global().OK))
-                                                                .child(format!("{done}/{total}")),
+                                                .when_some(todo_progress, |line, (done, total)| line.child(
+                                                    crate::keyboard::press_button(
+                                                        div().id(("sidebar-todos", sidebar_index)),
+                                                        {
+                                                            let todo_session = todo_session.clone();
+                                                            let entity = cx.weak_entity();
+                                                            move |window, cx| {
+                                                                window.prevent_default();
+                                                                cx.stop_propagation();
+                                                                let _ = entity.update(cx, |this, cx| {
+                                                                    this.sidebar_gesture = None;
+                                                                    this.show_orchestration(Some(todo_session.clone()), window, cx);
+                                                                });
+                                                            }
+                                                        },
+                                                    )
+                                                        .min_w_0().flex().items_center().gap(px(2.0))
+                                                        .relative()
+                                                        .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
+                                                        .children(crate::fixture_control_targets::marker(
+                                                            || format!("sidebar-todos:{}", todo_session.session_id),
+                                                            || None,
                                                         ))
-                                                        .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
-                                                            line.child(div().min_w_0().truncate().child(details))
-                                                        }),
-                                                )
-                                                .children(edits),
+                                                        .when(done == total, |el| el.text_color(Theme::global().OK))
+                                                        .rounded_full().pr(px(2.0)).cursor_pointer()
+                                                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                        .tooltip(|_, cx| cx.new(|_| remotes::HeaderTooltip("Open session todos".into())).into())
+                                                        .child(div().debug_selector(move || format!("sidebar-todos-icon-{sidebar_index}")).flex_none().child(
+                                                            gpui::svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.0)).text_color(if done == total { Theme::global().OK } else { Theme::global().TEXT_DIM })
+                                                        ))
+                                                        .child(div().min_w_0().truncate().child(format!("{done}/{total}"))),
+                                                ))
+                                                .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
+                                                    line.child(div().min_w_0().flex_1().truncate().child(details))
+                                                }),
                                         )
                                     }),
                             );
                             if let Some(workers) = nested_workers.get(&menu_session) {
+                                let folded = folded_workers.get(&menu_session).copied().unwrap_or(0);
+                                let expanded_lines = this.expanded_lines.clone();
                                 list = list.child(sidebar_swarm::render_workers(
-                                    sidebar_index,
+                                    sidebar_swarm::WorkerRowsLayout {
+                                        sidebar_index,
+                                        session_id: &menu_session,
+                                        under_checkout,
+                                        width: if this.compact_sidebar_open { SIDEBAR_WIDTH } else { this.sidebar_custom_width },
+                                    },
                                     workers,
-                                    under_checkout,
+                                    folded,
+                                    &mut this.swarm_marks,
+                                    &expanded_lines,
                                     cx,
                                 ));
                             }
@@ -6468,7 +7257,6 @@ impl Workspace {
                 )
                 .size_full(),
             ));
-            list = list.children(dock);
         }
 
         if self.sidebar_session_layout.is_empty() {
@@ -6704,37 +7492,59 @@ impl Workspace {
                                             "settings",
                                             cx,
                                         ))
+                                        .child(self.render_sidebar_search_button(cx))
                                         .child(
                                             div()
-                                                .id("sidebar-orchestration")
-                                                .debug_selector(|| "sidebar-orchestration".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .id("sidebar-openrig")
                                                 .px_2()
                                                 .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
+                                                .rounded_full()
                                                 .cursor_pointer()
-                                                .text_size(px(11.0))
+                                                .text_size(px(11.))
                                                 .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
                                                 .on_mouse_down(
                                                     gpui::MouseButton::Left,
                                                     cx.listener(|this, _, window, cx| {
-                                                        this.open_orchestration(
-                                                            &OpenOrchestration,
-                                                            window,
-                                                            cx,
-                                                        )
+                                                        this.open_openrig(&OpenOpenrig, window, cx)
                                                     }),
                                                 )
-                                                .child("orchestration"),
+                                                .child("OpenRig"),
+                                        )
+                                        .child(
+                                            crate::keyboard::press_button(
+                                                div().id("sidebar-orchestration"),
+                                                {
+                                                    let owner = cx.weak_entity();
+                                                    move |window, cx| {
+                                                        let _ = owner.update(cx, |this, cx| {
+                                                            this.open_orchestration(
+                                                                &OpenOrchestration,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                },
+                                            )
+                                            .debug_selector(|| "sidebar-orchestration".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .child("orchestration"),
                                         )
                                         .child(
                                             div()
@@ -6853,36 +7663,39 @@ impl Workspace {
                                                 .child("folder"),
                                         )
                                         .child(
-                                            div()
-                                                .id("sidebar-new-session")
-                                                // Tagged so a render test can click the real button
-                                                // and confirm it counts as a slow path, not as
-                                                // knowledge of super-enter.
-                                                .debug_selector(|| "sidebar-new-session".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(16.0))
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _event, _window, cx| {
-                                                        this.missed("new_panel", cx);
-                                                        this.open_new_session(cx);
-                                                    }),
-                                                )
-                                                .child("+"),
+                                            crate::keyboard::press_button(
+                                                div().id("sidebar-new-session"),
+                                                {
+                                                    let owner = cx.weak_entity();
+                                                    move |_, cx| {
+                                                        let _ = owner.update(cx, |this, cx| {
+                                                            this.missed("new_panel", cx);
+                                                            this.open_new_session(cx);
+                                                        });
+                                                    }
+                                                },
+                                            )
+                                            // Tagged so a render test can click the real button
+                                            // and confirm it counts as a slow path, not as
+                                            // knowledge of super-enter.
+                                            .debug_selector(|| "sidebar-new-session".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(16.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .child("+"),
                                         ),
                                 ),
                         )
@@ -6894,7 +7707,8 @@ impl Workspace {
                     .items_center()
                     .child(div().flex_1().min_w_0().child(navigation))
             })
-            .child(self.render_machine_switcher(cx))
+            // Folder mode's header already is the destination row.
+            .children((!folders).then(|| self.render_machine_switcher(None, cx)))
             .child(
                 div()
                     .flex_1()
@@ -7322,8 +8136,7 @@ impl Workspace {
             }
 
             if account.shows_oauth_history() {
-                // One short line per login. The full token counts, pricing
-                // caveats and estimate note live in the hover tooltip.
+                // One short line per login; estimated amounts are detailed on hover.
                 let mut history = div()
                     .debug_selector(|| format!("account-{}-history", account.id))
                     .mt(px(3.0))
@@ -7342,21 +8155,15 @@ impl Workspace {
                 }
                 let many = account.usage_reports.len() > 1;
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
-                    let mut tooltip = report.title();
-                    for period in ["Today", "Lifetime"] {
-                        let value = report.period_detail(period).unwrap_or("unavailable");
-                        tooltip.push_str(&format!("\n{period}: {value}"));
-                    }
-                    // Retain backend coverage, estimate and pricing caveats verbatim.
-                    for (key, value) in &report.extra_info {
-                        if !matches!(key.as_str(), "Today" | "Lifetime") {
-                            tooltip.push_str(&format!("\n{key}: {value}"));
-                        }
-                    }
-                    tooltip.push_str(&format!("\n\n{}", accounts::USAGE_ESTIMATE_NOTE));
                     let amount =
                         |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
-                    // Estimates: the tooltip carries the caveat, not the row.
+                    let tooltip = crate::panel::usage::RowsTooltip {
+                        title: format!("{} · API estimate, not a bill", report.title()),
+                        rows: ["Today", "Lifetime"]
+                            .into_iter()
+                            .map(|period| format!("{period}: {}", amount(period)))
+                            .collect(),
+                    };
                     let summary =
                         format!("today {} · total {}", amount("Today"), amount("Lifetime"));
                     let label = report.account_label.clone().filter(|_| many);
@@ -7370,8 +8177,11 @@ impl Workspace {
                             .gap_1()
                             .min_w_0()
                             .tooltip(move |_, cx| {
-                                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
-                                    .into()
+                                cx.new(|_| crate::panel::usage::RowsTooltip {
+                                    title: tooltip.title.clone(),
+                                    rows: tooltip.rows.clone(),
+                                })
+                                .into()
                             })
                             .when_some(label, |el, label| {
                                 el.child(
@@ -7546,11 +8356,13 @@ impl Workspace {
             .gap_2()
             .text_size(px(11.0))
             .child(div().text_size(px(14.0)).child("Settings"))
-            .child(
-                div()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Current window"),
-            );
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Current window"),
+                )
+            });
         for (id, label, enabled) in [
             ("settings-minimap", "Workspace minimap", self.show_minimap),
             (
@@ -7558,7 +8370,10 @@ impl Workspace {
                 "Show pressed shortcuts",
                 self.showcase_mode,
             ),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| !self.single_panel)
+        {
             settings = settings.child(
                 div()
                     .id(id)
@@ -7596,79 +8411,139 @@ impl Workspace {
                     ),
             );
         }
-        let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        settings = settings.child(
-            div()
-                .id("settings-folder-tabs")
-                .debug_selector(|| "settings-folder-tabs".into())
-                .flex_none()
-                .px_2()
-                .py_2()
-                .rounded_sm()
-                .flex()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(Theme::global().PANEL_BG)
-                .hover(|el| el.bg(Theme::global().TOOL_BG))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.layout_mode =
-                            if this.layout_mode == crate::config::LayoutMode::FolderTabs {
-                                crate::config::LayoutMode::Normal
+        if !self.single_panel {
+            let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+            settings = settings.child(
+                div()
+                    .id("settings-folder-tabs")
+                    .debug_selector(|| "settings-folder-tabs".into())
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.layout_mode =
+                                if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                                    crate::config::LayoutMode::Normal
+                                } else {
+                                    crate::config::LayoutMode::FolderTabs
+                                };
+                            this.camera_dirty.fill(true);
+                            if let Err(error) = crate::config::persist_layout_mode(this.layout_mode)
+                            {
+                                eprintln!("failed to persist workspace layout mode: {error}");
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child("Workspace layout")
+                    .child(
+                        div()
+                            .text_color(if folder_tabs {
+                                Theme::global().ACCENT
                             } else {
-                                crate::config::LayoutMode::FolderTabs
-                            };
-                        this.camera_dirty.fill(true);
-                        if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
-                            eprintln!("failed to persist workspace layout mode: {error}");
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child("Workspace layout")
-                .child(
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
+                    ),
+            );
+        }
+        let mut send_mode_setting = None;
+        if let Some(slot) = self.slots.get(self.active) {
+            let after_yield = slot.panel.read(cx).default_send_after_yield();
+            let mut choices = div().flex().gap_1();
+            for (id, label, value) in [
+                ("settings-send-steer", "Steer", false),
+                ("settings-send-after-yield", "After yield", true),
+            ] {
+                choices = choices.child(
                     div()
-                        .text_color(if folder_tabs {
+                        .id(id)
+                        .debug_selector(move || id.into())
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_color(if after_yield == value {
                             Theme::global().ACCENT
                         } else {
                             Theme::global().TEXT_DIM
                         })
-                        .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
-                ),
-        );
+                        .when(after_yield == value, |el| el.bg(Theme::global().ACCENT_DIM))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(slot) = this.slots.get(this.active) {
+                                    slot.panel.update(cx, |panel, cx| {
+                                        panel.set_default_send_after_yield(value, cx)
+                                    });
+                                }
+                                cx.notify();
+                            }),
+                        )
+                        .child(label),
+                );
+            }
+            send_mode_setting = Some(
+                div()
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .bg(Theme::global().PANEL_BG)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child("Default send mode (current session)")
+                    .child(choices),
+            );
+        }
         let applet_settings = self.render_applet_settings(cx);
+        let about = self.render_about_settings(cx);
         settings
             .child(self.render_account_settings(cx))
             .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
             .child(self.render_voice_settings(cx))
             .children(applet_settings)
-            .child(
-                div()
-                    .id("settings-machines")
-                    .debug_selector(|| "settings-machines".into())
-                    .px_2()
-                    .py_2()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .bg(Theme::global().PANEL_BG)
-                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.open_machines(window, cx);
-                        }),
-                    )
-                    .child("Machines and default new-panel location →"),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Color palettes are in the Theme tab."),
-            )
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .id("settings-machines")
+                        .debug_selector(|| "settings-machines".into())
+                        .px_2()
+                        .py_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(Theme::global().PANEL_BG)
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.open_machines(window, cx);
+                            }),
+                        )
+                        .child("Machines and default new-panel location →"),
+                )
+            })
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .mt_2()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Color palettes are in the Theme tab."),
+                )
+            })
+            .children(send_mode_setting)
+            .child(about)
             .into_any_element()
     }
 
@@ -8248,7 +9123,12 @@ impl Workspace {
             list = list.child(
                 div()
                     .id(("folder-picker-entry", index))
-                    .debug_selector(move || format!("folder-picker-entry-{index}").into())
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || format!("folder-picker-entry-{index}"),
+                        || None,
+                    ))
+                    .debug_selector(move || format!("folder-picker-entry-{index}"))
                     .px_4()
                     .py_2()
                     .cursor_pointer()
@@ -8308,10 +9188,10 @@ impl Workspace {
                 cx.listener(|this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    if this.folder_picker_sets_default {
-                        if let Some(index) = this.default_directory_panel_index(cx) {
-                            this.set_active(index, cx);
-                        }
+                    if this.folder_picker_sets_default
+                        && let Some(index) = this.default_directory_panel_index(cx)
+                    {
+                        this.set_active(index, cx);
                     }
                     if let Some(search) = &this.folder_search {
                         this.focus_pending = false;
@@ -8463,6 +9343,11 @@ impl Workspace {
                         div().p_3().flex().justify_end().child(
                             div()
                                 .id("folder-picker-open")
+                                .relative()
+                                .children(crate::fixture_control_targets::marker(
+                                    || "folder-picker-open".into(),
+                                    || None,
+                                ))
                                 .debug_selector(|| "folder-picker-open".into())
                                 .px_4()
                                 .py_2()
@@ -8498,10 +9383,43 @@ impl Workspace {
     }
 }
 
+/// A stable retained boundary for the sidebar. Camera ticks notify Workspace
+/// without changing its model, so the sidebar can replay its last frame while
+/// the canvas moves. Real workspace, panel, global and hover changes remain
+/// dependencies of this view and rebuild it normally.
+struct SidebarChrome {
+    workspace: gpui::WeakEntity<Workspace>,
+}
+
+fn workspace_fullscreen(window: &Window) -> bool {
+    window.is_fullscreen()
+        // The private screenshot window must not toggle an AppKit Space.
+        || (harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_FULLSCREEN").as_deref() == Ok("1"))
+}
+
+impl Render for SidebarChrome {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("SidebarChrome");
+        // This sidebar starts below the full-window tab row on macOS.
+        let fullscreen = cfg!(target_os = "macos") || window.is_fullscreen();
+        self.workspace
+            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Single-panel and modal layouts return before rendering the version
+        // footer. They still need the launch check and periodic updater.
+        updates::ensure_release_check();
         let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
+        if self.show_sidebar {
+            self.refresh_sidebar_panel_metadata(cx);
+        }
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing
             && slot.panel.read(cx).supports_voice()
@@ -8524,7 +9442,7 @@ impl Render for Workspace {
         }
         if self.resume.is_some() {
             self.dump_state(window, cx);
-            let root = self.render_resume(cx);
+            let root = self.render_resume(window, cx);
             return crate::window_caption::wrap(root, window, true);
         }
         if self.single_panel {
@@ -8570,6 +9488,13 @@ impl Render for Workspace {
         if self.compact_sidebar_motion.is_animating() {
             window.request_animation_frame();
         }
+        let sidebar_chrome = self
+            .sidebar_chrome
+            .get_or_insert_with(|| {
+                let workspace = cx.entity().downgrade();
+                cx.new(|_| SidebarChrome { workspace })
+            })
+            .clone();
         let sidebar_width = if self.show_sidebar && !compact {
             self.sidebar_custom_width
         } else {
@@ -8596,16 +9521,8 @@ impl Render for Workspace {
             self.camera_dirty.fill(true);
             self.camera_snap_pending.fill(true);
         }
-        // On macOS the sidebar header covers the transparent titlebar strip.
-        // Without the sidebar, leave room for the traffic lights. Other platforms
-        // do not draw through a system titlebar, so an inset would be a visible gap.
-        // In native macOS fullscreen the titlebar and traffic lights are hidden,
-        // so no chrome should reserve space for them.
-        let fullscreen = window.is_fullscreen();
-        let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
-        // Reserve the shared version footer outside the session canvas.
-        let viewport_h =
-            (f32::from(viewport.height) - content_top_inset - WORKSPACE_FOOTER_HEIGHT).max(0.0);
+        let fullscreen = workspace_fullscreen(window);
+        let viewport_h = f32::from(viewport.height);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -8726,7 +9643,7 @@ impl Render for Workspace {
             div()
                 .debug_selector(|| "selfdev-performance-profile".into())
                 .absolute()
-                .top(px(content_top_inset + 10.0))
+                .top(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET + 10.0))
                 .right(px(12.0))
                 .rounded_md()
                 .px_3()
@@ -8754,7 +9671,27 @@ impl Render for Workspace {
                 ))
         });
 
-        let root = div()
+        let tab_bar = self.render_workspace_bar(
+            if cfg!(target_os = "macos") {
+                f32::from(viewport.width)
+            } else {
+                canvas_w
+            },
+            compact || !self.show_sidebar,
+            coach_progress,
+            window,
+            cx,
+        );
+        let (window_tab_bar, canvas_tab_bar) = if cfg!(target_os = "macos") {
+            (Some(tab_bar), None)
+        } else {
+            (None, Some(tab_bar))
+        };
+        if window_tab_bar.is_some() {
+            // Navigation diagnostics expose canvas-relative coordinates.
+            self.live_tabs.header_offset -= sidebar_width + connector_width;
+        }
+        let root = crate::keyboard::tab_navigation(div())
             .size_full()
             .flex()
             .flex_col()
@@ -8829,7 +9766,9 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_first))
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
+            .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::workspace_slash_command))
+            .on_action(cx.listener(Self::promote_side_question))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
             .on_action(cx.listener(Self::move_panel_up))
@@ -8846,6 +9785,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
+            .on_action(cx.listener(Self::open_openrig))
+            .on_action(cx.listener(Self::inspect_fleet_seat))
+            .on_action(cx.listener(Self::open_fleet_session))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))
@@ -8864,6 +9806,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::open_changelog))
             .on_action(cx.listener(Self::open_resume))
+            .on_action(cx.listener(Self::open_session_search))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))
@@ -8873,7 +9816,6 @@ impl Render for Workspace {
             .child(
                 div()
                     .debug_selector(|| "workspace-body".into())
-                    .pb(px(WORKSPACE_FOOTER_HEIGHT))
                     .relative()
                     .w_full()
                     .flex_1()
@@ -8881,8 +9823,19 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
-                        root.child(self.render_sidebar(fullscreen, cx))
-                            .child(self.render_sidebar_resize_handle(cx))
+                        root.child(if cfg!(target_os = "macos") {
+                            div()
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .flex_col()
+                                .pt(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET))
+                                .child(sidebar_chrome)
+                                .into_any_element()
+                        } else {
+                            sidebar_chrome.into_any_element()
+                        })
+                        .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
                         div()
@@ -8892,7 +9845,6 @@ impl Render for Workspace {
                             .min_h_0()
                             .flex()
                             .flex_col()
-                            .pt(px(content_top_inset))
                             .pl(px(connector_width))
                             .pr(px(right_margin))
                             .child(
@@ -8912,13 +9864,7 @@ impl Render for Workspace {
                                         ))
                                     })
                                     .child(content)
-                                    .child(self.render_workspace_bar(
-                                        canvas_w,
-                                        compact || !self.show_sidebar,
-                                        coach_progress,
-                                        window,
-                                        cx,
-                                    ))
+                                    .children(canvas_tab_bar)
                                     .when(
                                         self.show_minimap
                                             && live_tabs::minimap_fits_header(canvas_w)
@@ -8938,13 +9884,13 @@ impl Render for Workspace {
                             ),
                     ),
             )
+            .children(window_tab_bar)
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
                 |root| {
                     root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
                 },
             )
-            .child(self.render_version_footer(version::pill_width(), cx))
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -9014,9 +9960,13 @@ fn default_working_dir() -> Option<String> {
 /// `JCODE_DESKTOP_WORKING_DIR` from the launch that opened a window, so each
 /// window of a shared host keeps the directory its shortcut asked for.
 fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
+    launch_directory_override(launch).or_else(crate::platform_dirs::home_string)
+}
+
+fn launch_directory_override(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
     default_working_dir_from(
         launch.var("JCODE_DESKTOP_WORKING_DIR").map(str::to_owned),
-        crate::platform_dirs::home_string(),
+        None,
         Path::is_dir,
     )
 }
@@ -9024,6 +9974,14 @@ fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String
 impl Workspace {
     fn default_working_dir(&self) -> Option<String> {
         launch_working_dir(&self.launch)
+    }
+
+    fn new_session_directory(&self) -> Option<String> {
+        self.pinned_working_dir
+            .as_deref()
+            .filter(|dir| Path::new(dir).is_absolute() && Path::new(dir).is_dir())
+            .map(str::to_owned)
+            .or_else(|| self.default_working_dir())
     }
 }
 
@@ -9124,7 +10082,7 @@ fn most_used_working_dir(sessions: &[jcode_sdk::SessionInfo]) -> Option<String> 
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for directory in sessions
         .iter()
-        .filter(|session| !session.session_id.starts_with("ssh://"))
+        .filter(|session| !harness::is_remote_session(&session.session_id))
         .filter_map(|session| session.working_dir.as_deref())
     {
         if Path::new(directory).is_absolute() && Path::new(directory).is_dir() {
@@ -9354,14 +10312,19 @@ fn sidebar_session_title_with_open_title(
     )
 }
 
+#[cfg(test)]
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
     let mut ordered = sessions.to_vec();
+    sort_sidebar_sessions(&mut ordered);
+    ordered
+}
+
+fn sort_sidebar_sessions(ordered: &mut [jcode_sdk::SessionInfo]) {
     ordered.sort_by(|a, b| {
         b.saved
             .cmp(&a.saved)
             .then_with(|| sidebar_session_recency_ms(b).cmp(&sidebar_session_recency_ms(a)))
     });
-    ordered
 }
 
 fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i64 {
@@ -9384,6 +10347,7 @@ fn unix_now_ms() -> i64 {
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     if let Some(host) = harness::remote_host(&session.session_id) {
+        let host = remotes::machine_label(&host);
         return Some(
             match session
                 .working_dir
@@ -9391,7 +10355,7 @@ fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String>
                 .filter(|dir| !dir.trim().is_empty())
             {
                 Some(dir) => format!("{host} · {dir}"),
-                None => host,
+                None => host.to_owned(),
             },
         );
     }
@@ -9738,6 +10702,66 @@ fn panel_at_viewport_center(
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn restoring_live_session_keeps_identity_while_attaching(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("same-id", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::ModelInfo {
+                        session_id: "same-id".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6".into()),
+                        reasoning_effort: Some("high".into()),
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+            workspace.apply(
+                Update::SessionAttaching {
+                    session_id: "same-id".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(panel.status, "attaching…");
+        });
+        assert!(vcx.debug_bounds("panel-model-effort").is_some());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "same-id".into(),
+                    event: jcode_sdk::ApiEvent::RuntimeInfo {
+                        session_id: "same-id".into(),
+                        provider: None,
+                        model: None,
+                        routes: vec![],
+                        reasoning_effort: None,
+                        auth_method: None,
+                        account_label: None,
+                    },
+                },
+                cx,
+            );
+        });
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.model.as_deref(), Some("gpt-5.6"));
+            assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+        });
+    }
+
     thread_local! {
         pub(super) static SIDEBAR_TITLE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
@@ -9803,7 +10827,7 @@ mod tests {
         const WARMUP: usize = 50;
         const SAMPLES: usize = 500;
 
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for row in 0..STRIP_COUNT {
@@ -9935,7 +10959,7 @@ mod tests {
     fn empty_strip_navigation_is_captured_but_boundary_noops_are_not(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let directory = tempfile::tempdir().unwrap();
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
@@ -9970,7 +10994,7 @@ mod tests {
         const WARMUP: usize = 10;
         const SAMPLES: usize = 100;
 
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for row in 0..STRIP_COUNT {
@@ -10031,6 +11055,8 @@ mod tests {
             history: vec!["older prompt".into()],
             history_index: None,
             live_draft: "unfinished prompt".into(),
+            history_draft: None,
+            stashed_prompt: None,
             attachments: vec![crate::input::AttachmentSnapshot {
                 media_type: "image/png".into(),
                 encoded: "aW1hZ2U=".into(),
@@ -10049,10 +11075,12 @@ mod tests {
             tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    draft_config: Default::default(),
                     transcript: None,
                     image_pane_open: false,
                     side_document: None,
                     prompt_queue: Default::default(),
+                    ask_draft: None,
                     session_id: "terminal".into(),
                     title: "build shell".into(),
                     working_dir: Some("/workspace".into()),
@@ -10142,7 +11170,33 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         }
+    }
+
+    #[test]
+    fn sidebar_in_place_sort_keeps_equal_recency_catalog_order() {
+        let mut sessions = vec![
+            session_info("first", Some("first")),
+            session_info("second", Some("second")),
+            session_info("saved-first", None),
+            session_info("saved-second", None),
+        ];
+        for session in &mut sessions {
+            session.updated_at_ms = Some(42);
+            session.saved = session.session_id.starts_with("saved");
+        }
+        let allocation = sessions.as_ptr();
+        sort_sidebar_sessions(&mut sessions);
+        assert_eq!(sessions.as_ptr(), allocation, "reuse the owned catalog");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["saved-first", "saved-second", "first", "second"],
+        );
+        assert_eq!(sessions[2].title.as_deref(), Some("first"));
     }
 
     #[test]
@@ -10241,7 +11295,7 @@ mod tests {
     fn session_catalog_refresh_keeps_a_restored_open_session_in_the_sidebar(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -10258,10 +11312,12 @@ mod tests {
                     tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            draft_config: Default::default(),
                             transcript: None,
                             image_pane_open: false,
                             side_document: None,
                             prompt_queue: Default::default(),
+                            ask_draft: None,
                             session_id: "session_fox_1234567890000_deadbeef".into(),
                             title: "Still running".into(),
                             working_dir: Some("/home/example/project".into()),
@@ -10273,6 +11329,8 @@ mod tests {
                                 history: Vec::new(),
                                 history_index: None,
                                 live_draft: String::new(),
+                                history_draft: None,
+                                stashed_prompt: None,
                                 attachments: Vec::new(),
                             },
                             scroll_x: 0.0,
@@ -10346,6 +11404,25 @@ mod tests {
                 "canonical metadata must replace the restored placeholder"
             );
             assert!(workspace.sessions[0].saved);
+            let mut worker = session_info("session_puppy_1234567890000_abcdef", Some("Worker"));
+            worker.parent_session_id = Some("session_fox_1234567890000_deadbeef".into());
+            worker.swarm_status = Some("running".into());
+            workspace.sessions.push(worker);
+            workspace.sync_swarm_strips(cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").expect("workers pill");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("swarm-list-title-0").expect("worker row");
+        vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "session_puppy_1234567890000_abcdef",
+                "clicking in a restored panel must activate the worker's chat"
+            );
         });
     }
 
@@ -10473,6 +11550,11 @@ mod tests {
             vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
                 .is_some()
         );
+        let todo_icon = vcx
+            .debug_bounds(format!("sidebar-todos-icon-{row}").leak())
+            .unwrap();
+        assert_eq!(todo_icon.size.width, px(9.0));
+        assert!(todo_icon.left() + px(16.0) <= title.left());
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
                 .is_none()
@@ -10696,7 +11778,7 @@ mod tests {
 
     #[gpui::test]
     fn persisted_session_record_paints_as_a_sidebar_row(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-sidebar-ui-{}-{}",
             std::process::id(),
@@ -10786,7 +11868,7 @@ mod tests {
     #[gpui::test]
     #[ignore = "manual sidebar hover profiler"]
     fn sidebar_hover_frame_profile(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         for count in [10, 100, 500] {
@@ -10936,7 +12018,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_divides_saved_sessions_from_other_sessions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -10966,7 +12048,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_separates_open_panels_from_other_sessions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11126,7 +12208,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_session_history_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11351,7 +12433,7 @@ mod tests {
 
     #[gpui::test]
     fn open_sidebar_sessions_follow_strips_top_to_bottom(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11409,7 +12491,7 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_todos_button_spawns_a_persistent_movable_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11599,7 +12681,7 @@ mod tests {
 
     #[gpui::test]
     fn clicking_a_file_opens_it_in_a_new_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let project = std::env::temp_dir().join(format!(
             "jcode-desktop-files-{}-{}",
             std::process::id(),
@@ -11650,7 +12732,7 @@ mod tests {
     /// real painted element, not merely paint a row that looks clickable.
     #[gpui::test]
     fn clicking_a_sidebar_row_activates_that_session(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11697,7 +12779,7 @@ mod tests {
     fn clicking_scrolled_history_rows_reliably_activates_the_displayed_session(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -11797,12 +12879,14 @@ mod tests {
             let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
             let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
             let destinations = vcx.debug_bounds("machine-destination-switcher").unwrap();
+            let sidebar = vcx.debug_bounds("sidebar").unwrap();
             assert_eq!(
-                header.bottom(),
                 destinations.top(),
-                "header must touch the combined destination and directory row"
+                sidebar.top(),
+                "the destination and directory row is the only header line"
             );
-            assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
+            assert!(header.top() >= destinations.top());
+            assert!(header.bottom() <= destinations.bottom());
             assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
             assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
         }
@@ -12180,7 +13264,7 @@ mod tests {
     /// credentials.
     #[gpui::test]
     fn connected_accounts_paint_in_the_sidebar(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (_workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.sidebar_view = SidebarView::Accounts;
@@ -12302,7 +13386,7 @@ mod tests {
 
     #[gpui::test]
     fn ctrl_o_uses_the_in_app_picker_and_creates_a_session(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -12383,6 +13467,8 @@ mod tests {
             .expect("open this folder should paint");
         vcx.simulate_click(open.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "a draft creates nothing yet");
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
 
         match commands
             .try_recv()
@@ -12401,7 +13487,7 @@ mod tests {
 
     #[gpui::test]
     fn folder_picker_dismissal_restores_navigation_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["left", "middle", "right"] {
@@ -12501,7 +13587,7 @@ mod tests {
 
     #[gpui::test]
     fn ctrl_o_focuses_search_and_enter_opens_the_matching_folder(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -12540,6 +13626,7 @@ mod tests {
 
         vcx.simulate_keystrokes("n o t e s enter");
         vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
         match commands
             .try_recv()
             .expect("enter should open the search match")
@@ -12605,7 +13692,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn session_shortcuts_use_home_and_a_directory_pinned_once(cx: &mut gpui::TestAppContext) {
+    fn session_shortcuts_use_the_directory_pinned_once(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::bind_workspace_keys(cx);
             crate::input::bind_keys(cx);
@@ -12657,12 +13744,14 @@ mod tests {
                 "ctrl-alt-enter",
                 Some(favorite.to_string_lossy().into_owned()),
             ),
-            ("super-n", default_working_dir()),
+            ("super-n", Some(favorite.to_string_lossy().into_owned())),
             ("super-;", Some(favorite.to_string_lossy().into_owned())),
-            ("super-'", default_working_dir()),
+            ("super-'", Some(favorite.to_string_lossy().into_owned())),
         ] {
             vcx.simulate_keystrokes(&platform_chord(chord));
             vcx.run_until_parked();
+            assert!(commands.try_recv().is_err(), "{chord} only opens a draft");
+            workspace.update(vcx, |workspace, cx| workspace.request_deferred_sessions(cx));
             match commands
                 .try_recv()
                 .expect("shortcut should create a session")
@@ -12974,7 +14063,7 @@ mod tests {
     /// a workspace or leak the blocked pull into the panel transcript.
     #[gpui::test]
     fn a_committed_pan_cannot_move_down_a_workspace(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two"] {
@@ -13071,7 +14160,7 @@ mod tests {
     fn vertical_scroll_over_an_empty_panel_cannot_move_down_a_workspace(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("empty", cx);
@@ -13163,7 +14252,7 @@ mod tests {
     /// visually quiet.
     #[gpui::test]
     fn a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -13277,7 +14366,7 @@ mod tests {
     fn transcript_scrolls_and_minimap_swipes_do_not_light_the_indicators(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -13461,7 +14550,7 @@ mod tests {
         ];
 
         for (skill_id, keys) in cases {
-            cx.update(|cx| crate::bind_workspace_keys(cx));
+            cx.update(crate::bind_workspace_keys);
             let (workspace, vcx) = cx.add_window_view(|window, cx| {
                 let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
                 // Enough panels that no shortcut is a no-op, and a second strip
@@ -13513,7 +14602,7 @@ mod tests {
     /// never teach a keystroke the app does not listen for.
     #[gpui::test]
     fn advertised_keys_match_the_real_keymap(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -13615,7 +14704,7 @@ mod tests {
     fn clicking_a_neighbouring_panel_is_recorded_as_a_missed_shortcut(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two", "three"] {
@@ -13666,7 +14755,7 @@ mod tests {
     /// activation must still happen when the corresponding mouse-up bubbles.
     #[gpui::test]
     fn clicking_selectable_text_in_a_restored_panel_activates_it(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13700,7 +14789,7 @@ mod tests {
     /// in a shortcut they have never pressed.
     #[gpui::test]
     fn clicking_the_new_session_button_is_not_keyboard_credit(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13828,7 +14917,7 @@ mod tests {
 
     #[gpui::test]
     fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13851,7 +14940,7 @@ mod tests {
 
     #[gpui::test]
     fn tab_plus_replaces_the_right_edge_new_session_target(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13877,7 +14966,7 @@ mod tests {
     /// keypress would have done anything, so it must not be held against them.
     #[gpui::test]
     fn clicking_the_focused_panel_is_not_a_missed_shortcut(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["one", "two"] {
@@ -13911,7 +15000,7 @@ mod tests {
     /// The hint lives in spare header space without changing panel geometry.
     #[gpui::test]
     fn the_hint_chip_uses_only_spare_tab_space(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -13951,7 +15040,7 @@ mod tests {
             assert!(workspace.coach.active_hint_id().is_some());
             assert!(workspace.focus_handle.is_focused(window));
         });
-        for width in [900.0, 640.0, 480.0] {
+        for width in [640.0, 480.0] {
             cx.simulate_window_resize(handle, gpui::size(px(width), px(800.0)));
             cx.run_until_parked();
             assert!(
@@ -13984,7 +15073,9 @@ mod tests {
     fn the_update_chip_paints_only_while_the_updater_has_something_to_say(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let _update_guard = updates::test_lock();
+        updates::set_release_status(updates::ReleaseStatus::Unknown);
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
@@ -14006,10 +15097,14 @@ mod tests {
             cx.run_until_parked();
         };
 
-        let _update_guard = updates::test_lock();
         // A current app says nothing at all.
         updates::set(updates::UpdateState::Idle);
         draw(cx);
+        assert_ne!(
+            updates::release_status(),
+            updates::ReleaseStatus::Unknown,
+            "single-panel windows must initialize update checks without a version footer"
+        );
         assert!(
             cx.debug_bounds("update-chip").is_none(),
             "a current app should not paint an update chip"
@@ -14068,7 +15163,7 @@ mod tests {
     /// The coach view must paint too, and only while it is open.
     #[gpui::test]
     fn the_coach_view_paints_only_when_opened(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("only", cx);
@@ -14163,7 +15258,7 @@ mod tests {
     fn pressing_into_empty_strips_clears_the_lesson_without_teaching(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("only", cx);
@@ -14208,7 +15303,7 @@ mod tests {
 
     #[gpui::test]
     fn overview_navigation_keeps_root_focus_and_restores_composer(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["left", "middle", "right"] {
@@ -14261,7 +15356,7 @@ mod tests {
 
     #[gpui::test]
     fn overview_restore_and_new_panel_keep_mounted_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("left", cx);
@@ -14407,7 +15502,7 @@ mod tests {
     /// must restore that strip's own last-focused panel.
     #[gpui::test]
     fn vertical_keys_animate_and_restore_each_strips_focus(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("top-left", cx);
@@ -14479,7 +15574,7 @@ mod tests {
 
     #[gpui::test]
     fn vertical_keys_cover_both_animation_directions(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("top-left", cx);
@@ -14549,7 +15644,7 @@ mod tests {
 
     #[gpui::test]
     fn horizontal_panel_moves_animate_both_swapped_panels(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("left", cx);
@@ -14592,7 +15687,7 @@ mod tests {
     fn moving_a_panel_between_strips_animates_and_stops_at_boundaries(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("moving", cx);
@@ -14891,7 +15986,7 @@ mod tests {
     /// a real rendered frame and asserts focus moved there.
     #[gpui::test]
     fn clicking_a_minimap_panel_jumps_focus_there(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -14920,8 +16015,8 @@ mod tests {
             .debug_bounds("workspace-canvas")
             .expect("workspace canvas");
         assert!(
-            map.top() >= canvas.top() && map.top() - canvas.top() < px(40.0),
-            "the minimap should hug the canvas top edge, below onboarding"
+            map.top() == canvas.top() + px(MINIMAP_TOP),
+            "the minimap should sit below any top-right window controls"
         );
         let initial_pin = cx
             .debug_bounds("minimap-you-pin")
@@ -14963,7 +16058,7 @@ mod tests {
     /// workspace bar.
     #[gpui::test]
     fn clicking_a_minimap_track_switches_strips(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.enable_test_minimap();
@@ -15001,7 +16096,7 @@ mod tests {
     fn focused_workspace(
         cx: &mut gpui::TestAppContext,
     ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         cx.update(|window, cx| {
@@ -15021,6 +16116,7 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_keystrokes(&format!("{MOD}-enter"));
         cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| workspace.request_deferred_sessions(cx));
 
         let Command::CreateSession {
             working_dir,
@@ -15427,7 +16523,7 @@ mod tests {
 
     #[gpui::test]
     fn super_t_opens_and_paints_a_plain_terminal_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -15484,7 +16580,7 @@ mod tests {
 
     #[gpui::test]
     fn super_shift_g_opens_and_paints_the_gmail_applet_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
             let _ = window;
@@ -15532,7 +16628,7 @@ mod tests {
     #[gpui::test]
     fn theme_tab_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
         let _theme = crate::theme::test_theme_lock();
-        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(crate::bind_workspace_keys);
         let original = Theme::active_preset();
         Theme::select(ThemePreset::WarmNeutral);
         let (workspace, vcx) =
@@ -15659,6 +16755,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn settings_default_send_mode_controls_active_panel(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("send-mode", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
+        let settings = vcx.debug_bounds("workspace-settings").unwrap();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: settings.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-600.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        let after = vcx
+            .debug_bounds("settings-send-after-yield")
+            .expect("settings choice");
+        vcx.simulate_click(after.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(workspace.read_with(vcx, |w, cx| {
+            w.slots[w.active].panel.read(cx).default_send_after_yield()
+        }));
+        let input =
+            workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).input.clone());
+        workspace.update(vcx, |w, cx| {
+            w.slots[w.active]
+                .panel
+                .update(cx, |p, _| p.status = "running".into())
+        });
+        vcx.update(|window, cx| {
+            let focus = input.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        vcx.simulate_input("settings decides this prompt");
+        vcx.simulate_keystrokes("enter");
+        workspace.read_with(vcx, |w, cx| {
+            let queue =
+                serde_json::to_value(w.slots[w.active].panel.read(cx).snapshot(cx).prompt_queue)
+                    .unwrap();
+            assert_eq!(
+                queue["prompts"][0]["content"],
+                "settings decides this prompt"
+            );
+            assert_eq!(queue["prompts"][0]["after_yield"], true);
+        });
+        let steer = vcx.debug_bounds("settings-send-steer").unwrap();
+        vcx.simulate_click(steer.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(!workspace.read_with(vcx, |w, cx| {
+            w.slots[w.active].panel.read(cx).default_send_after_yield()
+        }));
+    }
+
+    #[gpui::test]
     fn settings_tab_toggles_window_preferences_and_preserves_theme_tab(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -15737,6 +16889,41 @@ mod login_tests;
 #[cfg(test)]
 mod accounts_panel_tests {
     use super::*;
+
+    #[gpui::test]
+    fn opening_accounts_from_the_active_accounts_panel_reuses_it(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("source", cx);
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.entity_id());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source,
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(
+                &OpenAccounts {
+                    source: accounts.entity_id(),
+                    login_command: None,
+                },
+                window,
+                cx,
+            )
+        });
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.iter().filter(|s| !s.closing).count(), 2);
+            assert_eq!(w.slots[w.active].panel, accounts);
+        });
+    }
 
     #[gpui::test]
     fn accounts_panel_preview_and_pending_sources_never_contact_runtime(

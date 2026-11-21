@@ -1,7 +1,7 @@
 //! Native controls and actual workspace commands, without a live runtime.
 use super::*;
 
-fn session(id: &str) -> jcode_sdk::SessionInfo {
+pub(super) fn session(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
         user_connected: false,
         session_id: id.into(),
@@ -19,10 +19,11 @@ fn session(id: &str) -> jcode_sdk::SessionInfo {
         agent_label: None,
         swarm_status: None,
         edit_stats: None,
+        context: None,
     }
 }
 
-fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+pub(super) fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
     // Selector bounds can exist offscreen while Machines slides back into view.
     // Settle the test clock before exercising the real native click target.
@@ -36,9 +37,7 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
-    cx: &mut gpui::TestAppContext,
-) {
+fn destination_picker_cloud_changes_default_without_spawning(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -48,24 +47,20 @@ fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
         w
     });
     vcx.run_until_parked();
-    let local = vcx.debug_bounds("machine-destination-local").unwrap();
-    let cloud = vcx.debug_bounds("machine-destination-cloud").unwrap();
-    let ssh = vcx.debug_bounds("machines-picker-button").unwrap();
-    assert_eq!(local.origin.y, cloud.origin.y);
-    assert_eq!(cloud.origin.y, ssh.origin.y);
-    assert!(local.right() < cloud.left());
-    assert!(cloud.right() < ssh.left());
-    assert!((local.size.width - cloud.size.width).abs() <= px(1.0));
-    assert!((cloud.size.width - ssh.size.width).abs() <= px(1.0));
-    assert_eq!(local.size.height, cloud.size.height);
-    assert_eq!(cloud.size.height, ssh.size.height);
+    let destination = vcx.debug_bounds("machines-picker-button").unwrap();
+    assert!(destination.size.width > px(100.0));
+    assert!(vcx.debug_bounds("machine-destination-local").is_none());
+    assert!(vcx.debug_bounds("machine-destination-cloud").is_none());
     // Swarms and worktrees share one sidebar. There is no mode switch.
     assert!(vcx.debug_bounds("sidebar-mode-swarm").is_none());
     assert!(vcx.debug_bounds("sidebar-mode-worktrees").is_none());
     let directory = vcx.debug_bounds("default-directory-button").unwrap();
-    assert_eq!(directory.origin.y, local.origin.y);
-    assert!(ssh.right() < directory.left());
+    assert!(directory.left() >= destination.left());
+    assert!(directory.right() <= destination.right());
+    assert_eq!(directory.size.height, destination.size.height);
 
+    click(vcx, "machines-picker-button");
+    assert!(vcx.debug_bounds("machines-picker").is_some());
     click(vcx, "machine-destination-cloud");
     workspace.read_with(vcx, |w, _| {
         assert_eq!(
@@ -74,30 +69,32 @@ fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
         );
         assert_eq!(w.slots.len(), 2);
     });
-    let draft = workspace.read_with(vcx, |w, cx| {
-        w.slots[w.active].panel.read(cx).session_id.clone()
+    assert!(
+        commands.try_recv().is_err(),
+        "changing mode must not spawn a session"
+    );
+    workspace.read_with(vcx, |w, cx| {
+        assert!(
+            w.slots
+                .iter()
+                .all(|slot| !Panel::is_pending_session_id(&slot.panel.read(cx).session_id))
+        );
     });
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
-            if host == remotes::MANAGED_CLOUD_HOST && id == draft
-    ));
-    assert!(commands.try_recv().is_err());
     workspace.update(vcx, |w, cx| w.open_default_draft(None, cx));
     let next_draft = workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 3);
         w.slots[w.active].panel.read(cx).session_id.clone()
     });
-    assert_ne!(draft, next_draft);
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
             if host == remotes::MANAGED_CLOUD_HOST && id == next_draft
     ));
     click(vcx, "default-directory-button");
+    assert!(vcx.debug_bounds("machines-picker").is_some());
     assert!(
         vcx.debug_bounds("default-directory-panel").is_none(),
-        "remote paths must not open a local folder picker"
+        "the sidebar destination pill opens the destination picker, not a folder picker"
     );
     assert!(vcx.debug_bounds("sidebar-session-list").is_some());
     click(vcx, "machine-destination-local");
@@ -181,6 +178,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     }
     click(vcx, "machines-picker-button");
     click(vcx, "machine-connect-0");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     match commands.try_recv() {
         Ok(Command::CreateSession { .. }) => {}
         Ok(Command::CreateRemoteSession { host, .. }) => panic!("unexpected remote create: {host}"),
@@ -193,6 +191,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     click(vcx, "machines-picker-button");
     click(vcx, "machine-default-0");
     vcx.simulate_keystrokes("super-n");
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -323,6 +322,7 @@ fn local_connect_keeps_new_panel_selected_after_mouse_release(cx: &mut gpui::Tes
         w.slots[w.active].panel.read(cx).session_id.clone()
     });
     assert!(Panel::is_pending_session_id(&draft));
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
@@ -422,6 +422,7 @@ fn explicit_folder_and_help_stay_local_with_a_remote_default(cx: &mut gpui::Test
     workspace.update(vcx, |w, cx| {
         w.folder_picker_dir = Some(PathBuf::from("/local/project"));
         w.choose_browsed_folder(cx);
+        w.request_deferred_sessions(cx);
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/local/project")
@@ -530,6 +531,10 @@ fn remote_startup_is_independent_of_local_runtime_and_promotes_draft(
         );
     });
     vcx.simulate_keystrokes("enter");
+    assert!(commands.try_recv().is_err(), "send waits for history");
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send {session_id, content, ..}) if session_id == "ssh://desktop/remote-1" && content == "keep my remote draft")
     );
@@ -625,13 +630,18 @@ fn remote_identity_survives_snapshot_and_local_files_are_not_shown(cx: &mut gpui
 
 #[test]
 fn remote_history_never_becomes_a_local_pinned_folder() {
-    let mut remote = session("ssh://desktop/remote-1");
-    remote.working_dir = Some("/not/a/local/directory".into());
-    assert_eq!(most_used_working_dir(&[remote.clone()]), None);
-    assert_eq!(
-        sidebar_session_directory(&remote).as_deref(),
-        Some("desktop · /not/a/local/directory")
-    );
+    for (id, machine) in [
+        ("ssh://desktop/remote-1", "desktop"),
+        ("cloud://ai-core/remote-1", "ai-core"),
+    ] {
+        let mut remote = session(id);
+        remote.working_dir = Some("/not/a/local/directory".into());
+        assert_eq!(most_used_working_dir(&[remote.clone()]), None);
+        assert_eq!(
+            sidebar_session_directory(&remote).unwrap(),
+            format!("{machine} · /not/a/local/directory")
+        );
+    }
 }
 
 #[gpui::test]
@@ -819,7 +829,15 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
         commands.try_recv().is_err(),
         "failure must not silently fall back locally"
     );
-    click(vcx, "pending-session-retry");
+    vcx.simulate_keystrokes("shift-tab shift-tab");
+    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, request_id: Some(id), .. })
         if host == "offline-remote" && id == Panel::STARTUP_SESSION_ID)
@@ -828,7 +846,15 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
     // Even while retrying, an explicit target choice is available. Preserve
     // unsent editor text as well as the already submitted waiting prompt.
     vcx.simulate_input("next draft");
-    click(vcx, "pending-session-local");
+    vcx.simulate_keystrokes("shift-tab");
+    let keystroke = gpui::Keystroke::parse("space").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
     let request_id = match commands.try_recv().unwrap() {
         Command::CreateSession {
             request_id: Some(id),

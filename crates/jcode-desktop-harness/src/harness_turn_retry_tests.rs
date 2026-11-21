@@ -110,6 +110,7 @@ fn transient_turn_failure_is_continued_automatically_until_the_budget_runs_out()
         .send(SessionCommand::Send {
             content: "build it".into(),
             images: vec![],
+            attachments: vec![],
         })
         .unwrap();
     assert!(

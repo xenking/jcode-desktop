@@ -10,7 +10,7 @@ fn focused_workspace_with_map<'a>(
     cx: &'a mut gpui::TestAppContext,
     names: &[&str],
 ) -> (gpui::Entity<Workspace>, &'a mut gpui::VisualTestContext) {
-    cx.update(|cx| crate::bind_workspace_keys(cx));
+    cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
         workspace.enable_test_minimap();

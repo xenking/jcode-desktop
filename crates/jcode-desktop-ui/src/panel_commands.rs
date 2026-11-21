@@ -82,7 +82,7 @@ impl Panel {
             "/git" | "/diff" => {
                 let diff = command == "/diff";
                 let staged = args == "--staged" || args == "--cached";
-                if !args.is_empty() && !(diff && staged) {
+                if !args.is_empty() && (!diff || !staged) {
                     self.items.push(Item::Error(format!("Usage: `{command}{}`.", if diff { " [--staged]" } else { "" })));
                 } else if crate::harness::remote_host(&self.session_id).is_some() {
                     self.items.push(Item::Error(format!("{command} cannot inspect the remote checkout from this Desktop. Open the session's remote terminal to run `git {}` there.", if diff { "diff" } else { "status" })));

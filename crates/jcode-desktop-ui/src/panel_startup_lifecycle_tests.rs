@@ -3,7 +3,9 @@ use super::*;
 
 fn history(prompt: &str) -> Vec<jcode_sdk::HistoryMessage> {
     vec![jcode_sdk::HistoryMessage {
+        attachments: Vec::new(),
         response_stats: None,
+        timestamp_ms: None,
         tool: None,
         role: "user".into(),
         content: prompt.into(),
@@ -33,11 +35,10 @@ fn focused_startup_panel(
 }
 
 #[gpui::test]
-fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
-    cx: &mut gpui::TestAppContext,
-) {
+fn startup_tall_prompt_scrolls_in_transcript_and_preserves_position(cx: &mut gpui::TestAppContext) {
     for discrete in [false, true] {
         let (panel, vcx) = focused_startup_panel(cx);
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
         // About scrolling, not typing: commit the 1300-char prompt at once.
         crate::test_input::commit_text(
             vcx,
@@ -46,7 +47,8 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
         vcx.simulate_keystrokes("enter");
         // Long prompts collapse by default. This covers an expanded tall one.
         panel.update(vcx, |panel, cx| {
-            panel.expanded_prompts.insert((0, false));
+            panel.expanded_prompts.insert(0);
+            panel.stick_to_bottom = false;
             cx.notify();
         });
         vcx.run_until_parked();
@@ -57,50 +59,39 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
                 px(0.)
             );
         });
-        panel.update(vcx, |panel, cx| {
-            if discrete {
-                panel.glide_transcript_wheel(40., cx);
-                // Exercise the same glide steps without wall-clock timer waits.
-                for _ in 0..128 {
-                    if !panel.advance_transcript_wheel(cx) {
-                        break;
-                    }
-                }
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        let transcript_offset = |cx: &gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, _| {
+                let offset = panel.transcript_list.logical_scroll_top();
+                (offset.item_ix, offset.offset_in_item)
+            })
+        };
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: if discrete {
+                gpui::ScrollDelta::Lines(gpui::point(0., -2.))
             } else {
-                panel.scroll_transcript_direct(-40., cx);
-            }
+                gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-40.)))
+            },
+            ..Default::default()
         });
         vcx.run_until_parked();
-        let offset = panel.read_with(vcx, |panel, _| {
-            let offset = -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-            let max = f32::from(panel.transcript_list.max_offset_for_scrollbar().y);
-            assert!(
-                !panel.stick_to_bottom,
-                "manual scrolling must detach first-prompt preview"
-            );
-            assert!(
-                offset >= 30. && offset <= 45.,
-                "40px scroll became {offset}px (discrete={discrete})"
-            );
-            assert!(
-                offset < max / 2.,
-                "first downward gesture jumped to the tail"
-            );
-            offset
-        });
+        super::scroll_momentum_tests::settle(vcx);
+        let offset = transcript_offset(vcx);
+        assert!(
+            offset.1 > px(0.),
+            "prompt scrolls in transcript (discrete={discrete})"
+        );
         panel.update(vcx, |panel, cx| {
             panel.streaming_text = "Answer arrived while reading the beginning".into();
             cx.notify();
         });
         vcx.run_until_parked();
-        panel.read_with(vcx, |panel, _| {
-            assert!(!panel.stick_to_bottom);
-            let after = -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-            assert!(
-                (after - offset).abs() < 1.,
-                "response stole detached scroll position"
-            );
-        });
+        assert_eq!(
+            transcript_offset(vcx),
+            offset,
+            "response stole transcript position"
+        );
     }
 }
 
@@ -192,6 +183,7 @@ fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
     cx: &mut gpui::TestAppContext,
 ) {
     let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     let fresh = vcx.debug_bounds("prompt-input").unwrap();
     vcx.simulate_input("Short first prompt");
     vcx.simulate_keystrokes("enter");
@@ -290,6 +282,7 @@ fn startup_resize_and_repeated_notifications_preserve_settled_geometry(
 #[gpui::test]
 fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = focused_startup_panel(cx);
+    panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
     for index in 0..20 {
         let text = format!(
             "Growth message {index:02}. {}",
@@ -365,4 +358,67 @@ fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
             .as_ref()
             .is_some_and(|layout| layout.compact)
     }));
+}
+
+/// Distance from the composer pill row to the bottom edge of the window.
+fn pill_row_bottom_inset(vcx: &mut gpui::VisualTestContext) -> gpui::Pixels {
+    let tabs = vcx.debug_bounds("composer-tabs").unwrap();
+    let height = vcx.update(|window, _| window.viewport_size().height);
+    height - tabs.bottom()
+}
+
+/// A chat started on the welcome screen keeps that layout for good (the
+/// snapshot carries it), and once its transcript filled the window its pill
+/// row sat flush with the bottom edge while a docked panel beside it kept a
+/// margin. Every panel needs the same bottom inset.
+#[gpui::test]
+fn started_and_docked_composers_share_one_bottom_inset(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    vcx.simulate_input("Short question");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = (0..60)
+            .map(|i| format!("Response paragraph {i}\n\n"))
+            .collect();
+        cx.notify();
+    });
+    for _ in 0..4 {
+        vcx.run_until_parked();
+    }
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| layout.filled)
+    }));
+    let started = pill_row_bottom_inset(vcx);
+
+    let (docked, dvcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "docked-inset".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.test_settled_conversation(60, cx);
+        panel
+    });
+    let handle = dvcx.update(|window, _| window.window_handle());
+    dvcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    dvcx.run_until_parked();
+    docked.update(dvcx, |_, cx| cx.notify());
+    dvcx.run_until_parked();
+    assert!(docked.read_with(dvcx, |panel, _| panel.startup_layout.is_none()));
+    let docked = pill_row_bottom_inset(dvcx);
+
+    assert!(docked > px(0.), "a docked composer keeps a bottom margin: {docked:?}");
+    assert!(
+        (started - docked).abs() < px(1.),
+        "started {started:?} vs docked {docked:?}: the pill row must not drop to the edge"
+    );
 }

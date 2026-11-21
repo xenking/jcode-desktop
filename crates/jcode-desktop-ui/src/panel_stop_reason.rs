@@ -114,17 +114,67 @@ impl StopNotice {
     }
 }
 
-/// The cause in plain words, unless it only restates the title.
-fn connection_lost_detail(reason: &str) -> String {
-    let cause = crate::friendly_error::summarize(reason);
-    if cause.starts_with("Lost connection") {
-        "The response may still be running.".into()
-    } else {
-        format!("{cause} The response may still be running.")
-    }
-}
-
 impl Panel {
+    pub(super) fn has_unconfirmed_stop(&self) -> bool {
+        self.items.iter().rev().take_while(|item| !matches!(item, Item::User(_)))
+            .any(|item| matches!(item, Item::Stopped(notice) if notice.provisional && !notice.failure))
+    }
+
+    pub(super) fn request_user_stop(&mut self, cx: &mut Context<Self>) {
+        if self.has_unconfirmed_stop() {
+            self.force_stop(cx);
+        } else {
+            if self.preview_state.is_none() {
+                self.bridge.send(Command::Cancel {
+                    session_id: self.session_id.clone(),
+                });
+            }
+            self.record_cancel_requested(cx);
+        }
+    }
+
+    fn force_stop(&mut self, cx: &mut Context<Self>) {
+        if self.preview_state.is_none() {
+            self.bridge.send(Command::ForceStopTurn {
+                session_id: self.session_id.clone(),
+            });
+        }
+        if let Some(notice) = self
+            .items
+            .iter_mut()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .find_map(|item| match item {
+                Item::Stopped(notice) if notice.provisional => Some(notice),
+                _ => None,
+            })
+        {
+            notice.title = "Force stop requested".into();
+            notice.detail = "Waiting for the runtime to confirm the turn has stopped.".into();
+        }
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
+    pub(super) fn record_cancel_requested(&mut self, cx: &mut Context<Self>) {
+        self.record_stop(StopNotice::cancel_requested());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+            let _ = this.update(cx, |panel, cx| {
+                if let Some(notice) = panel.items.iter_mut().rev()
+                    .take_while(|item| !matches!(item, Item::User(_)))
+                    .find_map(|item| match item { Item::Stopped(notice) => Some(notice), _ => None })
+                    && notice.provisional && notice.title == "Stop requested by you"
+                {
+                    notice.title = "Stop not confirmed".into();
+                    notice.detail = "The runtime did not confirm cancellation. The turn may still be running; check the connection and try again.".into();
+                    panel.transcript_measurements.dirty = true;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+
     /// Update the failure of the current turn as automatic recovery progresses.
     pub(super) fn set_auto_retry(&mut self, retry: AutoRetry) {
         let notice = self
@@ -205,17 +255,9 @@ impl Panel {
     }
 
     pub(crate) fn connection_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
-        if self.activity_active() || !self.pending_users.is_empty() {
-            self.record_stop(StopNotice {
-                title: "Connection lost. Reconnecting…".into(),
-                detail: connection_lost_detail(reason),
-                provider_stop_reason: None,
-                failure: false,
-                provisional: true,
-                raw: Some(reason.to_owned()),
-                retry: AutoRetry::None,
-            });
-        }
+        self.lose_context_action();
+        // A reconnect is not evidence that the turn stopped. Keep streaming
+        // state and tool rows intact until the runtime confirms an outcome.
         self.status = format!("lost: {}", crate::friendly_error::summarize(reason));
         cx.notify();
     }
@@ -250,7 +292,7 @@ impl Panel {
                     .child(notice.title().to_owned()),
             )
             .when(notice.shows_error(), |el| {
-                el.child(self.render_recovery_error(index, &notice.detail, window, cx))
+                el.child(self.render_recovery_error(index, &notice.detail, true, window, cx))
             })
             .when(!notice.shows_error(), |el| {
                 let copy = notice.raw.clone().unwrap_or_else(|| notice.detail.clone());
@@ -269,6 +311,31 @@ impl Panel {
                         .child(super::recovery::copy_pill("stop-notice-copy", index, copy)),
                 )
             })
+            .when(
+                notice.provisional
+                    && (notice.title == "Stop not confirmed"
+                        || notice.title == "Force stop requested"),
+                |el| {
+                    el.child(
+                        div()
+                            .id(("force-stop-button", index))
+                            .debug_selector(|| "force-stop-button".into())
+                            .flex_none()
+                            .px_2p5()
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(Theme::global().ACCENT_DIM)
+                            .text_color(Theme::global().TEXT)
+                            .cursor_pointer()
+                            .hover(|el| el.opacity(0.8))
+                            .on_click(cx.listener(|panel, _, _, cx| {
+                                cx.stop_propagation();
+                                panel.force_stop(cx);
+                            }))
+                            .child("Force stop"),
+                    )
+                },
+            )
             .children(
                 notice
                     .provider_stop_reason

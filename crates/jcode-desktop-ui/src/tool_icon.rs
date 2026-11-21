@@ -70,7 +70,7 @@ pub(crate) fn render_badge_with_label(
 /// pulse frame redraws only that small view, never the transcript the header
 /// lives in. It respects reduced motion and stops when the call finishes.
 pub(crate) fn animate_running(
-    header: Div,
+    header: impl gpui::IntoElement,
     done: bool,
     failed: bool,
     veil: Option<gpui::AnyView>,

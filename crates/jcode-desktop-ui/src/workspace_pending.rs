@@ -26,12 +26,13 @@ pub(super) fn next_remote_draft_id(host: &str) -> String {
 }
 
 /// The destination travels with the draft through reloads and default-machine
-/// changes. Valid SSH destinations cannot contain '/', so no escaping is needed.
+/// changes. Valid destinations cannot contain '/', so no escaping is needed.
 pub(super) fn remote_draft_host(id: &str) -> Option<&str> {
     let (host, request) = id
         .strip_prefix("startup://draft/remote/")?
         .split_once('/')?;
-    (!request.is_empty() && crate::remote_targets::validate_host(host).is_ok()).then_some(host)
+    (!request.is_empty() && crate::remote_targets::validate_destination(host).is_ok())
+        .then_some(host)
 }
 
 impl Workspace {
@@ -63,10 +64,31 @@ impl Workspace {
             "New session".into(),
             cx,
         );
-        self.bridge.send(Command::CreateSession {
-            working_dir: directory,
-            request_id: Some(request_id),
-        });
+        let panel = self.slots[self.active].panel.clone();
+        if help {
+            // Help sends its own first prompt as soon as the session exists.
+            panel.update(cx, |panel, _| panel.mark_session_requested());
+            self.bridge.send(Command::CreateSession {
+                working_dir: directory,
+                request_id: Some(request_id),
+            });
+        } else {
+            panel.update(cx, |panel, cx| panel.defer_session(cx));
+        }
+    }
+
+    /// Stand in for the first prompt of every draft that is waiting for one.
+    #[cfg(test)]
+    pub(super) fn request_deferred_sessions(&mut self, cx: &mut Context<Self>) -> usize {
+        let mut requested = 0;
+        for slot in &self.slots {
+            if slot.panel.read(cx).session_deferred() {
+                slot.panel
+                    .update(cx, |panel, cx| panel.request_deferred_session(cx));
+                requested += 1;
+            }
+        }
+        requested
     }
 
     pub(super) fn open_remote_draft(&mut self, host: String, cx: &mut Context<Self>) {
@@ -83,12 +105,15 @@ impl Workspace {
         };
         let request_id = next_remote_draft_id(&host);
         self.remotes.failed = false;
-        self.remotes.status = Some(format!("Preparing connection to {host}…"));
+        self.remotes.status = Some(format!(
+            "Preparing connection to {}…",
+            remotes::machine_label(&host)
+        ));
         self.mount_session_draft(
             request_id.clone(),
             None,
-            if host == remotes::MANAGED_CLOUD_HOST {
-                "Jcode Cloud unavailable".into()
+            if remotes::managed_destination(&host) {
+                remotes::machine_label(&host).into()
             } else {
                 format!("Connecting to {host}…")
             },
@@ -96,7 +121,7 @@ impl Workspace {
         );
         let panel = self.slots[self.active].panel.clone();
         panel.update(cx, |panel, cx| {
-            panel.status = format!("Preparing connection to {host}…");
+            panel.status = format!("Preparing connection to {}…", remotes::machine_label(&host));
             cx.notify();
         });
         self.create_remote_draft_session(host, request_id, cx);
@@ -127,6 +152,7 @@ impl Workspace {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             },
             cx,
         );

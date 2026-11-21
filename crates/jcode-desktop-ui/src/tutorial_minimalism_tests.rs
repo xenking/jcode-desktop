@@ -27,7 +27,7 @@ fn tutorial_minimalism_measurement(cx: &mut gpui::TestAppContext) {
             "tutorial-close",
         ]
         .iter()
-        .filter(|id| vcx.debug_bounds(**id).is_some())
+        .filter(|id| vcx.debug_bounds(id).is_some())
         .count();
         println!(
             "MINIMAL_UI width={width} height={height} canvas_top={} canvas_height={} default_controls={controls} default_guide_height={} learn_tab={}",

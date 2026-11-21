@@ -13,7 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
+use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, SessionInfo};
+
+pub use jcode_sdk::HistoryPage as BoundedHistoryPage;
+
+/// Internal key for a gallery metadata reply carried over the image update path.
+pub const SESSION_IMAGE_LIST_KEY: &str = "__session_image_list__";
 
 #[path = "harness_spawn.rs"]
 mod spawn_profile;
@@ -35,24 +40,28 @@ mod transport {
     impl RemoteTransports {
         pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
             self.connect_with_progress(host, &mut |_| {})
+                .map(|(client, _)| client)
         }
 
         pub(super) fn connect_with_progress(
             &self,
             host: &str,
             progress: &mut dyn FnMut(&str),
-        ) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
-            if host == crate::managed_cloud::HOST {
-                return crate::managed_cloud::connect(
+        ) -> jcode_sdk::Result<(jcode_sdk::JcodeClient, bool)> {
+            if let Some(destination) = crate::managed_cloud::Destination::parse(host) {
+                return crate::managed_cloud::connect_with_sync_status(
                     progress,
                     format!("jcode-desktop-remote/{}", crate::client_version()),
-                    crate::managed_cloud::request_connect,
-                    jcode_sdk::JcodeClient::connect_ssh,
+                    |account, key| crate::managed_cloud::request_connect(account, destination, key),
+                    |options, _, _| jcode_sdk::JcodeClient::connect_ssh(options),
                 )
                 .map_err(|message| {
                     jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
                 });
             }
+            let host = crate::remote_targets::validate_host(host).map_err(|message| {
+                jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
+            })?;
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
                 // Temporarily disabled until inline tool responses have broader testing.
                 supports_user_response: false,
@@ -61,6 +70,7 @@ mod transport {
                 request_timeout: Some(std::time::Duration::from_secs(30)),
                 ..jcode_sdk::SshConnectOptions::new(host)
             })
+            .map(|client| (client, false))
         }
     }
 }
@@ -71,17 +81,40 @@ mod disconnect;
 mod history;
 #[path = "harness_recovery.rs"]
 mod recovery;
+#[path = "harness_search.rs"]
+mod search;
+mod tab_wait;
 
-/// Decode the host carried by a persisted remote panel ID.
+/// Test whether an ID belongs to a remote namespace, even if malformed.
+pub fn is_remote_session(session_id: &str) -> bool {
+    remote::is_remote(session_id)
+}
+
+/// Decode the destination carried by a persisted remote panel ID.
 pub fn remote_host(session_id: &str) -> Option<String> {
     remote::SessionAddress::parse(session_id).ok()?.host
 }
 
+pub fn session_address(session_id: &str) -> Option<(Option<String>, String)> {
+    let address = remote::SessionAddress::parse(session_id).ok()?;
+    Some((address.host, address.session_id))
+}
+
 const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
+
+/// A `/btw` fork inherits the whole agent prompt, tools included. Steer it to
+/// answer from the conversation instead of starting work of its own, the way a
+/// side question reads. Sent as a hidden system reminder, never as transcript
+/// text.
+const SIDE_QUESTION_REMINDER: &str = "This turn is a side question about the conversation above. Answer briefly and directly from that context. Do not call tools, do not edit files, and do not start a task.";
 
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
 pub enum Update {
+    DraftModels {
+        current: Option<String>,
+        routes: Vec<jcode_sdk::ModelRouteInfo>,
+    },
     /// Connection lifecycle status line, shown until connected.
     Status(String),
     /// Remote status persists independently of local runtime startup.
@@ -91,11 +124,21 @@ pub enum Update {
         request_id: Option<String>,
         failed: bool,
     },
+    RemoteSessions {
+        request_id: u64,
+        result: Result<Vec<SessionInfo>, String>,
+    },
     /// The runtime is up and reachable.
     Connected,
     /// The initial session list, fetched in the background.
     Sessions {
         sessions: Vec<SessionInfo>,
+    },
+    /// Facts read from each swarm worker's own record: model, effort, spend
+    /// and live phase. Sent before the catalog that lists those workers, so a
+    /// sidebar row never renders without its model.
+    WorkerFacts {
+        workers: HashMap<String, jcode_sdk::WorkerMeta>,
     },
     /// A session was created (in reply to `Command::CreateSession`).
     SessionCreated {
@@ -103,15 +146,48 @@ pub enum Update {
         /// Correlates the startup draft without consuming another creation.
         request_id: Option<String>,
     },
-    /// A session was forked from an existing panel.
+    /// A session was forked from an existing panel. `prompt` is the question
+    /// the fork was opened with: the harness has already delivered it to the
+    /// child, so the panel echoes it instead of the runtime replaying it.
     SessionForked {
         session: SessionInfo,
+        prompt: Option<String>,
+    },
+    /// A `/btw` side question started in a hidden fork of `parent_session_id`.
+    /// The answer streams as ordinary events for the child session; it must
+    /// never open a tab of its own.
+    SideQuestionStarted {
+        parent_session_id: String,
+        session: SessionInfo,
+        question: String,
     },
     /// History fetched for a session after attach.
     History {
         session_id: String,
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
+    },
+    HistoryPage {
+        session_id: String,
+        result: Result<jcode_sdk::ApiEvent, String>,
+    },
+    BoundedHistory {
+        session_id: String,
+        page: BoundedHistoryPage,
+    },
+    RewoundHistory {
+        session_id: String,
+        page: BoundedHistoryPage,
+        bounded: bool,
+    },
+    BoundedHistoryPage {
+        session_id: String,
+        result: Result<BoundedHistoryPage, String>,
+    },
+    HistoryImage {
+        session_id: String,
+        key: String,
+        result: Result<String, String>,
     },
     /// A streaming event for one session. The worker supplies the session id
     /// because some important events (notably errors) do not include one.
@@ -128,8 +204,38 @@ pub enum Update {
     MessageSubmitted {
         session_id: String,
     },
+    /// The server accepted or rejected a response to an ask request.
+    AskResponseSettled {
+        session_id: String,
+        request_id: String,
+        error: Option<String>,
+    },
     CommandFailed {
         session_id: String,
+        reason: String,
+    },
+    QueueMutationCapability {
+        session_id: String,
+        supported: bool,
+    },
+    QueueEditingCapability {
+        session_id: String,
+        supported: bool,
+    },
+    QueuedPromptEdited {
+        session_id: String,
+        prompt_id: String,
+        result: Result<jcode_sdk::api::QueuedPromptEditOutcome, String>,
+    },
+    QueueRemovalSettled {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+        result: Result<jcode_sdk::api::QueuedPromptRemovalOutcome, String>,
+    },
+    QueuePromptFailed {
+        session_id: String,
+        client_id: String,
         reason: String,
     },
     /// A reasoning effort request finished. `error` is the provider's refusal.
@@ -144,10 +250,23 @@ pub enum Update {
         session_id: String,
         state: Option<jcode_sdk::todo::TodoSnapshot>,
     },
+    TabWaitingState {
+        session_id: String,
+        waiting: bool,
+    },
+    /// Identity reported by the connected daemon, or None when unavailable.
+    OpenrigHostIdentity {
+        session_id: String,
+        self_host_id: Option<String>,
+    },
     /// A per-session connection died.
     SessionLost {
         session_id: String,
         reason: String,
+    },
+    /// The daemon is still publishing the live session's runtime.
+    SessionAttaching {
+        session_id: String,
     },
     /// A per-session connection was established again.
     SessionConnected {
@@ -169,6 +288,14 @@ pub enum Update {
     Disconnected {
         reason: String,
     },
+    /// Reply to `Command::SearchSessions`. `generation` identifies the query so
+    /// the UI can ignore answers it has already typed past.
+    SessionSearch {
+        query: String,
+        generation: u64,
+        result: Result<jcode_sdk::SessionSearchResults, String>,
+        elapsed_ms: f64,
+    },
 }
 
 /// Commands flowing from the UI into the bridge.
@@ -176,6 +303,12 @@ pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
     RefreshSessions,
+    /// Search every stored session's titles and transcripts. Answers with
+    /// `Update::SessionSearch` carrying the same `generation`.
+    SearchSessions {
+        query: String,
+        generation: u64,
+    },
     RefreshRuntime {
         session_id: String,
     },
@@ -197,8 +330,27 @@ pub enum Command {
         working_dir: Option<String>,
         request_id: Option<String>,
     },
+    ListRemoteSessions {
+        host: String,
+        request_id: u64,
+    },
     /// Open a dedicated connection for this session (attach + stream).
     Watch {
+        session_id: String,
+    },
+    GetCompactedHistory {
+        session_id: String,
+        visible_messages: usize,
+    },
+    GetHistoryPage {
+        session_id: String,
+        before: Option<String>,
+    },
+    GetHistoryImage {
+        session_id: String,
+        key: String,
+    },
+    ListSessionImages {
         session_id: String,
     },
     /// Drop a session's dedicated connection.
@@ -209,13 +361,76 @@ pub enum Command {
         session_id: String,
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+    },
+    SendSkill {
+        session_id: String,
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+        skill: String,
+    },
+    QueuePrompt {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+    },
+    RemoveQueuedPrompt {
+        session_id: String,
+        prompt: jcode_sdk::api::QueuedPrompt,
+        edit: bool,
+    },
+    /// Hold a queued prompt open for editing, or release the hold.
+    SetQueuedPromptEditing {
+        session_id: String,
+        prompt_id: String,
+        editing: bool,
+    },
+    /// Replace a still-queued prompt in place.
+    EditQueuedPrompt {
+        session_id: String,
+        prompt_id: String,
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+    },
+    ReorderQueuedPrompts {
+        session_id: String,
+        order: Vec<String>,
+    },
+    SetQueuedPromptMode {
+        session_id: String,
+        client_id: String,
+        mode: jcode_sdk::api::QueuedPromptMode,
+    },
+    InterruptQueuedPrompt {
+        session_id: String,
+        client_id: String,
+    },
+    InterruptQueuedPrompts {
+        session_id: String,
+        ids: Vec<String>,
+    },
+    CancelQueuedPrompt {
+        session_id: String,
+        client_id: String,
     },
     Cancel {
+        session_id: String,
+    },
+    ForceStopTurn {
         session_id: String,
     },
     /// Move the running tool call to the background (the TUI's Alt+B).
     BackgroundTool {
         session_id: String,
+    },
+    WatchBackgroundTaskOutput {
+        session_id: String,
+        task_id: Option<String>,
+    },
+    CancelBackgroundTask {
+        session_id: String,
+        task_id: String,
     },
     /// Answer an `ask` tool request. `AskResponse::default()` declines.
     AskResponse {
@@ -230,6 +445,21 @@ pub enum Command {
         session_id: String,
         prompt: String,
     },
+    /// `/btw`: answer `question` in a hidden fork so the source session's
+    /// transcript and prompt cache stay untouched.
+    SideQuestion {
+        session_id: String,
+        question: String,
+    },
+    /// Drop the connection to a dismissed side-question fork. The archived
+    /// session stays on disk.
+    DismissSideQuestion {
+        session_id: String,
+    },
+    /// Bring a promoted side-question fork back into the session list.
+    RestoreSideQuestion {
+        session_id: String,
+    },
     Transfer {
         session_id: String,
     },
@@ -237,6 +467,20 @@ pub enum Command {
     /// Answered with `Update::TodoState`.
     TodoState {
         session_id: String,
+    },
+    /// Read a plan for the sidebar without owning or attaching to its session.
+    ReadTodoSnapshot {
+        session_id: String,
+        reply: async_channel::Sender<Option<jcode_sdk::todo::TodoSnapshot>>,
+    },
+    ReadContextBreakdown {
+        target: ContextBreakdownTarget,
+        reply: async_channel::Sender<ContextInspection>,
+    },
+    ShakeTools {
+        session_id: String,
+        action: jcode_sdk::api::ShakeToolsAction,
+        reply: async_channel::Sender<Result<jcode_sdk::api::ShakeToolsResult, String>>,
     },
     /// Apply the persistent effects of a follow-up decision.
     AckTodoFollowUp {
@@ -269,11 +513,34 @@ pub enum Command {
         client: JcodeClient,
         prompt: String,
     },
+    /// Retain a side-question child connection and queue its question.
+    SideQuestionInternal {
+        parent_session_id: String,
+        session: SessionInfo,
+        client: JcodeClient,
+        question: String,
+    },
     /// Internal handoff from the asynchronous creator back to the bridge loop.
     CreatedInternal {
         session: SessionInfo,
         client: JcodeClient,
         request_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Default)]
+pub struct ContextInspection {
+    pub breakdown: Option<jcode_sdk::api::ContextBreakdown>,
+    pub shake_supported: bool,
+}
+
+#[derive(Debug)]
+pub enum ContextBreakdownTarget {
+    Session(String),
+    SessionMeter(String),
+    Draft {
+        model: Option<String>,
+        cwd: Option<String>,
     },
 }
 
@@ -286,6 +553,7 @@ pub enum SessionOperation {
     /// Bookmark (`true`) or unbookmark. A label also becomes the title.
     SetSaved(bool, Option<String>),
     Rewind(usize),
+    RewindTranscript(jcode_sdk::api::RewindAnchor),
     RewindUndo,
     /// The user acted on an agent applet instance.
     AppletAction {
@@ -300,15 +568,47 @@ pub enum SessionOperation {
 
 enum SessionCommand {
     RefreshRuntime,
+    GetCompactedHistory(usize),
+    GetHistoryPage(Option<String>),
+    GetHistoryImage(String),
+    ListSessionImages,
     TodoState,
     AckTodoFollowUp(jcode_sdk::todo::TodoEffects),
     AuthChanged(String),
     Send {
         content: String,
         images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+    },
+    SendSkill {
+        content: String,
+        images: Vec<(String, String)>,
+        attachments: Vec<jcode_sdk::api::Attachment>,
+        skill: String,
+    },
+    QueuePrompt(jcode_sdk::api::QueuedPrompt),
+    RemoveQueuedPrompt(jcode_sdk::api::QueuedPrompt, bool),
+    SetQueuedPromptEditing(String, bool),
+    EditQueuedPrompt(
+        String,
+        String,
+        Vec<(String, String)>,
+        Vec<jcode_sdk::api::Attachment>,
+    ),
+    ReorderQueuedPrompts(Vec<String>),
+    SetQueuedPromptMode(String, jcode_sdk::api::QueuedPromptMode),
+    InterruptQueuedPrompt(String),
+    InterruptQueuedPrompts(Vec<String>),
+    CancelQueuedPrompt(String),
+    /// Send a side question with its steering hidden from the transcript.
+    SendSideQuestion {
+        question: String,
     },
     Cancel,
+    ForceStopTurn,
     BackgroundTool,
+    WatchBackgroundTaskOutput(Option<String>),
+    CancelBackgroundTask(String),
     AskResponse {
         request_id: String,
         response: jcode_sdk::AskResponse,
@@ -318,6 +618,11 @@ enum SessionCommand {
         prompt: String,
         internal: Sender<Command>,
     },
+    SideQuestion {
+        question: String,
+        internal: Sender<Command>,
+    },
+    RestoreSession,
     Transfer,
     SetModel(String),
     RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>),
@@ -347,6 +652,41 @@ impl Bridge {
         let _ = self.commands.send(command);
     }
 
+    pub async fn read_todo_snapshot(
+        &self,
+        session_id: String,
+    ) -> Option<jcode_sdk::todo::TodoSnapshot> {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ReadTodoSnapshot { session_id, reply });
+        result.recv().await.ok().flatten()
+    }
+
+    pub async fn read_context_breakdown(
+        &self,
+        target: ContextBreakdownTarget,
+    ) -> ContextInspection {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ReadContextBreakdown { target, reply });
+        result.recv().await.unwrap_or_default()
+    }
+
+    pub async fn shake_tools(
+        &self,
+        session_id: String,
+        action: jcode_sdk::api::ShakeToolsAction,
+    ) -> Result<jcode_sdk::api::ShakeToolsResult, String> {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ShakeTools {
+            session_id,
+            action,
+            reply,
+        });
+        result
+            .recv()
+            .await
+            .map_err(|_| "The bridge disconnected. Shake outcome unknown.".to_owned())?
+    }
+
     /// Drain every pending update without blocking (test helpers only).
     #[cfg(any(test, feature = "test-support"))]
     pub fn drain(&self) -> Vec<Update> {
@@ -370,11 +710,11 @@ impl Bridge {
         let mut runtime_slot: HashMap<String, usize> = HashMap::new();
         let mut live = 0usize;
         let mut push = |slots: &mut Vec<Option<Update>>, live: &mut usize, update: Update| {
-            if let Some(session) = runtime_info_session(&update) {
-                if let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
-                    slots[previous] = None;
-                    *live -= 1;
-                }
+            if let Some(session) = runtime_info_session(&update)
+                && let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len())
+            {
+                slots[previous] = None;
+                *live -= 1;
             }
             slots.push(Some(update));
             *live += 1;
@@ -455,6 +795,7 @@ fn update_channel() -> (UpdateSender, UpdateReceiver) {
 }
 
 impl UpdateSender {
+    #[allow(clippy::result_large_err)]
     fn send(&self, update: Update) -> Result<(), async_channel::SendError<Update>> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         if self.wake.is_closed() {
@@ -462,10 +803,10 @@ impl UpdateSender {
         }
         let sequence = queue.sequence;
         queue.sequence = sequence.checked_add(1).expect("update sequence exhausted");
-        if let Some(session) = runtime_info_session(&update) {
-            if let Some(previous) = queue.runtime.insert(session.to_owned(), sequence) {
-                queue.pending.remove(&previous);
-            }
+        if let Some(session) = runtime_info_session(&update)
+            && let Some(previous) = queue.runtime.insert(session.to_owned(), sequence)
+        {
+            queue.pending.remove(&previous);
         }
         // Replacements take their new chronological position, not the old
         // snapshot's position ahead of intervening deltas and lifecycle events.
@@ -476,6 +817,7 @@ impl UpdateSender {
     }
 
     #[cfg(test)]
+    #[allow(clippy::result_large_err)]
     fn try_send(&self, update: Update) -> Result<(), async_channel::SendError<Update>> {
         self.send(update)
     }
@@ -485,10 +827,10 @@ impl UpdateReceiver {
     fn try_recv(&self) -> Result<Update, async_channel::TryRecvError> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         if let Some((sequence, update)) = queue.pending.pop_first() {
-            if let Some(session) = runtime_info_session(&update) {
-                if queue.runtime.get(session) == Some(&sequence) {
-                    queue.runtime.remove(session);
-                }
+            if let Some(session) = runtime_info_session(&update)
+                && queue.runtime.get(session) == Some(&sequence)
+            {
+                queue.runtime.remove(session);
             }
             let more = !queue.pending.is_empty();
             drop(queue);
@@ -572,8 +914,8 @@ impl Drop for UpdateReceiver {
 
 /// Spawn the bridge. Returns immediately; connection happens on the thread.
 pub fn spawn() -> Bridge {
-    if screenshot_mode() {
-        return spawn_inert();
+    if screenshot_mode() && controlled_runtime_socket().is_none() {
+        return spawn_screenshot();
     }
     let (update_tx, update_rx) = update_channel();
     let (command_tx, command_rx) = channel::<Command>();
@@ -590,6 +932,214 @@ pub fn spawn() -> Bridge {
         _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
         commands: command_tx,
         updates: update_rx,
+    }
+}
+
+#[path = "screenshot_history.rs"]
+mod screenshot_history;
+
+/// A bridge that answers from fixtures, so the screenshot harness can
+/// render the results screen without a daemon, an index, or a network.
+fn spawn_screenshot() -> Bridge {
+    let (update_tx, update_rx) = update_channel();
+    let (command_tx, command_rx) = channel::<Command>();
+    std::thread::Builder::new()
+        .name("jcode-bridge-screenshot".into())
+        .spawn(move || {
+            let history = screenshot_history::enabled().then(screenshot_history::session);
+            let draft = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
+                    == Ok("draft-session");
+            if draft {
+                let routes = ["gpt-5.6-terra", "gpt-5.6-sol"]
+                    .into_iter()
+                    .map(|model| jcode_sdk::ModelRouteInfo {
+                        model: model.into(),
+                        provider: "openai".into(),
+                        api_method: "openai-api".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    })
+                    .collect();
+                let _ = update_tx.send(Update::DraftModels {
+                    current: Some("gpt-5.6-terra".into()),
+                    routes,
+                });
+            }
+            while let Ok(command) = command_rx.recv() {
+                if draft
+                    && let Command::CreateSession {
+                        working_dir,
+                        request_id,
+                    } = &command
+                {
+                    let session: SessionInfo = serde_json::from_value(serde_json::json!({
+                        "session_id": "session_verifier_draft", "working_dir": working_dir,
+                        "title": "Native draft verification", "status": "idle"
+                    }))
+                    .expect("draft fixture session");
+                    let session_id = session.session_id.clone();
+                    let _ = update_tx.send(Update::SessionCreated {
+                        session,
+                        request_id: request_id.clone(),
+                    });
+                    let _ = update_tx.send(Update::History {
+                        session_id,
+                        messages: vec![],
+                        images: vec![],
+                    });
+                    continue;
+                }
+                if draft {
+                    match &command {
+                        Command::Send { session_id, .. } => {
+                            let _ = update_tx.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::SessionStatus {
+                                    session_id: session_id.clone(),
+                                    status: "running_tools".into(),
+                                    pending_soft_interrupts: None,
+                                },
+                            });
+                            continue;
+                        }
+                        Command::SideQuestion {
+                            session_id,
+                            question,
+                        } => {
+                            let child = "session_verifier_side_question";
+                            let session = serde_json::from_value(serde_json::json!({
+                                "session_id": child, "status": "idle"
+                            }))
+                            .expect("side question fixture session");
+                            let _ = update_tx.send(Update::SideQuestionStarted {
+                                parent_session_id: session_id.clone(),
+                                session,
+                                question: question.clone(),
+                            });
+                            for event in [
+                                ApiEvent::TextDelta {
+                                    session_id: child.into(),
+                                    message_id: None,
+                                    text: "The retry policy uses a short backoff.".into(),
+                                },
+                                ApiEvent::TurnDone {
+                                    session_id: child.into(),
+                                    pending_soft_interrupts: None,
+                                },
+                            ] {
+                                let _ = update_tx.send(Update::Event {
+                                    session_id: child.into(),
+                                    event,
+                                });
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Command::ReadTodoSnapshot { session_id, reply } = &command {
+                    let _ = reply.try_send(persisted_todo_snapshot(session_id));
+                    continue;
+                }
+                if let Some(update) = history
+                    .as_ref()
+                    .and_then(|session| screenshot_history::reply(session, &command))
+                {
+                    let _ = update_tx.send(update);
+                    continue;
+                }
+                let Command::SearchSessions { query, generation } = command else {
+                    continue;
+                };
+                let started = std::time::Instant::now();
+                let _ = update_tx.send(Update::SessionSearch {
+                    query: query.clone(),
+                    generation,
+                    result: Ok(screenshot_search_results(&query)),
+                    elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
+                });
+            }
+        })
+        .expect("spawn screenshot bridge thread");
+    Bridge {
+        _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
+        commands: command_tx,
+        updates: update_rx,
+    }
+}
+
+/// Hit rows for the screenshot: several sessions, a user prompt whose raw
+/// snippet is full of newlines, assistant answers with their models, and a
+/// title match.
+fn screenshot_search_results(query: &str) -> jcode_sdk::SessionSearchResults {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_default();
+    let minute = 60_000i64;
+    let highlight = |start: u32, end: u32| jcode_sdk::SessionSearchHighlight { start, end };
+    let prompt = "Can you make the global search results readable?\n\nThe rows currently spread over four lines, and the match lands far to the right of the text that introduces it, which looks broken.";
+    let prompt_start = prompt.find("readable").unwrap_or_default() as u32;
+    let answer = "Done. Each hit is now one line: the snippet is whitespace-collapsed and windowed about forty characters before the match, with ellipses on both sides.";
+    let answer_start = answer.find("whitespace-collapsed").unwrap_or_default() as u32;
+    jcode_sdk::SessionSearchResults {
+        query: query.to_string(),
+        titles: vec![jcode_sdk::SessionSearchHit {
+            session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+            title: "Global search: one line per hit".into(),
+            role: jcode_sdk::SessionSearchRole::Title,
+            model: None,
+            snippet: "Global search: one line per hit".into(),
+            highlights: vec![highlight(0, 6)],
+            timestamp_ms: now - 3 * minute,
+            message_id: None,
+        }],
+        messages: vec![
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+                title: "Global search: one line per hit".into(),
+                role: jcode_sdk::SessionSearchRole::User,
+                model: None,
+                snippet: prompt.into(),
+                highlights: vec![highlight(prompt_start, prompt_start + 8)],
+                timestamp_ms: now - 3 * 60 * minute,
+                message_id: Some("message_1".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_swarm_1794742000000_aaaaaaaaaaaa".into(),
+                title: "Global search: one line per hit".into(),
+                role: jcode_sdk::SessionSearchRole::Assistant,
+                model: Some("claude-opus-5-5".into()),
+                snippet: answer.into(),
+                highlights: vec![highlight(answer_start, answer_start + 20)],
+                timestamp_ms: now - 2 * 60 * minute,
+                message_id: Some("message_2".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_otter_1794720000000_bbbbbbbbbbbb".into(),
+                title: "Indexer: classify by message source".into(),
+                role: jcode_sdk::SessionSearchRole::Assistant,
+                model: Some("deepseek-v4.1-flash".into()),
+                snippet: "The indexer now classifies a user-role message by its source, so an auto-poke or a swarm report is no longer attributed to you.".into(),
+                highlights: vec![highlight(26, 34)],
+                timestamp_ms: now - 5 * 3_600_000,
+                message_id: Some("message_3".into()),
+            },
+            jcode_sdk::SessionSearchHit {
+                session_id: "session_heron_1794700000000_cccccccccccc".into(),
+                title: "Titlebar inset for full-height screens".into(),
+                role: jcode_sdk::SessionSearchRole::User,
+                model: None,
+                snippet: "The search screen draws under the traffic lights, so the heading collides with the red and yellow buttons.".into(),
+                highlights: vec![highlight(4, 10)],
+                timestamp_ms: now - 27 * 3_600_000,
+                message_id: Some("message_4".into()),
+            },
+        ],
+        indexed_sessions: 214,
+        truncated: false,
     }
 }
 
@@ -629,18 +1179,49 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
     )
 }
 
+pub fn controlled_runtime_socket() -> Option<std::path::PathBuf> {
+    if !screenshot_mode()
+        || std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() != Ok("1")
+        || std::env::var("JCODE_TEST_SESSION").as_deref() != Ok("1")
+    {
+        return None;
+    }
+    let socket =
+        std::path::PathBuf::from(std::env::var_os("JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET")?);
+    let home = jcode_home()?;
+    (socket.parent() == Some(home.as_path()) && socket.is_absolute()).then_some(socket)
+}
+
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
-    let attempt = || {
-        JcodeClient::connect(ConnectOptions {
+    if let Some(socket) = controlled_runtime_socket() {
+        return JcodeClient::connect(ConnectOptions {
+            socket_path: Some(socket),
+            client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
+            ensure_runtime: false,
+            supports_user_response: false,
+            ..Default::default()
+        });
+    }
+    let attempt = || -> jcode_sdk::Result<JcodeClient> {
+        let client = JcodeClient::connect(ConnectOptions {
+            socket_path: Some(crate::runtime_generation::local_bridge_socket()?),
             client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
             // Temporarily disabled until inline tool responses have broader testing.
             supports_user_response: false,
             ..Default::default()
-        })
+        })?;
+        crate::runtime_generation::verify_local_bridge(client.runtime_identity.as_ref())?;
+        crate::runtime_generation::verify_capabilities(&client)?;
+        Ok(client)
     };
     match attempt() {
-        Err(error) if error.kind == jcode_sdk::ErrorKind::ConnectFailed => {
+        Err(error)
+            if matches!(
+                error.kind,
+                jcode_sdk::ErrorKind::ConnectFailed | jcode_sdk::ErrorKind::HandshakeFailed
+            ) =>
+        {
             // The runtime was started once at bridge startup. If the harness
             // API bridge later dies (a self-dev restart interrupted halfway,
             // a crash), its socket file is left behind with nothing listening
@@ -667,7 +1248,7 @@ const RUNTIME_REVIVE_INTERVAL: Duration = Duration::from_secs(2);
 /// daemon socket away for a moment, and spawning a competing `jcode serve`
 /// from every reconnecting panel would fight the handoff.
 fn revive_local_runtime() -> bool {
-    if !crate::platform::socket_live(&jcode_sdk::api::legacy_socket_path()) {
+    if !crate::runtime_generation::daemon_allows_bridge_revive() {
         return false;
     }
     static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
@@ -680,14 +1261,15 @@ fn revive_local_runtime() -> bool {
         }
         *last = Some(std::time::Instant::now());
     }
-    let options = LaunchOptions {
-        binary: Some(crate::platform::companion_executable("jcode")),
-        ..Default::default()
+    let Ok(options) = crate::runtime_generation::launch_options() else {
+        return false;
     };
     let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
     // The SDK treats an existing socket file as a running bridge, so a dead
     // bridge's leftover file would make this a no-op forever.
-    crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
+    if let Some(socket) = &options.api_socket {
+        crate::platform::clear_stale_socket(socket);
+    }
     eprintln!("jcode desktop: reviving harness API bridge");
     match jcode_sdk::ensure_runtime(&options, &|_| {}) {
         Ok(()) => true,
@@ -751,19 +1333,27 @@ fn start_local_runtime(updates: UpdateSender) {
         {
             return;
         }
-        let options = LaunchOptions {
-            binary: Some(crate::platform::companion_executable("jcode")),
-            ..Default::default()
-        };
-        let started = {
+        if controlled_runtime_socket().is_some() {
+            if connect("control-runtime").is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        let started = crate::runtime_generation::launch_options().and_then(|options| {
             let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
-            crate::platform::clear_stale_socket(&jcode_sdk::api::api_socket_path());
+            if let Some(socket) = &options.api_socket {
+                crate::platform::clear_stale_socket(socket);
+            }
             jcode_sdk::ensure_runtime(&options, &|status| {
                 let _ = updates.send(Update::Status(status.to_string()));
             })
-        };
+        });
         match started {
-            Ok(()) => break,
+            Ok(()) => {
+                crate::runtime_generation::retire_stale_bridges();
+                break;
+            }
             Err(error) => {
                 let _ = updates.send(Update::Disconnected {
                     reason: format!("{error}; retrying"),
@@ -780,6 +1370,11 @@ fn start_local_runtime(updates: UpdateSender) {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
     let _ = updates.send(Update::Connected);
+    if let Ok((current, routes)) =
+        connect("draft-models").and_then(|client| client.list_draft_models())
+    {
+        let _ = updates.send(Update::DraftModels { current, routes });
+    }
 }
 
 fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {
@@ -809,14 +1404,49 @@ fn run_with_transports(
 ) {
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    let edit_home = jcode_home();
+    let mut edit_stamp = edit_home
+        .as_deref()
+        .and_then(crate::edit_stats_watch::stamp);
+    let mut next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
 
-    while let Ok(command) = commands.recv() {
+    loop {
+        if std::time::Instant::now() >= next_edit_check {
+            next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+            if let Some(current) = edit_home
+                .as_deref()
+                .and_then(crate::edit_stats_watch::stamp)
+            {
+                if edit_stamp
+                    .as_ref()
+                    .is_some_and(|previous| *previous != current)
+                {
+                    // If another refresh is running, keep the old stamp and retry.
+                    if !session_refresh_in_flight.load(std::sync::atomic::Ordering::Acquire) {
+                        refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone());
+                        edit_stamp = Some(current);
+                    }
+                } else {
+                    edit_stamp = Some(current);
+                }
+            }
+        }
+        let timeout = next_edit_check.saturating_duration_since(std::time::Instant::now());
+        let command = match commands.recv_timeout(timeout) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             Command::Shutdown => break,
             Command::RefreshSessions => {
                 refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
+            }
+            Command::SearchSessions { query, generation } => {
+                search::spawn_search(updates.clone(), query, generation)
             }
             Command::CreateSession {
                 working_dir,
@@ -868,6 +1498,14 @@ fn run_with_transports(
                     })
                     .expect("spawn create thread");
             }
+            Command::ListRemoteSessions { host, request_id } => {
+                let transports = transports.clone();
+                let updates = updates.clone();
+                std::thread::spawn(move || {
+                    let result = list_remote_sessions(&host, |host| transports.connect(host));
+                    let _ = updates.send(Update::RemoteSessions { request_id, result });
+                });
+            }
             Command::CreateRemoteSession {
                 host,
                 working_dir,
@@ -908,7 +1546,10 @@ fn run_with_transports(
                 prompt,
             } => {
                 let session_id = session.session_id.clone();
-                let _ = updates.send(Update::SessionForked { session });
+                let _ = updates.send(Update::SessionForked {
+                    session,
+                    prompt: Some(prompt.clone()),
+                });
                 let worker = spawn_attached_session_worker(
                     session_id.clone(),
                     client,
@@ -918,8 +1559,28 @@ fn run_with_transports(
                 let _ = worker.send(SessionCommand::Send {
                     content: prompt,
                     images: vec![],
+                    attachments: vec![],
                 });
                 if let Some(old) = workers.insert(session_id, worker) {
+                    let _ = old.send(SessionCommand::Stop);
+                }
+            }
+            Command::SideQuestionInternal {
+                parent_session_id,
+                session,
+                client,
+                question,
+            } => {
+                let child_id = session.session_id.clone();
+                let _ = updates.send(Update::SideQuestionStarted {
+                    parent_session_id,
+                    session,
+                    question: question.clone(),
+                });
+                let worker =
+                    spawn_attached_session_worker(child_id.clone(), client, &updates, &transports);
+                let _ = worker.send(SessionCommand::SendSideQuestion { question });
+                if let Some(old) = workers.insert(child_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
                 }
             }
@@ -951,6 +1612,41 @@ fn run_with_transports(
             Command::Watch { session_id } => {
                 ensure_session_worker(&mut workers, session_id, &updates, &transports);
             }
+            Command::GetCompactedHistory {
+                session_id,
+                visible_messages,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetCompactedHistory(visible_messages),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::GetHistoryPage { session_id, before } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetHistoryPage(before),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::GetHistoryImage { session_id, key } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::GetHistoryImage(key),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ListSessionImages { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ListSessionImages,
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
             Command::Unwatch { session_id } => {
                 if let Some(worker) = workers.remove(&session_id) {
                     let _ = worker.send(SessionCommand::Stop);
@@ -960,15 +1656,138 @@ fn run_with_transports(
                 session_id,
                 content,
                 images,
+                attachments,
             } => {
-                let command = SessionCommand::Send { content, images };
+                let command = SessionCommand::Send {
+                    content,
+                    images,
+                    attachments,
+                };
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
             }
+            Command::SendSkill {
+                session_id,
+                content,
+                images,
+                attachments,
+                skill,
+            } => {
+                let command = SessionCommand::SendSkill {
+                    content,
+                    images,
+                    attachments,
+                    skill,
+                };
+                send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates, &transports)
+                });
+            }
+            Command::QueuePrompt { session_id, prompt } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::QueuePrompt(prompt),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::RemoveQueuedPrompt {
+                session_id,
+                prompt,
+                edit,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RemoveQueuedPrompt(prompt, edit),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SetQueuedPromptEditing {
+                session_id,
+                prompt_id,
+                editing,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SetQueuedPromptEditing(prompt_id, editing),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::EditQueuedPrompt {
+                session_id,
+                prompt_id,
+                content,
+                images,
+                attachments,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ReorderQueuedPrompts { session_id, order } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ReorderQueuedPrompts(order),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SetQueuedPromptMode {
+                session_id,
+                client_id,
+                mode,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SetQueuedPromptMode(client_id, mode),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::InterruptQueuedPrompt {
+                session_id,
+                client_id,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::InterruptQueuedPrompt(client_id),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::InterruptQueuedPrompts { session_id, ids } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::InterruptQueuedPrompts(ids),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::CancelQueuedPrompt {
+                session_id,
+                client_id,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::CancelQueuedPrompt(client_id),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
             Command::Cancel { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
                     let _ = worker.send(SessionCommand::Cancel);
+                }
+            }
+            Command::ForceStopTurn { session_id } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::ForceStopTurn);
                 }
             }
             Command::BackgroundTool { session_id } => {
@@ -976,15 +1795,40 @@ fn run_with_transports(
                     let _ = worker.send(SessionCommand::BackgroundTool);
                 }
             }
+            Command::WatchBackgroundTaskOutput {
+                session_id,
+                task_id,
+            } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::WatchBackgroundTaskOutput(task_id));
+                }
+            }
+            Command::CancelBackgroundTask {
+                session_id,
+                task_id,
+            } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::CancelBackgroundTask(task_id));
+                }
+            }
             Command::AskResponse {
                 session_id,
                 request_id,
                 response,
             } => {
-                if let Some(worker) = workers.get(&session_id) {
-                    let _ = worker.send(SessionCommand::AskResponse {
+                let sent = workers.get(&session_id).is_some_and(|worker| {
+                    worker
+                        .send(SessionCommand::AskResponse {
+                            request_id: request_id.clone(),
+                            response,
+                        })
+                        .is_ok()
+                });
+                if !sent {
+                    let _ = updates.send(Update::AskResponseSettled {
+                        session_id,
                         request_id,
-                        response,
+                        error: Some("Session is not connected. Your answer is retained; retry when it reconnects.".into()),
                     });
                 }
             }
@@ -1057,6 +1901,44 @@ fn run_with_transports(
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
+            Command::ReadTodoSnapshot { session_id, reply } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-read-todo".into())
+                    .spawn(move || {
+                        let snapshot = persisted_todo_snapshot(&session_id).or_else(|| {
+                            let address = remote::SessionAddress::parse(&session_id).ok()?;
+                            let client = match &address.host {
+                                Some(host) => transports.connect(host),
+                                None => connect("todo-view"),
+                            }
+                            .ok()?;
+                            client.todo_state(&address.session_id).ok()
+                        });
+                        let _ = reply.try_send(snapshot);
+                    });
+            }
+            Command::ReadContextBreakdown { target, reply } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-context".into())
+                    .spawn(move || {
+                        let breakdown = read_context_breakdown(target, &transports);
+                        let _ = reply.try_send(breakdown);
+                    });
+            }
+            Command::ShakeTools {
+                session_id,
+                action,
+                reply,
+            } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-shake-tools".into())
+                    .spawn(move || {
+                        let _ = reply.try_send(shake_tools(&session_id, action, &transports));
+                    });
+            }
             Command::AckTodoFollowUp {
                 session_id,
                 effects,
@@ -1076,6 +1958,33 @@ fn run_with_transports(
                         prompt,
                         internal: internal.clone(),
                     },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::SideQuestion {
+                session_id,
+                question,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::SideQuestion {
+                        question,
+                        internal: internal.clone(),
+                    },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::DismissSideQuestion { session_id } => {
+                if let Some(worker) = workers.remove(&session_id) {
+                    let _ = worker.send(SessionCommand::Stop);
+                }
+            }
+            Command::RestoreSideQuestion { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RestoreSession,
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -1106,6 +2015,23 @@ fn stop_session_workers(workers: HashMap<String, Sender<SessionCommand>>) {
     }
 }
 
+fn list_remote_sessions(
+    host: &str,
+    connect: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
+) -> Result<Vec<SessionInfo>, String> {
+    let host = crate::remote_targets::validate_destination(host)?;
+    let client = connect(&host).map_err(|error| error.to_string())?;
+    let address = remote::SessionAddress {
+        host: Some(host),
+        session_id: String::new(),
+    };
+    let sessions = client.list_sessions().map_err(|error| error.to_string())?;
+    Ok(sessions
+        .into_iter()
+        .map(|session| address.session_info(session))
+        .collect())
+}
+
 /// A create is deliberately single-attempt, even for a startup request. An
 /// ambiguous timeout must not produce extra sessions on a recovered host.
 fn create_remote_session(
@@ -1114,10 +2040,10 @@ fn create_remote_session(
     request_id: Option<String>,
     updates: UpdateSender,
     internal: Sender<Command>,
-    connector: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
+    connector: impl FnOnce(&str) -> jcode_sdk::Result<(JcodeClient, bool)>,
 ) {
-    let result = crate::remote_targets::validate_host(&host).and_then(|host| {
-        let managed = host == crate::managed_cloud::HOST;
+    let result = crate::remote_targets::validate_destination(&host).and_then(|host| {
+        let managed = crate::managed_cloud::Destination::parse(&host).is_some();
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed {
@@ -1128,7 +2054,7 @@ fn create_remote_session(
             request_id: request_id.clone(),
             failed: false,
         });
-        let client = connector(&host).map_err(|error| error.to_string())?;
+        let (client, self_hosted) = connector(&host).map_err(|error| error.to_string())?;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed {
@@ -1142,7 +2068,8 @@ fn create_remote_session(
         let working_dir = working_dir.or_else(|| {
             // The managed bootstrap creates this persistent workspace. Naming
             // it explicitly also lets older cloud bridges report the directory.
-            managed.then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
+            // A self-hosted machine has no such folder and starts in its home.
+            (managed && !self_hosted).then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
         });
         let mut session = client
             .create_session(working_dir.clone())
@@ -1150,7 +2077,11 @@ fn create_remote_session(
         if session.working_dir.as_deref().is_none_or(str::is_empty) {
             session.working_dir = working_dir;
         }
-        if managed && !screenshot_mode() && !cfg!(any(test, feature = "test-support")) {
+        if managed
+            && !self_hosted
+            && !screenshot_mode()
+            && !cfg!(any(test, feature = "test-support"))
+        {
             // Start on this computer's default model and effort, not the
             // cloud daemon's. A failure keeps the session on its current model.
             let defaults = crate::managed_cloud_parity::Snapshot::session_defaults();
@@ -1221,10 +2152,11 @@ fn refresh_sessions(
                     started.elapsed().as_secs_f64() * 1_000.0,
                     sessions.len()
                 );
+                send_worker_facts(&updates, &sessions);
                 let _ = updates.send(Update::Sessions { sessions });
             }
             let started = std::time::Instant::now();
-            let api_sessions =
+            let listed =
                 match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
                     Ok(sessions) => sessions,
                     Err(error) => {
@@ -1235,7 +2167,7 @@ fn refresh_sessions(
                         Vec::new()
                     }
                 };
-            let mut sessions = merge_persisted_sessions(api_sessions, home.as_deref());
+            let mut sessions = merge_persisted_sessions(listed, home.as_deref());
             jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
             jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
             eprintln!(
@@ -1243,10 +2175,22 @@ fn refresh_sessions(
                 started.elapsed().as_secs_f64() * 1_000.0,
                 sessions.len()
             );
+            send_worker_facts(&updates, &sessions);
             let _ = updates.send(Update::Sessions { sessions });
             in_flight.store(false, std::sync::atomic::Ordering::Release);
         })
         .expect("spawn session list thread");
+}
+
+/// Publish what each swarm worker's own record says about it, before the
+/// catalog that lists the workers. A worker's model, effort and spend are not
+/// in the catalog entry, and re-reading its transcript in the UI thread would
+/// stall the sidebar.
+fn send_worker_facts(updates: &UpdateSender, sessions: &[SessionInfo]) {
+    let workers = jcode_sdk::local_worker_meta(sessions);
+    if !workers.is_empty() {
+        let _ = updates.send(Update::WorkerFacts { workers });
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1258,6 +2202,14 @@ struct PersistedSession {
     #[serde(default)]
     custom_title: Option<String>,
     #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    pinned_skills: Vec<String>,
+    #[serde(default)]
+    pinned_skill: Option<String>,
+    #[serde(default)]
     saved: bool,
     #[serde(default)]
     save_label: Option<String>,
@@ -1267,9 +2219,40 @@ struct PersistedSession {
     /// owner is gone crashed without writing its final status.
     #[serde(default)]
     last_pid: Option<u32>,
+    /// Session this one was created from: a swarm coordinator, or a user fork.
+    #[serde(default)]
+    parent_id: Option<String>,
+    /// Set for sessions the daemon spawns headless as swarm workers.
+    #[serde(default)]
+    is_debug: bool,
 }
 
 impl PersistedSession {
+    fn catalog_context(&self) -> Option<jcode_sdk::api::SessionCatalogContext> {
+        let modes = if self.pinned_skills.is_empty() {
+            self.pinned_skill.iter().cloned().collect()
+        } else {
+            self.pinned_skills.clone()
+        };
+        (self.model.is_some() || self.reasoning_effort.is_some() || !modes.is_empty()).then(|| {
+            jcode_sdk::api::SessionCatalogContext {
+                model: self.model.clone(),
+                reasoning_effort: self.reasoning_effort.clone(),
+                modes,
+                cache_expires_at_ms: None,
+            }
+        })
+    }
+
+    /// The coordinator that owns this session. A transcript fork also has a
+    /// `parent_id`, but only daemon-spawned workers are `is_debug`, and only
+    /// swarm ownership may nest a session under another in the sidebar.
+    fn swarm_parent(&self) -> Option<String> {
+        self.parent_id
+            .clone()
+            .filter(|parent| self.is_debug && !parent.trim().is_empty())
+    }
+
     /// Lifecycle status as the TUI picker reports it, including crashes the
     /// dead process never had the chance to persist.
     fn lifecycle_status(&self) -> String {
@@ -1387,6 +2370,15 @@ pub fn todo_progress_in(home: &Path, sessions: &[SessionInfo]) -> HashMap<String
             })
         })
         .collect()
+}
+
+fn persisted_todo_snapshot(session_id: &str) -> Option<jcode_sdk::todo::TodoSnapshot> {
+    use jcode_sdk::todo::store;
+    if !store::is_safe_session_id(session_id) {
+        return None;
+    }
+    let snapshot = store::load_snapshot(&jcode_home()?, session_id);
+    (!snapshot.todos.is_empty()).then_some(snapshot)
 }
 
 /// One session a live process owns, for the orchestration panel. Built from
@@ -1573,6 +2565,12 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         title: json_string_field(&head, "title", false),
         custom_title: json_string_field(&head, "custom_title", false)
             .or_else(|| json_string_field(&tail, "custom_title", true)),
+        model: json_string_field(&tail, "model", true),
+        reasoning_effort: json_string_field(&tail, "reasoning_effort", true),
+        pinned_skills: json_value_field(&tail, "pinned_skills", true)
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
+        pinned_skill: json_string_field(&tail, "pinned_skill", true),
         saved: json_value_field(&tail, "saved", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
@@ -1582,6 +2580,10 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         last_pid: json_value_field(&tail, "last_pid", true)
             .and_then(|value| value.as_u64())
             .and_then(|pid| u32::try_from(pid).ok()),
+        parent_id: json_string_field(&head, "parent_id", false),
+        is_debug: json_value_field(&tail, "is_debug", true)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -1668,6 +2670,15 @@ pub fn merge_persisted_sessions(
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
             session.status = record.lifecycle_status();
+            if session.context.is_none() {
+                session.context = record.catalog_context();
+            }
+            if session.parent_session_id.is_none() {
+                session.parent_session_id = record.swarm_parent();
+            }
+        }
+        if session.parent_session_id.is_some() && session.agent_label.is_none() {
+            session.agent_label = persisted_todo_title(home, &session.session_id);
         }
     }
 
@@ -1741,6 +2752,10 @@ pub fn merge_persisted_sessions(
             continue;
         };
         let status = record.lifecycle_status();
+        let parent_session_id = record.swarm_parent();
+        let todo_title = persisted_todo_title(home, &id);
+        let agent_label = parent_session_id.as_ref().and(todo_title.clone());
+        let context = record.catalog_context();
         let save_label = record
             .saved
             .then_some(record.save_label)
@@ -1750,7 +2765,7 @@ pub fn merge_persisted_sessions(
             .custom_title
             .filter(|title| !title.trim().is_empty())
             .or_else(|| save_label.clone())
-            .or_else(|| persisted_todo_title(home, &id))
+            .or(todo_title)
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
         disk_sessions.push((
             recency,
@@ -1767,10 +2782,11 @@ pub fn merge_persisted_sessions(
                 archived: false,
                 archived_at_ms: None,
                 save_label,
-                parent_session_id: None,
-                agent_label: None,
+                parent_session_id,
+                agent_label,
                 swarm_status: None,
                 edit_stats: None,
+                context,
             },
         ));
     }
@@ -1861,6 +2877,7 @@ fn send_to_session_worker<F>(
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum WorkerCommand {
     Command(SessionCommand),
     Idle,
@@ -1896,6 +2913,85 @@ fn session_worker(
         initial_client,
         transport::RemoteTransports::default(),
     );
+}
+
+fn read_context_breakdown(
+    target: ContextBreakdownTarget,
+    transports: &transport::RemoteTransports,
+) -> ContextInspection {
+    let summary_only = matches!(target, ContextBreakdownTarget::SessionMeter(_));
+    let (host, session_id, model, cwd) = match target {
+        ContextBreakdownTarget::Session(session_id)
+        | ContextBreakdownTarget::SessionMeter(session_id) => {
+            let Ok(address) = remote::SessionAddress::parse(&session_id) else {
+                return ContextInspection::default();
+            };
+            (address.host, Some(address.session_id), None, None)
+        }
+        ContextBreakdownTarget::Draft { model, cwd } => (None, None, model, cwd),
+    };
+    let client = match host {
+        Some(host) => transports.connect(&host),
+        None => connect("context-view"),
+    };
+    let Ok(client) = client else {
+        return ContextInspection::default();
+    };
+    let shake_supported =
+        session_id.is_some() && client.supports(jcode_sdk::api::SHAKE_TOOLS_CAPABILITY);
+    let breakdown = if client.supports(jcode_sdk::api::CONTEXT_BREAKDOWN_CAPABILITY) {
+        client
+            .request(jcode_sdk::api::ApiRequest::SessionContextBreakdown {
+                session_id: session_id.clone(),
+                model,
+                cwd,
+                summary_only,
+            })
+            .ok()
+            .and_then(|frame| match frame.event {
+                ApiEvent::ContextBreakdown { breakdown } if breakdown.session_id == session_id => {
+                    Some(breakdown)
+                }
+                _ => None,
+            })
+    } else {
+        None
+    };
+    ContextInspection {
+        breakdown,
+        shake_supported,
+    }
+}
+
+fn shake_tools(
+    session_id: &str,
+    action: jcode_sdk::api::ShakeToolsAction,
+    transports: &transport::RemoteTransports,
+) -> Result<jcode_sdk::api::ShakeToolsResult, String> {
+    let address = remote::SessionAddress::parse(session_id).map_err(|error| error.to_string())?;
+    let client = match &address.host {
+        Some(host) => transports.connect(host),
+        None => connect("context-shake"),
+    }
+    .map_err(|error| error.to_string())?;
+    if !client.supports(jcode_sdk::api::SHAKE_TOOLS_CAPABILITY) {
+        return Err("This runtime does not support manual Shake tools.".into());
+    }
+    let session_id = address.session_id;
+    let frame = client
+        .request(jcode_sdk::api::ApiRequest::SessionShakeTools {
+            session_id: session_id.clone(),
+            action,
+        })
+        .map_err(|error| error.to_string())?;
+    match frame.event {
+        ApiEvent::ShakeTools {
+            session_id: target,
+            result,
+        } if target == session_id => Ok(result),
+        ApiEvent::Error { message, .. } => Err(message),
+        _ => Err("Unexpected runtime reply. Shake outcome unknown.".into()),
+    }
 }
 
 /// Pin or unpin a session that has no live panel. The daemon applies saves to
@@ -1998,6 +3094,50 @@ fn should_log_reconnect(failed_attempts: u32) -> bool {
     failed_attempts < 3 || failed_attempts.is_power_of_two()
 }
 
+fn runtime_owner_is_busy(error: &jcode_sdk::Error) -> bool {
+    matches!(
+        error.kind,
+        jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::Internal)
+    ) && error.message.contains("Failed to restore session:")
+        && error.message.contains("still has a runtime owner")
+}
+
+fn saved_session_identity(
+    home: &std::path::Path,
+    real_id: &str,
+    session_id: &str,
+) -> Option<Update> {
+    let meta = jcode_sdk::worker_meta(home, real_id)?;
+    if meta.model.is_none() && meta.effort.is_none() {
+        return None;
+    }
+    Some(Update::Event {
+        session_id: session_id.to_owned(),
+        event: ApiEvent::ModelInfo {
+            session_id: session_id.to_owned(),
+            provider: meta.provider,
+            model: meta.model,
+            reasoning_effort: meta.effort,
+            auth_method: None,
+            account_label: None,
+        },
+    })
+}
+
+struct RemoteIdentityLease<'a> {
+    session_id: &'a str,
+    updates: &'a UpdateSender,
+}
+
+impl Drop for RemoteIdentityLease<'_> {
+    fn drop(&mut self) {
+        let _ = self.updates.send(Update::OpenrigHostIdentity {
+            session_id: self.session_id.to_owned(),
+            self_host_id: None,
+        });
+    }
+}
+
 fn session_worker_with_connector(
     session_id: String,
     commands: Receiver<SessionCommand>,
@@ -2022,6 +3162,12 @@ fn session_worker_with_connector(
         }
     };
     let real_id = address.session_id.as_str();
+    if address.host.is_none()
+        && let Ok(home) = jcode_base::storage::jcode_dir()
+        && let Some(identity) = saved_session_identity(&home, real_id, &session_id)
+    {
+        let _ = updates.send(identity);
+    }
     let base_reconnect_delay = if address.host.is_some() {
         Duration::from_secs(2)
     } else {
@@ -2029,16 +3175,26 @@ fn session_worker_with_connector(
     };
     let mut reconnect_delay = base_reconnect_delay;
     let mut failed_attempts: u32 = 0;
+    let mut reported_attaching = false;
 
     let mut pending = VecDeque::new();
     let mut reported_disconnected_events = false;
     // Survives reconnects: a retry scheduled before a dropped connection
     // fires once the replacement transport is attached.
     let mut turn_retry = jcode_sdk::TurnRetry::new(turn_retry_policy());
+    let mut background_output = None;
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
     'reconnect: loop {
+        let identity_lease = RemoteIdentityLease {
+            session_id: &session_id,
+            updates: &updates,
+        };
+        let _ = updates.send(Update::OpenrigHostIdentity {
+            session_id: session_id.clone(),
+            self_host_id: None,
+        });
         if collect_disconnected_commands(&commands, &mut pending) {
             return;
         }
@@ -2050,6 +3206,7 @@ fn session_worker_with_connector(
         {
             Ok(client) => client,
             Err(error) => {
+                reported_attaching = false;
                 if disconnect::report_protocol_failure(&error, &session_id, &updates) {
                     return;
                 }
@@ -2075,8 +3232,18 @@ fn session_worker_with_connector(
             if disconnect::report_protocol_failure(&error, &session_id, &updates) {
                 return;
             }
-            if should_log_reconnect(failed_attempts) {
-                lost(format!("{error}; reconnecting"));
+            if runtime_owner_is_busy(&error) {
+                if !reported_attaching {
+                    let _ = updates.send(Update::SessionAttaching {
+                        session_id: session_id.clone(),
+                    });
+                    reported_attaching = true;
+                }
+            } else {
+                reported_attaching = false;
+                if should_log_reconnect(failed_attempts) {
+                    lost(format!("{error}; reconnecting"));
+                }
             }
             if collect_disconnected_commands(&commands, &mut pending) {
                 return;
@@ -2086,7 +3253,11 @@ fn session_worker_with_connector(
                 ReconnectWait::Stop => return,
                 ReconnectWait::Woken => reconnect_delay = base_reconnect_delay,
                 ReconnectWait::Elapsed => {
-                    reconnect_delay = next_reconnect_delay(reconnect_delay, &error);
+                    reconnect_delay = if runtime_owner_is_busy(&error) {
+                        next_reconnect_delay(reconnect_delay, &error).min(Duration::from_secs(2))
+                    } else {
+                        next_reconnect_delay(reconnect_delay, &error)
+                    };
                 }
             }
             continue;
@@ -2108,12 +3279,69 @@ fn session_worker_with_connector(
         let mut unaccepted_sends = VecDeque::new();
         let mut retry_countdown = None;
         eprintln!("jcode desktop: session {session_id} connected");
+        // Publish the capability before history can unblock composer sends.
+        // The authoritative snapshot follows history recovery below.
+        let _ = updates.send(Update::QueueMutationCapability {
+            session_id: session_id.clone(),
+            supported: client.supports("queued_prompt_mutations_v1"),
+        });
+        let _ = updates.send(Update::QueueEditingCapability {
+            session_id: session_id.clone(),
+            supported: client.supports("queued_prompt_editing"),
+        });
+        if client.supports("queued_prompts") {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::QueuedPrompts {
+                    session_id: session_id.clone(),
+                    prompts: Vec::new(),
+                },
+            });
+        }
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
         });
+        let _ = updates.send(Update::OpenrigHostIdentity {
+            session_id: session_id.clone(),
+            self_host_id: client.openrig_self_host_id().map(str::to_owned),
+        });
 
+        if client.supports(jcode_sdk::api::BACKGROUND_TASKS_CAPABILITY) {
+            watch_background_tasks(
+                &client,
+                &address,
+                &session_id,
+                background_output.clone(),
+                &updates,
+            );
+        } else {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::BackgroundTasks {
+                    session_id: session_id.clone(),
+                    snapshot: jcode_sdk::api::BackgroundTasksSnapshot {
+                        tasks: Vec::new(),
+                        output: None,
+                    },
+                },
+            });
+        }
+
+        let mut skills_loaded = !client.supports("skill_message_v1")
+            || load_skill_catalog(&client, real_id, &session_id, &updates);
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
+        if client.supports("queued_prompts")
+            && let Ok(prompts) = client.get_queued_prompts(real_id)
+        {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::QueuedPrompts {
+                    session_id: session_id.clone(),
+                    prompts,
+                },
+            });
+        }
 
         // Identity for the panel's status footer: which model and provider are
         // serving this session, and through which credential route. Delivered
@@ -2134,6 +3362,8 @@ fn session_worker_with_connector(
             });
         }
 
+        let mut tab_wait = tab_wait::State::default();
+        tab_wait.refresh(&client, real_id, &session_id, &updates);
         loop {
             loop {
                 let command = match next_worker_command(&commands, &mut pending) {
@@ -2145,6 +3375,90 @@ fn session_worker_with_connector(
                     WorkerCommand::Disconnected => return,
                 };
                 match command {
+                    SessionCommand::WatchBackgroundTaskOutput(task_id) => {
+                        if background_output != task_id {
+                            background_output = task_id;
+                            if client.supports(jcode_sdk::api::BACKGROUND_TASKS_CAPABILITY) {
+                                watch_background_tasks(
+                                    &client,
+                                    &address,
+                                    &session_id,
+                                    background_output.clone(),
+                                    &updates,
+                                );
+                            }
+                        }
+                    }
+                    SessionCommand::CancelBackgroundTask(task_id) => {
+                        let error =
+                            match client.request(jcode_sdk::api::ApiRequest::CancelBackgroundTask {
+                                session_id: real_id.into(),
+                                task_id,
+                            }) {
+                                Ok(frame) => match frame.event {
+                                    ApiEvent::Ok => None,
+                                    ApiEvent::Error { message, .. } => Some(message),
+                                    _ => Some("Unexpected cancellation response".into()),
+                                },
+                                Err(error) => Some(error.to_string()),
+                            };
+                        if let Some(reason) = error {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                        }
+                    }
+                    SessionCommand::GetCompactedHistory(visible_messages) => {
+                        let result = client
+                            .get_compacted_history(real_id, visible_messages)
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::HistoryPage {
+                            session_id: session_id.clone(),
+                            result,
+                        });
+                    }
+                    SessionCommand::GetHistoryPage(before) => {
+                        let result = client
+                            .get_history_page(real_id, before)
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::BoundedHistoryPage {
+                            session_id: session_id.clone(),
+                            result,
+                        });
+                    }
+                    SessionCommand::GetHistoryImage(key) => {
+                        let result = client
+                            .get_history_image(real_id, &key)
+                            .map_err(|error| error.to_string());
+                        let _ = updates.send(Update::HistoryImage {
+                            session_id: session_id.clone(),
+                            key,
+                            result,
+                        });
+                    }
+                    SessionCommand::ListSessionImages => {
+                        let result = client
+                            .request(jcode_sdk::ApiRequest::ListSessionImages {
+                                session_id: real_id.to_string(),
+                            })
+                            .map_err(|error| error.to_string())
+                            .and_then(|frame| match frame.event {
+                                ApiEvent::SessionImages { session_id, images }
+                                    if session_id == real_id =>
+                                {
+                                    serde_json::to_string(&images)
+                                        .map_err(|error| error.to_string())
+                                }
+                                ApiEvent::Error { message, .. } => Err(message),
+                                _ => Err("Unexpected session images reply".into()),
+                            });
+                        let _ = updates.send(Update::HistoryImage {
+                            session_id: session_id.clone(),
+                            key: SESSION_IMAGE_LIST_KEY.into(),
+                            result,
+                        });
+                    }
                     SessionCommand::RefreshRuntime => {
                         if let Ok(info) = client.get_runtime_info(real_id) {
                             let _ = updates.send(Update::Event {
@@ -2188,7 +3502,230 @@ fn session_worker_with_connector(
                             });
                         }
                     }
-                    SessionCommand::Send { content, images } => {
+                    SessionCommand::QueuePrompt(prompt) => {
+                        if let Some(reason) = unsupported_attachments(&client, &prompt.attachments)
+                        {
+                            let _ = updates.send(Update::QueuePromptFailed {
+                                session_id: session_id.clone(),
+                                client_id: prompt.client_id,
+                                reason,
+                            });
+                            continue;
+                        }
+                        recovery.supersede();
+                        if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
+                            send_retry_phase(&updates, &session_id, String::new());
+                        }
+                        let reminder = collection_reminder(&session_id);
+                        let client_id = prompt.client_id.clone();
+                        if let Err(error) =
+                            client.queue_prompt_with_reminder(real_id, prompt, reminder.as_deref())
+                        {
+                            let _ = updates.send(Update::QueuePromptFailed {
+                                session_id: session_id.clone(),
+                                client_id,
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::RemoveQueuedPrompt(prompt, edit) => {
+                        let result = if client.supports("queued_prompt_mutations_v1") {
+                            client
+                                .remove_queued_prompt(real_id, "jcode-desktop", &prompt.client_id)
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue editing is not supported by this runtime".into())
+                        };
+                        let _ = updates.send(Update::QueueRemovalSettled {
+                            session_id: session_id.clone(),
+                            prompt,
+                            edit,
+                            result,
+                        });
+                    }
+                    SessionCommand::SetQueuedPromptEditing(prompt_id, editing) => {
+                        let result = if client.supports("queued_prompt_editing") {
+                            client
+                                .set_queued_prompt_editing(
+                                    real_id,
+                                    "jcode-desktop",
+                                    &prompt_id,
+                                    editing,
+                                )
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue editing is not supported by this runtime".into())
+                        };
+                        if let Err(reason) = result {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                        }
+                    }
+                    SessionCommand::EditQueuedPrompt(prompt_id, content, images, attachments) => {
+                        let result =
+                            if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                                Err(reason)
+                            } else if client.supports("queued_prompt_editing") {
+                                client
+                                    .edit_queued_prompt_with_attachments(
+                                        real_id,
+                                        "jcode-desktop",
+                                        &prompt_id,
+                                        content,
+                                        images,
+                                        attachments,
+                                    )
+                                    .map_err(|error| error.to_string())
+                            } else {
+                                Err("Queue editing is not supported by this runtime".into())
+                            };
+                        let _ = updates.send(Update::QueuedPromptEdited {
+                            session_id: session_id.clone(),
+                            prompt_id,
+                            result,
+                        });
+                    }
+                    SessionCommand::ReorderQueuedPrompts(order) => {
+                        let result = if client.supports("queued_prompt_mutations_v1") {
+                            client
+                                .reorder_queued_prompts(real_id, "jcode-desktop", order)
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("Queue reordering is not supported by this runtime".into())
+                        };
+                        if let Err(reason) = result {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                        }
+                    }
+                    SessionCommand::SetQueuedPromptMode(client_id, mode) => {
+                        if let Err(error) = client.set_queued_prompt_mode(real_id, &client_id, mode)
+                        {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::InterruptQueuedPrompt(client_id) => {
+                        if let Err(error) = client.interrupt_queued_prompt(real_id, &client_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        }
+                    }
+                    SessionCommand::InterruptQueuedPrompts(ids) => {
+                        let result = if client.supports("queued_prompt_batch_interrupt_v1") {
+                            client
+                                .interrupt_queued_prompts(real_id, ids.clone())
+                                .map_err(|error| error.to_string())
+                        } else if ids.len() == 1 {
+                            client
+                                .interrupt_queued_prompt(real_id, &ids[0])
+                                .map_err(|error| error.to_string())
+                        } else {
+                            Err("This runtime cannot interrupt a queue batch. Update the runtime and retry.".to_string())
+                        };
+                        if let Err(reason) = result {
+                            for client_id in ids {
+                                let _ = updates.send(Update::QueuePromptFailed {
+                                    session_id: session_id.clone(),
+                                    client_id,
+                                    reason: reason.clone(),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::CancelQueuedPrompt(client_id) => {
+                        if let Err(error) = client.cancel_soft_interrupt(real_id, &client_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: error.to_string(),
+                            });
+                        } else if let Ok(prompts) = client.get_queued_prompts(real_id) {
+                            let _ = updates.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::QueuedPrompts {
+                                    session_id: session_id.clone(),
+                                    prompts,
+                                },
+                            });
+                        }
+                    }
+                    SessionCommand::SendSkill {
+                        content,
+                        images,
+                        attachments,
+                        skill,
+                    } => {
+                        if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                            continue;
+                        }
+                        if !client.supports("skill_message_v1") {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason: "This runtime cannot activate skills from Desktop. Update the runtime and reconnect.".into(),
+                            });
+                            continue;
+                        }
+                        if turn_active || !unaccepted_sends.is_empty() {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason: "A skill cannot be activated while a turn is running. Try again after it finishes.".into(),
+                            });
+                            continue;
+                        }
+                        let reminder = collection_reminder(&session_id);
+                        match client.notify(jcode_sdk::api::ApiRequest::SendSkillMessage {
+                            session_id: real_id.to_owned(),
+                            content: content.clone(),
+                            active_skill: skill.clone(),
+                            images: images.clone(),
+                            attachments: attachments.clone(),
+                            system_reminder: reminder,
+                        }) {
+                            Ok(()) => {
+                                unaccepted_sends.push_back(SessionCommand::SendSkill {
+                                    content,
+                                    images,
+                                    attachments,
+                                    skill,
+                                });
+                                let _ = updates.send(Update::MessageSubmitted {
+                                    session_id: session_id.clone(),
+                                });
+                                turn_active = true;
+                                _detach.set_processing(true);
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::SendFailed {
+                                    session_id: session_id.clone(),
+                                    reason: error.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::Send {
+                        content,
+                        images,
+                        attachments,
+                    } => {
+                        if let Some(reason) = unsupported_attachments(&client, &attachments) {
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
+                                reason,
+                            });
+                            continue;
+                        }
                         recovery.supersede();
                         // New input starts its own request and retry budget.
                         if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
@@ -2196,22 +3733,52 @@ fn session_worker_with_connector(
                         }
                         let retry_content = content.clone();
                         let retry_images = images.clone();
+                        let retry_attachments = attachments.clone();
                         // Only one ordinary send can await acceptance. An old
                         // idle event must not let another send overwrite it.
                         let steering = turn_active || !unaccepted_sends.is_empty();
-                        let result = if steering {
+                        let result = if steering && !attachments.is_empty() {
+                            static NEXT_STEER_ID: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(0);
+                            let sequence =
+                                NEXT_STEER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let time = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            client.queue_prompt(
+                                real_id,
+                                jcode_sdk::api::QueuedPrompt {
+                                    client_id: format!(
+                                        "desktop-steer-{}-{time}-{sequence}",
+                                        std::process::id()
+                                    ),
+                                    content: content.clone(),
+                                    images,
+                                    attachments,
+                                    mode: jcode_sdk::api::QueuedPromptMode::Steer,
+                                    active_skill: None,
+                                    editing: false,
+                                },
+                            )
+                        } else if steering {
                             client.soft_interrupt_with_images(real_id, &content, images, true)
                         } else {
                             // Collection instructions ride along hidden on every
                             // new turn, read fresh so edits apply immediately.
                             let reminder = collection_reminder(&session_id);
-                            client.send_message_with_reminder(
-                                real_id,
-                                &content,
+                            client.notify(jcode_sdk::api::ApiRequest::SendMessage {
+                                session_id: real_id.to_owned(),
+                                content: content.clone(),
                                 images,
-                                reminder.as_deref(),
-                                None,
-                            )
+                                attachments,
+                                system_reminder: reminder
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_owned),
+                                no_reply: false,
+                            })
                         };
                         if let Err(error) = result {
                             // A daemon reload can briefly hand this SDK socket
@@ -2225,6 +3792,7 @@ fn session_worker_with_connector(
                                 &mut pending,
                                 retry_content,
                                 retry_images,
+                                retry_attachments,
                             ) {
                                 lost("session connection changed; reconnecting".into());
                                 continue 'reconnect;
@@ -2242,6 +3810,7 @@ fn session_worker_with_connector(
                                 unaccepted_sends.push_back(SessionCommand::Send {
                                     content: retry_content,
                                     images: retry_images,
+                                    attachments: retry_attachments,
                                 });
                             }
                             let _ = updates.send(Update::MessageSubmitted {
@@ -2254,28 +3823,85 @@ fn session_worker_with_connector(
                             _detach.set_processing(true);
                         }
                     }
+                    SessionCommand::SendSideQuestion { question } => {
+                        recovery.supersede();
+                        // A side question is not a conversation of its own yet:
+                        // keep the fork out of the session list until the user
+                        // promotes it. `real_id` is the id this connection uses.
+                        let _ = client.archive_session(real_id);
+                        // The child fork inherits the full agent prompt, tools
+                        // included. Steer it to answer from the conversation
+                        // without starting work, and keep that steer hidden so
+                        // the promoted transcript reads as the question alone.
+                        let result = client.send_message_with_reminder(
+                            real_id,
+                            &question,
+                            Vec::new(),
+                            Some(SIDE_QUESTION_REMINDER),
+                            None,
+                        );
+                        match result {
+                            Ok(()) => {
+                                turn_active = true;
+                                _detach.set_processing(true);
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Could not ask the side question: {error}"),
+                                });
+                            }
+                        }
+                    }
                     SessionCommand::Cancel => {
                         recovery.supersede();
                         if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
                             send_retry_phase(&updates, &session_id, String::new());
                         }
-                        if let Err(error) = client.cancel(real_id) {
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Could not stop the running turn: {error}. Automatic retries have been cancelled, but the runtime may still be working."),
-                            });
-                        }
+                        let client = client.clone();
+                        let real_id = real_id.to_string();
+                        std::thread::spawn(move || {
+                            let _ = client.cancel(&real_id);
+                        });
+                    }
+                    SessionCommand::ForceStopTurn => {
+                        recovery.supersede();
+                        let client = client.clone();
+                        let real_id = real_id.to_string();
+                        let updates = updates.clone();
+                        let session_id = session_id.clone();
+                        std::thread::spawn(move || {
+                            let result = if client.supports("force_stop_turn_v1") {
+                                client.force_stop_turn(&real_id)
+                            } else {
+                                Err(jcode_sdk::Error::new(
+                                    jcode_sdk::ErrorKind::UnsupportedCapability,
+                                    "This runtime does not support force stop. Update the runtime and reconnect.",
+                                ))
+                            };
+                            if let Err(error) = result
+                                && error.kind != jcode_sdk::ErrorKind::Timeout
+                            {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id,
+                                    reason: format!("Could not force stop: {error}"),
+                                });
+                            }
+                        });
                     }
                     SessionCommand::AskResponse {
                         request_id,
                         response,
                     } => {
-                        if let Err(error) = client.respond_to_ask(real_id, &request_id, response) {
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Could not send your answer: {error}"),
-                            });
-                        }
+                        let error = client
+                            .respond_to_ask(real_id, &request_id, response)
+                            .err()
+                            .map(|error| format!("Could not send your answer: {error}"));
+                        let _ = updates.send(Update::AskResponseSettled {
+                            session_id: session_id.clone(),
+                            request_id,
+                            error,
+                        });
                     }
                     SessionCommand::BackgroundTool => {
                         if let Err(error) = client.background_tool(real_id) {
@@ -2314,10 +3940,47 @@ fn session_worker_with_connector(
                             }
                         }
                     }
+                    SessionCommand::SideQuestion { question, internal } => {
+                        let fork = (|| -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {
+                            let session = client.fork_session(real_id)?;
+                            let child_address = remote::SessionAddress {
+                                host: address.host.clone(),
+                                session_id: session.session_id.clone(),
+                            };
+                            let child = connector(&child_address)?;
+                            child.attach_session(&session.session_id)?;
+                            Ok((address.session_info(session), child))
+                        })();
+                        match fork {
+                            Ok((session, child)) => {
+                                let _ = internal.send(Command::SideQuestionInternal {
+                                    parent_session_id: session_id.clone(),
+                                    session,
+                                    client: child,
+                                    question,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Failed to ask a side question: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::RestoreSession => {
+                        if let Err(error) = client.restore_session(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Could not restore the session: {error}"),
+                            });
+                        }
+                    }
                     SessionCommand::Transfer => match client.transfer_session(real_id) {
                         Ok(session) => {
                             let _ = updates.send(Update::SessionForked {
                                 session: address.session_info(session),
+                                prompt: None,
                             });
                         }
                         Err(error) => {
@@ -2330,7 +3993,10 @@ fn session_worker_with_connector(
                     SessionCommand::Fork => match client.fork_session(real_id) {
                         Ok(session) => {
                             let session = address.session_info(session);
-                            let _ = updates.send(Update::SessionForked { session });
+                            let _ = updates.send(Update::SessionForked {
+                                session,
+                                prompt: None,
+                            });
                         }
                         Err(error) => {
                             let _ = updates.send(Update::CommandFailed {
@@ -2418,17 +4084,36 @@ fn session_worker_with_connector(
                             }
                             continue;
                         }
-                        let result = match operation {
+                        let rewinds = matches!(
+                            &operation,
+                            SessionOperation::Rewind(_)
+                                | SessionOperation::RewindTranscript(_)
+                                | SessionOperation::RewindUndo
+                        );
+                        let mut result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
-                            SessionOperation::Compact => client.compact(real_id).map(|message| {
-                                let _ = updates.send(Update::Event {
-                                    session_id: session_id.clone(),
-                                    event: ApiEvent::Compacted {
+                            SessionOperation::Compact => {
+                                let event = match client.compact(real_id) {
+                                    Ok(message) => ApiEvent::Compacted {
                                         session_id: session_id.clone(),
                                         message,
                                     },
+                                    Err(error) => ApiEvent::BackgroundProgress {
+                                        session_id: session_id.clone(),
+                                        task_id: "context-compaction".into(),
+                                        label: "Context compaction".into(),
+                                        percent: None,
+                                        summary: format!("Compaction failed: {error}"),
+                                        detail: None,
+                                        done: true,
+                                    },
+                                };
+                                let _ = updates.send(Update::Event {
+                                    session_id: session_id.clone(),
+                                    event,
                                 });
-                            }),
+                                Ok(())
+                            }
                             SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }
@@ -2447,8 +4132,33 @@ fn session_worker_with_connector(
                                 client.rename_session(real_id, title)
                             }
                             SessionOperation::Rewind(index) => client.rewind(real_id, index),
+                            SessionOperation::RewindTranscript(target) => {
+                                client.rewind_transcript(real_id, target)
+                            }
                             SessionOperation::RewindUndo => client.rewind_undo(real_id),
                         };
+                        if rewinds && result.is_ok() {
+                            let bounded = client.supports("bounded_history_v1");
+                            let page = if bounded {
+                                client.get_history_page(real_id, None)
+                            } else {
+                                client
+                                    .get_history_with_images(real_id)
+                                    .map(|(messages, images)| BoundedHistoryPage {
+                                        messages,
+                                        images,
+                                        before: None,
+                                        prompt_offset: None,
+                                    })
+                            };
+                            result = page.map(|page| {
+                                let _ = updates.send(Update::RewoundHistory {
+                                    session_id: session_id.clone(),
+                                    page,
+                                    bounded,
+                                });
+                            });
+                        }
                         if let Err(error) = result {
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
@@ -2516,6 +4226,9 @@ fn session_worker_with_connector(
                 history.load(&client, real_id, &session_id, &updates);
             }
 
+            if !turn_active && tab_wait.refresh_due() {
+                tab_wait.refresh(&client, real_id, &session_id, &updates);
+            }
             let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 reported_disconnected_events = false;
@@ -2537,6 +4250,8 @@ fn session_worker_with_connector(
                 // desktop panel look busy: doing so routes its first prompt
                 // through soft_interrupt, where it waits forever because that
                 // new session has no active turn to interrupt.
+                // Some bridge frames (including AskRequest) omit the identity
+                // when the connection owns the request but has not named it.
                 if event_session_id(&event).is_some_and(|id| id != real_id) {
                     continue;
                 }
@@ -2548,40 +4263,9 @@ fn session_worker_with_connector(
                     ..
                 } = &event
                 {
-                    // This is the same server-owned directive used by the TUI,
-                    // not a guess based on a sidebar's cached crash badge.
-                    if recovery.claim(
-                        continuation_message,
-                        turn_active || !unaccepted_sends.is_empty(),
-                    ) {
-                        if let Err(error) =
-                            client.send_system_reminder(real_id, continuation_message)
-                        {
-                            recovery.finish_submission();
-                            let _ = updates.send(Update::CommandFailed {
-                                session_id: session_id.clone(),
-                                reason: format!("Failed to continue interrupted work: {error}"),
-                            });
-                        } else {
-                            turn_active = true;
-                            _detach.set_processing(true);
-                            let _ = updates.send(Update::Event {
-                                session_id: session_id.clone(),
-                                event: ApiEvent::SessionStatus {
-                                    session_id: session_id.clone(),
-                                    status: "running".into(),
-                                    pending_soft_interrupts: None,
-                                },
-                            });
-                        }
+                    if recovery.notice(continuation_message) {
+                        let _ = updates.send(Update::Status("Resumed after reload".into()));
                     }
-                    continue;
-                }
-                if recovery.observe(&event) {
-                    // Another client already continued the session. Never
-                    // steer a second automatic continuation into that turn.
-                    turn_active = true;
-                    _detach.set_processing(true);
                     continue;
                 }
                 if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
@@ -2599,6 +4283,7 @@ fn session_worker_with_connector(
                     // payload eligible for recovery on a later busy error.
                     unaccepted_sends.clear();
                 }
+                let was_active = turn_active;
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
                 let retry_decision = turn_retry.observe(&event, std::time::Instant::now());
@@ -2618,10 +4303,16 @@ fn session_worker_with_connector(
                 };
                 let closes_turn =
                     matches!(event, ApiEvent::Error { .. } | ApiEvent::TurnDone { .. });
+                if closes_turn && !skills_loaded {
+                    skills_loaded = load_skill_catalog(&client, real_id, &session_id, &updates);
+                }
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event: namespace_event(event, &address),
                 });
+                if was_active && !turn_active {
+                    tab_wait.refresh(&client, real_id, &session_id, &updates);
+                }
                 // The panel clears its phase when a turn ends, so announce
                 // the pending retry after forwarding the closing event.
                 match retry_decision {
@@ -2638,14 +4329,11 @@ fn session_worker_with_connector(
                     jcode_sdk::RetryDecision::Cancelled => {
                         send_retry_phase(&updates, &session_id, String::new());
                     }
-                    _ if closes_turn => {
-                        if turn_retry.pending().is_some() {
-                            let phase =
-                                retry_countdown_phase(&turn_retry, std::time::Instant::now())
-                                    .expect("pending retry has a countdown");
-                            retry_countdown = Some(phase.clone());
-                            send_retry_phase(&updates, &session_id, phase);
-                        }
+                    _ if closes_turn && turn_retry.pending().is_some() => {
+                        let phase = retry_countdown_phase(&turn_retry, std::time::Instant::now())
+                            .expect("pending retry has a countdown");
+                        retry_countdown = Some(phase.clone());
+                        send_retry_phase(&updates, &session_id, phase);
                     }
                     _ => {}
                 }
@@ -2672,6 +4360,7 @@ fn session_worker_with_connector(
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+        drop(identity_lease);
         if address.host.is_some() {
             // A reachable SSH server whose API immediately closes should not
             // produce an unbounded rapid reconnect storm either.
@@ -2710,6 +4399,30 @@ fn retry_countdown_phase(retry: &jcode_sdk::TurnRetry, now: std::time::Instant) 
     ))
 }
 
+fn watch_background_tasks(
+    client: &JcodeClient,
+    address: &remote::SessionAddress,
+    session_id: &str,
+    task_id: Option<String>,
+    updates: &UpdateSender,
+) {
+    let reply = client.request(jcode_sdk::api::ApiRequest::WatchBackgroundTasks {
+        session_id: address.session_id.clone(),
+        task_id,
+    });
+    // The bridge retries transient census errors on the subscription. Do not
+    // turn a failed activity refresh into a failed agent turn.
+    if let Ok(frame) = reply
+        && matches!(&frame.event, ApiEvent::BackgroundTasks { .. })
+        && event_session_id(&frame.event) == Some(address.session_id.as_str())
+    {
+        let _ = updates.send(Update::Event {
+            session_id: session_id.into(),
+            event: namespace_event(frame.event, address),
+        });
+    }
+}
+
 /// Surface automatic retry progress in the panel status line. An empty phase
 /// clears it.
 fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
@@ -2724,7 +4437,7 @@ fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
 
 fn event_session_id(event: &ApiEvent) -> Option<&str> {
     match event {
-        ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id),
+        ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id.as_str()),
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
@@ -2736,15 +4449,26 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::RequestUsage { session_id, .. }
+        | ApiEvent::KvCacheMiss { session_id, .. }
+        | ApiEvent::ContextOccupancy { session_id, .. }
+        | ApiEvent::ContextCapChanged { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
+        | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
+        | ApiEvent::ProviderGuardrailRetry { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::BackgroundTasks { session_id, .. }
+        | ApiEvent::PeerUserMessage { session_id, .. }
+        | ApiEvent::AgentMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
+        | ApiEvent::SwarmStatus { session_id, .. }
         | ApiEvent::ConnectionPhase { session_id, .. }
         | ApiEvent::ModelInfo { session_id, .. }
         | ApiEvent::Models { session_id, .. }
@@ -2755,9 +4479,10 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::FileStatus { session_id, .. }
         | ApiEvent::Compacted { session_id, .. }
         | ApiEvent::SessionRenamed { session_id, .. }
-        | ApiEvent::History { session_id, .. } => Some(session_id),
+        | ApiEvent::History { session_id, .. } => Some(session_id.as_str()),
         _ => None,
     }
+    .filter(|id| !id.is_empty())
 }
 
 fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> ApiEvent {
@@ -2765,6 +4490,28 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         return event;
     }
     match &mut event {
+        ApiEvent::SwarmStatus {
+            session_id,
+            members,
+            ..
+        } => {
+            *session_id = address.ui_id(session_id);
+            for member in members {
+                member.session_id = address.ui_id(&member.session_id);
+                member.parent_session_id = member
+                    .parent_session_id
+                    .as_deref()
+                    .map(|id| address.ui_id(id));
+            }
+        }
+        ApiEvent::AgentMessage {
+            session_id,
+            from_session,
+            ..
+        } => {
+            *session_id = address.ui_id(session_id);
+            *from_session = address.ui_id(from_session);
+        }
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
@@ -2776,11 +4523,20 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::FocusRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::RequestUsage { session_id, .. }
+        | ApiEvent::KvCacheMiss { session_id, .. }
+        | ApiEvent::ContextOccupancy { session_id, .. }
+        | ApiEvent::ContextCapChanged { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
+        | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
+        | ApiEvent::ProviderGuardrailRetry { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::BackgroundTasks { session_id, .. }
+        | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
@@ -2802,9 +4558,18 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         ApiEvent::Attached { session } | ApiEvent::SessionForked { session } => {
             session.session_id = address.ui_id(&session.session_id);
         }
-        ApiEvent::Sessions { sessions } => {
+        ApiEvent::Sessions { sessions, workers } => {
             for session in sessions {
                 session.session_id = address.ui_id(&session.session_id);
+            }
+            // Facts are keyed by the same session ids, so a remote session's
+            // renamed ids must be rewritten with them.
+            if !workers.is_empty() {
+                let renamed = workers
+                    .iter()
+                    .map(|(id, meta)| (address.ui_id(id), meta.clone()))
+                    .collect::<HashMap<_, _>>();
+                *workers = renamed;
             }
         }
         _ => {}
@@ -2852,16 +4617,30 @@ pub fn collection_reminder(session_id: &str) -> Option<String> {
         .instructions_for(session_id)
 }
 
+fn unsupported_attachments(
+    client: &JcodeClient,
+    attachments: &[jcode_sdk::api::Attachment],
+) -> Option<String> {
+    (!attachments.is_empty() && !client.supports(jcode_sdk::api::FILE_ATTACHMENTS_CAPABILITY)).then(
+        || "This runtime cannot receive file attachments. Update the runtime and reconnect.".into(),
+    )
+}
+
 fn queue_wrong_session_retry(
     error: &str,
     pending: &mut VecDeque<SessionCommand>,
     content: String,
     images: Vec<(String, String)>,
+    attachments: Vec<jcode_sdk::api::Attachment>,
 ) -> bool {
     if !is_wrong_session_attachment_error(error) {
         return false;
     }
-    pending.push_front(SessionCommand::Send { content, images });
+    pending.push_front(SessionCommand::Send {
+        content,
+        images,
+        attachments,
+    });
     true
 }
 
@@ -2869,6 +4648,29 @@ fn is_already_processing_error(message: &str) -> bool {
     message
         .to_ascii_lowercase()
         .contains("already processing a message")
+}
+
+fn load_skill_catalog(
+    client: &JcodeClient,
+    real_id: &str,
+    session_id: &str,
+    updates: &UpdateSender,
+) -> bool {
+    let Ok(output) =
+        client.runtime_command(real_id, jcode_sdk::api::RuntimeCommand::Skills, Vec::new())
+    else {
+        return false;
+    };
+    let _ = updates.send(Update::Event {
+        session_id: session_id.to_owned(),
+        event: ApiEvent::RuntimeCommandResult {
+            session_id: session_id.to_owned(),
+            command: output.command,
+            data: output.data,
+            message: String::new(),
+        },
+    });
+    true
 }
 
 fn recover_async_busy(
@@ -2888,6 +4690,9 @@ fn recover_async_busy(
 
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
     match event {
+        ApiEvent::SoftInterruptInjected { point, .. } if point == "turn_start" => {
+            *turn_active = true
+        }
         ApiEvent::MessageAccepted { .. }
         | ApiEvent::TextDelta { .. }
         | ApiEvent::ReasoningDelta { .. }
@@ -3413,7 +5218,95 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         }
+    }
+
+    /// Real files copied from the user's `~/.jcode`: the coordinator
+    /// `session_microbe_...` with 45 daemon-spawned workers. Only the
+    /// per-session metadata and the swarm snapshot are kept, not transcripts.
+    fn microbe_home() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/microbe_home")
+    }
+
+    const MICROBE: &str = "session_microbe_1794670947943_2648f3bbec7c7e5e";
+
+    #[test]
+    fn real_coordinator_workers_nest_under_it_with_swarm_status() {
+        let home = microbe_home();
+        let mut sessions = merge_persisted_sessions(Vec::new(), Some(&home));
+        jcode_sdk::enrich_sessions_from_swarm_state(&mut sessions, home.join("state/swarm"));
+        let by_id = |id: &str| {
+            sessions
+                .iter()
+                .find(|s| s.session_id.starts_with(id))
+                .unwrap_or_else(|| panic!("{id} missing"))
+        };
+        let workers = sessions
+            .iter()
+            .filter(|s| s.parent_session_id.as_deref() == Some(MICROBE))
+            .count();
+        assert_eq!(
+            workers, 45,
+            "every spawned worker is owned by the coordinator"
+        );
+        // The coordinator itself is a user session, not nested under its own
+        // transcript parent.
+        assert_eq!(by_id(MICROBE).parent_session_id, None);
+        // Live swarm snapshot status wins over the transcript lifecycle.
+        assert_eq!(
+            by_id("session_badger").swarm_status.as_deref(),
+            Some("running")
+        );
+        assert_eq!(by_id("session_frog").swarm_status.as_deref(), Some("ready"));
+        assert_eq!(
+            by_id("session_crab").agent_label.as_deref(),
+            Some("queued-msg-wait")
+        );
+        // Workers absent from the snapshot keep no swarm status.
+        assert_eq!(by_id("session_rose").swarm_status, None);
+    }
+
+    #[test]
+    fn transcript_forks_do_not_nest_as_swarm_workers() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("fork.json"),
+            r#"{"parent_id":"root","is_debug":false,"status":"Closed"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("worker.json"),
+            r#"{"parent_id":"root","is_debug":true,"status":"Active","last_pid":999999}"#,
+        )
+        .unwrap();
+        let sessions = merge_persisted_sessions(Vec::new(), Some(home.path()));
+        let parent = |id: &str| {
+            sessions
+                .iter()
+                .find(|s| s.session_id == id)
+                .unwrap()
+                .parent_session_id
+                .clone()
+        };
+        assert_eq!(parent("fork"), None);
+        assert_eq!(parent("worker").as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn large_worker_transcripts_still_report_their_coordinator() {
+        let path =
+            std::env::temp_dir().join(format!("jcode-worker-large-{}.json", std::process::id()));
+        let padding = "x".repeat(SIDEBAR_METADATA_WINDOW * 3);
+        let document = format!(
+            r#"{{"id":"w","parent_id":"root","title":"t","messages":[{{"text":"{padding}"}}],"working_dir":"/p","status":"Closed","is_debug":true,"saved":false}}"#
+        );
+        std::fs::write(&path, &document).unwrap();
+        let record = read_persisted_session(&path, document.len() as u64).unwrap();
+        assert_eq!(record.swarm_parent().as_deref(), Some("root"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3490,10 +5383,16 @@ mod tests {
             working_dir: None,
             title: None,
             custom_title: None,
+            model: None,
+            reasoning_effort: None,
+            pinned_skills: Vec::new(),
+            pinned_skill: None,
             saved: false,
             save_label: None,
             status: serde_json::json!("Active"),
             last_pid,
+            parent_id: None,
+            is_debug: false,
         };
         // A pid beyond the kernel's pid_max can never be alive.
         assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");
@@ -3651,6 +5550,27 @@ mod tests {
     }
 
     #[test]
+    fn older_session_catalog_uses_persisted_model_and_modes() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("older.json"),
+            r#"{"model":"future-model","reasoning_effort":"high","pinned_skill":"selfdev"}"#,
+        )
+        .unwrap();
+
+        for listed in [vec![], vec![session_info("older")]] {
+            let merged = merge_persisted_sessions(listed, Some(home.path()));
+            let context = merged[0].context.as_ref().unwrap();
+            assert_eq!(context.model.as_deref(), Some("future-model"));
+            assert_eq!(context.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(context.modes, ["selfdev"]);
+            assert_eq!(context.cache_expires_at_ms, None);
+        }
+    }
+
+    #[test]
     fn full_api_page_is_ready_without_scanning_persisted_transcripts() {
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-api-page-{}-{}",
@@ -3704,10 +5624,12 @@ mod tests {
             &mut pending,
             "original prompt".into(),
             images.clone(),
+            vec![],
         ));
         let Some(SessionCommand::Send {
             content,
             images: queued_images,
+            ..
         }) = pending.pop_front()
         else {
             panic!("original send was not queued for retry");
@@ -3719,6 +5641,7 @@ mod tests {
             "ordinary provider error",
             &mut pending,
             "must not retry".into(),
+            Vec::new(),
             Vec::new(),
         ));
         assert!(pending.is_empty());
@@ -3734,6 +5657,7 @@ mod tests {
         let mut unaccepted = VecDeque::from([SessionCommand::Send {
             content: "hi".into(),
             images: images.clone(),
+            attachments: vec![],
         }]);
         let mut pending = VecDeque::new();
 
@@ -3745,7 +5669,7 @@ mod tests {
         assert!(unaccepted.is_empty());
         assert!(matches!(
             pending.pop_front(),
-            Some(SessionCommand::Send { content, images: queued })
+            Some(SessionCommand::Send { content, images: queued, .. })
                 if content == "hi" && queued == images
         ));
     }
@@ -3759,6 +5683,29 @@ mod tests {
         };
         assert_eq!(event_session_id(&event), Some("other-session"));
         assert_ne!(event_session_id(&event), Some("this-session"));
+    }
+
+    #[test]
+    fn connection_scoped_ask_with_empty_identity_is_not_filtered_out() {
+        let event = ApiEvent::AskRequest {
+            session_id: String::new(),
+            request_id: "ask-call".into(),
+            tool_call_id: "call".into(),
+            questions: vec![],
+        };
+        assert_eq!(event_session_id(&event), None);
+    }
+
+    /// The daemon replays occupancy right after an attach. Without a session
+    /// identity the event would reach whichever panel shares the connection and
+    /// paint another session's context ring.
+    #[test]
+    fn replayed_context_occupancy_is_scoped_to_its_session() {
+        let event = ApiEvent::ContextOccupancy {
+            session_id: "other-session".into(),
+            prompt_tokens: 41_000,
+        };
+        assert_eq!(event_session_id(&event), Some("other-session"));
     }
 
     /// Opt-in acceptance check against the real local runtime and configured
@@ -3816,6 +5763,7 @@ mod tests {
             session_id: session_id.clone(),
             content: "Reply with exactly JCODE_DESKTOP_OK and nothing else.".into(),
             images: Vec::new(),
+            attachments: Vec::new(),
         });
 
         let mut accepted = false;
@@ -3856,6 +5804,7 @@ mod tests {
             SessionCommand::Send {
                 content: "hello".into(),
                 images: vec![],
+                attachments: vec![],
             },
             |_| tx.clone(),
         );
@@ -3882,6 +5831,7 @@ mod tests {
             SessionCommand::Send {
                 content: "do not drop me".into(),
                 images: vec![],
+                attachments: vec![],
             },
             |_| {
                 starts += 1;
@@ -3902,6 +5852,7 @@ mod tests {
         tx.send(SessionCommand::Send {
             content: "hi".into(),
             images: vec![("image/png".into(), "cG5n".into())],
+            attachments: vec![],
         })
         .unwrap();
         tx.send(SessionCommand::Cancel).unwrap();
@@ -3911,7 +5862,7 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert!(matches!(
             pending.pop_front(),
-            Some(SessionCommand::Send { content, images })
+            Some(SessionCommand::Send { content, images, .. })
                 if content == "hi" && images == [("image/png".into(), "cG5n".into())]
         ));
         assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
@@ -4062,6 +6013,61 @@ mod side_panel_routing_tests {
     use super::*;
 
     #[test]
+    fn swarm_status_namespaces_members_and_preserves_daemon_order() {
+        let address = remote::SessionAddress::parse("ssh://example/lead").unwrap();
+        let event = namespace_event(
+            ApiEvent::SwarmStatus {
+                session_id: "lead".into(),
+                updated_at_unix_ms: 1_065,
+                members: vec![jcode_sdk::SwarmMemberInfo {
+                    session_id: "worker".into(),
+                    status: "running".into(),
+                    parent_session_id: Some("lead".into()),
+                    agent_label: Some("task".into()),
+                }],
+            },
+            &address,
+        );
+        assert_eq!(event_session_id(&event), Some("ssh://example/lead"));
+        let ApiEvent::SwarmStatus {
+            members,
+            updated_at_unix_ms,
+            ..
+        } = event
+        else {
+            panic!("wrong event")
+        };
+        assert_eq!(updated_at_unix_ms, 1_065);
+        assert_eq!(members[0].session_id, "ssh://example/worker");
+        assert_eq!(
+            members[0].parent_session_id.as_deref(),
+            Some("ssh://example/lead")
+        );
+        assert_eq!(members[0].status, "running");
+    }
+
+    #[test]
+    fn swarm_dm_keeps_both_sessions_in_the_remote_namespace() {
+        let address = remote::SessionAddress::parse("ssh://example/recipient").unwrap();
+        let event = namespace_event(
+            ApiEvent::AgentMessage {
+                session_id: "recipient".into(),
+                from_session: "sender".into(),
+                from_name: Some("fox".into()),
+                message: "DM from fox: check the output".into(),
+            },
+            &address,
+        );
+        assert_eq!(event_session_id(&event), Some("ssh://example/recipient"));
+        assert!(
+            matches!(event, ApiEvent::AgentMessage { from_session, from_name, message, .. }
+            if from_session == "ssh://example/sender"
+                && from_name.as_deref() == Some("fox")
+                && message == "DM from fox: check the output")
+        );
+    }
+
+    #[test]
     fn side_panel_events_keep_remote_session_namespace_and_content() {
         let address = remote::SessionAddress::parse("ssh://example/session_one").unwrap();
         let snapshot = jcode_sdk::SidePanelSnapshot {
@@ -4126,6 +6132,42 @@ mod stop_reason_routing_tests {
             reason,
             message: "Provider stopped the response".into(),
             provider_stop_reason: Some("content_filter".into()),
+        }
+    }
+
+    #[test]
+    fn cache_events_route_to_local_or_remote_session() {
+        for ui_id in ["session_one", "ssh://example/session_one"] {
+            let address = remote::SessionAddress::parse(ui_id).unwrap();
+            let events = [
+                ApiEvent::RequestUsage {
+                    session_id: "session_one".into(),
+                    request_id: "stable-request-id".into(),
+                    provider: "anthropic".into(),
+                    model: "claude-opus".into(),
+                    input: Some(10),
+                    output: Some(8),
+                    cache_read_input: Some(100),
+                    cache_creation_input: None,
+                },
+                ApiEvent::KvCacheMiss {
+                    session_id: "session_one".into(),
+                    reason: "expired".into(),
+                    harness_caused: false,
+                    missed_tokens: 50,
+                    read_tokens: 100,
+                    expected_tokens: 150,
+                    documented_cause: None,
+                    message: "cache expired".into(),
+                },
+            ];
+            for event in events {
+                assert_eq!(event_session_id(&event), Some("session_one"));
+                assert_eq!(
+                    event_session_id(&namespace_event(event, &address)),
+                    Some(ui_id)
+                );
+            }
         }
     }
 

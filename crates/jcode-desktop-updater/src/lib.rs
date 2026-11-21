@@ -142,6 +142,7 @@ fn current_executable() -> Result<PathBuf> {
 pub(crate) struct Environment {
     pub target: Target,
     pub executable: PathBuf,
+    #[allow(dead_code)]
     pub home: Option<PathBuf>,
     /// Run each staged executable with `--version` before activating it.
     pub smoke_test: bool,

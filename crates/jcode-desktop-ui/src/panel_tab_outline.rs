@@ -6,6 +6,8 @@
 //! - Working: a yellow fill grows left to right with completed todos, and a
 //!   soft highlight sweeps across the tab so an unchanged count still reads
 //!   as alive.
+//! - Waiting: a dashed outline marks waiting on workers or background work.
+//! - Question: a solid accent outline marks an unanswered ask card.
 //! - Done: a green wash breathes gently until the session is viewed or a new
 //!   turn starts.
 //! - Error: a quiet red wash.
@@ -22,7 +24,7 @@ use gpui::{
 
 use crate::theme::Theme;
 
-use super::MinimapSessionState;
+use super::{MinimapSessionState, Panel};
 
 /// 60 Hz on the shared animation grid, so every animated tab wakes in the
 /// same frame instead of each re-rendering the header on its own.
@@ -35,6 +37,14 @@ const BREATH_SECONDS: f32 = 2.6;
 /// instead of snapping it to its new width.
 const PROGRESS_EASE: f32 = 0.18;
 
+impl Panel {
+    pub(crate) fn set_tab_waiting(&mut self, waiting: bool, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.tab_dependency_waiting, waiting) != waiting {
+            cx.notify();
+        }
+    }
+}
+
 /// Seconds since a process-wide epoch. Every tab animates in lockstep, and
 /// phase never depends on how many ticks were delivered.
 fn clock() -> f32 {
@@ -45,11 +55,26 @@ fn clock() -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabMode {
     Working,
+    Waiting,
+    Question,
     /// Finished while out of view. Cleared once the session is seen.
     Done,
     Error,
     /// An interrupted plan, shown quietly.
     Paused,
+}
+
+impl TabMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Question => "question",
+            Self::Done => "done",
+            Self::Error => "error",
+            Self::Paused => "paused",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,12 +109,29 @@ impl TabRing {
             color,
             progress: match mode {
                 TabMode::Working | TabMode::Paused => progress,
-                TabMode::Done | TabMode::Error => None,
+                TabMode::Done | TabMode::Error | TabMode::Waiting | TabMode::Question => None,
             },
             mode,
         })
     }
 
+    pub(super) fn waiting() -> Self {
+        Self {
+            color: Theme::global().LINK,
+            progress: None,
+            mode: TabMode::Waiting,
+        }
+    }
+
+    pub(super) fn question() -> Self {
+        Self {
+            color: Theme::global().CODE_CONTROL,
+            progress: None,
+            mode: TabMode::Question,
+        }
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn working(&self) -> bool {
         self.mode == TabMode::Working
     }
@@ -179,17 +221,38 @@ fn clipped(window: &mut Window, clip: Bounds<Pixels>, f: impl FnOnce(&mut Window
     window.with_content_mask(Some(ContentMask { bounds: clip }), f);
 }
 
-/// A soft vertical band centred at `center`, fading to nothing on both sides.
-fn band(window: &mut Window, bounds: Bounds<Pixels>, center: f32, width: f32, peak: Rgba) {
+pub(crate) fn tab_corner_radius(size: gpui::Size<Pixels>) -> Pixels {
+    size.height.min(size.width) / 2.0
+}
+
+/// Paint two gradient halves on the full pill. A rectangular scissor limits
+/// each half's span, while the quad itself masks the rounded corners.
+fn band(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    radius: Pixels,
+    center: f32,
+    width: f32,
+    peak: Rgba,
+) {
     let clear = Rgba { a: 0., ..peak };
     let top = bounds.origin.y;
     let height = bounds.size.height;
+    let tab_left = f32::from(bounds.origin.x);
+    let tab_width = f32::from(bounds.size.width);
     let half = width / 2.0;
     for (left, from, to) in [(center - half, clear, peak), (center, peak, clear)] {
-        window.paint_quad(gpui::fill(
-            Bounds::new(point(px(left), top), size(px(half), height)),
-            linear_gradient(90., linear_color_stop(from, 0.), linear_color_stop(to, 1.)),
-        ));
+        let span = Bounds::new(point(px(left), top), size(px(half), height));
+        clipped(window, bounds.intersect(&span), |window| {
+            let start = (left - tab_left) / tab_width;
+            let end = (left + half - tab_left) / tab_width;
+            let gradient = linear_gradient(
+                90.,
+                linear_color_stop(from, start),
+                linear_color_stop(to, end),
+            );
+            window.paint_quad(gpui::fill(bounds, gradient).corner_radii(radius));
+        });
     }
 }
 
@@ -201,17 +264,24 @@ fn paint(
     now: f32,
     reduce_motion: bool,
 ) {
-    // Match the tab's pill shape, including narrow tabs in crowded headers.
-    let radius = f32::from(bounds.size.height).min(f32::from(bounds.size.width)) / 2.0;
-    let rounded = |color: Rgba| gpui::fill(bounds, color).corner_radii(px(radius));
+    let radius = tab_corner_radius(bounds.size);
+    let rounded = |color: Rgba| gpui::fill(bounds, color).corner_radii(radius);
     let outline = |color: Rgba| {
         gpui::quad(
             bounds,
-            px(radius),
+            radius,
             gpui::transparent_black(),
-            px(1.),
+            if ring.mode == TabMode::Question {
+                px(2.)
+            } else {
+                px(1.)
+            },
             color,
-            gpui::BorderStyle::Solid,
+            if ring.mode == TabMode::Waiting {
+                gpui::BorderStyle::Dashed
+            } else {
+                gpui::BorderStyle::Solid
+            },
         )
     };
     let left = f32::from(bounds.origin.x);
@@ -229,6 +299,7 @@ fn paint(
                     band(
                         window,
                         bounds,
+                        radius,
                         left + filled - 3.0,
                         6.0,
                         ring.color.opacity(0.28),
@@ -242,9 +313,14 @@ fn paint(
                 let t = (now / SWEEP_SECONDS).fract();
                 let travel = width + band_width * 2.0;
                 let center = left - band_width + travel * (t * 1.25).min(1.0);
-                clipped(window, bounds, |window| {
-                    band(window, bounds, center, band_width, ring.color.opacity(0.22));
-                });
+                band(
+                    window,
+                    bounds,
+                    radius,
+                    center,
+                    band_width,
+                    ring.color.opacity(0.22),
+                );
             }
             window.paint_quad(outline(ring.color.opacity(0.55)));
         }
@@ -256,6 +332,10 @@ fn paint(
             };
             window.paint_quad(rounded(ring.color.opacity(0.10 + 0.12 * breath)));
             window.paint_quad(outline(ring.color.opacity(0.45 + 0.45 * breath)));
+        }
+        TabMode::Waiting | TabMode::Question => {
+            window.paint_quad(rounded(ring.color.opacity(0.11)));
+            window.paint_quad(outline(ring.color.opacity(0.90)));
         }
         TabMode::Error => {
             window.paint_quad(rounded(ring.color.opacity(0.12)));
@@ -318,6 +398,43 @@ impl Render for TabOutline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn working_highlights_share_outline_geometry(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        for width in [96.0_f32, 16.0] {
+            for center in [2.0, width - 2.0] {
+                let band_width = (width * 0.45).clamp(24.0, 120.0);
+                let now =
+                    (center + band_width) / (width + 2.0 * band_width) * (SWEEP_SECONDS / 1.25);
+                cx.draw(point(px(0.), px(0.)), size(px(width), px(24.)), |_, _| {
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let ring =
+                                TabRing::resolve(MinimapSessionState::Working, None).unwrap();
+                            paint(window, bounds, ring, Some(0.98), now, false);
+                        },
+                    )
+                    .size_full()
+                });
+                let quads = cx.update(|window, _| window.painted_quads());
+                let outline = quads.last().expect("working outline must paint");
+                assert_ne!(outline.corner_radii, Default::default());
+                assert!(quads.len() >= 4, "progress and highlights must paint");
+                for quad in &quads[..quads.len() - 1] {
+                    assert_eq!(
+                        quad.bounds, outline.bounds,
+                        "working paint must use the pill bounds"
+                    );
+                    assert_eq!(
+                        quad.corner_radii, outline.corner_radii,
+                        "working paint must use the outline radius"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn ring_color_codes_state_and_tracks_progress() {

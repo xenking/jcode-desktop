@@ -113,6 +113,7 @@ impl ModelQuery {
     }
 
     /// Higher is better. `None` means at least one query word did not match.
+    #[allow(dead_code)]
     pub(super) fn score(&self, entry: &SearchEntry) -> Option<i32> {
         self.word_scores(entry)
             .map(|scores| scores.iter().fold(0i32, |sum, s| sum.saturating_add(*s)))
@@ -247,7 +248,7 @@ pub(super) fn rank_matches<'a>(
         })
         .collect();
     // Stable sort: equal scores keep the caller's usage ranking.
-    kept.sort_by(|a, b| b.1.cmp(&a.1));
+    kept.sort_by_key(|(_, total)| std::cmp::Reverse(*total));
     kept
 }
 

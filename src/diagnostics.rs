@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+#[allow(dead_code)]
 const HIGH_CPU_PERCENT: f64 = 50.0;
 /// Routine memory samples, so long-running leaks leave a growth history.
 const MEMORY_LOG_EVERY: u32 = 120; // 120 * 5s = 10 minutes
@@ -338,6 +339,7 @@ impl MemorySample {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_status(status: &str) -> Self {
         let mut sample = Self::default();
         for line in status.lines() {
@@ -448,7 +450,7 @@ impl MemoryMonitor {
                 growth / MIB
             ));
             self.last_logged_rss = pressure;
-        } else if self.ticks % MEMORY_LOG_EVERY == 0 {
+        } else if self.ticks.is_multiple_of(MEMORY_LOG_EVERY) {
             lines.push(format!("memory: {sample}"));
             self.last_logged_rss = pressure;
         }

@@ -54,6 +54,7 @@ pub(super) fn schedule() {
 }
 
 /// A user-requested check, as for `/update` or the version pill.
+#[allow(dead_code)]
 pub(super) fn start() {
     let _ = std::thread::Builder::new()
         .name("desktop-update".into())

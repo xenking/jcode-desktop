@@ -4,7 +4,7 @@
 # `[dictation] command`. It asks SuperWhisper to record through its public
 # deep link, waits for SuperWhisper to write the next recording, and prints
 # that transcript to stdout. SuperWhisper owns the microphone, model, mode and
-# license. Stop the recording with SuperWhisper's own shortcut or pill.
+# license. Desktop stops capture with superwhisper://record/stop.
 # No credentials are read and nothing is sent anywhere by this script.
 set -eu
 dir="${SUPERWHISPER_RECORDINGS:-$HOME/Documents/superwhisper/recordings}"
@@ -13,7 +13,7 @@ timeout="${SUPERWHISPER_TIMEOUT:-300}"
 [ -d "$dir" ] || { echo "SuperWhisper recordings folder not found: $dir" >&2; exit 1; }
 latest() { ls -1 "$dir" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1; }
 before="$(latest || true)"
-open -g "superwhisper://record"
+open -g "superwhisper://record/start"
 elapsed=0
 while [ "$elapsed" -lt $((timeout * 2)) ]; do
   sleep 0.5

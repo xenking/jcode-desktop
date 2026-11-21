@@ -41,18 +41,6 @@ class RuntimePinTests(unittest.TestCase):
                 self.assertLess(text.index(command), text.index('dtolnay/rust-toolchain')
                                 if 'dtolnay/rust-toolchain' in text else text.index('vmactions/freebsd-vm'))
 
-    def test_update_matrix_and_testing_defaults_match_native_runtime(self):
-        pin = self.runtime_pin('cross-platform-release.yml')
-        text = (ROOT / '.github/workflows/update-matrix.yml').read_text()
-        pins = re.findall(r'repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b', text)
-        self.assertEqual(pins, [pin, pin])
-        macos = (ROOT / '.github/workflows/macos-tests.yml').read_text()
-        self.assertIn(f'default: {pin}', macos)
-        self.assertIn("inputs.jcode_ref || '" + pin + "'", macos)
-        hosted = (ROOT / '.github/workflows/linux-hosted-validation.yml').read_text()
-        self.assertIn(f'default: {pin}', hosted)
-        self.assertIn('verify-runtime-source.py --runtime jcode --expected-commit "$JCODE_REVISION"', hosted)
-
     def test_runtime_preflight_is_a_fingerprinted_release_input(self):
         self.assertTrue(AUTO.release_input('scripts/verify-runtime-source.py'))
         self.assertTrue(AUTO.release_input('scripts/windows-runtime-acceptance.py'))

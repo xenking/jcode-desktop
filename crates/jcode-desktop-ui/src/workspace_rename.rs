@@ -28,7 +28,8 @@ impl Workspace {
                 slot.row == self.active_row
                     && !slot.closing
                     && panel.can_fork()
-                    && (!panel.session_id.contains("://") || panel.session_id.starts_with("ssh://"))
+                    && (!panel.session_id.contains("://")
+                        || crate::harness::is_remote_session(&panel.session_id))
             })
             .map(|slot| slot.panel.clone())
     }

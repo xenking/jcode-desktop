@@ -50,6 +50,7 @@ fn assert_draft_and_focus(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualT
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn account_offer_is_optional_and_fixture_safe() {
     assert!(EMAIL_SIGN_IN, "email sign-in is offered");
     for handled in [false, true] {
@@ -437,6 +438,7 @@ fn theme_hover_previews_before_and_after_a_click(cx: &mut gpui::TestAppContext) 
     Theme::select(original);
 }
 
+#[allow(dead_code)]
 fn field_text(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> String {
     workspace.read_with(vcx, |w, cx| {
         w.account_sign_in

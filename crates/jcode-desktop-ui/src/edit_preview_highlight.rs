@@ -76,7 +76,7 @@ fn compact(text: &str, indent: usize, spans: &[(Range<usize>, HighlightStyle)]) 
                 })
                 .map(|(_, visible)| visible);
             let first = ranges.next()?;
-            let end = ranges.last().unwrap_or(first).end;
+            let end = ranges.next_back().unwrap_or(first).end;
             Some((first.start..end, *style))
         })
         .collect();

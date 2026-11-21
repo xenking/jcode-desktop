@@ -1,0 +1,13 @@
+{
+  "kind": "agent",
+  "name": "conveyor-lead",
+  "format": null,
+  "profiles": [
+    {
+      "name": "default"
+    }
+  ],
+  "description": "Conveyor intake lead - receives work, keeps station handoffs clear, and closes packets",
+  "libraryEntryId": "33d11aa6749be7f8",
+  "raw": "name: conveyor-lead\nversion: \"1.0\"\ndescription: Conveyor intake lead - receives work, keeps station handoffs clear, and closes packets\ndefaults:\n  runtime: claude-code\nimports:\nprofiles:\n  default:\n    uses:\n      skills: [orchestration-team, backlog-capture, verification-before-completion]\n      guidance: []\n      subagents: []\n      plugins: [shared:openrig-core]\n      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks]\nresources:\n  guidance:\n      path: guidance/role.md\n      path: startup/context.md\nstartup:\n  files:\n      orientation: role\n      delivery_hint: send_text\n      required: true\n      delivery_hint: send_text\n      required: true\n  actions: []"
+}

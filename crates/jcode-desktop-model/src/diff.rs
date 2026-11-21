@@ -183,7 +183,7 @@ fn patch_diffs(patch: &str) -> Vec<FileDiff> {
 
 fn parse_patch(patch: &str, partial_last_line: bool) -> Vec<FileDiff> {
     let lines: Vec<&str> = patch.lines().collect();
-    if lines.iter().any(|line| *line == "*** Begin Patch") {
+    if lines.contains(&"*** Begin Patch") {
         codex_diffs(&lines, partial_last_line)
     } else {
         unified_diffs(&lines, partial_last_line)
@@ -420,11 +420,10 @@ fn strip_side(path: &str, prefix: &str) -> String {
 }
 
 fn header_path(header: &str) -> String {
-    if header.starts_with('"') {
-        if let Some((path, _)) = quoted_path(header) {
+    if header.starts_with('"')
+        && let Some((path, _)) = quoted_path(header) {
             return path;
         }
-    }
     // Unified timestamps are tab-delimited. Spaces belong to the filename.
     header.split('\t').next().unwrap_or_default().to_owned()
 }

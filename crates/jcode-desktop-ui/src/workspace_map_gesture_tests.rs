@@ -247,15 +247,15 @@ fn dragging_map_background_pans_cards_without_changing_active_session(
     finish_overview_animation(&workspace, vcx);
     let first = vcx.debug_bounds("overview-panel-0").unwrap();
     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-    // Above the cards, so the press cannot activate a session.
-    let start = gpui::point(canvas.left() + px(200.0), canvas.top() + px(40.0));
-    let end = start + gpui::point(px(-40.0), px(-30.0));
+    // Keep both points between the header and cards, inside the map surface.
+    let start = gpui::point(canvas.left() + px(200.0), first.top() - px(8.0));
+    let delta = gpui::point(px(-40.0), px(-12.0));
+    let end = start + delta;
     vcx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
     vcx.simulate_mouse_move(end, gpui::MouseButton::Left, Default::default());
     vcx.run_until_parked();
     let after = vcx.debug_bounds("overview-panel-0").unwrap();
-    assert_eq!(after.left() - first.left(), px(-40.0));
-    assert_eq!(after.top() - first.top(), px(-30.0));
+    assert_eq!(after.origin - first.origin, delta);
     vcx.simulate_mouse_up(end, gpui::MouseButton::Left, Default::default());
     // Motion after releasing must stop dragging and must not pan any further.
     vcx.simulate_mouse_move(start, None, Default::default());
@@ -264,7 +264,10 @@ fn dragging_map_background_pans_cards_without_changing_active_session(
         assert!(workspace.overview);
         assert_eq!(workspace.active, 0);
         assert_eq!(workspace.active_row, 0);
-        assert_eq!(workspace.map_gesture.pan, (-40.0, -30.0));
+        assert_eq!(
+            workspace.map_gesture.pan,
+            (f32::from(delta.x), f32::from(delta.y))
+        );
         assert!(workspace.map_gesture.drag.is_none());
     });
 }

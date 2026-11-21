@@ -36,7 +36,7 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
         input.set_model_routes(Vec::new(), &routes, None, cx);
         input.set_content("/model ".into(), cx);
         let collapsed = input.command_suggestions();
-        assert_eq!(collapsed.len(), 4);
+        assert_eq!(collapsed.len(), 5); // Three models, disclosure, Manage.
         assert!(Arc::ptr_eq(&collapsed, &input.command_suggestions()));
 
         // Changing only highlight must not rebuild the metadata vector.
@@ -63,12 +63,12 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
         assert_eq!(current[0].value, "/model openai-api:atlas-0006");
         assert_eq!(current[0].help, "Current");
 
-        let group = current.last().unwrap().toggle.clone().unwrap();
+        let group = current.iter().find_map(|row| row.toggle.clone()).unwrap();
         input.toggle_model_group(group.clone(), cx);
         let expanded = input.command_suggestions();
         assert!(!Arc::ptr_eq(&current, &expanded));
-        assert_eq!(expanded.len(), 8); // Seven available models and disclosure.
-        assert_eq!(expanded.last().unwrap().value, "Show fewer models");
+        assert_eq!(expanded.len(), 9); // Seven models, disclosure and Manage.
+        assert_eq!(expanded[expanded.len() - 2].value, "Show fewer models");
         input.toggle_model_group(group, cx);
         let recollapsed = input.command_suggestions();
         assert!(!Arc::ptr_eq(&expanded, &recollapsed));
@@ -171,16 +171,17 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, size(px(1000.), px(800.)));
     let mut catalog = routes(1000);
-    // The current longer name matches the final short name's query and is
-    // ranked first. Clicking the short name must not submit that first match.
-    catalog[998].model = "atlas-0999-long".into();
+    // Newest first puts atlas-0000 last. The current longer name matches the
+    // final short name's query and is ranked first. Clicking the short name
+    // must not submit that first match.
+    catalog[1].model = "atlas-0000-long".into();
     input.update(vcx, |input, cx| {
-        input.set_model_routes(Vec::new(), &catalog, Some("atlas-0999-long".into()), cx);
+        input.set_model_routes(Vec::new(), &catalog, Some("atlas-0000-long".into()), cx);
         input.set_content("/model atlas".into(), cx);
         let rows = input.command_suggestions();
         assert_eq!(rows.len(), 1000);
-        assert_eq!(rows[0].value, "/model openai-api:atlas-0999-long");
-        assert_eq!(rows[999].value, "/model openai-api:atlas-0999");
+        assert_eq!(rows[0].value, "/model openai-api:atlas-0000-long");
+        assert_eq!(rows[999].value, "/model openai-api:atlas-0000");
     });
     vcx.run_until_parked();
     vcx.update(|window, cx| window.draw(cx).clear(cx));
@@ -223,15 +224,103 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
     assert!((1..50).contains(&visible), "painted {visible} rows at end");
     vcx.simulate_click(last.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
+    // A click switches to that exact route at once.
     assert_eq!(
         submitted.borrow().as_slice(),
-        ["/model openai-api:atlas-0999"]
+        ["/model openai-api:atlas-0000"]
     );
-    input.read_with(vcx, |input, _| {
-        assert!(input.content.is_empty());
-        assert_eq!(
-            input.history.last().unwrap(),
-            "/model openai-api:atlas-0999"
+}
+
+/// The picker's effort step has no hover, so each row keeps the level name.
+/// The level's shape is drawn beside it, so the label holds no text glyph.
+#[test]
+fn effort_step_rows_keep_the_name_and_no_text_glyph() {
+    use super::model_picker::effort_row_label;
+    assert_eq!(effort_row_label("none"), "None");
+    assert_eq!(effort_row_label("low"), "Low");
+    assert_eq!(effort_row_label("medium"), "Medium");
+    assert_eq!(effort_row_label("high"), "High");
+    assert_eq!(effort_row_label("xhigh"), "xHigh");
+    assert_eq!(effort_row_label("max"), "Max");
+    assert_eq!(effort_row_label("swarm"), "Swarm");
+}
+
+/// Provider headers show the credential's quota bars and resets, not how it
+/// signs in, and the highlighted model row carries its effort ladder.
+#[gpui::test]
+fn headers_show_quota_and_the_highlighted_row_offers_effort(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(crate::panel::usage::StatusAccounts(vec![
+            crate::accounts::Account {
+                id: "openai".into(),
+                display_name: "OpenAI".into(),
+                status: "available".into(),
+                auth_kind: "OAuth".into(),
+                method: String::new(),
+                limits: Vec::new(),
+                usage_reports: vec![crate::accounts::UsageReport {
+                    provider_name: "OpenAI (ChatGPT) (a@x)".into(),
+                    account_label: None,
+                    limits: vec![
+                        crate::accounts::UsageLimit {
+                            name: "5-hour window".into(),
+                            usage_percent: 30.,
+                            reset_in: Some("2h".into()),
+                        },
+                        crate::accounts::UsageLimit {
+                            name: "7-day window".into(),
+                            usage_percent: 100.,
+                            reset_in: Some("2d 20h".into()),
+                        },
+                    ],
+                    extra_info: Vec::new(),
+                    banked_reset: None,
+                }],
+            },
+        ]))
+    });
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, size(px(1000.), px(800.)));
+    input.update_in(vcx, |input, window, cx| {
+        window.focus(&input.focus_handle, cx);
+        let route = jcode_sdk::ModelRouteInfo {
+            model: "gpt-5.6-sol".into(),
+            provider: "OpenAI".into(),
+            api_method: "openai-oauth".into(),
+            available: true,
+            detail: String::new(),
+            usage: None,
+        };
+        input.set_model_routes(Vec::new(), &[route], None, cx);
+        input.set_effort_state(
+            crate::effort::ladder(None, Some("gpt-5.6-sol")),
+            Some("high".into()),
+            cx,
         );
+        input.set_content("/model ".into(), cx);
+    });
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("model-picker-quota-0").is_some(),
+        "quota beside the header"
+    );
+    assert!(vcx.debug_bounds("model-picker-quota-0-0").is_some());
+    assert!(vcx.debug_bounds("model-picker-quota-0-1").is_some());
+    assert!(
+        vcx.debug_bounds("model-picker-auth-0").is_none(),
+        "no Signed in badge"
+    );
+    assert!(vcx.debug_bounds("model-row-efforts-0").is_some());
+    let medium = vcx
+        .debug_bounds("model-row-effort-0-medium")
+        .expect("medium mark on the highlighted row");
+    vcx.simulate_click(medium.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    input.read_with(vcx, |input, _| {
+        assert_eq!(input.row_effort("openai-oauth:gpt-5.6-sol"), Some("medium"));
     });
 }

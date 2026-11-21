@@ -41,6 +41,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_queue(false)
+    }
+
+    fn with_queue(queue: bool) -> Self {
         let (connections_tx, connections) = channel();
         let (requests_tx, requests) = channel();
         let (closed_tx, closed) = channel();
@@ -59,9 +63,14 @@ impl Fixture {
                 while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
                     let event = match &frame.request {
                         ApiRequest::Hello { .. } => ApiEvent::HelloOk {
+                            runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "pool-integration-test".into(),
-                            capabilities: vec!["runtime_commands".into()],
+                            capabilities: if queue {
+                                vec!["runtime_commands".into(), "queued_prompts".into()]
+                            } else {
+                                vec!["runtime_commands".into()]
+                            },
                         },
                         ApiRequest::Ping => ApiEvent::Pong,
                         ApiRequest::CreateSession { .. } => ApiEvent::Attached {
@@ -74,6 +83,10 @@ impl Fixture {
                             session_id: session_id.clone(),
                             messages: vec![],
                             images: vec![],
+                        },
+                        ApiRequest::GetQueuedPrompts { session_id } => ApiEvent::QueuedPrompts {
+                            session_id: session_id.clone(),
+                            prompts: vec![],
                         },
                         ApiRequest::GetRuntimeInfo { session_id } => ApiEvent::RuntimeInfo {
                             session_id: session_id.clone(),
@@ -148,6 +161,45 @@ fn until(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) -> Updat
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+#[test]
+fn queue_capability_precedes_connected_and_history() {
+    let fixture = Fixture::with_queue(true);
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    commands
+        .send(Command::CreateRemoteSession {
+            host: "queue-host".into(),
+            working_dir: None,
+            request_id: Some("draft".into()),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut capability = false;
+    let mut connected = false;
+    while !connected {
+        assert!(Instant::now() < deadline, "connection deadline");
+        match updates.try_recv() {
+            Ok(Update::Event {
+                event: ApiEvent::QueuedPrompts { .. },
+                ..
+            }) => capability = true,
+            Ok(Update::SessionConnected { .. }) => {
+                assert!(
+                    capability,
+                    "queue capability must precede connection readiness"
+                );
+                connected = true;
+            }
+            Ok(Update::History { .. }) => {
+                assert!(capability, "queue capability must precede history")
+            }
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
 }
 
 #[test]
@@ -244,9 +296,13 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
     assert_ne!(parent_index, child_index);
     let child_native = format!("fork-{parent_index}");
     let child_id = remote::namespace("fork-host", &child_native);
-    until(
+    let forked = until(
         &updates,
-        |update| matches!(update, Update::SessionForked { session } if session.session_id == child_id),
+        |update| matches!(update, Update::SessionForked { session, .. } if session.session_id == child_id),
+    );
+    assert!(
+        matches!(&forked, Update::SessionForked { prompt: Some(prompt), .. } if prompt == "child-only question"),
+        "the fork update carries the prompt the panel must echo"
     );
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
@@ -300,6 +356,145 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
 }
 
 #[test]
+fn side_question_answers_in_a_hidden_fork_and_leaves_the_parent_alone() {
+    for status in ["idle", "running_tools"] {
+        assert_side_question_reaches_hidden_fork(status);
+    }
+}
+
+fn assert_side_question_reaches_hidden_fork(status: &str) {
+    let fixture = Fixture::new();
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    let parent_id = remote::namespace("btw-host", "parent");
+    commands
+        .send(Command::Watch {
+            session_id: parent_id.clone(),
+        })
+        .unwrap();
+    let (host, parent_index, mut parent_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(host, "btw-host");
+    until(
+        &updates,
+        |update| matches!(update, Update::SessionConnected { session_id } if session_id == &parent_id),
+    );
+    write_frame(
+        &mut parent_socket,
+        &ServerFrame::event(ApiEvent::SessionStatus {
+            session_id: "parent".into(),
+            status: status.into(),
+            pending_soft_interrupts: None,
+        }),
+    )
+    .unwrap();
+    until(&updates, |update| {
+        matches!(update,
+            Update::Event { session_id, event: ApiEvent::SessionStatus { status: observed, .. }, .. }
+                if session_id == &parent_id && observed == status
+        )
+    });
+    commands
+        .send(Command::SideQuestion {
+            session_id: parent_id.clone(),
+            question: "why is the retry gone?".into(),
+        })
+        .unwrap();
+    let (child_host, child_index, child_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(child_host, "btw-host");
+    assert_ne!(parent_index, child_index);
+    // The daemon names the fork after the connection that asked for it.
+    let child_native = format!("fork-{parent_index}");
+    let child_id = remote::namespace("btw-host", &child_native);
+    until(&updates, |update| {
+        matches!(
+            update,
+            Update::SideQuestionStarted { parent_session_id, session, question }
+                if parent_session_id == &parent_id
+                    && session.session_id == child_id
+                    && question == "why is the retry gone?"
+        )
+    });
+    // The child is archived so an unpromoted side question stays out of the
+    // session list, and the question carries its steering as a hidden reminder.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut archived = false;
+    let mut submitted = false;
+    while !(archived && submitted) {
+        assert!(
+            Instant::now() < deadline,
+            "side question was not archived and submitted"
+        );
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        match request {
+            ApiRequest::ArchiveSession { session_id } => {
+                assert_eq!(index, child_index);
+                assert_eq!(session_id, child_native);
+                archived = true;
+            }
+            ApiRequest::SendMessage {
+                session_id,
+                content,
+                system_reminder,
+                ..
+            } => {
+                assert_eq!(index, child_index);
+                assert_eq!(session_id, child_native);
+                assert_eq!(content, "why is the retry gone?");
+                assert_eq!(system_reminder.as_deref(), Some(SIDE_QUESTION_REMINDER));
+                submitted = true;
+            }
+            _ => continue,
+        }
+    }
+    // The source conversation never receives the side question.
+    commands
+        .send(Command::SetModel {
+            session_id: parent_id,
+            model: "parent-still-attached".into(),
+        })
+        .unwrap();
+    loop {
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        if let ApiRequest::SendMessage { content, .. } = &request {
+            assert_ne!(
+                content, "why is the retry gone?",
+                "the parent stays untouched"
+            );
+        }
+        if let ApiRequest::SetModel { session_id, model } = request {
+            assert_eq!(index, parent_index);
+            assert_eq!(session_id, "parent");
+            assert_eq!(model, "parent-still-attached");
+            break;
+        }
+    }
+    // Dismissing drops the child connection without deleting the archived fork.
+    commands
+        .send(Command::DismissSideQuestion {
+            session_id: child_id,
+        })
+        .unwrap();
+    assert_eq!(
+        fixture.closed.recv_timeout(Duration::from_secs(3)).unwrap(),
+        child_index
+    );
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
+    drop((parent_socket, child_socket));
+}
+
+#[test]
 fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
     let fixture = Fixture::new();
     let (commands, updates, bridge) = bridge_loop(fixture.pool);
@@ -312,6 +507,7 @@ fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
             session_id: id("send"),
             content: "hello".into(),
             images: vec![],
+            attachments: vec![],
         },
         Command::SetModel {
             session_id: id("model"),

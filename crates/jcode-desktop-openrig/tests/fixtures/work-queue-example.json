@@ -1,0 +1,5 @@
+[
+  {"qitemId":"qitem-example-open","destinationSession":"operator@kernel","sourceSession":"advisor-lead@kernel","state":"in-progress","priority":"urgent","tsCreated":"2026-11-21T07:00:00Z","summary":"Review the staged migration","body":"Check the smoke test results and compare the staging manifest against the release plan.","closureReason":null,"blockedOn":null},
+  {"qitemId":"qitem-example-done","destinationSession":"advisor-lead@kernel","sourceSession":"operator@kernel","state":"done","priority":null,"tsCreated":null,"summary":"Audit build inputs","body":"The source revision and its dependency locks matched.","closureReason":"completed","blockedOn":null},
+  {"qitemId":"qitem-example-held","destinationSession":"operator@kernel","state":"blocked","priority":"routine","tsCreated":"2026-11-21T06:00:00Z","summary":"Record the acceptance run","body":"Waiting for a verified staging artifact.","blockedOn":"staging artifact"}
+]

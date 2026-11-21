@@ -655,8 +655,8 @@ pub fn replacement_pairs(
         let last = cursor + surplus.min(LOOKAHEAD);
         let mut best = cursor;
         let mut best_score = replacement_similarity(short_text, longer[cursor].1);
-        for candidate in cursor + 1..=last {
-            let score = replacement_similarity(short_text, longer[candidate].1);
+        for (candidate, line) in longer.iter().enumerate().take(last + 1).skip(cursor + 1) {
+            let score = replacement_similarity(short_text, line.1);
             // Nearest candidate wins ties, including wholly unrelated lines.
             if score > best_score {
                 best = candidate;
@@ -1007,7 +1007,7 @@ fn unified_patch(patch: &str, partial_last_line: bool) -> Option<DiffPreview> {
                 a = a.strip_prefix("a/").unwrap_or(&a).to_owned();
                 b = b.strip_prefix("b/").unwrap_or(&b).to_owned();
             }
-            if !a.is_empty() && !b.is_empty() && !(a == "/dev/null" && b == "/dev/null") {
+            if !(a.is_empty() || b.is_empty() || a == "/dev/null" && b == "/dev/null") {
                 let path = if b == "/dev/null" { &a } else { &b };
                 let next = current.get_or_insert_with(|| file(path, "Edit"));
                 next.path = path.to_owned();
@@ -1153,13 +1153,11 @@ fn git_paths(text: &str) -> Option<(String, String)> {
     // itself contains ` b/`. Checking that split once avoids quadratic scans.
     if !text.starts_with('"') {
         let middle = text.len().saturating_sub(1) / 2;
-        if let (Some(a), Some(b)) = (text.get(..middle), text.get(middle..)) {
-            if let (Some(a), Some(b)) = (a.strip_prefix("a/"), b.strip_prefix(" b/")) {
-                if !a.is_empty() && a == b {
+        if let (Some(a), Some(b)) = (text.get(..middle), text.get(middle..))
+            && let (Some(a), Some(b)) = (a.strip_prefix("a/"), b.strip_prefix(" b/"))
+                && !a.is_empty() && a == b {
                     return Some((a.to_owned(), b.to_owned()));
                 }
-            }
-        }
     }
     let (a, rest) = if text.starts_with('"') {
         let (a, end) = quoted_token(text)?;

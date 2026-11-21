@@ -22,6 +22,24 @@ impl HistoryRecovery {
         session_id: &str,
         updates: &super::UpdateSender,
     ) {
+        if client.supports("bounded_history_v1") {
+            match client.get_history_page(real_id, None) {
+                Ok(page) => {
+                    self.loaded();
+                    let _ = updates.send(super::Update::BoundedHistory {
+                        session_id: session_id.to_owned(),
+                        page,
+                    });
+                }
+                Err(error) => {
+                    eprintln!("jcode desktop: session {session_id} history read failed: {error}");
+                    if self.failed(Instant::now()) {
+                        let _ = updates.send(super::Update::CommandFailed { session_id: session_id.to_owned(), reason: format!("Could not load conversation history after repeated attempts. {error}") });
+                    }
+                }
+            }
+            return;
+        }
         match client.get_history_with_images(real_id) {
             Ok((messages, images)) => {
                 self.loaded();

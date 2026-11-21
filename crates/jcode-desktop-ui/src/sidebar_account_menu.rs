@@ -645,14 +645,14 @@ impl Workspace {
             .id("account-menu")
             .debug_selector(|| "account-menu".into())
             .w_full()
-            .p_3()
+            .p_2()
             .rounded_xl()
             .border_1()
             .border_color(theme.PANEL_BORDER)
             .bg(theme.PANEL_BG)
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_2()
             .text_size(px(11.0))
             .child(
                 div()
@@ -673,6 +673,23 @@ impl Workspace {
                             .child(format!("{plan}{status}")),
                     ),
             );
+
+        // The versions: the build running now, and the release the badge above
+        // offers, with the one button that applies it. This is the only place
+        // besides Settings → About where the number appears.
+        let versions = version::version_block(
+            &updates::release_status(),
+            &updates::current(),
+            updates::is_source_build(),
+        );
+        body = body.child(version::render_version_block(
+            &versions,
+            cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                Workspace::check_and_apply_update(cx);
+                cx.notify();
+            }),
+        ));
 
         // Usage this period.
         body = body.child(match snapshot {

@@ -99,6 +99,39 @@ fn cloud_initialization_does_not_lock_ordinary_ssh_pool() {
     ));
 }
 
+#[test]
+fn cloud_masters_and_prepared_clients_are_only_reused_on_the_same_machine() {
+    let mut pool = CloudPool::<Weak<&str>, &str>::default();
+    let account = cloud_account("first", "https://api.example/v1");
+    let now = Instant::now();
+    let first = Destination::named("ai-core").unwrap();
+    let state = pool.target(first);
+    let owner = Arc::new("master:ai-core");
+    let mut first_state = state.lock().unwrap();
+    first_state.select_account(Some(&account), 1);
+    first_state.publish(Arc::downgrade(&owner));
+    let (generation, _) = first_state.begin_prepare(Weak::upgrade, now).unwrap();
+    for other in [
+        Destination::named("studio").unwrap(),
+        Destination::parse(managed_cloud::HOST).unwrap(),
+    ] {
+        let other_state = pool.target(other);
+        let mut other_state = other_state.try_lock().expect("independent machine lock");
+        other_state.select_account(Some(&account), 1);
+        assert!(other_state.reserve(Weak::upgrade).is_none());
+        assert!(!other_state.finish_prepare(generation, Some("spare:ai-core"), now));
+        assert!(other_state.take_spare(now).is_none());
+    }
+    assert!(first_state.finish_prepare(generation, Some("spare:ai-core"), now));
+    drop(first_state);
+    let same = pool.target(first);
+    assert_eq!(same.lock().unwrap().take_spare(now), Some("spare:ai-core"));
+    assert_eq!(
+        same.lock().unwrap().reserve(Weak::upgrade).as_deref(),
+        Some(&"master:ai-core")
+    );
+}
+
 fn spare_cache() -> (CloudTransport<Weak<usize>, Arc<usize>>, Arc<usize>) {
     let owner = Arc::new(1);
     let mut cloud = CloudTransport::default();
