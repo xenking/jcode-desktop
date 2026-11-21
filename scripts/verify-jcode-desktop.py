@@ -1011,6 +1011,11 @@ class Instance:
             labels = {row["session_id"]: row["label"] for row in before["panel"]["workers"]}
             if labels.get(SWARM_WORKER) != "btw-enter":
                 raise RuntimeError("auto-lane worker must show its catalog title without an agent label")
+            if labels.get("swarm-fixture-2") != "Test runner":
+                raise RuntimeError("finished row used the retry prompt instead of the lane label")
+            click("finished-workers")
+            expanded = self.screenshot("swarm-status-expanded.png")
+            click("finished-workers")
         save(self.run / f"{name}-before.json", before)
         first = self.screenshot(f"{name}-before.png")
 
@@ -1027,6 +1032,10 @@ class Instance:
             raise RuntimeError("worker click produced no screenshot change")
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "GPUI pointer dispatch; real Git worktrees with offline swarm records"}
+        if name == "swarm-status":
+            if expanded["sha256"] == first["sha256"]:
+                raise RuntimeError("opening the finished section did not change the native frame")
+            report["expanded"] = expanded
         save(self.run / f"{name}-proof.json", report)
         return report
 

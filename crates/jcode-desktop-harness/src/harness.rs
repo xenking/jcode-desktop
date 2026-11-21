@@ -2594,6 +2594,9 @@ pub fn merge_persisted_sessions(
                 session.parent_session_id = record.swarm_parent();
             }
         }
+        if session.parent_session_id.is_some() && session.agent_label.is_none() {
+            session.agent_label = persisted_todo_title(home, &session.session_id);
+        }
     }
 
     // A full limited API page is authoritative. Modern bridges source it from
@@ -2667,6 +2670,8 @@ pub fn merge_persisted_sessions(
         };
         let status = record.lifecycle_status();
         let parent_session_id = record.swarm_parent();
+        let todo_title = persisted_todo_title(home, &id);
+        let agent_label = parent_session_id.as_ref().and(todo_title.clone());
         let context = record.catalog_context();
         let save_label = record
             .saved
@@ -2677,7 +2682,7 @@ pub fn merge_persisted_sessions(
             .custom_title
             .filter(|title| !title.trim().is_empty())
             .or_else(|| save_label.clone())
-            .or_else(|| persisted_todo_title(home, &id))
+            .or(todo_title)
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
         disk_sessions.push((
             recency,
@@ -2695,7 +2700,7 @@ pub fn merge_persisted_sessions(
                 archived_at_ms: None,
                 save_label,
                 parent_session_id,
-                agent_label: None,
+                agent_label,
                 swarm_status: None,
                 edit_stats: None,
                 context,

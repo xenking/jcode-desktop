@@ -272,6 +272,7 @@ impl Panel {
                     }
                     this.composer_popover_trigger = Some(this.swarm_trigger_focus.clone());
                     this.swarm_list_open = true;
+                    this.swarm_finished_open = false;
                     this.swarm_list_scroll
                         .set_offset(gpui::point(px(0.), px(0.)));
                     window.focus(&this.swarm_list_focus, cx);
@@ -303,9 +304,23 @@ impl Panel {
         if !self.swarm_list_open {
             return None;
         }
-        let mut workers = self.swarm_workers.clone();
-        workers.sort_by_key(|worker| (!worker.state.is_live(), !worker.state.is_active()));
-        if workers.is_empty() && self.background_jobs.tasks.is_empty() {
+        let mut workers: Vec<_> = self
+            .swarm_workers
+            .iter()
+            .filter(|worker| worker.state.is_live())
+            .cloned()
+            .collect();
+        workers.sort_by_key(|worker| !worker.state.is_active());
+        let active_count = workers.len();
+        let finished = self
+            .swarm_workers
+            .iter()
+            .filter(|worker| worker.state.is_finished());
+        let finished_count = finished.clone().count();
+        if self.swarm_finished_open {
+            workers.extend(finished.cloned());
+        }
+        if active_count + finished_count == 0 && self.background_jobs.tasks.is_empty() {
             return None;
         }
         let theme = Theme::global();
@@ -315,9 +330,7 @@ impl Panel {
         let key_focus = focus.clone();
         self.swarm_picker_rows
             .resize_with(workers.len(), || cx.focus_handle());
-        let mut row_focus = self.swarm_picker_rows.clone();
-        let worker_count = workers.len();
-        let worker_rows = workers
+        let mut worker_rows = workers
             .iter()
             .enumerate()
             .map(|(index, worker)| {
@@ -353,7 +366,7 @@ impl Panel {
                 let cost = worker.cost_text();
                 crate::keyboard::tracked_button(
                     div().id(("swarm-list-worker", index)),
-                    &row_focus[index],
+                    &self.swarm_picker_rows[index],
                 )
                 .debug_selector(move || format!("swarm-list-worker-{index}"))
                 .flex_none()
@@ -456,16 +469,62 @@ impl Panel {
             })
             .collect::<Vec<_>>();
         let mut rows = Vec::new();
-        if worker_count > 0 {
-            rows.push(work_section("Workers", worker_count, false));
+        let mut row_focus = Vec::new();
+        let mut scroll_indices = Vec::new();
+        if active_count + finished_count > 0 {
+            rows.push(
+                work_section("Workers", format!("Workers · {active_count}"), false)
+                    .into_any_element(),
+            );
+            scroll_indices.extend(rows.len()..rows.len() + active_count);
+            row_focus.extend_from_slice(&self.swarm_picker_rows[..active_count]);
+            rows.extend(worker_rows.drain(..active_count));
+        }
+        if finished_count > 0 {
+            let arrow = if self.swarm_finished_open {
+                '▾'
+            } else {
+                '▸'
+            };
+            scroll_indices.push(rows.len());
+            row_focus.push(self.swarm_finished_focus.clone());
+            rows.push(
+                crate::keyboard::tracked_button(
+                    work_section(
+                        "Finished workers",
+                        format!("{arrow} Finished workers · {finished_count}"),
+                        active_count > 0,
+                    )
+                    .id("swarm-finished-toggle"),
+                    &self.swarm_finished_focus,
+                )
+                .cursor_pointer()
+                .rounded_md()
+                .hover(|el| el.bg(theme.USER_BG))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.swarm_finished_open = !this.swarm_finished_open;
+                    cx.notify();
+                }))
+                .children(crate::fixture_control_targets::marker(
+                    || "finished-workers".into(),
+                    || Some(self.session_id.clone()),
+                ))
+                .into_any_element(),
+            );
+            scroll_indices.extend(rows.len()..rows.len() + worker_rows.len());
+            row_focus.extend_from_slice(&self.swarm_picker_rows[active_count..]);
             rows.extend(worker_rows);
         }
         if !jobs.is_empty() {
-            rows.push(work_section(
-                "Background tasks",
-                jobs.len(),
-                worker_count > 0,
-            ));
+            rows.push(
+                work_section(
+                    "Background tasks",
+                    format!("Background tasks · {}", jobs.len()),
+                    !rows.is_empty(),
+                )
+                .into_any_element(),
+            );
         }
         let detail_index = rows.len() + jobs.len();
         for (index, job) in jobs.iter().enumerate() {
@@ -475,6 +534,7 @@ impl Panel {
                 .entry(job.task_id.clone())
                 .or_insert_with(|| cx.focus_handle())
                 .clone();
+            scroll_indices.push(rows.len());
             rows.push(self.render_background_job_row(index, job, &focus, detail_index, cx));
             row_focus.push(focus);
         }
@@ -523,14 +583,10 @@ impl Panel {
                                     if let Some(index) =
                                         row_focus.iter().position(|row| row == &next)
                                     {
-                                        // Section headings are scroll children, not focus stops.
-                                        let headings = 1 + usize::from(
-                                            worker_count > 0 && index >= worker_count,
-                                        );
                                         scroll.scroll_to_item(if index == 0 {
                                             0
                                         } else {
-                                            index + headings
+                                            scroll_indices[index]
                                         });
                                     }
                                     window.focus(&next, cx);
@@ -578,7 +634,7 @@ impl Panel {
     }
 }
 
-fn work_section(label: &'static str, count: usize, separated: bool) -> gpui::AnyElement {
+fn work_section(label: &'static str, title: String, separated: bool) -> gpui::Div {
     let theme = Theme::global();
     div()
         .debug_selector(move || format!("work-section-{label}"))
@@ -593,8 +649,7 @@ fn work_section(label: &'static str, count: usize, separated: bool) -> gpui::Any
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(theme.composer_secondary())
         .truncate()
-        .child(format!("{label} · {count}"))
-        .into_any_element()
+        .child(title)
 }
 
 #[cfg(test)]
@@ -873,6 +928,36 @@ mod tests {
                 assert!(vcx.update(|window, _| trigger.is_focused(window)));
             }
         }
+    }
+
+    #[gpui::test]
+    fn finished_workers_are_collapsed_and_use_the_lane_label(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        let session = serde_json::from_value(serde_json::json!({
+            "session_id": "session_fox_1_a", "status": "closed", "parent_session_id": "activity-bar",
+            "swarm_status": "stopped", "title": "Retry this lane after the previous worker failed",
+            "agent_label": "tab-status"
+        }))
+        .unwrap();
+        let finished = Worker::from_session(&session, None, 0);
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![finished.clone(), worker("rose", "running")], cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_click(pill.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("work-section-Workers").is_some());
+        assert!(vcx.debug_bounds("swarm-list-worker-0").is_some());
+        assert!(
+            vcx.debug_bounds("swarm-list-worker-1").is_none(),
+            "history starts collapsed"
+        );
+        let history = vcx.debug_bounds("work-section-Finished workers").unwrap();
+        vcx.simulate_click(history.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list-worker-1").is_some());
+        assert_eq!(finished.row_title(), "tab-status");
     }
 
     #[gpui::test]
@@ -1244,6 +1329,10 @@ mod tests {
                 .as_deref(),
             Some("Waiting: calf, sunflower")
         );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.tab_ring().map(|r| r.mode.label())),
+            Some("waiting")
+        );
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(
                 vec![
@@ -1258,6 +1347,10 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(panel.read_with(vcx, |panel, _| panel.await_line()), None);
         assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
+        assert_ne!(
+            panel.read_with(vcx, |panel, _| panel.tab_ring().map(|r| r.mode.label())),
+            Some("waiting")
+        );
     }
 
     /// The row the user reported as "poodle compact-div… running 23m": the

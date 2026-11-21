@@ -715,6 +715,8 @@ pub struct Panel {
     /// The worker list opened from the composer's count is showing.
     swarm_list_open: bool,
     swarm_list_focus: FocusHandle,
+    swarm_finished_open: bool,
+    swarm_finished_focus: FocusHandle,
     swarm_picker_rows: Vec<FocusHandle>,
     swarm_list_scroll: ScrollHandle,
     swarm_trigger_focus: FocusHandle,
@@ -1617,6 +1619,8 @@ impl Panel {
             worker_record: None,
             swarm_list_open: false,
             swarm_list_focus: cx.focus_handle(),
+            swarm_finished_open: false,
+            swarm_finished_focus: cx.focus_handle(),
             swarm_picker_rows: Vec::new(),
             swarm_list_scroll: ScrollHandle::new(),
             swarm_trigger_focus: cx.focus_handle(),
@@ -8910,9 +8914,14 @@ mod tests {
             assert_eq!(mode(panel), None);
 
             panel.set_tab_waiting(true, cx);
+            panel.set_pending_awaits(vec![jcode_sdk::PendingAwait {
+                requested_ids: vec!["removed-worker-1".into(), "removed-worker-2".into()],
+                deadline_unix_ms: u64::MAX,
+            }], cx);
             assert_eq!(mode(panel), Some(TabMode::Waiting));
             panel.set_tab_waiting(false, cx);
             assert_eq!(mode(panel), None);
+            assert!(panel.awaiting_ids().is_empty());
 
             for (wire, expected) in [
                 (serde_json::json!({"ev":"tool_start", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg"}), TabMode::Working),

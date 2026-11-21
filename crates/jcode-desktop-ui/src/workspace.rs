@@ -1437,6 +1437,9 @@ impl Workspace {
                     }
                     child.parent_session_id = Some("screenshot-fixture".into());
                     child.swarm_status = Some(status.into());
+                    if index == 2 && worktree_fixture.is_some() {
+                        child.title = Some("Retry after the previous worker failed".into());
+                    }
                     child.edit_stats = Some(jcode_sdk::SessionEditStats {
                         added: 14 + index as u64 * 50,
                         removed: 2 + index as u64 * 8,

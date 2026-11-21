@@ -89,6 +89,7 @@ pub(crate) fn marker(
 
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
+        || selector == "finished-workers"
         || selector == "hover:panel-cache"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")

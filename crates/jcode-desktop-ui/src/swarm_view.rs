@@ -52,7 +52,6 @@ impl WorkerState {
     }
 
     /// Ready, completed, stopped or failed: no longer worth waiting on.
-    #[allow(dead_code)]
     pub fn is_finished(self) -> bool {
         matches!(self, Self::Ready | Self::Failed | Self::Stopped)
     }
@@ -202,6 +201,14 @@ impl Worker {
     }
 
     pub fn row_title(&self) -> &str {
+        if self.state.is_finished() {
+            return self
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .unwrap_or(&self.name);
+        }
         let title = self.title.as_deref().map(str::trim).filter(|title| {
             // Previous daemons stored this synthetic startup prompt as a title.
             *title != jcode_base::session_title::AUTO_LANE_START

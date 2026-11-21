@@ -39,6 +39,9 @@ const PROGRESS_EASE: f32 = 0.18;
 
 impl Panel {
     pub(crate) fn set_tab_waiting(&mut self, waiting: bool, cx: &mut Context<Self>) {
+        if !waiting {
+            self.set_pending_awaits(Vec::new(), cx);
+        }
         if std::mem::replace(&mut self.tab_dependency_waiting, waiting) != waiting {
             cx.notify();
         }
