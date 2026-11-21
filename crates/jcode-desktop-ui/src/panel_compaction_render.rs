@@ -193,4 +193,18 @@ impl super::Panel {
         // append the finished divider so it is not lost.
         self.items.push(Item::Compaction(completed));
     }
+
+    pub(super) fn fail_compaction(&mut self, message: &str) {
+        let error = Item::Error(message.into());
+        if let Some(running) = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|item| matches!(item, Item::Compaction(row) if row.state.is_running()))
+        {
+            *running = error;
+        } else {
+            self.items.push(error);
+        }
+    }
 }

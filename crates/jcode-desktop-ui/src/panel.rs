@@ -3276,11 +3276,11 @@ impl Panel {
             session_id: self.session_id.clone(),
             operation,
         });
-        self.items.push(Item::Assistant(if compact {
-            "Requesting context compaction…".into()
-        } else {
-            "Requested the session change. The conversation will refresh after the runtime confirms it.".into()
-        }));
+        if !compact {
+            self.items.push(Item::Assistant(
+                "Requested the session change. The conversation will refresh after the runtime confirms it.".into(),
+            ));
+        }
     }
 
     fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
@@ -4053,14 +4053,13 @@ impl Panel {
                 }
             }
             ApiEvent::Compacted { message, .. } => {
-                self.items.push(Item::BackgroundTask {
-                    task_id: "context-compaction".into(),
-                    label: "Context compaction".into(),
-                    summary: message.clone(),
-                    detail: None,
-                    percent: None,
-                    done: false,
-                });
+                // Older daemons include a multi-line context report in the acknowledgement.
+                let label = if message.lines().count() == 1 {
+                    message.as_str()
+                } else {
+                    "Compacting context…"
+                };
+                self.show_compaction_running(label);
             }
             ApiEvent::MemoryInjected { content, .. } => {
                 // The daemon stores the same row it sends here, so the live
@@ -4103,6 +4102,14 @@ impl Panel {
             ApiEvent::BackgroundTasks { snapshot, .. } => {
                 self.apply_background_tasks(snapshot, cx);
                 return;
+            }
+            ApiEvent::BackgroundProgress {
+                task_id,
+                summary,
+                done: true,
+                ..
+            } if task_id == "context-compaction" => {
+                self.fail_compaction(summary);
             }
             ApiEvent::BackgroundProgress {
                 task_id,
