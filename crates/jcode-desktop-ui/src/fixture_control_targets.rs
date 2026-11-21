@@ -146,6 +146,8 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                 | "context-usage-close"
                 | "context-usage-compact"
                 | "context-usage-shake"
+                | "context-usage-shake-confirm"
+                | "context-usage-shake-cancel"
         )
         || (background_tasks() && selector.starts_with("task:"))
         || (resume_preview()

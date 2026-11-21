@@ -1129,17 +1129,20 @@ mod tests {
             matches!(target, crate::harness::ContextBreakdownTarget::Session(id) if id == "usage-session")
         );
         reply
-            .try_send(Some(jcode_sdk::api::ContextBreakdown {
-                session_id: Some("usage-session".into()),
-                model: Some("claude-sonnet-4-6".into()),
-                total_tokens: Some(41_000),
-                limit_tokens: Some(200_000),
-                estimated: true,
-                categories: vec![jcode_sdk::api::ContextBreakdownCategory {
-                    kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
-                    tokens: Some(41_000),
-                }],
-            }))
+            .try_send(crate::harness::ContextInspection {
+                breakdown: Some(jcode_sdk::api::ContextBreakdown {
+                    session_id: Some("usage-session".into()),
+                    model: Some("claude-sonnet-4-6".into()),
+                    total_tokens: Some(41_000),
+                    limit_tokens: Some(200_000),
+                    estimated: true,
+                    categories: vec![jcode_sdk::api::ContextBreakdownCategory {
+                        kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
+                        tokens: Some(41_000),
+                    }],
+                }),
+                shake_supported: false,
+            })
             .unwrap();
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-breakdown").is_some());
@@ -1151,7 +1154,10 @@ mod tests {
         let shake = vcx.debug_bounds("context-usage-shake").unwrap();
         vcx.simulate_click(shake.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(commands.try_recv().is_err(), "unavailable Shake must not run Compact");
+        assert!(
+            commands.try_recv().is_err(),
+            "unavailable Shake must not run Compact"
+        );
         let close = vcx.debug_bounds("context-usage-close").unwrap();
         let viewport = vcx.update(|window, _| window.viewport_size());
         assert!(close.right() <= viewport.width);
@@ -1163,10 +1169,67 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage").is_some());
         assert!(vcx.debug_bounds("context-usage-breakdown").is_none());
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::ReadContextBreakdown { .. })
-        ));
+        let Ok(Command::ReadContextBreakdown { reply, .. }) = commands.try_recv() else {
+            panic!("Context Usage did not refresh when reopened");
+        };
+        reply
+            .try_send(crate::harness::ContextInspection {
+                shake_supported: true,
+                ..Default::default()
+            })
+            .unwrap();
+        vcx.run_until_parked();
+
+        use jcode_sdk::api::{ShakeToolsAction, ShakeToolsResult, ShakeToolsStats};
+        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let Ok(Command::ShakeTools {
+            session_id,
+            action: ShakeToolsAction::Preview,
+            reply,
+        }) = commands.try_recv()
+        else {
+            panic!("Shake tools did not preview the selected session");
+        };
+        assert_eq!(session_id, "usage-session");
+        assert!(
+            commands.try_recv().is_err(),
+            "a pending preview cannot run twice"
+        );
+        reply
+            .try_send(Ok(ShakeToolsResult::Preview {
+                confirmation: "only-this-preview".into(),
+                cache_at_risk: true,
+                stats: ShakeToolsStats {
+                    outputs_elided: 1,
+                    estimated_tokens_saved: 5_000,
+                },
+            }))
+            .unwrap();
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "preview must not apply without confirmation"
+        );
+        let confirm = vcx.debug_bounds("context-usage-shake-confirm").unwrap();
+        vcx.simulate_click(confirm.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let Ok(Command::ShakeTools {
+            session_id,
+            action: ShakeToolsAction::Apply { confirmation },
+            reply,
+        }) = commands.try_recv()
+        else {
+            panic!("the confirmation did not apply Shake");
+        };
+        assert_eq!(session_id, "usage-session");
+        assert_eq!(confirmation, "only-this-preview");
+        reply.try_send(Err("Session is busy".into())).unwrap();
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-result").is_some());
+        assert!(commands.try_recv().is_err());
 
         let compact = vcx.debug_bounds("context-usage-compact").unwrap();
         vcx.simulate_click(compact.center(), gpui::Modifiers::default());

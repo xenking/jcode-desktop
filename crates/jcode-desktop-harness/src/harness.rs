@@ -475,7 +475,12 @@ pub enum Command {
     },
     ReadContextBreakdown {
         target: ContextBreakdownTarget,
-        reply: async_channel::Sender<Option<jcode_sdk::api::ContextBreakdown>>,
+        reply: async_channel::Sender<ContextInspection>,
+    },
+    ShakeTools {
+        session_id: String,
+        action: jcode_sdk::api::ShakeToolsAction,
+        reply: async_channel::Sender<Result<jcode_sdk::api::ShakeToolsResult, String>>,
     },
     /// Apply the persistent effects of a follow-up decision.
     AckTodoFollowUp {
@@ -521,6 +526,12 @@ pub enum Command {
         client: JcodeClient,
         request_id: Option<String>,
     },
+}
+
+#[derive(Debug, Default)]
+pub struct ContextInspection {
+    pub breakdown: Option<jcode_sdk::api::ContextBreakdown>,
+    pub shake_supported: bool,
 }
 
 #[derive(Debug)]
@@ -652,10 +663,27 @@ impl Bridge {
     pub async fn read_context_breakdown(
         &self,
         target: ContextBreakdownTarget,
-    ) -> Option<jcode_sdk::api::ContextBreakdown> {
+    ) -> ContextInspection {
         let (reply, result) = async_channel::bounded(1);
         self.send(Command::ReadContextBreakdown { target, reply });
-        result.recv().await.ok().flatten()
+        result.recv().await.unwrap_or_default()
+    }
+
+    pub async fn shake_tools(
+        &self,
+        session_id: String,
+        action: jcode_sdk::api::ShakeToolsAction,
+    ) -> Result<jcode_sdk::api::ShakeToolsResult, String> {
+        let (reply, result) = async_channel::bounded(1);
+        self.send(Command::ShakeTools {
+            session_id,
+            action,
+            reply,
+        });
+        result
+            .recv()
+            .await
+            .map_err(|_| "The bridge disconnected. Shake outcome unknown.".to_owned())?
     }
 
     /// Drain every pending update without blocking (test helpers only).
@@ -1897,6 +1925,18 @@ fn run_with_transports(
                         let _ = reply.try_send(breakdown);
                     });
             }
+            Command::ShakeTools {
+                session_id,
+                action,
+                reply,
+            } => {
+                let transports = transports.clone();
+                let _ = std::thread::Builder::new()
+                    .name("jcode-bridge-shake-tools".into())
+                    .spawn(move || {
+                        let _ = reply.try_send(shake_tools(&session_id, action, &transports));
+                    });
+            }
             Command::AckTodoFollowUp {
                 session_id,
                 effects,
@@ -2876,10 +2916,12 @@ fn session_worker(
 fn read_context_breakdown(
     target: ContextBreakdownTarget,
     transports: &transport::RemoteTransports,
-) -> Option<jcode_sdk::api::ContextBreakdown> {
+) -> ContextInspection {
     let (host, session_id, model, cwd) = match target {
         ContextBreakdownTarget::Session(session_id) => {
-            let address = remote::SessionAddress::parse(&session_id).ok()?;
+            let Ok(address) = remote::SessionAddress::parse(&session_id) else {
+                return ContextInspection::default();
+            };
             (address.host, Some(address.session_id), None, None)
         }
         ContextBreakdownTarget::Draft { model, cwd } => (None, None, model, cwd),
@@ -2887,23 +2929,63 @@ fn read_context_breakdown(
     let client = match host {
         Some(host) => transports.connect(&host),
         None => connect("context-view"),
+    };
+    let Ok(client) = client else {
+        return ContextInspection::default();
+    };
+    let shake_supported =
+        session_id.is_some() && client.supports(jcode_sdk::api::SHAKE_TOOLS_CAPABILITY);
+    let breakdown = if client.supports(jcode_sdk::api::CONTEXT_BREAKDOWN_CAPABILITY) {
+        client
+            .request(jcode_sdk::api::ApiRequest::SessionContextBreakdown {
+                session_id: session_id.clone(),
+                model,
+                cwd,
+            })
+            .ok()
+            .and_then(|frame| match frame.event {
+                ApiEvent::ContextBreakdown { breakdown } if breakdown.session_id == session_id => {
+                    Some(breakdown)
+                }
+                _ => None,
+            })
+    } else {
+        None
+    };
+    ContextInspection {
+        breakdown,
+        shake_supported,
     }
-    .ok()?;
-    if !client.supports(jcode_sdk::api::CONTEXT_BREAKDOWN_CAPABILITY) {
-        return None;
+}
+
+fn shake_tools(
+    session_id: &str,
+    action: jcode_sdk::api::ShakeToolsAction,
+    transports: &transport::RemoteTransports,
+) -> Result<jcode_sdk::api::ShakeToolsResult, String> {
+    let address = remote::SessionAddress::parse(session_id).map_err(|error| error.to_string())?;
+    let client = match &address.host {
+        Some(host) => transports.connect(host),
+        None => connect("context-shake"),
     }
+    .map_err(|error| error.to_string())?;
+    if !client.supports(jcode_sdk::api::SHAKE_TOOLS_CAPABILITY) {
+        return Err("This runtime does not support manual Shake tools.".into());
+    }
+    let session_id = address.session_id;
     let frame = client
-        .request(jcode_sdk::api::ApiRequest::SessionContextBreakdown {
+        .request(jcode_sdk::api::ApiRequest::SessionShakeTools {
             session_id: session_id.clone(),
-            model,
-            cwd,
+            action,
         })
-        .ok()?;
+        .map_err(|error| error.to_string())?;
     match frame.event {
-        ApiEvent::ContextBreakdown { breakdown } if breakdown.session_id == session_id => {
-            Some(breakdown)
-        }
-        _ => None,
+        ApiEvent::ShakeTools {
+            session_id: target,
+            result,
+        } if target == session_id => Ok(result),
+        ApiEvent::Error { message, .. } => Err(message),
+        _ => Err("Unexpected runtime reply. Shake outcome unknown.".into()),
     }
 }
 

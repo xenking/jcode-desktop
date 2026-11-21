@@ -1,7 +1,9 @@
 use super::*;
 use crate::fixture_control_targets::marker;
 use crate::harness::ContextBreakdownTarget;
-use jcode_sdk::api::{ContextBreakdown, ContextBreakdownKind};
+use jcode_sdk::api::{
+    ContextBreakdown, ContextBreakdownKind, ShakeToolsAction, ShakeToolsResult, ShakeToolsStats,
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -9,6 +11,8 @@ pub(super) struct State {
     read: Option<Task<()>>,
     breakdown: Option<ContextBreakdown>,
     action: ActionState,
+    shake_supported: bool,
+    shake_task: Option<Task<()>>,
     pub(super) compacting: bool,
 }
 
@@ -41,20 +45,20 @@ enum ActionState {
     #[default]
     Idle,
     Running(Action),
+    ConfirmShake(ShakePreview),
     Finished {
         label: String,
         error: bool,
     },
 }
 
-impl Action {
-    fn operation(self) -> Option<SessionOperation> {
-        match self {
-            Self::Compact => Some(SessionOperation::Compact),
-            Self::Shake => None,
-        }
-    }
+struct ShakePreview {
+    confirmation: String,
+    cache_at_risk: bool,
+    stats: ShakeToolsStats,
+}
 
+impl Action {
     fn selector(self) -> &'static str {
         match self {
             Self::Compact => "context-usage-compact",
@@ -96,7 +100,12 @@ impl Panel {
 
     pub(super) fn lose_context_action(&mut self) {
         self.context_usage.compacting = false;
-        if matches!(self.context_usage.action, ActionState::Running(_)) {
+        self.context_usage.shake_supported = false;
+        self.context_usage.shake_task = None;
+        if matches!(
+            self.context_usage.action,
+            ActionState::Running(_) | ActionState::ConfirmShake(_)
+        ) {
             self.context_usage.action = ActionState::Finished {
                 label: "Connection lost. Action outcome unknown.".into(),
                 error: true,
@@ -105,15 +114,91 @@ impl Panel {
     }
 
     fn context_action_enabled(&self, action: Action) -> bool {
-        action.operation().is_some()
-            && !matches!(self.context_usage.action, ActionState::Running(_))
-            && !self.context_usage.compacting
+        self.context_can_mutate()
+            && !matches!(
+                self.context_usage.action,
+                ActionState::Running(_) | ActionState::ConfirmShake(_)
+            )
+            && (action == Action::Compact || self.context_usage.shake_supported)
+    }
+
+    fn context_can_mutate(&self) -> bool {
+        !self.context_usage.compacting
             && !self.activity_active()
             && !self.is_pending_session()
             && !self.session_deferred()
             && !self.is_side_document()
             && self.preview_state.is_none()
             && !self.status.starts_with("lost:")
+    }
+
+    fn run_shake_tools(&mut self, action: ShakeToolsAction, cx: &mut Context<Self>) {
+        let session_id = self.session_id.clone();
+        let bridge = self.bridge.clone();
+        let is_preview = matches!(action, ShakeToolsAction::Preview);
+        self.context_usage.action = ActionState::Running(Action::Shake);
+        self.context_usage.shake_task = Some(cx.spawn(async move |panel, cx| {
+            let result = bridge.shake_tools(session_id.clone(), action).await;
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.session_id != session_id
+                    || !matches!(
+                        panel.context_usage.action,
+                        ActionState::Running(Action::Shake)
+                    )
+                {
+                    return;
+                }
+                panel.context_usage.shake_task = None;
+                match result {
+                    Ok(ShakeToolsResult::Preview {
+                        confirmation,
+                        cache_at_risk,
+                        stats,
+                    }) if is_preview => {
+                        panel.context_usage.action = if panel.context_usage.open {
+                            ActionState::ConfirmShake(ShakePreview {
+                                confirmation,
+                                cache_at_risk,
+                                stats,
+                            })
+                        } else {
+                            ActionState::Idle
+                        };
+                    }
+                    Ok(ShakeToolsResult::Applied { stats }) if !is_preview => panel
+                        .settle_context_action(
+                            Action::Shake,
+                            format!(
+                                "{} {} shortened · ~{} tokens saved",
+                                stats.outputs_elided,
+                                if stats.outputs_elided == 1 {
+                                    "output"
+                                } else {
+                                    "outputs"
+                                },
+                                format_tokens(stats.estimated_tokens_saved)
+                            ),
+                            false,
+                            cx,
+                        ),
+                    Ok(ShakeToolsResult::NoChange) => {
+                        panel.context_usage.action = ActionState::Finished {
+                            label: "No eligible tool outputs to shake.".into(),
+                            error: false,
+                        };
+                    }
+                    Err(error) => panel.settle_context_action(Action::Shake, error, true, cx),
+                    _ => panel.settle_context_action(
+                        Action::Shake,
+                        "Unexpected Shake response.".into(),
+                        true,
+                        cx,
+                    ),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     pub(super) fn toggle_context_usage(&mut self, cx: &mut Context<Self>) {
@@ -130,6 +215,9 @@ impl Panel {
         self.context_usage.open = false;
         self.context_usage.read = None;
         self.context_usage.breakdown = None;
+        if matches!(self.context_usage.action, ActionState::ConfirmShake(_)) {
+            self.context_usage.action = ActionState::Idle;
+        }
         cx.notify();
     }
 
@@ -148,9 +236,10 @@ impl Panel {
         let bridge = self.bridge.clone();
         self.context_usage.breakdown = None;
         self.context_usage.read = Some(cx.spawn(async move |panel, cx| {
-            let breakdown = bridge.read_context_breakdown(target).await;
+            let inspection = bridge.read_context_breakdown(target).await;
             let _ = panel.update(cx, |panel, cx| {
-                panel.context_usage.breakdown = breakdown;
+                panel.context_usage.breakdown = inspection.breakdown;
+                panel.context_usage.shake_supported = inspection.shake_supported;
                 panel.context_usage.read = None;
                 cx.notify();
             });
@@ -361,6 +450,9 @@ impl Panel {
                     )
                 })
                 .children(match &self.context_usage.action {
+                    ActionState::ConfirmShake(preview) => {
+                        Some(self.render_shake_preview(preview, cx))
+                    }
                     ActionState::Finished { label, error } => Some(
                         div()
                             .id("context-usage-result")
@@ -377,6 +469,94 @@ impl Panel {
                     _ => None,
                 }),
         )
+    }
+
+    fn render_shake_preview(
+        &self,
+        preview: &ShakePreview,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::global();
+        let enabled = self.context_can_mutate() && self.context_usage.shake_supported;
+        let confirm = div()
+            .id("context-usage-shake-confirm")
+            .debug_selector(|| "context-usage-shake-confirm".into())
+            .relative()
+            .children(marker(
+                || "context-usage-shake-confirm".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .rounded_full()
+            .px_2()
+            .py_1()
+            .bg(theme.chip_active_background())
+            .text_color(if enabled {
+                theme.TEXT
+            } else {
+                theme.TEXT_FAINT
+            })
+            .when(enabled, |el| {
+                crate::keyboard::button(el)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        if !panel.context_usage.open
+                            || !panel.context_can_mutate()
+                            || !panel.context_usage.shake_supported
+                        {
+                            return;
+                        }
+                        if let ActionState::ConfirmShake(preview) = &panel.context_usage.action {
+                            let confirmation = preview.confirmation.clone();
+                            panel.run_shake_tools(ShakeToolsAction::Apply { confirmation }, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+            })
+            .child("Confirm Shake");
+        let cancel = crate::keyboard::button(div().id("context-usage-shake-cancel"))
+            .debug_selector(|| "context-usage-shake-cancel".into())
+            .relative()
+            .children(marker(
+                || "context-usage-shake-cancel".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .rounded_full()
+            .px_2()
+            .py_1()
+            .bg(theme.chip_background())
+            .cursor_pointer()
+            .on_click(cx.listener(|panel, _, _, cx| {
+                if matches!(panel.context_usage.action, ActionState::ConfirmShake(_)) {
+                    panel.context_usage.action = ActionState::Idle;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .child("Cancel");
+        div()
+            .id("context-usage-shake-preview")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .text_size(px(12.))
+            .child(format!(
+                "Shorten {} {} · save ~{} tokens",
+                preview.stats.outputs_elided,
+                if preview.stats.outputs_elided == 1 {
+                    "old tool output"
+                } else {
+                    "old tool outputs"
+                },
+                format_tokens(preview.stats.estimated_tokens_saved)
+            ))
+            .when(preview.cache_at_risk, |el| {
+                el.child(
+                    div().text_color(theme.WARN).child(
+                        "This may invalidate the prompt cache. The next turn may cost more.",
+                    ),
+                )
+            })
+            .child(div().flex().gap_2().child(confirm).child(cancel))
     }
 
     fn render_context_action(
@@ -407,16 +587,19 @@ impl Panel {
             } else {
                 theme.TEXT_FAINT
             })
-            .when(action == Action::Shake && !enabled && !running, |el| {
-                el.tooltip(|_, cx| {
-                    cx.new(|_| {
-                        super::usage::MeterTooltip(
-                            "Manual tool shaking is unavailable on this runtime.".into(),
-                        )
+            .when(
+                action == Action::Shake && !self.context_usage.shake_supported && !running,
+                |el| {
+                    el.tooltip(|_, cx| {
+                        cx.new(|_| {
+                            super::usage::MeterTooltip(
+                                "Manual tool shaking is unavailable on this runtime.".into(),
+                            )
+                        })
+                        .into()
                     })
-                    .into()
-                })
-            })
+                },
+            )
             .when(enabled, |el| {
                 crate::keyboard::button(el)
                     .cursor_pointer()
@@ -425,12 +608,17 @@ impl Panel {
                         if !panel.context_usage.is_open() || !panel.context_action_enabled(action) {
                             return;
                         }
-                        let Some(operation) = action.operation() else {
-                            return;
-                        };
-                        panel.context_usage.action = ActionState::Running(action);
-                        panel.run_session_operation(operation, action.label());
-                        cx.notify();
+                        match action {
+                            Action::Compact => {
+                                panel.context_usage.action = ActionState::Running(action);
+                                panel.run_session_operation(
+                                    SessionOperation::Compact,
+                                    action.label(),
+                                );
+                                cx.notify();
+                            }
+                            Action::Shake => panel.run_shake_tools(ShakeToolsAction::Preview, cx),
+                        }
                         cx.stop_propagation();
                     }))
             })

@@ -128,7 +128,7 @@ class ContextUsage(VERIFY.Instance):
         VERIFY.save(self.run / "context-usage-proof.json", proof)
 
 
-def main():
+def main(instance_type=ContextUsage):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--desktop-bin", type=Path, required=True)
@@ -150,7 +150,7 @@ def main():
                     binary=str(args.desktop_bin.resolve()), jcode_bin=str(args.jcode_bin.resolve()),
                     bridge_bin=str(args.bridge_bin.resolve()), sources=VERIFY.source_identity(),
                     fixture="background-jobs", theme=args.theme, window_width=args.width, compact=args.compact)
-    instance = ContextUsage(args.run, manifest)
+    instance = instance_type(args.run, manifest)
     try:
         instance.start()
         instance.exercise()
