@@ -2664,6 +2664,13 @@ mod tests {
             w
         });
         let original = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        original.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                let mut draft = input.snapshot();
+                draft.content = "Unsent draft before switching".into();
+                input.restore(draft, cx);
+            });
+        });
         workspace.update_in(vcx, |w, window, cx| {
             w.open_resume(&OpenResume, window, cx);
             w.resume.as_mut().unwrap().selected = Some("target".into());
@@ -2687,6 +2694,10 @@ mod tests {
             w.resume.as_mut().unwrap().selected = Some(original.read(cx).session_id.clone());
             w.resume_selected(window, cx);
             assert_eq!(w.slots[0].panel, original);
+            assert_eq!(
+                original.read(cx).input.read(cx).snapshot().content,
+                "Unsent draft before switching"
+            );
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("single-panel-root").is_some());
