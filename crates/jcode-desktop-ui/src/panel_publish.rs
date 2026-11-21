@@ -1,11 +1,6 @@
-//! Publish button for Desktop self-development panels and the live stage
-//! tracker shown at the top of the publish session.
+//! Checkout eligibility and the live stage tracker for Desktop publishing.
 use super::*;
 use crate::publish::{self, STAGES, StageState};
-
-/// A first click arms the button. Publishing tags an immutable public release,
-/// so a stray click must never start it.
-const CONFIRM_WINDOW: Duration = Duration::from_secs(4);
 
 impl Panel {
     pub(crate) fn is_publish_tracker(&self) -> bool {
@@ -67,84 +62,6 @@ impl Panel {
                 "Tagged `desktop-v0.3.2` at `origin/main` and dispatched the native builds. Waiting on the macOS and cross-platform workflows.".into(),
             ),
         ];
-    }
-
-    fn publish_armed(&self) -> bool {
-        self.publish_armed_at
-            .is_some_and(|armed| armed.elapsed() < CONFIRM_WINDOW)
-    }
-
-    pub(super) fn render_publish_button(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if self.is_publish_tracker() {
-            return None;
-        }
-        self.publish_checkout()?;
-        let theme = Theme::global();
-        let armed = self.publish_armed();
-        let label = if armed { "Confirm publish" } else { "Publish" };
-        let tooltip = if armed {
-            "Click again to commit, push, release, and publish Jcode Desktop"
-        } else {
-            "Commit, push, release, and publish Jcode Desktop, tracked in a new panel"
-        };
-        let icon_color = if armed { theme.BG } else { theme.TEXT_DIM };
-        Some(
-            div()
-                .id("publish-desktop")
-                .debug_selector(|| "publish-desktop".into())
-                .flex_none()
-                .h(px(composer::TAB_HEIGHT))
-                .px_2p5()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .rounded_full()
-                .text_size(px(10.5))
-                .font_family(theme.FONT_MONO)
-                .whitespace_nowrap()
-                .cursor_pointer()
-                .map(|el| {
-                    if armed {
-                        el.bg(theme.ACCENT).text_color(theme.BG)
-                    } else {
-                        el.bg(theme.prompt_background(usize::MAX))
-                            .text_color(theme.TEXT_DIM)
-                            .hover(|el| el.text_color(theme.TEXT).bg(theme.USER_BG))
-                    }
-                })
-                .tooltip(move |_, cx| cx.new(|_| PublishTooltip(tooltip)).into())
-                .child(
-                    gpui::svg()
-                        .data(include_bytes!("../../../assets/icons/publish.svg") as &'static [u8])
-                        .text_color(icon_color)
-                        .flex_none()
-                        .size(px(12.)),
-                )
-                .child(label)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    if !this.publish_armed() {
-                        this.publish_armed_at = Some(Instant::now());
-                        cx.notify();
-                        // Disarm visibly when the window lapses.
-                        cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(CONFIRM_WINDOW).await;
-                            let _ = this.update(cx, |_, cx| cx.notify());
-                        })
-                        .detach();
-                        return;
-                    }
-                    this.publish_armed_at = None;
-                    window.dispatch_action(
-                        Box::new(crate::ui_actions::PublishDesktop {
-                            source: cx.entity_id(),
-                        }),
-                        cx,
-                    );
-                    cx.notify();
-                }))
-                .into_any_element(),
-        )
     }
 
     /// Fixed stage rows fed by the session's latest todo snapshot. Shown in
@@ -331,21 +248,4 @@ fn stage_row(
                     StageState::Pending => "",
                 }),
         )
-}
-
-struct PublishTooltip(&'static str);
-
-impl Render for PublishTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let _render_scope = crate::render_stats::scope("PublishTooltip");
-        div()
-            .debug_selector(|| "publish-desktop-tooltip".into())
-            .max_w(px(300.))
-            .p_2()
-            .rounded_md()
-            .bg(Theme::global().HEADER_BG)
-            .text_size(px(12.))
-            .text_color(Theme::global().TEXT)
-            .child(self.0)
-    }
 }

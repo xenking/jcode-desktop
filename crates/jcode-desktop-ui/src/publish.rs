@@ -1,14 +1,10 @@
-//! Desktop self-development publishing: one button that commits, pushes,
-//! releases and publishes Jcode Desktop from its own checkout, then tracks the
-//! pipeline in a dedicated session panel.
+//! Desktop self-development publishing from `/publish` and its release aliases.
 //!
 //! The release itself stays owned by the repository's documented tooling
 //! (`scripts/release-desktop.py` and its GitHub workflows). This module only
 //! detects eligible checkouts and describes the staged run to the agent, so the
 //! tracker panel can show live stage progress from the session's todo list.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Draft request IDs for publish trackers. The kind travels with the draft
@@ -32,30 +28,12 @@ pub(crate) const STAGES: [(&str, &str); 6] = [
     ),
 ];
 
-/// The Jcode Desktop checkout containing `path`, if any. Identity comes from
-/// the shared runtime's detector, so the button appears exactly when the agent
-/// runs in Desktop self-development mode.
+/// The Jcode Desktop checkout containing `path`, as recognized by the runtime.
 pub(crate) fn checkout_root(path: &str) -> Option<PathBuf> {
-    thread_local! {
-        static CACHE: RefCell<HashMap<String, Option<PathBuf>>> = RefCell::new(HashMap::new());
-    }
     if path.trim().is_empty() {
         return None;
     }
-    // Rendering asks every frame. Canonicalizing and parsing Cargo.toml is
-    // cheap once but not per frame, and a checkout's identity is stable.
-    CACHE.with(|cache| {
-        if let Some(hit) = cache.borrow().get(path) {
-            return hit.clone();
-        }
-        let root = jcode_selfdev_types::desktop_repo_root(Path::new(path));
-        let mut cache = cache.borrow_mut();
-        if cache.len() > 256 {
-            cache.clear();
-        }
-        cache.insert(path.to_owned(), root.clone());
-        root
-    })
+    jcode_selfdev_types::desktop_repo_root(Path::new(path))
 }
 
 pub(crate) fn is_publish_draft(id: &str) -> bool {

@@ -1,7 +1,7 @@
 //! Composer chrome: the input with one row of compact pills below it.
 //!
-//! Mode, model and effort, and context are on the left. Publish and location
-//! are on the right. The voice button lives inside the input box.
+//! Mode, model and effort, and context are on the left. Location is on the
+//! right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
 //! prompt cards, so nothing reads as a folder tab, but they are filled with a
 //! lift of the pane surface: prompt paper is only a few steps away from the
@@ -234,7 +234,6 @@ impl Panel {
                     .gap_1()
                     .overflow_hidden()
                     .child(meta)
-                    .children(self.render_publish_button(cx))
                     .children(remote_machine.map(|machine| {
                         // Remote sessions name their machine first, so a cloud
                         // chat never reads like a local one.

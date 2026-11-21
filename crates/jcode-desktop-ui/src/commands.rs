@@ -74,7 +74,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/commit-and-push", "Alias for /commit-push"),
     RegisteredCommand::public(
         "/publish",
-        "Desktop selfdev: commit, push, release, and publish, tracked in a new panel",
+        "Commit, push, and publish Jcode Desktop from a local Desktop checkout",
     ),
     RegisteredCommand::public(
         "/fast-release",

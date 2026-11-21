@@ -778,8 +778,6 @@ pub struct Panel {
     swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, ScrollHandle>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
-    /// The Publish button needs a second click within a short window.
-    publish_armed_at: Option<Instant>,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -1696,7 +1694,6 @@ impl Panel {
             expanded_prompts: HashSet::new(),
             swarm_scrolls: Default::default(),
             publish_tracker: false,
-            publish_armed_at: None,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
