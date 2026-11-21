@@ -22,6 +22,9 @@ is an offline fixture, not a provider-connected session.
 
 - **Draft:** `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --journey composer`.
   Require exact text in `composer-after.json` and visibly in its PNG.
+- **Arrows and stash:** on a fresh offline run, use `drive --run "$RUN" --journey composer-arrows`.
+  Require `composer-arrows-proof.json` and the stash indicator in `composer-arrows-stashed.png`.
+  This dispatches real GPUI key events to the hidden window, not macOS HID events.
 - **Enter:** `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action press_key --params '{"key":"Enter"}'`.
   Then `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state`.
   Require `submitted: true` in the action reply and an empty composer.

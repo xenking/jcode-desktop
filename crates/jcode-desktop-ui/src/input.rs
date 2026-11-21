@@ -16,7 +16,7 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 use serde::{Deserialize, Serialize};
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 #[path = "input_popup.rs"]
 pub(crate) mod popup;
@@ -180,6 +180,8 @@ pub struct PromptInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
+    last_layout_revision: u64,
+    vertical_caret: Option<VerticalCaret>,
     last_bounds: Option<Bounds<Pixels>>,
     chip_positions: Vec<(usize, Bounds<Pixels>)>,
     /// Row height the layout was shaped and painted with. Event handlers run
@@ -254,7 +256,7 @@ pub struct PromptInput {
     command_layout_key: Option<(SharedString, usize, gpui::Size<Pixels>)>,
     command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
-    revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
+    revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>, bool)>,
     submission_enabled: bool,
     empty_submit: bool,
     pending_session: bool,
@@ -636,6 +638,14 @@ impl Attachment {
 struct EditSnapshot {
     content: String,
     attachments: Vec<Attachment>,
+}
+
+struct VerticalCaret {
+    offset: usize,
+    revision: u64,
+    goal_x: Pixels,
+    // At a soft wrap the same offset can also be the start of the next row.
+    downstream: bool,
 }
 
 fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
@@ -1028,6 +1038,8 @@ impl PromptInput {
             selection_reversed: false,
             marked_range: None,
             last_layout: None,
+            last_layout_revision: 0,
+            vertical_caret: None,
             last_bounds: None,
             chip_positions: Vec::new(),
             last_line_height: None,
@@ -2606,7 +2618,7 @@ impl PromptInput {
             cx.notify();
             return;
         }
-        if self.history.is_empty() {
+        if self.move_visual_row(-1, cx) || self.history.is_empty() {
             return;
         }
         // History stores text only. Switching while attachments are present
@@ -2632,6 +2644,9 @@ impl PromptInput {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
             self.reveal_command(self.command_selection);
             cx.notify();
+            return;
+        }
+        if self.move_visual_row(1, cx) {
             return;
         }
         let Some(index) = self.history_index else {
@@ -3255,9 +3270,98 @@ impl PromptInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_caret = None;
         let offset = offset.min(self.content.len());
         self.selected_range = offset..offset;
+        self.selection_reversed = false;
         cx.notify()
+    }
+
+    fn vertical_caret(&self) -> Option<&VerticalCaret> {
+        self.vertical_caret.as_ref().filter(|caret| {
+            caret.revision == self.control_revision
+                && self.selected_range.is_empty()
+                && caret.offset == self.cursor_offset()
+        })
+    }
+
+    fn caret_position(&self, layout: &PromptLayout, line_height: Pixels) -> Option<Point<Pixels>> {
+        layout.position_for_caret(
+            self.cursor_offset(),
+            line_height,
+            self.vertical_caret().is_some_and(|caret| caret.downstream),
+        )
+    }
+
+    /// False means the caret is already at the edge in this direction.
+    fn move_visual_row(&mut self, step: isize, cx: &mut Context<Self>) -> bool {
+        if self.content.is_empty() {
+            return false;
+        }
+        let (Some(layout), Some(height)) = (&self.last_layout, self.last_line_height) else {
+            return true;
+        };
+        if self.last_layout_revision != self.control_revision {
+            return true;
+        }
+        let Some(caret) = self.caret_position(layout, height) else {
+            return true;
+        };
+        let Some(end) = layout.position_for_index(self.content.len(), height) else {
+            return true;
+        };
+        let row = |y: Pixels| (y / height).round() as isize;
+        let goal_x = self.vertical_caret().map_or(caret.x, |caret| caret.goal_x);
+        let mut target = row(caret.y) + step;
+        let last = row(end.y);
+        let chips = self.chip_ranges();
+        while (0..=last).contains(&target) {
+            let offset = layout
+                .closest_index_for_position(point(goal_x, height * (target as f32 + 0.5)), height)
+                .unwrap_or_else(|offset| offset)
+                .min(self.content.len());
+            let mut grapheme = GraphemeCursor::new(offset, self.content.len(), true);
+            let candidates = if let Some((_, chip)) = chips
+                .iter()
+                .find(|(_, range)| range.start < offset && offset < range.end)
+            {
+                [chip.start, chip.end]
+            } else if grapheme.is_boundary(&self.content, 0).unwrap_or(false) {
+                [offset, offset]
+            } else {
+                let before = grapheme.prev_boundary(&self.content, 0).ok().flatten();
+                let mut grapheme = GraphemeCursor::new(offset, self.content.len(), true);
+                let after = grapheme.next_boundary(&self.content, 0).ok().flatten();
+                [
+                    before.unwrap_or_default(),
+                    after.unwrap_or(self.content.len()),
+                ]
+            };
+            let nearest = candidates
+                .into_iter()
+                .flat_map(|offset| [(offset, false), (offset, true)])
+                .filter_map(|(offset, downstream)| {
+                    let position = layout.position_for_caret(offset, height, downstream)?;
+                    (row(position.y) == target).then_some((
+                        offset,
+                        downstream,
+                        f32::from((position.x - goal_x).abs()),
+                    ))
+                })
+                .min_by(|a, b| a.2.total_cmp(&b.2));
+            if let Some((offset, downstream, _)) = nearest {
+                self.move_to(offset, cx);
+                self.vertical_caret = Some(VerticalCaret {
+                    offset,
+                    revision: self.control_revision,
+                    goal_x,
+                    downstream,
+                });
+                return true;
+            }
+            target += step;
+        }
+        false
     }
 
     fn cursor_offset(&self) -> usize {
@@ -3295,6 +3399,7 @@ impl PromptInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_caret = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -3868,9 +3973,7 @@ impl Element for TextElement {
                 .expect("prompt text should shape"),
         );
         let line_height = window.line_height();
-        let target = line
-            .position_for_index(cursor, line_height)
-            .unwrap_or_default();
+        let target = input.caret_position(&line, line_height).unwrap_or_default();
         let mut visual_line_count = line.visual_line_count();
         if let Some(full) = placeholder_full.filter(|full| !full.is_empty()) {
             // Reserve the fully typed prompt's height so typing never resizes
@@ -4048,11 +4151,14 @@ impl Element for TextElement {
             // Reveal edits and keyboard navigation, but do not undo wheel scrolling
             // on every paint. Include viewport size so resizing reveals the caret.
             let viewport = input.editor_scroll.bounds();
-            let caret_key = (input.cursor_offset(), input.content.clone(), viewport.size);
+            let caret_key = (
+                input.cursor_offset(),
+                input.content.clone(),
+                viewport.size,
+                input.vertical_caret().is_some_and(|caret| caret.downstream),
+            );
             if input.revealed_caret.as_ref() != Some(&caret_key) {
-                if let Some(caret) =
-                    line.position_for_index(input.cursor_offset(), window.line_height())
-                {
+                if let Some(caret) = input.caret_position(&line, window.line_height()) {
                     let top = prepaint.text_bounds.top() + caret.y;
                     let bottom = top + window.line_height();
                     let adjustment = if top < viewport.top() {
@@ -4074,6 +4180,7 @@ impl Element for TextElement {
                 input.revealed_caret = Some(caret_key);
             }
             input.last_layout = Some(line);
+            input.last_layout_revision = input.control_revision;
             input.last_bounds = Some(prepaint.text_bounds);
             input.last_line_height = Some(window.line_height());
             let needs_ticker = {
@@ -5280,7 +5387,7 @@ mod tests {
             ("up", 6),
             ("down", 7),
             ("down", 9),
-            ("down", 15),
+            ("down", draft.len()),
         ] {
             cx.simulate_keystrokes(*window, key);
             window
@@ -5289,6 +5396,76 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_uses_reflowed_rows_after_resize(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let draft = "word word ".repeat(12);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.history.push("old prompt".into());
+            input.set_content(draft.clone(), cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        vcx.simulate_resize(size(px(180.), px(500.)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("home down");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), draft.as_str());
+            assert!((1..draft.len()).contains(&input.cursor_offset()));
+        });
+        vcx.simulate_keystrokes("up");
+        input.read_with(vcx, |input, _| assert_eq!(input.cursor_offset(), 0));
+
+        vcx.simulate_resize(size(px(1600.), px(500.)));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("end up");
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.content.as_ref(), "old prompt")
+        });
+    }
+
+    #[gpui::test]
+    fn arrow_navigation_does_not_split_image_or_file_chips(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-file.png");
+        let png = include_bytes!("../../../assets/previews/image-preview.png");
+        std::fs::write(&path, png).unwrap();
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.attach_image(
+                crate::clipboard_image::ClipboardImage {
+                    media_type: "image/png".into(),
+                    bytes: png.to_vec(),
+                    width: 640,
+                    height: 480,
+                },
+                cx,
+            );
+            input.replace_text_in_range(None, "\n", window, cx);
+            input.attach_pasted_files(&[path], window, cx);
+            input.replace_text_in_range(None, "\nabc", window, cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        vcx.run_until_parked();
+        let before = input.read_with(vcx, |input, _| input.snapshot());
+        for label in ["test-file.png", "[#image"] {
+            vcx.simulate_keystrokes("up");
+            input.read_with(vcx, |input, _| {
+                let (_, chip) = input
+                    .chip_ranges()
+                    .into_iter()
+                    .find(|(_, range)| input.content[range.clone()].contains(label))
+                    .unwrap();
+                assert!([chip.start, chip.end].contains(&input.cursor_offset()));
+            });
+        }
+        vcx.simulate_keystrokes("down down");
+        assert_eq!(input.read_with(vcx, |input, _| input.snapshot()), before);
     }
 
     #[gpui::test]

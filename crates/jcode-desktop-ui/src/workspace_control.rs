@@ -79,11 +79,22 @@ pub(super) fn handle_window_request(
         }
         if !matches!(
             key,
-            "tab" | "shift-tab" | "enter" | "space" | "escape" | "up" | "down" | "left" | "right"
+            "tab"
+                | "shift-tab"
+                | "enter"
+                | "space"
+                | "escape"
+                | "up"
+                | "down"
+                | "left"
+                | "right"
+                | "ctrl-s"
+                | "home"
+                | "backspace"
         ) {
-            return error("unsupported_key", "unknown fixture navigation key");
+            return error("unsupported_key", "unknown fixture key");
         }
-        let keystroke = gpui::Keystroke::parse(key).expect("fixture navigation keys are valid");
+        let keystroke = gpui::Keystroke::parse(key).expect("fixture keys are valid");
         window.dispatch_event(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),

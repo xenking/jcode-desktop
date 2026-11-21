@@ -367,6 +367,8 @@ class Instance:
             return self.draft_session_journey()
         if name == "side-question":
             return self.side_question_journey()
+        if name == "composer-arrows":
+            return self.composer_arrows_journey()
         # Fix the draft so rotating empty-composer suggestions cannot fake a delta.
         self.drive("set_composer", {"text": "Verification fixture draft"})
         before = self.drive("state")
@@ -417,6 +419,47 @@ class Instance:
         report = {"journey": name, "passed": True, "before": first, "after": last,
                   "scope": "native UI interaction only, not live provider/persistence acceptance"}
         save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def composer_arrows_journey(self):
+        def key(name):
+            self.drive("press_key", {"key": f"fixture:{name}"})
+
+        def composer():
+            return self.drive("state")["panel"]["composer"]
+
+        older = "Verification prompt history entry"
+        self.drive("set_composer", {"text": older})
+        self.drive("send")  # Only the existing private offline fixture.
+        draft = "界 👩‍💻 Привет Jcode " * 40 + " THE-END"
+        self.drive("set_composer", {"text": draft})
+        before = self.screenshot("composer-arrows-before.png")
+        key("up")
+        if composer() != draft:
+            raise RuntimeError("Up replaced a draft from inside its wrapped rows")
+        key("backspace")
+        edited = composer()
+        if not (0 < len(edited) < len(draft) and edited.endswith("THE-END")):
+            raise RuntimeError("Backspace after Up did not edit an earlier visual row")
+        key("home")
+        key("up")
+        if composer() != older:
+            raise RuntimeError("Up at the top edge did not open history")
+        key("down")
+        if composer() != edited:
+            raise RuntimeError("Down at the history edge did not restore the draft")
+        key("ctrl-s")
+        if composer():
+            raise RuntimeError("Ctrl+S did not clear the stashed draft from the editor")
+        stashed = self.screenshot("composer-arrows-stashed.png")
+        key("ctrl-s")
+        if composer() != edited:
+            raise RuntimeError("Ctrl+S did not restore the exact stashed draft")
+        after = self.screenshot("composer-arrows-after.png")
+        report = {"journey": "composer-arrows", "passed": True, "before": before,
+                  "stashed": stashed, "after": after,
+                  "scope": "native GPUI key dispatch, no macOS HID injection or provider"}
+        save(self.run / "composer-arrows-proof.json", report)
         return report
 
     def side_question_journey(self):
@@ -1000,7 +1043,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

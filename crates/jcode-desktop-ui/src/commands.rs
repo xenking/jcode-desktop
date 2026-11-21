@@ -266,7 +266,9 @@ pub(crate) fn registered_command(name: &str) -> Option<RegisteredCommand> {
 }
 
 pub(crate) fn help_markdown() -> String {
-    let mut help = String::from("**Commands**\n\n");
+    let mut help = String::from(
+        "**Composer shortcuts**\n\n- `Ctrl+S` to stash or restore the prompt.\n\n**Commands**\n\n",
+    );
     for (name, description) in registered_command_entries() {
         help.push_str(&format!("- `{name}` — {description}\n"));
     }
