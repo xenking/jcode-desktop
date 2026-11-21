@@ -4567,7 +4567,11 @@ impl Render for PromptInput {
             .children(attachment_overlay)
             .flex()
             .flex_col()
-            .key_context("PromptInput")
+            .key_context(if self.queue_editor {
+                "PromptInput QueueEditor"
+            } else {
+                "PromptInput"
+            })
             .track_focus(&self.focus_handle(cx).tab_index(0).tab_stop(true))
             .relative()
             .child({

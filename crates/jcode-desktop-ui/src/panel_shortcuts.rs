@@ -7,12 +7,11 @@ pub(crate) use crate::ui_actions::{BackgroundRunningTool, JumpToLatest, JumpToLa
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("shift-space", JumpToLatest, Some("ChatPanel")),
-        // Plain space jumps only while the composer is empty. With a draft the
-        // handler propagates so the space is typed normally.
+        // The inline queue editor shares editing bindings, not this composer shortcut.
         gpui::KeyBinding::new(
             "space",
             JumpToLatestIfEmpty,
-            Some("ChatPanel > PromptInput"),
+            Some("ChatPanel > (PromptInput && !QueueEditor)"),
         ),
     ]);
 }
