@@ -66,6 +66,27 @@ fn edit_arguments_are_formatted_without_raw_tool_call(cx: &mut gpui::TestAppCont
 }
 
 #[gpui::test]
+fn expanded_arguments_render_after_an_omitted_null(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = panel_with(
+        cx,
+        vec![Item::Tool {
+            call_id: "nullable-arguments".into(),
+            name: "bash".into(),
+            input: r#"{"command":"echo привет\n世界","notify":null,"timeout":0,"wake":false}"#
+                .into(),
+            output: "привет".into(),
+            done: true,
+            error: None,
+        }],
+    );
+    click(vcx, "tool-header");
+    assert!(vcx.debug_bounds("selectable-text-tool-detail-0").is_some());
+    assert!(
+        document_text(&panel, vcx).contains("command: echo привет\n世界\ntimeout: 0\nwake: false")
+    );
+}
+
+#[gpui::test]
 fn json_tool_output_collapses_nested_values(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = panel_with(
         cx,
