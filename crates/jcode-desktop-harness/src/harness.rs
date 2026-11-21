@@ -537,6 +537,7 @@ pub struct ContextInspection {
 #[derive(Debug)]
 pub enum ContextBreakdownTarget {
     Session(String),
+    SessionMeter(String),
     Draft {
         model: Option<String>,
         cwd: Option<String>,
@@ -1185,7 +1186,8 @@ pub fn controlled_runtime_socket() -> Option<std::path::PathBuf> {
     {
         return None;
     }
-    let socket = std::path::PathBuf::from(std::env::var_os("JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET")?);
+    let socket =
+        std::path::PathBuf::from(std::env::var_os("JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET")?);
     let home = jcode_home()?;
     (socket.parent() == Some(home.as_path()) && socket.is_absolute()).then_some(socket)
 }
@@ -2917,8 +2919,10 @@ fn read_context_breakdown(
     target: ContextBreakdownTarget,
     transports: &transport::RemoteTransports,
 ) -> ContextInspection {
+    let summary_only = matches!(target, ContextBreakdownTarget::SessionMeter(_));
     let (host, session_id, model, cwd) = match target {
-        ContextBreakdownTarget::Session(session_id) => {
+        ContextBreakdownTarget::Session(session_id)
+        | ContextBreakdownTarget::SessionMeter(session_id) => {
             let Ok(address) = remote::SessionAddress::parse(&session_id) else {
                 return ContextInspection::default();
             };
@@ -2941,6 +2945,7 @@ fn read_context_breakdown(
                 session_id: session_id.clone(),
                 model,
                 cwd,
+                summary_only,
             })
             .ok()
             .and_then(|frame| match frame.event {
@@ -4079,7 +4084,12 @@ fn session_worker_with_connector(
                             }
                             continue;
                         }
-                        let rewinds = matches!(&operation, SessionOperation::Rewind(_) | SessionOperation::RewindTranscript(_) | SessionOperation::RewindUndo);
+                        let rewinds = matches!(
+                            &operation,
+                            SessionOperation::Rewind(_)
+                                | SessionOperation::RewindTranscript(_)
+                                | SessionOperation::RewindUndo
+                        );
                         let mut result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => {
@@ -4122,7 +4132,9 @@ fn session_worker_with_connector(
                                 client.rename_session(real_id, title)
                             }
                             SessionOperation::Rewind(index) => client.rewind(real_id, index),
-                            SessionOperation::RewindTranscript(target) => client.rewind_transcript(real_id, target),
+                            SessionOperation::RewindTranscript(target) => {
+                                client.rewind_transcript(real_id, target)
+                            }
                             SessionOperation::RewindUndo => client.rewind_undo(real_id),
                         };
                         if rewinds && result.is_ok() {
@@ -4130,12 +4142,21 @@ fn session_worker_with_connector(
                             let page = if bounded {
                                 client.get_history_page(real_id, None)
                             } else {
-                                client.get_history_with_images(real_id).map(|(messages, images)| BoundedHistoryPage {
-                                    messages, images, before: None, prompt_offset: None,
-                                })
+                                client
+                                    .get_history_with_images(real_id)
+                                    .map(|(messages, images)| BoundedHistoryPage {
+                                        messages,
+                                        images,
+                                        before: None,
+                                        prompt_offset: None,
+                                    })
                             };
                             result = page.map(|page| {
-                                let _ = updates.send(Update::RewoundHistory { session_id: session_id.clone(), page, bounded });
+                                let _ = updates.send(Update::RewoundHistory {
+                                    session_id: session_id.clone(),
+                                    page,
+                                    bounded,
+                                });
                             });
                         }
                         if let Err(error) = result {
@@ -4434,6 +4455,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::RequestUsage { session_id, .. }
         | ApiEvent::KvCacheMiss { session_id, .. }
         | ApiEvent::ContextOccupancy { session_id, .. }
+        | ApiEvent::ContextCapChanged { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
@@ -4507,6 +4529,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::RequestUsage { session_id, .. }
         | ApiEvent::KvCacheMiss { session_id, .. }
         | ApiEvent::ContextOccupancy { session_id, .. }
+        | ApiEvent::ContextCapChanged { session_id, .. }
         | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::SoftInterruptInjected { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
@@ -6036,10 +6059,12 @@ mod side_panel_routing_tests {
             &address,
         );
         assert_eq!(event_session_id(&event), Some("ssh://example/recipient"));
-        assert!(matches!(event, ApiEvent::AgentMessage { from_session, from_name, message, .. }
+        assert!(
+            matches!(event, ApiEvent::AgentMessage { from_session, from_name, message, .. }
             if from_session == "ssh://example/sender"
                 && from_name.as_deref() == Some("fox")
-                && message == "DM from fox: check the output"));
+                && message == "DM from fox: check the output")
+        );
     }
 
     #[test]

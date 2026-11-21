@@ -122,8 +122,6 @@ mod ask_images;
 mod background_jobs;
 #[path = "panel_cache_card.rs"]
 mod cache_card;
-#[path = "panel_rig_hud.rs"]
-mod rig_hud;
 #[path = "panel_cache_miss.rs"]
 mod cache_miss;
 #[path = "panel_cache_timer.rs"]
@@ -139,6 +137,8 @@ mod decision;
 mod decision_tests;
 #[path = "panel_fork_prompt.rs"]
 mod fork_prompt;
+#[path = "panel_rig_hud.rs"]
+mod rig_hud;
 #[path = "panel_side_question.rs"]
 mod side_question;
 #[path = "panel_swarm_card.rs"]
@@ -1712,7 +1712,7 @@ impl Panel {
             rig_feed,
             rig_host_id: (crate::harness::screenshot_mode()
                 && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some())
-                .then(|| "host-fixture-local".into()),
+            .then(|| "host-fixture-local".into()),
             preview_state: None,
             demo: false,
             history_loaded: false,
@@ -4250,6 +4250,7 @@ impl Panel {
                     // daemon's measured post-compaction size now.
                     if let Some(post_tokens) = post_tokens {
                         self.context_tokens = Some(*post_tokens);
+                        self.set_compacted_context_estimate(*post_tokens);
                     }
                     if matches!(trigger.as_deref(), None | Some("manual")) {
                         self.finish_manual_context_compaction(
@@ -4406,6 +4407,12 @@ impl Panel {
                 account_label,
                 ..
             } => {
+                let previous_route = (
+                    self.provider.clone(),
+                    self.model.clone(),
+                    self.auth_method.clone(),
+                    self.account_label.clone(),
+                );
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
@@ -4419,7 +4426,6 @@ impl Panel {
                 // current model and must not wipe a still-correct label.
                 if model.is_some() && *model != self.model {
                     self.model = model.clone();
-                    self.refresh_context_usage(cx);
                     self.auth_method = None;
                     self.account_label = None;
                     self.input.update(cx, |input, cx| {
@@ -4435,6 +4441,17 @@ impl Panel {
                     self.account_label = account_label.clone();
                 } else if account_label.is_some() {
                     self.account_label = account_label.clone();
+                }
+                if previous_route
+                    != (
+                        self.provider.clone(),
+                        self.model.clone(),
+                        self.auth_method.clone(),
+                        self.account_label.clone(),
+                    )
+                {
+                    self.invalidate_context_meter();
+                    self.refresh_context_usage(cx);
                 }
                 self.sync_effort_menu(cx);
             }
@@ -4494,6 +4511,7 @@ impl Panel {
             ApiEvent::ContextOccupancy { prompt_tokens, .. } => {
                 self.context_tokens = Some(*prompt_tokens);
             }
+            ApiEvent::ContextCapChanged { .. } => self.refresh_context_usage(cx),
             ApiEvent::RequestUsage { .. } => self.cache_telemetry.observe(event),
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
@@ -5636,30 +5654,34 @@ impl Panel {
                                         .child(format!("exit {code}")),
                                 )
                             })
-                            .when_some(percent.filter(|value| !*done && value.is_finite()), |el, percent| {
-                                el.child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(40.0))
-                                        .debug_selector(|| "background-task-progress".into())
-                                        .h(px(2.0))
-                                        .rounded_full()
-                                        .bg(Theme::global().TOOL_BORDER)
-                                        .child(
-                                            div()
-                                                .h_full()
-                                                .w(relative((percent / 100.0).clamp(0.0, 1.0)))
-                                                .rounded_full()
-                                                .bg(Theme::global().WARN),
-                                        ),
-                                )
-                            })
+                            .when_some(
+                                percent.filter(|value| !*done && value.is_finite()),
+                                |el, percent| {
+                                    el.child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(40.0))
+                                            .debug_selector(|| "background-task-progress".into())
+                                            .h(px(2.0))
+                                            .rounded_full()
+                                            .bg(Theme::global().TOOL_BORDER)
+                                            .child(
+                                                div()
+                                                    .h_full()
+                                                    .w(relative((percent / 100.0).clamp(0.0, 1.0)))
+                                                    .rounded_full()
+                                                    .bg(Theme::global().WARN),
+                                            ),
+                                    )
+                                },
+                            )
                             .children(tool_card_token_pill(detail.as_deref().unwrap_or("")))
                             .when(crate::fixture_control_targets::background_tasks(), |el| {
-                                el.relative().children(crate::fixture_control_targets::marker(
-                                    || key.clone(),
-                                    || Some(self.session_id.clone()),
-                                ))
+                                el.relative()
+                                    .children(crate::fixture_control_targets::marker(
+                                        || key.clone(),
+                                        || Some(self.session_id.clone()),
+                                    ))
                             }),
                     )
                     .when(expanded, |el| {
@@ -7344,8 +7366,11 @@ impl Render for Panel {
                                                 bounds.contains(&event.position)
                                             },
                                         );
-                                        let (over_editor, editor_gesture) = wheel_panel.read(cx)
-                                            .input.read(cx).editor_wheel_ownership(event, in_composer);
+                                        let (over_editor, editor_gesture) = wheel_panel
+                                            .read(cx)
+                                            .input
+                                            .read(cx)
+                                            .editor_wheel_ownership(event, in_composer);
                                         if editor_gesture && !over_editor {
                                             cx.stop_propagation();
                                             return;
@@ -7778,52 +7803,6 @@ fn pretty_auth_method(method: &str) -> String {
     }
 }
 
-fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Option<String> {
-    context_usage_label_with(model, context_tokens, |model, window| {
-        compaction_threshold_for_model(None, model, window)
-    })
-}
-
-/// Same as [`context_usage_label`], with the compaction threshold lookup
-/// injected so tests do not depend on the user's config.
-fn context_usage_label_with(
-    model: Option<&str>,
-    context_tokens: Option<u64>,
-    threshold: impl Fn(&str, u64) -> Option<u64>,
-) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(used) = context_tokens {
-        let window = model.and_then(context_window_for_model);
-        let compact_at = model
-            .zip(window)
-            .and_then(|(model, window)| threshold(model, window));
-        match (window, compact_at) {
-            (Some(window), Some(compact_at)) => {
-                let percent = (used as f64 / compact_at as f64 * 100.0).min(100.0);
-                parts.push(format!(
-                    "{} / {} to compact ({percent:.0}%), window {}",
-                    format_tokens(used),
-                    format_tokens(compact_at),
-                    format_tokens(window)
-                ));
-            }
-            (Some(window), None) => {
-                let percent = (used as f64 / window as f64 * 100.0).min(100.0);
-                parts.push(format!(
-                    "{} / {} ({percent:.0}%)",
-                    format_tokens(used),
-                    format_tokens(window)
-                ));
-            }
-            (None, _) => parts.push(format!("{} tokens", format_tokens(used))),
-        }
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("  ·  "))
-}
-
 /// Shorten a home-relative path for the footer.
 #[cfg(test)]
 fn compact_dir(path: &str) -> String {
@@ -7836,17 +7815,6 @@ fn compact_dir(path: &str) -> String {
 /// Use the same model capacity catalog as the CLI instead of desktop-only guesses.
 fn context_window_for_model(model: &str) -> Option<u64> {
     jcode_base::provider::context_limit_for_model_with_provider(model, None).map(|n| n as u64)
-}
-
-/// Reactive compaction trigger for the model, from the same `[compaction]`
-/// config (including `[compaction.models.*]` overrides) the daemon uses.
-pub(crate) fn compaction_threshold_for_model(
-    provider: Option<&str>,
-    model: &str,
-    window: u64,
-) -> Option<u64> {
-    jcode_base::compaction::compaction_threshold_tokens(provider, Some(model), window as usize)
-        .map(|n| n as u64)
 }
 
 /// Match the TUI's output-token estimate and thresholds, using desktop theme
@@ -10236,20 +10204,6 @@ mod tests {
         assert_eq!(account_method_label(Some("openai"), None), "OpenAI");
         assert_eq!(account_method_label(None, None), "Accounts");
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
-        assert_eq!(context_usage_label(None, None), None);
-        assert_eq!(
-            context_usage_label_with(Some("gpt-5.6-sol"), Some(100_000), |_, _| None).as_deref(),
-            Some("100.0k / 272.0k (37%)")
-        );
-        assert_eq!(
-            context_usage_label(Some("mystery-model"), Some(1_500)).as_deref(),
-            Some("1.5k tokens")
-        );
-        assert_eq!(
-            context_usage_label_with(Some("gpt-5.4-alto"), Some(233_000), |_, _| Some(500_000))
-                .as_deref(),
-            Some("233.0k / 500.0k to compact (47%), window 1.0m")
-        );
     }
 
     #[test]
@@ -12694,7 +12648,9 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && matches!(
             fixture.as_deref(),
-            Some("empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt" | "soniox-rt")
+            Some(
+                "empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt" | "soniox-rt"
+            )
         )
     {
         return Vec::new();

@@ -3,19 +3,131 @@ use crate::fixture_control_targets::marker;
 use crate::harness::ContextBreakdownTarget;
 use jcode_sdk::api::{
     ContextActionMeasurement, ContextActionSavings, ContextBreakdown, ContextBreakdownKind,
-    ShakeToolsAction, ShakeToolsResult, ShakeToolsStats,
+    ContextMeter, ContextMeterState, ContextOccupancySource, ShakeToolsAction, ShakeToolsResult,
+    ShakeToolsStats,
 };
 
 #[derive(Default)]
 pub(super) struct State {
     open: bool,
     read: Option<Task<()>>,
+    refresh_queued: bool,
+    primed: bool,
+    meter: Option<ContextMeter>,
     breakdown: Option<ContextBreakdown>,
     action: ActionState,
     shake_supported: bool,
     shake_task: Option<Task<()>>,
     pub(super) compacting: bool,
     compact_measurement_supported: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct ContextDisplay {
+    pub meter: ContextMeter,
+    pub offline: bool,
+}
+
+fn format_context_tokens(tokens: u64) -> String {
+    format_tokens(tokens)
+        .replace(".0k", "k")
+        .replace(".0m", "m")
+}
+
+impl ContextDisplay {
+    pub(super) fn percent(&self) -> Option<f32> {
+        self.meter
+            .occupied_tokens
+            .zip(self.meter.compaction_threshold_tokens.filter(|&n| n > 0))
+            .map(|(used, threshold)| (used as f64 / threshold as f64 * 100.) as f32)
+    }
+
+    pub(super) fn value(&self) -> String {
+        let occupied = self.meter.occupied_tokens.map(|used| {
+            let prefix = match self.meter.source {
+                ContextOccupancySource::LocalEstimate
+                | ContextOccupancySource::CompactionEstimate => "~",
+                _ => "",
+            };
+            format!("{prefix}{}", format_context_tokens(used))
+        });
+        match (
+            occupied,
+            self.meter.compaction_threshold_tokens.filter(|&n| n > 0),
+        ) {
+            (Some(used), Some(threshold)) => {
+                format!("{used} / {}", format_context_tokens(threshold))
+            }
+            (None, Some(threshold)) => format!("? / {}", format_context_tokens(threshold)),
+            (Some(used), None) => used,
+            (None, None) => "Unknown".into(),
+        }
+    }
+
+    pub(super) fn rows(&self) -> Vec<String> {
+        let meter = &self.meter;
+        let source = match meter.source {
+            ContextOccupancySource::ProviderReported => "Last provider report",
+            ContextOccupancySource::HistoricalReport => "Historical report (route unverified)",
+            ContextOccupancySource::CompactionEstimate => "Post-compaction estimate",
+            ContextOccupancySource::LocalEstimate => "Local estimate",
+            ContextOccupancySource::Unknown => "Occupancy not reported",
+        };
+        let state = if self.offline {
+            "Offline · "
+        } else {
+            match meter.state {
+                ContextMeterState::Saved => "Saved snapshot · ",
+                ContextMeterState::Draft => "Draft · ",
+                ContextMeterState::Live | ContextMeterState::Unavailable => "",
+            }
+        };
+        let route = meter
+            .route
+            .as_ref()
+            .map(|r| format!(" · {r}"))
+            .unwrap_or_default();
+        let measured = meter
+            .measured_at_ms
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+            .map(|at| format!(" · {} UTC", at.format("%b %d %H:%M:%S")))
+            .unwrap_or_default();
+        let mut rows = vec![format!("{state}{source}{route}{measured}")];
+        if let Some(window) = meter.model_window_tokens {
+            rows.push(format!("Model window: {} tokens", format_tokens(window)));
+        }
+        if let Some(cap) = meter.session_cap_tokens {
+            rows.push(format!("Session cap: {} tokens", format_tokens(cap)));
+        } else if let Some(budget) = meter
+            .effective_budget_tokens
+            .filter(|n| Some(*n) != meter.model_window_tokens)
+        {
+            rows.push(format!("Context budget: {} tokens", format_tokens(budget)));
+        }
+        if meter.compaction_threshold_tokens.is_none() {
+            rows.push(match meter.compaction_mode.as_deref() {
+                Some(mode) if mode != "reactive" => {
+                    format!("No fixed auto-compaction threshold ({mode})")
+                }
+                _ => "Auto-compaction threshold unknown".into(),
+            });
+        } else if meter.compaction_mode.as_deref() == Some("provider_native") {
+            rows.push("Auto-compaction: provider-native".into());
+        }
+        if let Some(idle) = meter.idle_precompaction_tokens {
+            rows.push(format!(
+                "Idle pre-compaction: {} tokens after cache cools",
+                format_tokens(idle)
+            ));
+        }
+        if let Some(cutoff) = meter.long_context_pricing_above_input_tokens {
+            rows.push(format!(
+                "Higher pricing above {} input tokens per request",
+                format_context_tokens(cutoff)
+            ));
+        }
+        rows
+    }
 }
 
 impl State {
@@ -157,6 +269,8 @@ impl Panel {
     }
 
     pub(super) fn lose_context_action(&mut self) {
+        self.context_usage.read = None;
+        self.context_usage.refresh_queued = false;
         self.context_usage.compacting = false;
         self.context_usage.compact_measurement_supported = false;
         self.context_usage.shake_supported = false;
@@ -278,7 +392,6 @@ impl Panel {
             return;
         }
         self.context_usage.open = false;
-        self.context_usage.read = None;
         self.context_usage.breakdown = None;
         if matches!(self.context_usage.action, ActionState::ConfirmShake(_)) {
             self.context_usage.action = ActionState::Idle;
@@ -286,29 +399,100 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn refresh_context_usage(&mut self, cx: &mut Context<Self>) {
-        if !self.context_usage.is_open() || self.is_pending_session() && !self.session_deferred() {
+    pub(crate) fn refresh_context_usage(&mut self, cx: &mut Context<Self>) {
+        if self.status.starts_with("lost:")
+            || self.is_side_document()
+            || (self.is_pending_session() && !self.session_deferred())
+            || (self.session_deferred() && !self.context_usage.is_open())
+            || (!self.context_usage.is_open() && !self.context_usage.primed)
+        {
             return;
         }
+        if self.context_usage.read.is_some() {
+            self.context_usage.refresh_queued = true;
+            return;
+        }
+        let summary_only = !self.context_usage.is_open();
         let target = if self.session_deferred() {
             ContextBreakdownTarget::Draft {
                 model: self.model.clone(),
                 cwd: self.working_dir.clone(),
             }
-        } else {
+        } else if !summary_only {
             ContextBreakdownTarget::Session(self.session_id.clone())
+        } else {
+            ContextBreakdownTarget::SessionMeter(self.session_id.clone())
         };
         let bridge = self.bridge.clone();
-        self.context_usage.breakdown = None;
         self.context_usage.read = Some(cx.spawn(async move |panel, cx| {
             let inspection = bridge.read_context_breakdown(target).await;
             let _ = panel.update(cx, |panel, cx| {
-                panel.context_usage.breakdown = inspection.breakdown;
+                if let Some(breakdown) = inspection.breakdown {
+                    if let Some(meter) = &breakdown.meter
+                        && (meter.state != ContextMeterState::Unavailable
+                            || panel.context_usage.meter.is_none())
+                    {
+                        panel.context_usage.meter = Some(meter.clone());
+                    }
+                    if panel.context_usage.is_open() && !summary_only {
+                        panel.context_usage.breakdown = Some(breakdown);
+                    }
+                }
                 panel.context_usage.shake_supported = inspection.shake_supported;
                 panel.context_usage.read = None;
+                if std::mem::take(&mut panel.context_usage.refresh_queued) {
+                    panel.refresh_context_usage(cx);
+                }
                 cx.notify();
             });
         }));
+    }
+
+    pub(crate) fn prime_context_meter(&mut self, cx: &mut Context<Self>) {
+        self.context_usage.primed = true;
+        self.refresh_context_usage(cx);
+    }
+
+    pub(super) fn invalidate_context_meter(&mut self) {
+        self.context_usage.meter = None;
+        self.context_usage.breakdown = None;
+        self.context_usage.read = None;
+        self.context_usage.refresh_queued = false;
+        self.context_tokens = None;
+    }
+
+    pub(super) fn set_compacted_context_estimate(&mut self, post_tokens: u64) {
+        self.context_usage.breakdown = None;
+        self.context_usage.read = None;
+        self.context_usage.refresh_queued = false;
+        if let Some(meter) = &mut self.context_usage.meter {
+            meter.occupied_tokens = Some(post_tokens);
+            meter.source = ContextOccupancySource::CompactionEstimate;
+            meter.measured_at_ms = None;
+            meter.route = None;
+        }
+    }
+
+    pub(super) fn context_display(&self) -> ContextDisplay {
+        let meter = self.context_usage.meter.clone().unwrap_or_else(|| {
+            let occupied = self
+                .context_tokens
+                .or_else(|| self.context_usage.breakdown.as_ref()?.total_tokens);
+            ContextMeter {
+                occupied_tokens: occupied,
+                source: if occupied.is_some() {
+                    ContextOccupancySource::HistoricalReport
+                } else {
+                    ContextOccupancySource::Unknown
+                },
+                model_window_tokens: self.model.as_deref().and_then(context_window_for_model),
+                ..ContextMeter::default()
+            }
+        });
+        ContextDisplay {
+            meter,
+            offline: self.status.starts_with("lost:"),
+        }
     }
 
     pub(super) fn render_context_usage(
@@ -320,34 +504,21 @@ impl Panel {
         }
         let theme = Theme::global();
         let breakdown = self.context_usage.breakdown.as_ref();
-        let (used, limit) = breakdown.map_or_else(
-            || {
-                (
-                    self.context_tokens,
-                    self.model.as_deref().and_then(context_window_for_model),
-                )
-            },
-            |breakdown| (breakdown.total_tokens, breakdown.limit_tokens),
-        );
-        let limit = limit.filter(|limit| *limit > 0);
-        let estimated = breakdown.is_some_and(|breakdown| breakdown.estimated);
-        let estimate = if estimated { "~" } else { "" };
-        let categories = breakdown.map_or(&[][..], |breakdown| breakdown.categories.as_slice());
-        let fraction = used
-            .zip(limit)
-            .map(|(used, limit)| used as f64 / limit as f64);
-        let tokens = match (used, limit) {
-            (Some(used), Some(limit)) => {
-                format!(
-                    "{estimate}{} / {} tokens",
-                    format_tokens(used),
-                    format_tokens(limit)
-                )
-            }
-            (Some(used), None) => format!("{estimate}{} tokens used", format_tokens(used)),
-            (None, Some(limit)) => format!("{} token limit", format_tokens(limit)),
-            (None, None) => String::new(),
-        };
+        let display = self.context_display();
+        let value = display.value();
+        let selector = format!("context-usage-value-{value}");
+        let percent = display.percent();
+        let categories = breakdown
+            .filter(|breakdown| {
+                breakdown
+                    .categories
+                    .iter()
+                    .any(|category| category.tokens.is_some())
+            })
+            .map_or(&[][..], |breakdown| breakdown.categories.as_slice());
+        let residual = breakdown
+            .and_then(|breakdown| breakdown.residual_tokens)
+            .filter(|&n| n != 0);
         let owner = cx.weak_entity();
         Some(
             div()
@@ -424,11 +595,12 @@ impl Panel {
                         .justify_between()
                         .gap_2()
                         .text_color(theme.composer_secondary())
-                        .child(fraction.map_or_else(
-                            || "Usage unavailable".into(),
-                            |fraction| format!("{:.0}% full", fraction * 100.),
-                        ))
-                        .child(div().flex_none().child(tokens)),
+                        .child(div().child(if display.meter.compaction_threshold_tokens.is_some() {
+                            "Occupied / auto-compaction threshold"
+                        } else {
+                            "Occupied tokens"
+                        }))
+                        .child(div().debug_selector(move || selector).flex_none().child(value)),
                 )
                 .child(
                     div()
@@ -439,32 +611,15 @@ impl Panel {
                         .overflow_hidden()
                         .rounded_full()
                         .bg(theme.chip_background())
-                        .children(limit.into_iter().flat_map(|limit| {
-                            let denominator = limit.max(used.unwrap_or(0)) as f64;
-                            categories.iter().filter_map(move |bucket| {
-                                let tokens = bucket.tokens.filter(|tokens| *tokens > 0)?;
-                                let (_, color) = category(bucket.kind, theme);
-                                Some(
-                                    div()
-                                        .w(relative((tokens as f64 / denominator).min(1.) as f32))
-                                        .min_w(px(2.))
-                                        .flex_none()
-                                        .h_full()
-                                        .bg(color),
-                                )
-                            })
-                        }))
-                        .when(categories.is_empty(), |bar| {
-                            bar.children(fraction.filter(|fraction| *fraction > 0.).map(
-                                |fraction| {
-                                    div()
-                                        .w(relative(fraction.min(1.) as f32))
-                                        .h_full()
-                                        .bg(theme.TEXT_FAINT)
-                                },
-                            ))
-                        }),
+                        .children(percent.map(|percent| {
+                            div()
+                                .w(relative((percent / 100.).min(1.)))
+                                .h_full()
+                                .bg(super::usage::usage_color(percent, theme))
+                        })),
                 )
+                .child(div().flex().flex_col().gap_1().text_size(px(12.)).text_color(theme.composer_secondary())
+                    .children(display.rows().into_iter().map(|row| div().child(row))))
                 .when(categories.is_empty(), |panel| {
                     let message = if self.context_usage.read.is_some() {
                         "Loading breakdown…"
@@ -485,6 +640,7 @@ impl Panel {
                             .flex()
                             .flex_col()
                             .gap_2()
+                            .child(div().text_size(px(12.)).text_color(theme.composer_secondary()).child("Estimated breakdown"))
                             .children(categories.iter().map(|bucket| {
                                 let (label, color) = category(bucket.kind, theme);
                                 div()
@@ -501,9 +657,16 @@ impl Panel {
                                             .text_color(theme.composer_secondary())
                                             .child(bucket.tokens.map_or_else(
                                                 || "Unavailable".into(),
-                                                |tokens| format!("{estimate}{tokens}"),
+                                                |tokens| format!("~{tokens}"),
                                             )),
                                     )
+                            }))
+                            .children(residual.map(|residual| {
+                                let decision = if residual > 0 { "above" } else { "below" };
+                                div().text_size(px(12.)).text_color(theme.composer_secondary()).child(format!(
+                                    "Occupancy is {} tokens {decision} the sum of known estimates",
+                                    format_tokens(residual.unsigned_abs()),
+                                ))
                             })),
                     )
                 })

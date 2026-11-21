@@ -67,23 +67,13 @@ impl Render for RowsTooltip {
     }
 }
 
-struct ContextTooltip {
-    used: Option<u64>,
-    threshold: Option<u64>,
-    window: Option<u64>,
-    percent: Option<f32>,
-}
+struct ContextTooltip(super::context_usage::ContextDisplay);
 
 impl Render for ContextTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
-        let value = match (self.used, self.threshold) {
-            (Some(used), Some(limit)) => {
-                format!("{} / {}", format_tokens(used), format_tokens(limit))
-            }
-            (Some(used), None) => format_tokens(used),
-            _ => "Not reported".into(),
-        };
+        let value = self.0.value();
+        let selector = format!("context-tooltip-value-{value}");
         div()
             .debug_selector(|| "context-tooltip".into())
             .flex()
@@ -92,6 +82,7 @@ impl Render for ContextTooltip {
             .px_3()
             .py_2()
             .min_w(px(220.))
+            .max_w(px(355.))
             .rounded_xl()
             .bg(theme.HEADER_BG)
             .border_1()
@@ -102,23 +93,29 @@ impl Render for ContextTooltip {
                 div()
                     .text_color(theme.TEXT)
                     .font_weight(FontWeight::MEDIUM)
-                    .child("Context window"),
+                    .child("Context usage"),
             )
             .child(
                 div()
                     .flex()
                     .justify_between()
-                    .gap_4()
+                    .gap_2()
+                    .flex_wrap()
                     .text_color(theme.TEXT_DIM)
-                    .child("Context")
+                    .child(if self.0.meter.compaction_threshold_tokens.is_some() {
+                        "Occupied / auto-compaction threshold"
+                    } else {
+                        "Occupied tokens"
+                    })
                     .child(
                         div()
+                            .debug_selector(move || selector)
                             .font_family(theme.FONT_MONO)
                             .text_color(theme.TEXT)
                             .child(value),
                     ),
             )
-            .children(self.percent.map(|percent| {
+            .children(self.0.percent().map(|percent| {
                 usage_bar(
                     "context-tooltip-bar".into(),
                     percent,
@@ -126,19 +123,13 @@ impl Render for ContextTooltip {
                     theme,
                 )
             }))
-            .children(self.window.map(|window| {
+            .children(self.0.rows().into_iter().map(|row| {
+                let selector = format!("context-tooltip-row-{row}");
                 div()
-                    .flex()
-                    .justify_between()
-                    .gap_4()
+                    .debug_selector(move || selector)
+                    .whitespace_normal()
                     .text_color(theme.TEXT_DIM)
-                    .child("Window")
-                    .child(
-                        div()
-                            .font_family(theme.FONT_MONO)
-                            .text_color(theme.TEXT)
-                            .child(format_tokens(window)),
-                    )
+                    .child(row)
             }))
     }
 }
@@ -825,23 +816,9 @@ impl Panel {
             return None;
         }
         let theme = Theme::global();
-        let capacity = self.model.as_deref().and_then(context_window_for_model);
-        // Fill the ring toward the compaction trigger, not the raw window, so
-        // the user sees when the session will fold (e.g. 500k on a 1M window).
-        let window = self
-            .model
-            .as_deref()
-            .zip(capacity)
-            .and_then(|(model, window)| {
-                super::compaction_threshold_for_model(self.provider.as_deref(), model, window)
-            })
-            .or(capacity);
-        let used = self.context_tokens;
-        let percent = used
-            .zip(window)
-            .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
-        // Unknown usage shows only the empty ring, never a placeholder dash.
-        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
+        let display = self.context_display();
+        let percent = display.percent();
+        let label = display.meter.occupied_tokens.map(|_| display.value());
         Some(
             crate::keyboard::button(div().id("panel-context-meter"))
                 .debug_selector(|| "panel-context-meter".into())
@@ -866,18 +843,13 @@ impl Panel {
                     el.bg(theme.chip_active_background())
                 })
                 .when(!self.context_usage.is_open(), |el| {
-                    el.tooltip(move |_, cx| {
-                        cx.new(|_| ContextTooltip {
-                            used,
-                            threshold: window,
-                            window: capacity,
-                            percent,
-                        })
-                        .into()
-                    })
+                    el.tooltip(move |_, cx| cx.new(|_| ContextTooltip(display.clone())).into())
                 })
                 .child(context_ring(percent))
-                .children(label)
+                .children(label.map(|label| {
+                    let selector = format!("context-pill-value-{label}");
+                    div().debug_selector(move || selector).child(label)
+                }))
                 .on_click(cx.listener(|panel, _, window, cx| {
                     panel.toggle_context_usage(window, cx);
                     cx.stop_propagation();
@@ -917,10 +889,17 @@ impl Panel {
                     .flex()
                     .items_center()
                     .text_color(theme.TEXT_DIM)
-                    .tooltip(move |_, cx| cx.new(|_| RowsTooltip {
-                        title: "API estimate · not a bill".into(),
-                        rows: vec![account.clone(), format!("Responses: {turns}"), "Pricing: list rates".into()],
-                    }).into())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| RowsTooltip {
+                            title: "API estimate · not a bill".into(),
+                            rows: vec![
+                                account.clone(),
+                                format!("Responses: {turns}"),
+                                "Pricing: list rates".into(),
+                            ],
+                        })
+                        .into()
+                    })
                     .child(format_cost(cost)),
             );
         }
@@ -1003,16 +982,31 @@ mod tests {
 
     #[gpui::test]
     fn context_tooltip_has_compaction_bar(cx: &mut gpui::TestAppContext) {
-        let (_, vcx) = cx.add_window_view(|_, _| ContextTooltip {
-            used: Some(135_000),
-            threshold: Some(500_000),
-            window: Some(1_000_000),
-            percent: Some(27.),
+        let (_, vcx) = cx.add_window_view(|_, _| {
+            ContextTooltip(super::super::context_usage::ContextDisplay {
+                meter: jcode_sdk::api::ContextMeter {
+                    occupied_tokens: Some(135_000),
+                    compaction_threshold_tokens: Some(500_000),
+                    model_window_tokens: Some(1_000_000),
+                    long_context_pricing_above_input_tokens: Some(272_000),
+                    source: jcode_sdk::api::ContextOccupancySource::ProviderReported,
+                    ..Default::default()
+                },
+                offline: false,
+            })
         });
         vcx.run_until_parked();
         let card = vcx.debug_bounds("context-tooltip").unwrap();
+        assert!(
+            vcx.debug_bounds("context-tooltip-value-135k / 500k")
+                .is_some()
+        );
         let bar = vcx.debug_bounds("context-tooltip-bar").unwrap();
         assert!(bar.top() >= card.top() && bar.bottom() <= card.bottom());
+        let pricing = vcx
+            .debug_bounds("context-tooltip-row-Higher pricing above 272k input tokens per request")
+            .expect("route pricing cutoff is a separate visible row");
+        assert!(pricing.top() >= bar.bottom() && pricing.bottom() <= card.bottom());
     }
 
     #[gpui::test]
@@ -1131,6 +1125,14 @@ mod tests {
         reply
             .try_send(crate::harness::ContextInspection {
                 breakdown: Some(jcode_sdk::api::ContextBreakdown {
+                    meter: Some(jcode_sdk::api::ContextMeter {
+                        occupied_tokens: Some(41_000),
+                        compaction_threshold_tokens: Some(65_000),
+                        model_window_tokens: Some(200_000),
+                        source: jcode_sdk::api::ContextOccupancySource::ProviderReported,
+                        ..Default::default()
+                    }),
+                    residual_tokens: Some(-3_000),
                     session_id: Some("usage-session".into()),
                     model: Some("claude-sonnet-4-6".into()),
                     total_tokens: Some(41_000),
@@ -1139,7 +1141,7 @@ mod tests {
                     action_forecast: None,
                     categories: vec![jcode_sdk::api::ContextBreakdownCategory {
                         kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
-                        tokens: Some(41_000),
+                        tokens: Some(44_000),
                     }],
                 }),
                 shake_supported: false,
@@ -1147,6 +1149,8 @@ mod tests {
             .unwrap();
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-breakdown").is_some());
+        assert!(vcx.debug_bounds("context-usage-value-41k / 65k").is_some());
+        assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_some());
         assert_eq!(
             panel.read_with(vcx, |panel, _| panel.items.len()),
             item_count

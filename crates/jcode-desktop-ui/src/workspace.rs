@@ -1332,10 +1332,11 @@ impl Workspace {
             );
         } else if harness::controlled_runtime_socket().is_some() {
             if let Ok(session_id) = std::env::var("JCODE_DESKTOP_CONTROL_RUNTIME_SESSION")
-                && let Ok(session) = serde_json::from_value::<jcode_sdk::SessionInfo>(serde_json::json!({
-                    "session_id": session_id,
-                    "status": "idle",
-                }))
+                && let Ok(session) =
+                    serde_json::from_value::<jcode_sdk::SessionInfo>(serde_json::json!({
+                        "session_id": session_id,
+                        "status": "idle",
+                    }))
             {
                 workspace.sessions = vec![session.clone()];
                 workspace.active = workspace.open_session(session, cx);
@@ -2694,10 +2695,16 @@ impl Workspace {
                     }
                 }
             }
-            Update::RewoundHistory { session_id, page, bounded } => {
+            Update::RewoundHistory {
+                session_id,
+                page,
+                bounded,
+            } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| panel.replace_rewound_history(page, bounded, cx));
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.replace_rewound_history(page, bounded, cx)
+                        });
                         break;
                     }
                 }
@@ -3089,7 +3096,10 @@ impl Workspace {
                     }
                 }
             }
-            Update::OpenrigHostIdentity { session_id, self_host_id } => {
+            Update::OpenrigHostIdentity {
+                session_id,
+                self_host_id,
+            } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
@@ -3108,6 +3118,7 @@ impl Workspace {
                             // with idle/running. Clear the stale lost banner now.
                             panel.status = "connected".into();
                             panel.refresh_local_pending_awaits(cx);
+                            panel.prime_context_meter(cx);
                             cx.notify();
                         });
                         break;
@@ -3132,12 +3143,7 @@ impl Workspace {
     /// Open `session` as a panel immediately to the right of the focused panel.
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
-        self.open_session_with_identity(
-            session.session_id,
-            session.title,
-            session.working_dir,
-            cx,
-        )
+        self.open_session_with_identity(session.session_id, session.title, session.working_dir, cx)
     }
 
     fn open_session_with_identity(
@@ -5421,7 +5427,8 @@ impl Workspace {
             let focused = index == self.active;
             let content_width = px((width - if folders { 0. } else { 12. }).max(1.));
             if slot.panel.read(cx).openrig_width_changed(content_width) {
-                slot.panel.update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
+                slot.panel
+                    .update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
             }
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             // Update only on a real change: GPUI retains views between frames and

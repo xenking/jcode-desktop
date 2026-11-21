@@ -48,6 +48,9 @@ class ContextUsage(VERIFY.Instance):
         result = {key: value for key, value in reply.items() if key not in ("v", "ev", "reply_to")}
         assert result["session_id"] == session and result["limit_tokens"] > 0, result
         assert result["categories"], result
+        meter = result["meter"]
+        assert meter["occupied_tokens"] == result["total_tokens"], result
+        assert meter["compaction_threshold_tokens"] < meter["model_window_tokens"], result
         return result
 
     def capture_text(self, name):
@@ -65,27 +68,46 @@ class ContextUsage(VERIFY.Instance):
     def exercise(self):
         first = self.target["session_id"]
         second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
-        for session, prompt in [(first, "First session, short context."), (second, "Second session. " * 150)]:
-            self.runtime_debug("message", prompt, "--session", session, "--wait")
+        for session, count, prompt in [(first, 11042, "First session, short context."),
+                                       (second, 224142, "Second session. " * 150)]:
+            self.runtime_debug("message", f"[e2e:input-tokens:{count}] {prompt}", "--session", session, "--wait")
         if self.manifest["compact"]:
             for turn in range(4):
                 self.runtime_debug("message", f"[e2e:pad] First session, turn {turn}", "--session", first, "--wait")
             self.runtime_debug("message", "First session, keep this recent turn.", "--session", first, "--wait")
-        self.drive("open_session", {"session_id": second})
+        def open_second():
+            try:
+                self.drive("open_session", {"session_id": second})
+                return True
+            except RuntimeError as error:
+                if "session_not_found" not in str(error):
+                    raise
+                return False
+
+        self.runtime_wait(open_second, "second private session in Desktop's catalog")
         self.selected(first)
         expected = [self.context_usage(session) for session in (first, second)]
-        assert expected[0]["total_tokens"] != expected[1]["total_tokens"], expected
+        assert [usage["total_tokens"] for usage in expected] == [11042, 224142], expected
+        assert all(usage["meter"]["source"] == "provider_reported" for usage in expected), expected
         requests = (self.run / "fake-requests.jsonl").read_bytes()
         before = [self.drive("state", session=s)["panel"]["loaded_transcript_items"] for s in (first, second)]
         frames = {}
+
+        def compact_count(tokens):
+            for size, suffix in ((1_000_000, "m"), (1_000, "k")):
+                if tokens >= size:
+                    return f"{tokens / size:.1f}".rstrip("0").rstrip(".") + suffix
+            return str(tokens)
 
         def panel(name, index):
             frame, text = self.capture_text(name)
             conversation = next(bucket["tokens"] for bucket in expected[index]["categories"]
                                 if bucket["kind"] == "conversation")
+            meter = expected[index]["meter"]
+            value = f"{compact_count(meter['occupied_tokens'])}/{compact_count(meter['compaction_threshold_tokens'])}"
             if all(label.lower() in text.lower() for label in (
-                "Context Usage", "Compact now", "Shake tools", "Conversation", "% full", "tokens",
-            )) and re.search(rf"\b{conversation}\b", text):
+                "Context Usage", "Compact now", "Shake tools", "Conversation", "Estimated breakdown", "Model window",
+            )) and re.search(rf"\b{conversation}\b", text) and value in re.sub(r"\s+", "", text).lower():
                 return frame
             return None
 
