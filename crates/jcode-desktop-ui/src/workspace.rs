@@ -1358,6 +1358,7 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
+                context: None,
                 edit_stats: Some(jcode_sdk::SessionEditStats {
                     added: 128,
                     removed: 37,
@@ -1651,6 +1652,7 @@ impl Workspace {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             },
             cx,
         );
@@ -2360,6 +2362,7 @@ impl Workspace {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
         }
@@ -3371,6 +3374,7 @@ impl Workspace {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             });
         self.activate_session(session, window, cx);
     }
@@ -6334,6 +6338,7 @@ impl Workspace {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
         }
@@ -11092,6 +11097,7 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         }
     }
 

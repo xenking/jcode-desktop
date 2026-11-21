@@ -20,6 +20,7 @@ fn background_open_preserves_focused_panel(cx: &mut gpui::TestAppContext) {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         });
         w
     });

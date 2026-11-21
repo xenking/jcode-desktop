@@ -10,6 +10,8 @@ use super::*;
 use crate::global_search::{self, Effect, PickRow};
 use std::time::Instant;
 
+const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) enum Filter {
     #[default]
@@ -297,6 +299,7 @@ impl Workspace {
                     agent_label: None,
                     swarm_status: None,
                     edit_stats: None,
+                    context: None,
                 });
             }
         }
@@ -322,6 +325,7 @@ impl Workspace {
                         agent_label: None,
                         swarm_status: None,
                         edit_stats: None,
+                        context: None,
                     });
                 }
             }
@@ -763,6 +767,7 @@ impl Workspace {
             .unwrap_or(jcode_sdk::SessionInfo {
                 user_connected: false,
                 edit_stats: None,
+                context: None,
                 session_id,
                 parent_session_id: None,
                 agent_label: None,
@@ -983,6 +988,8 @@ impl Workspace {
             self.reveal_in_preview(&panel, window, cx);
         }
         let theme = Theme::global();
+        let secondary = resume_secondary_ink(theme);
+        let now = now_ms();
         let mut rows = div()
             .id("resume-results")
             .debug_selector(|| "resume-results".into())
@@ -1026,7 +1033,7 @@ impl Workspace {
                                 .flex_1()
                                 .min_w_0()
                                 .text_size(px(12.0))
-                                .text_color(theme.TEXT_DIM)
+                                .text_color(secondary)
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -1036,9 +1043,9 @@ impl Workspace {
                             div()
                                 .flex_none()
                                 .text_size(px(11.0))
-                                .text_color(theme.TEXT_FAINT)
+                                .text_color(secondary)
                                 .whitespace_nowrap()
-                                .child(global_search::time_label(data.timestamp_ms, now_ms())),
+                                .child(global_search::time_label(data.timestamp_ms, now)),
                         ),
                 );
                 continue;
@@ -1057,25 +1064,26 @@ impl Workspace {
                 _ => String::new(),
             };
             let live = liveness(session);
-            let status = match live {
-                Liveness::Working => "working".to_string(),
-                Liveness::Open => "open".to_string(),
-                Liveness::Crashed | Liveness::Inactive => session.status.clone(),
+            let (runtime, usage) = resume_row_metadata(session, now);
+            let full_metadata = [&runtime, &usage]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let usage = if !runtime.is_empty() && !usage.is_empty() {
+                format!(" · {usage}")
+            } else {
+                usage
             };
-            let metadata = format!(
-                "{}{} · {}",
-                saved_marker,
-                status,
-                sidebar_session_meta(session).unwrap_or_else(|| "Session history".into())
-            );
             let is_open = open_activity.contains_key(&id);
             let badge = resume_liveness_badge(live, open_spinners.get(&id).cloned(), index);
-            let title = highlighted_text(format!("{icon} {title}"), &terms, theme);
-            let directory = session
-                .working_dir
-                .as_deref()
-                .map(compact_working_dir)
-                .unwrap_or_else(|| "No working directory".into());
+            let title = highlighted_text(format!("{icon} {saved_marker}{title}"), &terms, theme);
+            let action_label = if is_open {
+                "Go to session"
+            } else {
+                "Open session"
+            };
             let action_row = row.clone();
             let row = row.clone();
             let action = crate::keyboard::button(
@@ -1093,19 +1101,31 @@ impl Workspace {
                         )
                     })
                     .flex_none()
-                    .px_2()
-                    .py_1()
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_full()
-                    .text_size(px(12.0))
-                    .whitespace_nowrap()
                     .bg(theme.INPUT_BG)
                     .hover(|el| el.bg(theme.PANEL_BG))
                     .cursor_pointer()
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| remotes::HeaderTooltip(action_label.into()))
+                            .into()
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.click_resume_row(&action_row, true, window, cx);
                     }))
-                    .child(if is_open { "Go to" } else { "Open" }),
+                    .child(
+                        gpui::svg()
+                            .data(RESUME_ARROW)
+                            .size(px(14.))
+                            .text_color(theme.TEXT)
+                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                std::f32::consts::FRAC_PI_2,
+                            ))),
+                    ),
             )
             .tab_index(1);
             rows = rows.child(
@@ -1117,8 +1137,11 @@ impl Workspace {
                         || None,
                     ))
                     .debug_selector(move || format!("resume-row-{index}"))
-                    .px_3()
-                    .py_2()
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .cursor_pointer()
                     .rounded_full()
                     .when(is_selected, |el| el.bg(theme.TOOL_BG))
@@ -1130,34 +1153,73 @@ impl Workspace {
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .w_0()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().flex_1().min_w_0().text_ellipsis().child(title))
-                            .child(action),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT_DIM)
-                            .text_ellipsis()
-                            .child(highlighted_text(directory, &terms, theme)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                            .flex_col()
                             .child(
                                 div()
+                                    .flex()
+                                    .w_full()
                                     .min_w_0()
-                                    .text_ellipsis()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.TEXT_FAINT)
-                                    .child(highlighted_text(metadata, &terms, theme)),
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .w_0()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(title),
+                                    )
+                                    .children(badge),
                             )
-                            .children(badge),
-                    ),
+                            .child(
+                                div()
+                                    .id(("resume-row-metadata", index))
+                                    .debug_selector(move || format!("resume-row-{index}-metadata"))
+                                    .flex()
+                                    .items_center()
+                                    .w_full()
+                                    .min_w_0()
+                                    .text_size(px(11.0))
+                                    .text_color(secondary)
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| {
+                                            remotes::HeaderTooltip(full_metadata.clone().into())
+                                        })
+                                        .into()
+                                    })
+                                    .when(!runtime.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .flex_1()
+                                                .w_0()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(runtime),
+                                        )
+                                    })
+                                    .when(!usage.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .flex_none()
+                                                .max_w(relative(0.65))
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(usage),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .child(action),
             );
         }
         if matches.is_empty() {
@@ -1229,11 +1291,18 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_size(px(16.0)).text_ellipsis().child(title))
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(title),
+                    )
                     .child(
                         div()
                             .text_size(px(11.0))
-                            .text_color(theme.TEXT_DIM)
+                            .text_color(secondary)
+                            .whitespace_nowrap()
                             .text_ellipsis()
                             .child(detail),
                     ),
@@ -1283,15 +1352,11 @@ impl Workspace {
         crate::keyboard::tab_navigation(div()
             .debug_selector(|| "resume-panel".into())
             .size_full()
-            .px_4()
-            .pb_4()
-            // The picker replaces the canvas, so nothing above it reserves the
-            // macOS titlebar: without this the heading sits under the traffic
-            // lights.
-            .pt(px(content_top_inset(false, window.is_fullscreen()) + 16.0))
+            .px_3()
+            .pb_2()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_1()
             .bg(theme.PANEL_BG)
             .text_color(theme.TEXT)
             .font_family(theme.FONT_UI)
@@ -1327,40 +1392,45 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .justify_between()
+                    .flex_none()
+                    .h(px(content_top_inset(false, window.is_fullscreen()).max(32.)))
+                    .pl(px((sidebar_header_left_padding(window.is_fullscreen()) - 12.).max(0.)))
                     .items_center()
                     .child(
-                        div()
-                            .debug_selector(|| "resume-title".into())
-                            .text_size(px(22.0))
-                            .child("Sessions"),
-                    )
-                    .child(
-                        div()
+                        crate::keyboard::button(div()
                             .id("resume-close")
                             .debug_selector(|| "resume-close".into())
                             .cursor_pointer()
-                            .px_3()
-                            .py_1()
+                            .px_2()
+                            .py(px(2.))
+                            .text_size(px(12.))
+                            .whitespace_nowrap()
+                                            .text_ellipsis()
                             .rounded_full()
                             .bg(theme.TOOL_BG)
                             .hover(|el| el.bg(theme.INPUT_BG))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_resume(window, cx)),
                             )
-                            .child("Back · Esc"),
+                            .child("‹ Back · Esc"))
+                        .tab_index(2),
                     ),
             )
             .child(
                 div()
-                    .debug_selector(|| "resume-search".into())
-                    .child(search),
-            )
-            .child(
-                div()
                     .flex()
-                    .min_w_0()
-                    .gap_2()
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .debug_selector(|| "resume-search".into())
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(search),
+                    )
                     .children(
                         [
                             (Filter::All, "All", "resume-all"),
@@ -1372,8 +1442,12 @@ impl Workspace {
                         .map(|(value, label, id)| {
                             div()
                                 .id(id)
-                                .px_3()
+                                .min_w_0()
+                                .px_2()
                                 .py_1()
+                                .text_size(px(12.))
+                                .whitespace_nowrap()
+                                            .text_ellipsis()
                                 .rounded_full()
                                 .cursor_pointer()
                                 .hover(|el| el.bg(theme.TOOL_BG))
@@ -1388,15 +1462,18 @@ impl Workspace {
                         div()
                             .debug_selector(|| "resume-status".into())
                             .min_w_0()
-                            .text_ellipsis()
-                            .text_color(theme.TEXT_DIM)
+                            .max_w(relative(0.25))
+                            .text_size(px(12.))
+                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                            .text_color(secondary)
                             .child(status),
                     ),
             )
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_2()
                     .flex_1()
                     .min_h_0()
                     .child(
@@ -1410,7 +1487,8 @@ impl Workspace {
                     .child(preview),
             )
             .child(
-                div().text_size(px(11.0)).text_color(theme.TEXT_DIM).text_ellipsis().child(
+                div().text_size(px(11.0)).text_color(secondary).whitespace_nowrap()
+                                            .text_ellipsis().child(
                     "↑ ↓ Select   Enter Open   Tab Preview   Esc Back   Ctrl+1/2/3/4 Filters",
                 ),
             ))
@@ -1477,6 +1555,12 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: Some(jcode_sdk::api::SessionCatalogContext {
+                model: Some("gpt-6.2-sol".into()),
+                reasoning_effort: Some("high".into()),
+                modes: vec!["swarm".into(), "selfdev".into()],
+                cache_expires_at_ms: Some(if index == 0 { i64::MAX } else { 1 }),
+            }),
         });
     }
 }
@@ -1591,60 +1675,87 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+fn resume_row_metadata(session: &jcode_sdk::SessionInfo, now: i64) -> (String, String) {
+    let mut runtime = Vec::new();
+    let mut usage = Vec::new();
+    if let Some(context) = &session.context {
+        runtime.extend(context.model.iter().cloned());
+        runtime.extend(context.reasoning_effort.iter().cloned());
+        if !context.modes.is_empty() {
+            runtime.push(context.modes.join(", "));
+        }
+        if let Some(expiry) = context.cache_expires_at_ms {
+            usage.push(if now < expiry { "warm" } else { "cold" }.into());
+        }
+    }
+    usage.extend(sidebar_session_meta(session));
+    (runtime.join(" · "), usage.join(" · "))
+}
+
+fn relative_luminance(color: gpui::Rgba) -> f32 {
+    let linear = |c: f32| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+fn contrast(a: gpui::Rgba, b: gpui::Rgba) -> f32 {
+    let (a, b) = (relative_luminance(a) + 0.05, relative_luminance(b) + 0.05);
+    a.max(b) / a.min(b)
+}
+
+fn resume_secondary_ink(theme: &Theme) -> gpui::Rgba {
+    [theme.TEXT_DIM, theme.TEXT]
+        .into_iter()
+        .find(|color| {
+            contrast(*color, theme.PANEL_BG) >= 4.5 && contrast(*color, theme.TOOL_BG) >= 4.5
+        })
+        .unwrap_or(theme.TEXT)
+}
+
 type PreviewHistory = (
     Vec<jcode_sdk::HistoryMessage>,
     Vec<jcode_sdk::RenderedImage>,
 );
 
-/// A compact right-aligned tag. Working rows get a tinted pill so they stand
-/// out at a glance. Open rows get a quiet label.
 fn resume_liveness_badge(
     live: Liveness,
     spinner: Option<gpui::AnyView>,
     index: usize,
 ) -> Option<gpui::AnyElement> {
     let theme = Theme::global();
-    let (label, ink, fill) = match live {
+    let (id, symbol, label, ink) = match live {
         Liveness::Inactive => return None,
-        Liveness::Working => ("Working", theme.OK, Some(gpui::Rgba { a: 0.2, ..theme.OK })),
-        Liveness::Open => ("Already open", theme.TEXT_DIM, None),
-        Liveness::Crashed => (
-            "Crashed",
-            theme.ERROR,
-            Some(gpui::Rgba {
-                a: 0.18,
-                ..theme.ERROR
-            }),
+        Liveness::Working => ("working", "●", "Working", theme.OK),
+        Liveness::Open => (
+            "open",
+            "▣",
+            "Open in this window",
+            resume_secondary_ink(theme),
         ),
+        Liveness::Crashed => ("crashed", "!", "Crashed", theme.ERROR),
     };
     Some(
         div()
-            .debug_selector(move || {
-                format!(
-                    "resume-row-{index}-{}",
-                    if live == Liveness::Open {
-                        "open".to_string()
-                    } else {
-                        label.to_lowercase()
-                    }
-                )
-            })
+            .id(("resume-row-state", index))
+            .debug_selector(move || format!("resume-row-{index}-{id}"))
             .flex_none()
+            .size(px(14.))
             .flex()
             .items_center()
-            .gap(px(5.0))
-            .px_2()
-            .py(px(1.0))
-            .rounded_full()
-            .text_size(px(12.0))
+            .justify_center()
+            .text_size(px(12.))
             .whitespace_nowrap()
             .text_color(ink)
-            .when_some(fill, |el, fill| el.bg(fill))
-            .when(live == Liveness::Working, |el| match spinner {
-                Some(spinner) => el.child(div().flex_none().child(spinner)),
-                None => el.child(div().flex_none().size(px(7.0)).rounded_full().bg(ink)),
+            .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(label.into())).into())
+            .map(|el| match spinner {
+                Some(spinner) if live == Liveness::Working => el.child(spinner),
+                _ => el.child(symbol),
             })
-            .child(label)
             .into_any_element(),
     )
 }

@@ -253,11 +253,8 @@ fn focusing_the_active_panel_while_searching_keeps_the_query_field_typing(
     );
 }
 
-/// The screen replaces the canvas, so it draws where the window's titlebar is.
-/// On macOS that puts its heading under the traffic lights unless the screen
-/// reserves the same inset the single-panel workspace does.
 #[gpui::test]
-fn the_search_heading_clears_the_titlebar_inset(cx: &mut gpui::TestAppContext) {
+fn session_browser_fits_back_and_search_chrome_into_two_rows(cx: &mut gpui::TestAppContext) {
     let (workspace, mut vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.push_test_panel("chat", cx);
@@ -269,14 +266,21 @@ fn the_search_heading_clears_the_titlebar_inset(cx: &mut gpui::TestAppContext) {
     let screen = vcx
         .debug_bounds("resume-panel")
         .expect("the search screen rendered");
-    let title = vcx
-        .debug_bounds("resume-title")
-        .expect("the heading rendered");
-    let inset = content_top_inset(false, false);
-    assert!(
-        title.top() >= screen.top() + px(inset),
-        "heading {title:?} must sit below the {inset}px titlebar inset inside {screen:?}"
-    );
+    let back = vcx.debug_bounds("resume-close").expect("Back is visible");
+    let search = vcx
+        .debug_bounds("resume-search")
+        .expect("search is visible");
+    let status = vcx.debug_bounds("resume-status").expect("count is visible");
+    let results = vcx.debug_bounds("resume-results").expect("list is visible");
+    assert!(back.left() >= screen.left() + px(sidebar_header_left_padding(false)));
+    assert!(back.center().y < search.top());
+    if cfg!(target_os = "macos") {
+        assert!(back.center().y < screen.top() + px(content_top_inset(false, false)));
+    }
+    assert!((search.center().y - status.center().y).abs() <= px(1.));
+    assert!(search.right() <= status.left());
+    assert!(results.top() <= search.bottom() + px(8.));
+    assert!(vcx.debug_bounds("resume-title").is_none());
 }
 
 fn hit(

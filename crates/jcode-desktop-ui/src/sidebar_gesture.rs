@@ -223,6 +223,7 @@ mod tests {
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context: None,
             });
         }
         workspace.set_active(0, cx);

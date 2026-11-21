@@ -2071,6 +2071,14 @@ struct PersistedSession {
     #[serde(default)]
     custom_title: Option<String>,
     #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    pinned_skills: Vec<String>,
+    #[serde(default)]
+    pinned_skill: Option<String>,
+    #[serde(default)]
     saved: bool,
     #[serde(default)]
     save_label: Option<String>,
@@ -2089,6 +2097,22 @@ struct PersistedSession {
 }
 
 impl PersistedSession {
+    fn catalog_context(&self) -> Option<jcode_sdk::api::SessionCatalogContext> {
+        let modes = if self.pinned_skills.is_empty() {
+            self.pinned_skill.iter().cloned().collect()
+        } else {
+            self.pinned_skills.clone()
+        };
+        (self.model.is_some() || self.reasoning_effort.is_some() || !modes.is_empty()).then(|| {
+            jcode_sdk::api::SessionCatalogContext {
+                model: self.model.clone(),
+                reasoning_effort: self.reasoning_effort.clone(),
+                modes,
+                cache_expires_at_ms: None,
+            }
+        })
+    }
+
     /// The coordinator that owns this session. A transcript fork also has a
     /// `parent_id`, but only daemon-spawned workers are `is_debug`, and only
     /// swarm ownership may nest a session under another in the sidebar.
@@ -2410,6 +2434,12 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         title: json_string_field(&head, "title", false),
         custom_title: json_string_field(&head, "custom_title", false)
             .or_else(|| json_string_field(&tail, "custom_title", true)),
+        model: json_string_field(&tail, "model", true),
+        reasoning_effort: json_string_field(&tail, "reasoning_effort", true),
+        pinned_skills: json_value_field(&tail, "pinned_skills", true)
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
+        pinned_skill: json_string_field(&tail, "pinned_skill", true),
         saved: json_value_field(&tail, "saved", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
@@ -2509,6 +2539,9 @@ pub fn merge_persisted_sessions(
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
             session.status = record.lifecycle_status();
+            if session.context.is_none() {
+                session.context = record.catalog_context();
+            }
             if session.parent_session_id.is_none() {
                 session.parent_session_id = record.swarm_parent();
             }
@@ -2586,6 +2619,7 @@ pub fn merge_persisted_sessions(
         };
         let status = record.lifecycle_status();
         let parent_session_id = record.swarm_parent();
+        let context = record.catalog_context();
         let save_label = record
             .saved
             .then_some(record.save_label)
@@ -2616,6 +2650,7 @@ pub fn merge_persisted_sessions(
                 agent_label: None,
                 swarm_status: None,
                 edit_stats: None,
+                context,
             },
         ));
     }
@@ -4899,6 +4934,7 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+            context: None,
         }
     }
 
@@ -5063,6 +5099,10 @@ mod tests {
             working_dir: None,
             title: None,
             custom_title: None,
+            model: None,
+            reasoning_effort: None,
+            pinned_skills: Vec::new(),
+            pinned_skill: None,
             saved: false,
             save_label: None,
             status: serde_json::json!("Active"),
@@ -5223,6 +5263,27 @@ mod tests {
         assert_eq!(merged[0].title.as_deref(), Some("Sidebar performance"));
 
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn older_session_catalog_uses_persisted_model_and_modes() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("older.json"),
+            r#"{"model":"future-model","reasoning_effort":"high","pinned_skill":"selfdev"}"#,
+        )
+        .unwrap();
+
+        for listed in [vec![], vec![session_info("older")]] {
+            let merged = merge_persisted_sessions(listed, Some(home.path()));
+            let context = merged[0].context.as_ref().unwrap();
+            assert_eq!(context.model.as_deref(), Some("future-model"));
+            assert_eq!(context.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(context.modes, ["selfdev"]);
+            assert_eq!(context.cache_expires_at_ms, None);
+        }
     }
 
     #[test]
