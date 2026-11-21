@@ -3,6 +3,104 @@ use super::*;
 use gpui::{HighlightStyle, StyledText};
 use std::ops::Range;
 
+pub(super) struct ToolDetail {
+    pub text: String,
+    argument_keys: Vec<Range<usize>>,
+    output: Range<usize>,
+}
+
+impl ToolDetail {
+    pub(super) fn arguments(input: &str) -> Self {
+        let mut text = String::new();
+        let mut argument_keys = Vec::new();
+        if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
+            for (key, value) in arguments {
+                if value.is_null() || !tool_argument_visible(&key) {
+                    continue;
+                }
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                let start = text.len();
+                text.push_str(&key);
+                text.push(':');
+                argument_keys.push(start..text.len());
+                text.push(' ');
+                match value {
+                    serde_json::Value::String(value) => text.push_str(&value),
+                    other => {
+                        text.push_str(&serde_json::to_string_pretty(&other).unwrap_or_default())
+                    }
+                }
+            }
+        } else {
+            text.push_str(input.trim());
+        }
+        Self {
+            text,
+            argument_keys,
+            output: 0..0,
+        }
+    }
+
+    pub(super) fn new(name: &str, input: &str, output: &str, error: Option<&str>) -> Self {
+        let mut detail = Self::arguments(input);
+        if !output.is_empty() {
+            let output = strip_ansi(output);
+            let output = if name == "bg" {
+                output
+                    .strip_prefix("Background task finished.\n\n")
+                    .or_else(|| output.strip_prefix("Background task was already finished.\n\n"))
+                    .unwrap_or(&output)
+                    .to_owned()
+            } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
+                serde_json::to_string_pretty(&json).unwrap_or(output)
+            } else {
+                output
+            };
+            if !detail.text.is_empty() {
+                detail.text.push_str("\n\n");
+            }
+            let start = detail.text.len();
+            detail.text.push_str(&output);
+            detail.output = start..detail.text.len();
+        }
+        if let Some(error) = error {
+            detail.text.push_str("\n\nError\n");
+            detail.text.push_str(&strip_ansi(error));
+        }
+        detail
+    }
+
+    fn highlights(
+        &self,
+        name: &str,
+        input: &str,
+        selection: Option<(Range<usize>, HighlightStyle)>,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let key_style = HighlightStyle {
+            color: Some(crate::theme::to_hsla(Theme::global().TEXT_FAINT)),
+            ..Default::default()
+        };
+        let mut highlights = self
+            .argument_keys
+            .iter()
+            .cloned()
+            .map(|range| (range, key_style))
+            .collect::<Vec<_>>();
+        if !self.output.is_empty() {
+            let offset = self.output.start;
+            highlights.extend(
+                syntax_ranges(name, input, &self.text[self.output.clone()])
+                    .into_iter()
+                    .map(|(range, style)| ((offset + range.start)..(offset + range.end), style)),
+            );
+        }
+        highlights.extend(selection);
+        markdown::flatten_highlights(&highlights)
+    }
+}
+
 fn language(name: &str, input: &str, output: &str) -> Option<String> {
     if matches!(name, "edit" | "apply_patch" | "diff")
         && output.lines().any(|line| {
@@ -52,13 +150,13 @@ pub(super) fn bash_sections(
     input: &str,
     output: &str,
     error: Option<&str>,
-) -> Option<(String, String)> {
+) -> Option<(ToolDetail, String)> {
     if name != "bash" {
         return None;
     }
     let input_value: serde_json::Value = serde_json::from_str(input).ok()?;
     input_value.get("command")?.as_str()?;
-    let mut args = tool_detail(name, input, "");
+    let mut args = ToolDetail::arguments(input);
     let mut result = strip_ansi(output);
     let trimmed = result.trim_end_matches('\n');
     if let Some((before, last)) = trimmed.rsplit_once('\n') {
@@ -78,7 +176,7 @@ pub(super) fn bash_sections(
         result.push_str(&strip_ansi(error));
     }
     if !result.is_empty() {
-        args.push('\n');
+        args.text.push('\n');
     }
     Some((args, result))
 }
@@ -289,78 +387,27 @@ fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, Hi
     markdown::highlight_code(output, &lang).1
 }
 
-fn argument_ranges(name: &str, input: &str, detail: &str) -> Vec<(Range<usize>, HighlightStyle)> {
-    let Ok(serde_json::Value::Object(args)) = serde_json::from_str::<serde_json::Value>(input)
-    else {
-        return Vec::new();
-    };
-    let formatted = tool_detail(name, input, "");
-    if !detail.starts_with(&formatted) {
-        return Vec::new();
-    }
-    let mut offset = 0;
-    let mut ranges = Vec::new();
-    for (key, value) in args
-        .into_iter()
-        .filter(|(key, _)| tool_argument_visible(key))
-    {
-        let value = match value {
-            serde_json::Value::String(text) => text,
-            other => serde_json::to_string_pretty(&other).unwrap_or_default(),
-        };
-        ranges.push((
-            offset..offset + key.len() + 1,
-            HighlightStyle {
-                color: Some(crate::theme::to_hsla(Theme::global().TEXT_FAINT)),
-                ..Default::default()
-            },
-        ));
-        offset += key.len() + 2 + value.len() + 1;
-    }
-    ranges
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "rendering needs tool data and GPUI selection context"
-)]
 pub(super) fn selectable_detail(
     name: &str,
     input: &str,
-    output: &str,
-    detail: String,
+    detail: ToolDetail,
     key: String,
     selection: Entity<TextSelection>,
     window: &Window,
     cx: &App,
 ) -> gpui::AnyElement {
-    let output = strip_ansi(output);
-    let mut highlights = argument_ranges(name, input, &detail);
-    if !output.is_empty()
-        && let Some(offset) = detail.rfind(&output)
-    {
-        highlights.extend(
-            syntax_ranges(name, input, &output)
-                .into_iter()
-                .map(|(range, style)| ((range.start + offset)..(range.end + offset), style)),
-        );
-    }
-    if let Some(highlight) = selection.read(cx).highlight(&key, detail.len()) {
-        highlights.push(highlight);
-    }
+    let selected = selection.read(cx).highlight(&key, detail.text.len());
+    let highlights = detail.highlights(name, input, selected);
     let mut style = window.text_style();
     style.font_family = Theme::global().FONT_MONO.into();
     style.color = crate::theme::to_hsla(Theme::global().CODE_TEXT);
-    let styled = StyledText::new(detail.clone())
-        .with_default_highlights(&style, markdown::flatten_highlights(&highlights));
+    let styled = StyledText::new(detail.text.clone()).with_default_highlights(&style, highlights);
     let layout = styled.layout().clone();
-    text_selection::selectable(selection, key, detail, layout, styled, cx)
+    text_selection::selectable(selection, key, detail.text, layout, styled, cx)
 }
 
 pub(super) fn selectable_arguments(
-    name: &str,
-    input: &str,
-    args: String,
+    args: ToolDetail,
     index: usize,
     selection: Entity<TextSelection>,
     window: &Window,
@@ -370,8 +417,7 @@ pub(super) fn selectable_arguments(
         .debug_selector(|| "tool-argument-table".into())
         .min_w_0()
         .child(selectable_detail(
-            name,
-            input,
+            "",
             "",
             args,
             format!("tool-detail-{index}"),
@@ -393,12 +439,55 @@ mod tests {
     }
     #[test]
     fn argument_keys_are_highlighted_even_with_multiline_values() {
-        let input = r#"{"command":"echo\nhello","task_id":"abc"}"#;
-        let detail = tool_detail("bash", input, "");
-        let ranges = argument_ranges("bash", input, &detail);
-        assert_eq!(&detail[ranges[0].0.clone()], "command:");
-        assert!(!detail.contains("task_id"));
-        assert_eq!(ranges.len(), 1);
+        let input = r#"{"command":"echo привет\n世界","notify":null,"task_id":"abc","timeout":0,"wake":false,"éclair":["🦀"]}"#;
+        let detail = ToolDetail::arguments(input);
+        assert_eq!(
+            detail.text,
+            "command: echo привет\n世界\ntimeout: 0\nwake: false\néclair: [\n  \"🦀\"\n]"
+        );
+        let keys: Vec<_> = detail
+            .highlights("bash", input, None)
+            .into_iter()
+            .map(|(range, _)| &detail.text[range])
+            .collect();
+        assert_eq!(keys, ["command:", "timeout:", "wake:", "éclair:"]);
+    }
+    #[test]
+    fn output_syntax_and_selection_keep_ordered_utf8_ranges() {
+        let input = r#"{"file_path":"é.rs","flag":null,"note":"界"}"#;
+        let output = "@@ -1 +1 @@\n-é\n+界🦀";
+        let detail = ToolDetail::new("edit", input, output, Some(output));
+        let spans = detail.highlights("edit", input, None);
+        let fragments: Vec<_> = spans
+            .iter()
+            .map(|(range, _)| &detail.text[range.clone()])
+            .collect();
+        assert_eq!(fragments, ["file_path:", "note:", "-é\n", "+界🦀"]);
+        let start = detail.text.find("note:").unwrap() + "no".len();
+        let end = detail.text.find("+界").unwrap() + "+界".len();
+        let selection = HighlightStyle {
+            color: Some(crate::theme::to_hsla(Theme::global().TEXT_USER)),
+            ..Default::default()
+        };
+        let spans = detail.highlights("edit", input, Some((start..end, selection)));
+        assert!(
+            spans
+                .windows(2)
+                .all(|pair| pair[0].0.end <= pair[1].0.start)
+        );
+        let fragments: Vec<_> = spans
+            .iter()
+            .map(|(range, _)| &detail.text[range.clone()])
+            .collect();
+        assert_eq!(
+            fragments,
+            ["file_path:", "no", "te: 界\n\n@@ -1 +1 @@\n-é\n+界", "🦀"]
+        );
+        assert_eq!(spans[2].1.color, selection.color);
+        assert_eq!(
+            spans[3].1.color,
+            Some(crate::theme::to_hsla(Theme::global().OK))
+        );
     }
     #[test]
     fn background_parser_retains_fields_and_unfenced_preview() {

@@ -257,11 +257,6 @@ fn segments_with_regions(
                 tool_row_summary(name, input),
             );
             if open.card {
-                let mut detail = tool_detail(name, input, output);
-                if let Some(error) = error {
-                    detail.push_str("\n\nError\n");
-                    detail.push_str(&strip_ansi(error));
-                }
                 let files = if display.diff_display != crate::config::DiffDisplay::Off {
                     diff_review::inline_result_files(
                         name,
@@ -286,7 +281,7 @@ fn segments_with_regions(
                 if let Some((args, result)) =
                     tool_output::bash_sections(name, input, output, error.as_deref())
                 {
-                    push(format!("tool-detail-{index}"), args);
+                    push(format!("tool-detail-{index}"), args.text);
                     push(format!("tool-bash-output-{index}"), result);
                 } else if let Some(result) = tool_output::background_output(name, output) {
                     if let Some(preview) = result.preview {
@@ -328,7 +323,10 @@ fn segments_with_regions(
                         );
                     }
                 } else {
-                    push(format!("tool-detail-{index}"), detail);
+                    push(
+                        format!("tool-detail-{index}"),
+                        tool_output::ToolDetail::new(name, input, output, error.as_deref()).text,
+                    );
                 }
             }
         }

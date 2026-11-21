@@ -5730,19 +5730,7 @@ impl Panel {
                     .or_insert_with(|| cx.focus_handle().tab_stop(true))
                     .clone();
                 let click_focus = row_focus.clone();
-                // Pretty-printing the arguments and stripping ANSI from the
-                // whole output is the costly part of a tool row, and it was
-                // done for every collapsed row on every frame. The detail
-                // always has a header line, so only build it while it shows.
                 let has_detail = true;
-                let detail = (detail_visible && !display.screenshot_mode).then(|| {
-                    let mut detail = tool_detail(name, input, output);
-                    if let Some(error) = error {
-                        detail.push_str("\n\nError\n");
-                        detail.push_str(&strip_ansi(error));
-                    }
-                    detail
-                });
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 let running_veil = (!*done && error.is_none()).then(|| {
@@ -5849,7 +5837,7 @@ impl Panel {
                         error.is_some(),
                         running_veil,
                     ))
-                    .when_some(detail.filter(|_| has_detail), |el, detail| {
+                    .when(detail_visible && !display.screenshot_mode && has_detail, |el| {
                         let scroll = self
                             .swarm_scrolls
                             .borrow_mut()
@@ -6039,7 +6027,7 @@ impl Panel {
                                             .children(supplement)
                                                 .child(if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
                                                     div().flex().flex_col()
-                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .child(div().debug_selector(|| "tool-bash-command".into()).child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
                                                         .into_any_element()
                                                 } else if let Some(result) = tool_output::background_output(name, output) {
@@ -6048,7 +6036,7 @@ impl Panel {
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
                                                 } else if let Some(lines) = tool_output::json_lines(name, output, &call_id, &self.expanded_regions) {
-                                                    let args = tool_detail(name, input, "");
+                                                    let args = tool_output::ToolDetail::arguments(input);
                                                     let mut toggle_index = 0usize;
                                                     let rows = lines.into_iter().enumerate().map(|(line_index, line)| {
                                                         let toggle = line.toggle.map(|key| {
@@ -6062,21 +6050,21 @@ impl Panel {
                                                         div().flex().child(toggle).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-json-{index}-{line_index}"), line.text, window, cx)).into_any_element()
                                                     }).collect::<Vec<_>>();
                                                     div().debug_selector(|| "tool-detail-json".into()).font_family(Theme::global().FONT_MONO).flex().flex_col()
-                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .children(rows)
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
                                                 } else if let Some(markdown) = tool_output::markdown_output(name, output) {
-                                                    let args = tool_detail(name, input, "");
+                                                    let args = tool_output::ToolDetail::arguments(input);
                                                     div().debug_selector(|| "tool-detail-markdown".into())
                                                         .flex().flex_col().gap_2()
-                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(name, input, args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .child(div().font_family(Theme::global().FONT_AI).child(markdown::render(&markdown, tool_output::markdown_row(index), &self.transcript_selection, window, cx)))
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
                                                 } else {
                                                     div().debug_selector(|| "tool-argument-table".into()).child(div().debug_selector({ let selector = tool_output::selector(name, input, output); move || selector.into() }).child(tool_output::selectable_detail(
-                                                        name, input, output, detail,
+                                                        name, input, tool_output::ToolDetail::new(name, input, output, error.as_deref()),
                                                         format!("tool-detail-{index}"),
                                                         self.transcript_selection.clone(), window, cx,
                                                     ))).into_any_element()
@@ -8744,41 +8732,7 @@ fn tool_argument_visible(key: &str) -> bool {
 
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
-    let mut parts = Vec::new();
-    if let Ok(serde_json::Value::Object(arguments)) = serde_json::from_str(input) {
-        let rows = arguments
-            .into_iter()
-            .filter(|(key, value)| tool_argument_visible(key) && !value.is_null())
-            .map(|(key, value)| {
-                let value = match value {
-                    serde_json::Value::String(text) => text,
-                    other => serde_json::to_string_pretty(&other).unwrap_or_default(),
-                };
-                format!("{key}: {value}")
-            })
-            .collect::<Vec<_>>();
-        if !rows.is_empty() {
-            parts.push(rows.join("\n"));
-        }
-    } else if !input.trim().is_empty() {
-        parts.push(input.trim().to_string());
-    }
-    if !output.is_empty() {
-        let output = strip_ansi(output);
-        let output = if name == "bg" {
-            output
-                .strip_prefix("Background task finished.\n\n")
-                .or_else(|| output.strip_prefix("Background task was already finished.\n\n"))
-                .unwrap_or(&output)
-                .to_owned()
-        } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
-            serde_json::to_string_pretty(&json).unwrap_or(output)
-        } else {
-            output
-        };
-        parts.push(output);
-    }
-    parts.join("\n\n")
+    tool_output::ToolDetail::new(name, input, output, None).text
 }
 
 type HistoryToolTimes = HashMap<String, (Option<i64>, Option<i64>, Option<Duration>)>;
@@ -12635,7 +12589,8 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 input: serde_json::json!({
                     "command": "cargo test --workspace --all-targets -- --nocapture \
                                 && cargo clippy --workspace --all-targets \
-                                && cargo build --release"
+                                && cargo build --release",
+                    "notify": null
                 })
                 .to_string(),
                 output: (0..60)
