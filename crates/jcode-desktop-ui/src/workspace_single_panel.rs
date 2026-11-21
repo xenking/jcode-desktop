@@ -40,9 +40,10 @@ impl Workspace {
                     std::env::args_os()
                         .filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"),
                 );
-                if let Some(directory) = self.default_working_dir()
+                if let Some(directory) = self.new_session_directory()
                     && std::path::Path::new(&directory).is_dir()
                 {
+                    command.env("JCODE_DESKTOP_WORKING_DIR", &directory);
                     command.current_dir(directory);
                 }
                 command.spawn().map(|_| ())

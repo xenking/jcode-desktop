@@ -911,6 +911,10 @@ struct LocalDraftModels {
 
 impl gpui::Global for LocalDraftModels {}
 
+struct RememberedDraftModel(crate::config::DraftModelDefaults);
+
+impl gpui::Global for RememberedDraftModel {}
+
 /// `/model` and `/effort` only record a choice, so a draft answers them
 /// without a runtime session.
 pub(crate) fn is_draft_config_command(content: &str) -> bool {
@@ -1188,6 +1192,7 @@ impl Panel {
     pub(crate) fn defer_session(&mut self, cx: &mut Context<Self>) {
         if self.is_pending_session() && self.draft_session == DraftSession::Unrequested {
             self.draft_session = DraftSession::Deferred;
+            self.load_draft_model_defaults(cx);
             if self.has_queued_prompts() {
                 // Sent before the runtime was reachable: the commitment is
                 // already made.
@@ -1199,6 +1204,48 @@ impl Panel {
             self.load_draft_skills(cx);
             cx.notify();
         }
+    }
+
+    fn load_draft_model_defaults(&mut self, cx: &mut Context<Self>) {
+        if self.draft_config.model.is_some() || self.draft_config.effort.is_some() {
+            return;
+        }
+        let defaults = cx
+            .try_global::<RememberedDraftModel>()
+            .map(|defaults| defaults.0.clone())
+            .unwrap_or_else(|| {
+                #[cfg(not(test))]
+                {
+                    crate::config::get().models.draft_defaults.clone()
+                }
+                #[cfg(test)]
+                crate::config::DraftModelDefaults::default()
+            });
+        if let Some(model) = defaults.model {
+            self.pick_draft_model(&model, cx);
+        }
+        self.draft_config.effort = defaults.effort.clone();
+        self.reasoning_effort = defaults.effort;
+        self.sync_effort_menu(cx);
+    }
+
+    fn remember_draft_model(&mut self, cx: &mut Context<Self>) {
+        if !self.session_deferred() {
+            return;
+        }
+        let defaults = crate::config::DraftModelDefaults {
+            model: self
+                .draft_config
+                .model
+                .clone()
+                .or_else(|| self.model.clone()),
+            effort: self.draft_config.effort.clone(),
+        };
+        if let Err(error) = crate::config::persist_draft_model_defaults(&defaults) {
+            self.effort_notice(format!("Could not save new session defaults: {error}"), cx);
+            return;
+        }
+        cx.set_global(RememberedDraftModel(defaults));
     }
 
     /// The workspace sent, or is about to send, this draft's create request.
@@ -1271,6 +1318,15 @@ impl Panel {
     /// exists.
     pub(super) fn pick_draft_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.draft_config.model = Some(model.to_string());
+        if self
+            .draft_config
+            .effort
+            .as_deref()
+            .is_some_and(|level| !crate::effort::ladder(None, Some(model)).contains(&level))
+        {
+            self.draft_config.effort = None;
+            self.reasoning_effort = None;
+        }
         // The runtime reports the bare id once it serves the model. Show the
         // same name now, without the picker's route prefix.
         let shown = match model.split_once(':') {
@@ -1289,6 +1345,7 @@ impl Panel {
     /// Send the draft's picked model and effort to its new session, ahead of
     /// the prompts queued behind them.
     fn apply_draft_config(&mut self, cx: &mut Context<Self>) {
+        let ladder = self.effort_ladder();
         let DraftConfig {
             model,
             effort,
@@ -1302,7 +1359,7 @@ impl Panel {
         }
         if let Some(effort) = effort {
             self.reasoning_effort = None;
-            self.request_effort(&effort, cx);
+            self.request_effort_on(&ladder, &effort, cx);
         }
         for mode in modes {
             self.bridge.send(Command::RuntimeCommand {
@@ -2770,6 +2827,7 @@ impl Panel {
                 self.switch_model_with_effort(model, &effort.to_ascii_lowercase(), cx);
             } else if self.is_pending_session() {
                 self.pick_draft_model(model, cx);
+                self.remember_draft_model(cx);
             } else {
                 self.bridge.send(Command::SetModel {
                     session_id: self.session_id.clone(),
@@ -3092,6 +3150,7 @@ impl Panel {
         self.select_background_job(None, cx);
         let settings = self.input.read(cx).picker_settings();
         let models = self.available_models.clone();
+        let deferred = self.session_deferred();
         let submit = cx.weak_entity();
         let cancel = cx.weak_entity();
         let outside = cx.weak_entity();
@@ -3144,6 +3203,7 @@ impl Panel {
                 });
             });
             input.apply_picker_settings(settings, cx);
+            input.set_pending_session(deferred, cx);
             input.start_picker_search(
                 match kind {
                     PickerKind::Model => "/model",

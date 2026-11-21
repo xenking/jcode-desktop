@@ -210,7 +210,7 @@ impl Panel {
                         // ring beside it, filled to the rung and heat-tinted.
                         // An unknown value keeps its word.
                         let mark = crate::effort_icon::icon(&effort, BAR_ICON);
-                        let word = mark.is_none().then(|| {
+                        let word = (mark.is_none() || self.session_deferred()).then(|| {
                             div().min_w_0().truncate().child(if effort == "default" {
                                 "Effort".to_owned()
                             } else {
@@ -221,6 +221,7 @@ impl Panel {
                             .relative()
                             .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
+                            .gap_1()
                             .px_1p5()
                             .children(mark)
                             .children(word)

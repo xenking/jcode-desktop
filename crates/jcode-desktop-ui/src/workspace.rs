@@ -1638,7 +1638,10 @@ impl Workspace {
                     .remotes
                     .default_host
                     .is_none()
-                    .then(|| self.default_working_dir())
+                    .then(|| {
+                        launch_directory_override(&self.launch)
+                            .or_else(|| self.new_session_directory())
+                    })
                     .flatten(),
                 status: "starting".into(),
                 transcript_bytes: None,
@@ -3939,17 +3942,10 @@ impl Workspace {
     fn new_panel_in_pinned_directory(
         &mut self,
         _: &NewPanelInPinnedDirectory,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.tutorial_cue("Enter", "New session", "new", cx);
-        self.learned("new_panel", cx);
-        self.open_default_draft(
-            self.pinned_working_dir
-                .clone()
-                .or_else(|| self.default_working_dir()),
-            cx,
-        );
+        self.new_panel(&NewPanel, window, cx);
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
@@ -4640,7 +4636,7 @@ impl Workspace {
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
     fn open_new_session(&mut self, cx: &mut Context<Self>) {
-        self.open_default_draft(self.default_working_dir(), cx);
+        self.open_default_draft(self.new_session_directory(), cx);
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
@@ -9901,9 +9897,13 @@ fn default_working_dir() -> Option<String> {
 /// `JCODE_DESKTOP_WORKING_DIR` from the launch that opened a window, so each
 /// window of a shared host keeps the directory its shortcut asked for.
 fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
+    launch_directory_override(launch).or_else(crate::platform_dirs::home_string)
+}
+
+fn launch_directory_override(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
     default_working_dir_from(
         launch.var("JCODE_DESKTOP_WORKING_DIR").map(str::to_owned),
-        crate::platform_dirs::home_string(),
+        None,
         Path::is_dir,
     )
 }
@@ -9911,6 +9911,14 @@ fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String
 impl Workspace {
     fn default_working_dir(&self) -> Option<String> {
         launch_working_dir(&self.launch)
+    }
+
+    fn new_session_directory(&self) -> Option<String> {
+        self.pinned_working_dir
+            .as_deref()
+            .filter(|dir| Path::new(dir).is_absolute() && Path::new(dir).is_dir())
+            .map(str::to_owned)
+            .or_else(|| self.default_working_dir())
     }
 }
 
@@ -13620,7 +13628,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn session_shortcuts_use_home_and_a_directory_pinned_once(cx: &mut gpui::TestAppContext) {
+    fn session_shortcuts_use_the_directory_pinned_once(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::bind_workspace_keys(cx);
             crate::input::bind_keys(cx);
@@ -13672,9 +13680,9 @@ mod tests {
                 "ctrl-alt-enter",
                 Some(favorite.to_string_lossy().into_owned()),
             ),
-            ("super-n", default_working_dir()),
+            ("super-n", Some(favorite.to_string_lossy().into_owned())),
             ("super-;", Some(favorite.to_string_lossy().into_owned())),
-            ("super-'", default_working_dir()),
+            ("super-'", Some(favorite.to_string_lossy().into_owned())),
         ] {
             vcx.simulate_keystrokes(&platform_chord(chord));
             vcx.run_until_parked();

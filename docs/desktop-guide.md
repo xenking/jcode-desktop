@@ -30,11 +30,8 @@ These shortcuts use the default machine selected under **Machines**. When the
 default is remote, new session panels start in that machine's home directory.
 The local directory behavior below applies when **This computer** is the default.
 
-- **Super+Enter** opens a new session panel in your fixed most-used directory,
-  just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. Hints and the
-  tutorial teach Enter. Super+N still opens a session in home.
-- **Super+;** opens a session in your fixed most-used directory.
-- **Super+'** opens a session in your home directory.
+- **Super+N**, **Super+Enter**, **Ctrl+Alt+Enter**, **Super+;**, **Super+'** and
+  the tab bar **+** all open a new session using the selected default directory.
 - **Super+T** opens a terminal panel.
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
@@ -114,11 +111,10 @@ remote_hosts = ["desktop", "user@build-server"]
 
 For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead.
 
-### Local pinned directory
+### Defaults for new local sessions
 
-Use Cmd instead of Super on macOS. Click **Default directory** at the top left
-to open a regular, focusable panel for the local directory used by
-**Super+Enter** and **Super+;**. Switch between it and chats with the usual panel
+Use Cmd instead of Super on macOS. In **New session destination**, choose
+**Default directory on this computer**. Switch between the picker and chats with the usual panel
 shortcuts or tabs. Clicking the control again returns to the same picker, keeping
 your unfinished search. The panel can also be moved, resized, or closed like a chat.
 Click a directory in the usage-ranked list to select it immediately, or browse
@@ -131,7 +127,7 @@ of changing this preference.
 The directory is saved as `pinned_working_dir` in `[desktop.workspace]` and stays
 fixed across usage changes, reloads, and restarts. If you have not selected one,
 it is chosen once from usable session history. Until that history arrives,
-Super+Enter and Super+; use home without pinning that fallback. You can also edit
+new sessions use home without pinning that fallback. You can also edit
 the setting directly, or remove it and restart to choose from history again.
 For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead. For example:
 
@@ -139,6 +135,12 @@ For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead. For example:
 [desktop.workspace]
 pinned_working_dir = "/path/to/your/project"
 ```
+
+Select a **Model** and **Effort** on a new local draft to set the defaults for
+future local drafts, including after restarting Desktop. Clicking an effort
+level in the model picker selects both at once. The current draft shows your
+choices immediately and applies them with its first prompt. **Mode** applies
+to that draft only. Changes to a running session do not change these defaults.
 
 Global Firefox bindings can consume Super+Enter before Desktop receives it.
 See [global shortcut compatibility](global-focus-shortcuts.md) for the

@@ -197,6 +197,10 @@ class Instance:
                        JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE="1")
         if self.manifest["fixture"] == "draft-session":
             (self.profile / "00-sample-project").mkdir()
+            pinned = self.profile / "99-pinned-project"
+            pinned.mkdir()
+            with (self.profile / "desktop.toml").open("a") as config:
+                config.write(f"pinned_working_dir = {json.dumps(str(pinned))}\n")
             modes = []
         if self.manifest["fixture"] == "orb-todos":
             modes = []
@@ -712,8 +716,22 @@ class Instance:
                 or after["panel"]["working_dir"] != str(project)):
             raise RuntimeError(f"promoted draft not in the expected panel and sidebar: {after}")
         save(self.run / "draft-session-after.json", after)
+        self.drive("click", {"selector": "tab-new-session"})
+        listing = self.drive("list")
+        draft_ids = [p["session"] for row in listing["navigation"]["rows"] for p in row["panels"]
+                     if p["session"].startswith("startup://draft/")]
+        if len(draft_ids) != 1:
+            raise RuntimeError(f"tab plus did not create one new draft: {draft_ids}")
+        self.target["session_id"] = draft_ids[0]
+        new_draft = self.drive("state")
+        pinned = self.profile / "99-pinned-project"
+        if (new_draft["panel"]["working_dir"] != str(pinned)
+                or new_draft["panel"]["model"] != configured["panel"]["model"]
+                or new_draft["panel"]["reasoning_effort"] != configured["panel"]["reasoning_effort"]):
+            raise RuntimeError(f"tab plus lost the preferences on the new draft: {new_draft}")
+        save(self.run / "draft-session-next.json", new_draft)
         report = {"passed": True, "scope": "native UI with offline catalog and create reply",
-                  "working_dir": str(project), "model": configured["panel"]["model"],
+                  "working_dir": str(project), "new_draft_directory": str(pinned), "model": configured["panel"]["model"],
                   "effort": configured["panel"]["reasoning_effort"], "sidebar": [sid], "screenshot": photo}
         save(self.run / "draft-session-proof.json", report)
         return report

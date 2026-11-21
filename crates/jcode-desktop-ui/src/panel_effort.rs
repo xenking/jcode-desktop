@@ -20,6 +20,9 @@ pub(super) struct PendingEffort {
 impl Panel {
     /// Levels the serving model accepts.
     pub(super) fn effort_ladder(&self) -> Vec<&'static str> {
+        if let Some(model) = &self.draft_config.model {
+            return effort::ladder(None, Some(model));
+        }
         effort::ladder(self.provider.as_deref(), self.model.as_deref())
     }
 
@@ -63,7 +66,7 @@ impl Panel {
         self.request_effort_on(&ladder, level, cx);
     }
 
-    fn request_effort_on(
+    pub(super) fn request_effort_on(
         &mut self,
         ladder: &[&'static str],
         level: &str,
@@ -91,6 +94,7 @@ impl Panel {
             // prompt.
             self.draft_config.effort = Some(level.to_string());
             self.reasoning_effort = Some(level.to_string());
+            self.remember_draft_model(cx);
             self.sync_effort_menu(cx);
             cx.notify();
             return true;

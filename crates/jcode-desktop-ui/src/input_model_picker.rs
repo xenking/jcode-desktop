@@ -637,8 +637,11 @@ impl PromptInput {
             return None;
         }
         let chosen = self.row_effort(spec);
+        let commit_draft_choice = self.pending_session && self.picker_prefix == Some("/model");
         let marks = ladder.into_iter().enumerate().map(|(rung, effort)| {
             let on = chosen == Some(effort);
+            let command = commit_draft_choice
+                .then(|| format!("/model {spec}{}{effort}", model_stage::EFFORT_FLAG));
             div()
                 .id(("model-row-effort", index * 16 + rung))
                 .debug_selector(move || format!("model-row-effort-{index}-{effort}"))
@@ -656,9 +659,13 @@ impl PromptInput {
                 .when(on, |pill| pill.child(effort_row_label(effort)))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.set_picker_effort(effort, cx);
+                        if let Some(command) = &command {
+                            this.submit_command(command.clone(), false, window, cx);
+                        } else {
+                            this.set_picker_effort(effort, cx);
+                        }
                     }),
                 )
         });

@@ -100,6 +100,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                 || matches!(
                     selector,
                     "composer-location"
+                        | "tab-new-session"
                         | "folder-picker-entry-0"
                         | "folder-picker-open"
                         | "panel-model"

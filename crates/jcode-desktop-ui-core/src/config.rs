@@ -24,6 +24,14 @@ pub struct ModelsConfig {
     /// Route specs (`openai-oauth:gpt-5.6-sol`) hidden from the Desktop model
     /// picker. The "Manage models" view lists them again so they can be shown.
     pub hidden: Vec<String>,
+    pub draft_defaults: DraftModelDefaults,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DraftModelDefaults {
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// Inline composer autocomplete (ghost text, Tab accepts).
@@ -107,7 +115,7 @@ pub enum LayoutMode {
 pub struct WorkspaceConfig {
     /// The optional Jcode account welcome screen was completed or skipped.
     pub account_sign_in_handled: bool,
-    /// Selected once from session history, then fixed for Super+Enter / Super+;.
+    /// Default directory for new local Desktop sessions.
     pub pinned_working_dir: Option<String>,
     /// Default SSH target. Missing or empty means local sessions.
     pub default_remote_host: Option<String>,
@@ -479,6 +487,36 @@ fn persist_pinned_working_dir_at(
         "workspace",
         "pinned_working_dir",
         &toml::Value::String(directory.into()).to_string(),
+    )
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn persist_draft_model_defaults(defaults: &DraftModelDefaults) -> std::io::Result<()> {
+    persist_draft_model_defaults_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        defaults,
+    )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn persist_draft_model_defaults(_defaults: &DraftModelDefaults) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(any(test, not(feature = "test-support")))]
+fn persist_draft_model_defaults_at(
+    path: &std::path::Path,
+    standalone: bool,
+    defaults: &DraftModelDefaults,
+) -> std::io::Result<()> {
+    let value = toml::Value::try_from(defaults).expect("draft defaults serialize");
+    persist_value_at(
+        path,
+        standalone,
+        "models",
+        "draft_defaults",
+        &value.to_string(),
     )
 }
 
@@ -1246,6 +1284,29 @@ mod tests {
                 Some(directory)
             );
             assert_eq!(config.appearance.theme, "neutral-light");
+        }
+    }
+
+    #[test]
+    fn draft_model_defaults_survive_reload_in_shared_and_standalone_configs() {
+        for standalone in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.toml");
+            let section = if standalone { "models" } else { "desktop.models" };
+            fs::write(&path, format!("[{section}]\nhidden = [\"example\"] # keep\n")).unwrap();
+            let mut defaults = DraftModelDefaults {
+                model: Some("claude-oauth:claude-fable-5-2".into()),
+                effort: Some("low".into()),
+            };
+            for effort in [Some("low".into()), None] {
+                defaults.effort = effort;
+                persist_draft_model_defaults_at(&path, standalone, &defaults).unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                let config = parse(&text, standalone).unwrap();
+                assert_eq!(config.models.draft_defaults, defaults);
+                assert_eq!(config.models.hidden, ["example"]);
+                assert!(text.contains("# keep"));
+            }
         }
     }
 

@@ -1249,6 +1249,7 @@ impl Workspace {
                 div()
                     .id("tab-new-session")
                     .debug_selector(|| "tab-new-session".into())
+                    .children(crate::fixture_control_targets::marker(|| "tab-new-session".into(), || None))
                     .absolute()
                     .right(px(TAB_CLOSE_WIDTH))
                     .top_0()
