@@ -49,9 +49,18 @@ fn rewind_uses_transcript_rows_and_returns_focus_to_composer(cx: &mut gpui::Test
     assert!(vcx.debug_bounds("rewind-selected-0").is_some());
     vcx.simulate_keystrokes("right");
     assert!(vcx.debug_bounds("rewind-selected-2").is_some());
+    // A click or a focus restoration may return focus to the composer while
+    // rewind is still active. Its Escape binding must not win.
+    vcx.update(|window, cx| {
+        let focus = panel.read(cx).input_focus_handle(cx);
+        window.focus(&focus, cx);
+    });
     vcx.simulate_keystrokes("escape");
     assert!(vcx.debug_bounds("rewind-keys").is_none());
     assert!(commands.try_recv().is_err());
+    vcx.simulate_keystrokes("escape");
+    assert!(commands.try_recv().is_err());
+    assert!(vcx.debug_bounds("response-stop-notice").is_none());
     vcx.update(|window, cx| {
         assert!(panel.read(cx).input_focus_handle(cx).is_focused(window));
     });
@@ -74,4 +83,105 @@ fn rewind_uses_transcript_rows_and_returns_focus_to_composer(cx: &mut gpui::Test
     vcx.update(|window, cx| {
         assert!(panel.read(cx).input_focus_handle(cx).is_focused(window));
     });
+}
+
+#[gpui::test]
+fn rewind_centers_messages_and_crosses_history_pages(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));
+    let message = |role: &str, content: String| {
+        serde_json::from_value(serde_json::json!({"role": role, "content": content})).unwrap()
+    };
+    panel.update(vcx, |panel, cx| {
+        panel.load_bounded_history(
+            crate::harness::BoundedHistoryPage {
+                messages: (0..100)
+                    .map(|i| match i {
+                        0 => message("user", "First loaded prompt".into()),
+                        98 => message("assistant", "Long paragraph.\n\n".repeat(100)),
+                        _ => message("assistant", format!("Message {i}")),
+                    })
+                    .collect(),
+                images: vec![],
+                before: Some("older".into()),
+                prompt_offset: None,
+            },
+            cx,
+        );
+        panel.start_rewind(cx);
+    });
+    let assert_centered = |vcx: &mut gpui::VisualTestContext, selector| {
+        for _ in 0..3 {
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+        }
+        let row = vcx.debug_bounds(selector).expect(selector);
+        let (viewport, dock) = panel.read_with(vcx, |panel, _| {
+            (
+                panel.transcript_list.viewport_bounds(),
+                panel.transcript_end_pad,
+            )
+        });
+        let center = viewport.center().y - px(dock / 2.);
+        assert!(
+            (f32::from(row.center().y - center)).abs() <= 2.,
+            "{selector}: {row:?}, viewport: {viewport:?}, dock: {dock}"
+        );
+    };
+    assert_centered(vcx, "rewind-selected-99");
+    vcx.simulate_keystrokes("up");
+    for _ in 0..3 {
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+    }
+    let long = vcx.debug_bounds("rewind-selected-98").unwrap();
+    let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    assert!(long.size.height > viewport.size.height);
+    assert!((f32::from(long.top() - viewport.top())).abs() <= 2.);
+    assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+    vcx.simulate_keystrokes("down");
+    assert_centered(vcx, "rewind-selected-99");
+    vcx.simulate_keystrokes("left");
+    assert_centered(vcx, "rewind-selected-0");
+    assert!(
+        !commands
+            .try_iter()
+            .any(|command| matches!(command, Command::GetHistoryPage { .. }))
+    );
+    vcx.simulate_keystrokes("left");
+    assert!(commands.try_iter().any(|command| matches!(
+        command,
+        Command::GetHistoryPage { session_id, before: Some(before) }
+            if session_id == "rewind" && before == "older"
+    )));
+    panel.update(vcx, |panel, cx| {
+        panel.load_bounded_history_page(
+            Ok(crate::harness::BoundedHistoryPage {
+                messages: vec![message("user", "Older prompt".into())],
+                images: vec![],
+                before: None,
+                prompt_offset: Some(0),
+            }),
+            cx,
+        );
+    });
+    assert_centered(vcx, "rewind-selected-0");
+}
+
+#[gpui::test]
+fn escape_does_not_request_a_stop_when_the_panel_is_not_running(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("idle".into(), None, None, bridge, cx));
+    vcx.update(|window, cx| {
+        Panel::connect_input(&panel, cx);
+        window.focus(&panel.read(cx).input_focus_handle(cx), cx);
+    });
+    panel.update(vcx, |panel, cx| {
+        // A transport disconnect is not an indication that a turn is active.
+        panel.connection_lost("disconnected", cx);
+    });
+    vcx.simulate_keystrokes("escape");
+    assert!(commands.try_recv().is_err());
+    assert!(vcx.debug_bounds("response-stop-notice").is_none());
 }
