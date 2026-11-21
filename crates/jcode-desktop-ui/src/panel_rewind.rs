@@ -1,16 +1,27 @@
 use super::*;
+use gpui::Pixels;
 use jcode_sdk::api::{RewindAnchor, RewindMessageKey};
 
 pub(super) struct Selection {
     selected: usize,
     reveal: bool,
+    inset: Pixels,
+    older_target: Option<Target>,
     original_scroll: gpui::ListOffset,
     followed_tail: bool,
 }
 
-fn is_target(item: &Item) -> bool {
-    prompt::is_pinnable_prompt(item)
-        || matches!(item, Item::Assistant(text) if !text.trim().is_empty())
+#[derive(Clone, Copy)]
+enum Target {
+    Message,
+    Prompt,
+}
+
+impl Target {
+    fn matches(self, item: &Item) -> bool {
+        prompt::is_pinnable_prompt(item)
+            || matches!((self, item), (Self::Message, Item::Assistant(text)) if !text.trim().is_empty())
+    }
 }
 
 impl Panel {
@@ -25,10 +36,16 @@ impl Panel {
             self.items.push(Item::Error(
                 "Wait for the current turn before rewinding.".into(),
             ));
-        } else if let Some(selected) = self.items.iter().rposition(is_target) {
+        } else if let Some(selected) = self
+            .items
+            .iter()
+            .rposition(|item| Target::Message.matches(item))
+        {
             self.rewind_selection = Some(Selection {
                 selected,
                 reveal: true,
+                inset: px(0.),
+                older_target: None,
                 original_scroll: self.transcript_list.logical_scroll_top(),
                 followed_tail: self.stick_to_bottom,
             });
@@ -46,6 +63,7 @@ impl Panel {
         if let Some(selection) = &mut self.rewind_selection {
             selection.selected = index;
             selection.reveal = true;
+            selection.older_target = None;
             self.cancel_transcript_momentum();
             cx.notify();
         }
@@ -55,34 +73,106 @@ impl Panel {
         if let Some(selection) = &mut self.rewind_selection {
             selection.selected += items;
             selection.original_scroll.item_ix += rows;
+            if let Some(target) = selection.older_target {
+                if let Some(next) = self.items[..items]
+                    .iter()
+                    .rposition(|item| target.matches(item))
+                {
+                    selection.selected = next;
+                    selection.reveal = true;
+                    selection.older_target = None;
+                } else {
+                    self.request_older_history();
+                }
+            }
+        }
+    }
+
+    fn remeasure_rewind_edges(&self) {
+        let count = self.transcript_list.item_count();
+        if count > 0 {
+            self.transcript_list.remeasure_items(0..1);
+        }
+        if count > 1 {
+            self.transcript_list.remeasure_items(count - 1..count);
         }
     }
 
     pub(super) fn reveal_rewind_selection(
         &mut self,
         rows: &[TranscriptRenderRow],
+        dock_pad: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if let Some(selection) = &mut self.rewind_selection
-            && std::mem::take(&mut selection.reveal)
-            && let Some(item_ix) = rows.iter().position(|row| row.index == selection.selected)
-        {
-            window.focus(&self.focus_handle, cx);
-            let viewport = self.transcript_list.viewport_bounds();
-            if !self
-                .transcript_list
-                .bounds_for_item(item_ix)
-                .is_some_and(|bounds| {
-                    bounds.origin.y >= viewport.origin.y && bounds.origin.y < viewport.bottom()
-                })
-            {
-                self.transcript_list.scroll_to(gpui::ListOffset {
-                    item_ix,
-                    offset_in_item: px(0.),
-                });
+    ) -> Pixels {
+        let Some(selection) = &mut self.rewind_selection else {
+            return px(0.);
+        };
+        // Room to center the first and last messages without overscrolling the list.
+        let inset = window.viewport_size().height / 2.;
+        let changed = selection.inset != inset;
+        if changed {
+            if selection.inset == px(0.) {
+                window.focus(&self.focus_handle, cx);
             }
+            selection.inset = inset;
+            selection.reveal = true;
         }
+        if !selection.reveal {
+            return inset;
+        }
+        let Some(item_ix) = rows.iter().position(|row| row.index == selection.selected) else {
+            return inset;
+        };
+        if changed {
+            self.remeasure_rewind_edges();
+        }
+        let viewport = self.transcript_list.viewport_bounds();
+        if !changed && let Some(bounds) = self.transcript_list.bounds_for_item(item_ix) {
+            let leading = if item_ix == 0 { inset } else { px(0.) };
+            let trailing = if item_ix + 1 == self.transcript_list.item_count() {
+                inset + px(dock_pad)
+            } else {
+                px(0.)
+            };
+            let visible_height = (viewport.size.height - px(dock_pad)).max(px(1.));
+            let height = bounds.size.height - leading - trailing;
+            let desired_top = viewport.top() + ((visible_height - height) / 2.).max(px(0.));
+            self.transcript_list
+                .scroll_by(bounds.top() + leading - desired_top);
+            if let Some(selection) = &mut self.rewind_selection {
+                selection.reveal = false;
+            }
+        } else {
+            // Offscreen rows may not have been measured by the virtual list yet.
+            self.transcript_list.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: px(0.),
+            });
+            window.request_animation_frame();
+        }
+        inset
+    }
+
+    pub(super) fn finish_rewind(
+        &mut self,
+        confirm: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(selection) = self.rewind_selection.take() else {
+            return false;
+        };
+        self.remeasure_rewind_edges();
+        if confirm {
+            self.confirm_rewind(selection.selected);
+        } else {
+            self.stick_to_bottom = selection.followed_tail;
+            self.transcript_list.scroll_to(selection.original_scroll);
+        }
+        self.focus_input(window, cx);
+        cx.notify();
+        true
     }
 
     pub(super) fn handle_rewind_key(
@@ -97,35 +187,34 @@ impl Panel {
         let selected = selection.selected;
         match event.keystroke.key.as_str() {
             "escape" | "enter" => {
-                let selection = self.rewind_selection.take().expect("active selection");
-                if event.keystroke.key == "enter" {
-                    self.confirm_rewind(selected);
-                } else {
-                    self.stick_to_bottom = selection.followed_tail;
-                    self.transcript_list.scroll_to(selection.original_scroll);
-                }
-                self.focus_input(window, cx);
-                cx.notify();
+                self.finish_rewind(event.keystroke.key == "enter", window, cx);
             }
             key @ ("up" | "down" | "left" | "right") => {
-                let target = |item: &Item| {
-                    is_target(item)
-                        && (!matches!(key, "left" | "right") || matches!(item, Item::User(_)))
+                let target = if matches!(key, "left" | "right") {
+                    Target::Prompt
+                } else {
+                    Target::Message
                 };
+                let older = matches!(key, "up" | "left");
                 let selected = selected.min(self.items.len());
-                let next = if matches!(key, "up" | "left") {
-                    self.items[..selected].iter().rposition(target)
+                let next = if older {
+                    self.items[..selected]
+                        .iter()
+                        .rposition(|item| target.matches(item))
                 } else {
                     self.items
                         .iter()
                         .enumerate()
                         .skip(selected + 1)
-                        .find_map(|(index, item)| target(item).then_some(index))
+                        .find_map(|(index, item)| target.matches(item).then_some(index))
                 };
                 if let Some(index) = next {
                     self.choose_rewind_row(index, cx);
-                } else if matches!(key, "up" | "left") {
-                    self.request_older_history();
+                } else if let Some(selection) = &mut self.rewind_selection {
+                    selection.older_target = older.then_some(target);
+                    if older {
+                        self.request_older_history();
+                    }
                 }
             }
             _ => {}
@@ -201,7 +290,7 @@ impl Panel {
         let Some(selection) = &self.rewind_selection else {
             return row.into_any_element();
         };
-        if !is_target(item) {
+        if !Target::Message.matches(item) {
             return row.into_any_element();
         }
         row.id(("rewind-row", index))

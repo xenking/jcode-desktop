@@ -439,6 +439,9 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        if self.rewind_selection.is_some() {
+            return None;
+        }
         let index = self.offscreen_prompt?;
         let item = self.items.get(index)?.clone();
         if !is_pinnable_prompt(&item) {

@@ -2598,11 +2598,8 @@ impl Panel {
                                 this.close_model_picker(cx);
                                 handled = true;
                             } else if !this.is_pending_session()
-                                && (this.status != "idle"
+                                && (this.activity_active()
                                     || this.has_unconfirmed_stop()
-                                    || !this.connection_phase.is_empty()
-                                    || !this.streaming_text.is_empty()
-                                    || !this.streaming_reasoning.is_empty()
                                     || !this.pending_users.is_empty())
                             {
                                 this.prompt_queue.paused = true;
@@ -2775,6 +2772,10 @@ impl Panel {
         if self.handle_skill_invocation(trimmed, cx) {
             return true;
         }
+        if trimmed == "/rewind" {
+            self.start_rewind(cx);
+            return true;
+        }
         if self.handle_special_command(trimmed, cx)
             || self.handle_recovery_command(trimmed, cx)
             || self.handle_runtime_command(trimmed, cx)
@@ -2871,9 +2872,6 @@ impl Panel {
             self.request_session_saved(true, label);
         } else if trimmed == "/unsave" {
             self.request_session_saved(false, None);
-        } else if trimmed == "/rewind" {
-            self.start_rewind(cx);
-            return true;
         } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
             if target == "undo" {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
@@ -6699,7 +6697,9 @@ impl Render for Panel {
         // While the welcome viewport still grows with its content, following
         // the tail would scroll a line up for one frame and then snap back
         // when the composer moves down. Hold the top until the space fills.
-        if startup_preview || self.startup_growing() {
+        if self.rewind_selection.is_some() {
+            self.tail_glide.reset();
+        } else if startup_preview || self.startup_growing() {
             self.tail_glide.reset();
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
@@ -6708,7 +6708,7 @@ impl Render for Panel {
         } else {
             self.tail_glide.reset();
         }
-        self.reveal_rewind_selection(&rows, window, cx);
+        let rewind_inset = self.reveal_rewind_selection(&rows, dock_pad, window, cx);
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -6796,7 +6796,7 @@ impl Render for Panel {
                             if row_index == list_rows.len() {
                                 return div()
                                     .relative()
-                                    .pb(px(end_pad))
+                                    .pb(px(end_pad) + rewind_inset)
                                     .child(steady_activity::steady_row(
                                         panel.read(cx).render_transcript_activity(),
                                         steady_cell.clone(),
@@ -6852,7 +6852,11 @@ impl Render for Panel {
                                     .relative()
                                     .px_3()
                                     .pt(px(top_padding))
-                                    .pb(px(end_pad))
+                                    .pb(if rewind_inset > px(0.) {
+                                        px(0.)
+                                    } else {
+                                        px(end_pad)
+                                    })
                                     .map(|el| match display.alignment {
                                         crate::config::TextAlignment::Left => el.text_left(),
                                         crate::config::TextAlignment::Center => el.text_center(),
@@ -6903,11 +6907,26 @@ impl Render for Panel {
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
                                     ));
-                                match &row.source {
+                                let rendered = match &row.source {
                                     TranscriptRowSource::Settled(_) => {
                                         panel.render_rewind_row(row.index, item, padded, cx)
                                     }
                                     TranscriptRowSource::Owned(_) => padded.into_any_element(),
+                                };
+                                if rewind_inset > px(0.)
+                                    && (row_index == 0 || row_index + 1 == row_count)
+                                {
+                                    div()
+                                        .pt(if row_index == 0 { rewind_inset } else { px(0.) })
+                                        .pb(if row_index + 1 == row_count {
+                                            rewind_inset + px(end_pad)
+                                        } else {
+                                            px(0.)
+                                        })
+                                        .child(rendered)
+                                        .into_any_element()
+                                } else {
+                                    rendered
                                 }
                             })
                         },
@@ -6990,7 +7009,9 @@ impl Render for Panel {
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
-                if this.queue_editor_focused(window, cx) {
+                if this.finish_rewind(false, window, cx) {
+                    cx.stop_propagation();
+                } else if this.queue_editor_focused(window, cx) {
                     // Esc first closes an attachment preview the editor opened.
                     if this.queue_editor_has_preview(cx) {
                         cx.propagate();
