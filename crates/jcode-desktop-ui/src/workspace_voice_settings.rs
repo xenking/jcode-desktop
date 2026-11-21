@@ -79,21 +79,18 @@ fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
 /// Install the SuperWhisper bridge next to the jcode config and return the
 /// command line to store in `[dictation] command`.
 fn install_superwhisper_bridge() -> std::io::Result<String> {
-    let dir = jcode_desktop_model::platform_dirs::jcode_home()
-        .ok_or_else(|| std::io::Error::other("no jcode home"))?
-        .join("bin");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("superwhisper-dictate.sh");
+    let path = crate::panel::voice::superwhisper_bridge_path()
+        .ok_or_else(|| std::io::Error::other("no jcode home"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(&path, SUPERWHISPER_SCRIPT)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     }
-    Ok(format!(
-        "'{}'",
-        path.display().to_string().replace('\'', "'\\''")
-    ))
+    Ok(crate::panel::voice::bridge_command(&path))
 }
 
 fn superwhisper_installed() -> bool {
@@ -216,9 +213,7 @@ impl Workspace {
                     && self.save_dictation("backend", "command", cx)
                 {
                     self.voice_settings = VoiceSettings::default();
-                    self.status =
-                        "Voice uses SuperWhisper. Stop recording with SuperWhisper's shortcut."
-                            .into();
+                    self.status = "Voice uses SuperWhisper. Use Stop voice to finish recording.".into();
                 }
             }
             Err(error) => self.status = format!("Could not install SuperWhisper bridge: {error}"),

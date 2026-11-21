@@ -1488,6 +1488,12 @@ impl Panel {
                 let _ = panel.update(cx, |panel, cx| panel.seed_mode_picker_fixture(cx));
             });
         }
+        if session_id == "screenshot-fixture" && crate::fixture_control_targets::voice_recording() {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| panel.seed_inline_voice_fixture(cx));
+            });
+        }
         if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
             let panel = cx.weak_entity();
             cx.defer(move |cx| {
@@ -12316,7 +12322,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && matches!(
             fixture.as_deref(),
-            Some("empty" | "compaction" | "mode-picker" | "draft-session")
+            Some("empty" | "compaction" | "mode-picker" | "draft-session" | "voice-rt")
         )
     {
         return Vec::new();

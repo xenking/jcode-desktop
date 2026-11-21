@@ -274,7 +274,7 @@ class Instance:
                         state = self.native({"action": "state", "target": self.target})
                     fixture = self.manifest["fixture"]
                     if (state["panel"].get("visible_transcript_items")
-                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs")
+                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "voice-rt")
                             or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
@@ -1117,7 +1117,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card", "resume-preview"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card", "resume-preview", "voice-rt"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",

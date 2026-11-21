@@ -32,6 +32,10 @@ pub(crate) fn resume_preview() -> bool {
     enabled() && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_some()
 }
 
+pub(crate) fn voice_recording() -> bool {
+    enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("voice-rt")
+}
+
 struct Capture {
     selector: String,
     session: String,
@@ -90,6 +94,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
         || selector.starts_with("background-job:")
+        || (voice_recording() && selector == "composer.voice")
         || (draft_session()
             && (selector.starts_with("draft-model-row:")
                 || matches!(

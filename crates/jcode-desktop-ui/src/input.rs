@@ -23,6 +23,8 @@ pub(crate) mod popup;
 
 #[path = "input_layout.rs"]
 mod layout;
+#[path = "input_live_dictation.rs"]
+mod live_dictation;
 
 #[path = "input_motion.rs"]
 mod motion;
@@ -188,6 +190,7 @@ pub struct PromptInput {
     /// outside the element's text style, where `Window::line_height` differs.
     last_line_height: Option<Pixels>,
     voice_preview: Option<String>,
+    live_dictation: Option<Range<usize>>,
     /// Says what stopping the recording will do to the draft. Comes from
     /// `[dictation] mode`, so the dim preview never promises a send the mode
     /// will not perform.
@@ -856,15 +859,16 @@ impl PromptInput {
 
     pub fn snapshot(&self) -> PromptInputSnapshot {
         // A transient picker must never replace the user's persisted draft.
-        let (content, attachments) = self
-            .model_menu_draft
-            .as_ref()
-            .map(|(content, attachments)| (content, attachments))
-            .unwrap_or((&self.content, &self.attachments));
-        let selection = if self.model_menu_draft.is_some() {
-            content.len()..content.len()
-        } else {
-            self.selected_range.clone()
+        let (content, selection, attachments) = match &self.model_menu_draft {
+            Some((content, attachments)) => (
+                std::borrow::Cow::Borrowed(content.as_ref()),
+                content.len()..content.len(),
+                attachments,
+            ),
+            None => {
+                let (content, selection) = self.draft_without_live_dictation();
+                (content, selection, &self.attachments)
+            }
         };
         PromptInputSnapshot {
             content: content.to_string(),
@@ -887,6 +891,7 @@ impl PromptInput {
     }
 
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
+        self.live_dictation = None;
         self.model_menu_draft = None;
         self.stashed_prompt = snapshot.stashed_prompt.map(|stash| {
             let mut content = stash.content;
@@ -931,6 +936,7 @@ impl PromptInput {
         if let Some(range) = self.chip_range(&attachment) {
             let mut content = self.content.to_string();
             content.replace_range(range.clone(), "");
+            self.rebase_live_dictation_after_edit(&range, 0);
             self.control_revision = self.control_revision.wrapping_add(1);
             self.content = content.into();
             self.selected_range = range.start..range.start;
@@ -946,7 +952,7 @@ impl PromptInput {
 
     fn edit_snapshot(&self) -> EditSnapshot {
         EditSnapshot {
-            content: self.content.to_string(),
+            content: self.draft_without_live_dictation().0.into_owned(),
             attachments: self.attachments.clone(),
         }
     }
@@ -1069,6 +1075,7 @@ impl PromptInput {
             chip_positions: Vec::new(),
             last_line_height: None,
             voice_preview: None,
+            live_dictation: None,
             voice_preview_hint: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
             composer_bounds: Default::default(),
@@ -1324,9 +1331,7 @@ impl PromptInput {
         self.selected_range.is_empty() && self.cursor_offset() == self.content.len()
     }
 
-    /// Test hook: put the caret at `offset` so dictation insertion can be
-    /// asserted from a caret in the middle of a draft.
-    #[cfg(test)]
+    /// Put the caret at a byte offset for dictation fixtures.
     pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.move_to(offset, cx);
     }
@@ -1959,12 +1964,10 @@ impl PromptInput {
     }
 
     fn stash(&mut self, _: &Stash, _: &mut Window, cx: &mut Context<Self>) {
-        let current = (!self.content.is_empty() || !self.attachments.is_empty()).then(|| {
-            (
-                self.content.to_string(),
-                self.selected_range.clone(),
-                std::mem::take(&mut self.attachments),
-            )
+        let (draft, selection) = self.draft_without_live_dictation();
+        let draft = draft.into_owned();
+        let current = (!draft.is_empty() || !self.attachments.is_empty()).then(|| {
+            (draft, selection, std::mem::take(&mut self.attachments))
         });
         let previous = std::mem::replace(&mut self.stashed_prompt, current);
         let (text, selection, attachments) = previous.unwrap_or_default();
@@ -1995,7 +1998,11 @@ impl PromptInput {
     }
 
     pub(crate) fn control_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.submission_enabled || self.queue_editor || self.content.trim().is_empty() {
+        if self.live_dictation.is_some()
+            || !self.submission_enabled
+            || self.queue_editor
+            || self.content.trim().is_empty()
+        {
             return false;
         }
         self.dispatch_submission(
@@ -2009,6 +2016,10 @@ impl PromptInput {
     }
 
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.live_dictation.is_some() {
+            self.set_transient_notice("Stop voice recording before sending".into(), cx);
+            return;
+        }
         if !self.submission_enabled || self.queue_editor {
             return;
         }
@@ -2324,6 +2335,7 @@ impl PromptInput {
         self.remove_chips_in_range(&range);
         let mut content = self.content.to_string();
         content.replace_range(range.clone(), &marker);
+        self.rebase_live_dictation_after_edit(&range, marker.len());
         self.control_revision = self.control_revision.wrapping_add(1);
         self.content = content.into();
         let cursor = range.start + marker.len();
@@ -2506,6 +2518,7 @@ impl PromptInput {
             inserted.push_str(&marker);
             inserted.push(' ');
             content.replace_range(range.clone(), &inserted);
+            self.rebase_live_dictation_after_edit(&range, inserted.len());
             self.content = content.into();
             self.control_revision = self.control_revision.wrapping_add(1);
             let cursor = range.start + inserted.len();
@@ -2549,6 +2562,7 @@ impl PromptInput {
         self.remove_chips_in_range(&range);
         let mut content = self.content.to_string();
         content.replace_range(range.clone(), &marker);
+        self.rebase_live_dictation_after_edit(&range, marker.len());
         self.content = content.into();
         self.control_revision = self.control_revision.wrapping_add(1);
         let cursor = range.start + marker.len();
@@ -2675,7 +2689,7 @@ impl PromptInput {
         let index = match self.history_index {
             Some(index) => index.saturating_sub(1),
             None => {
-                self.live_draft = self.content.to_string();
+                self.live_draft = self.draft_without_live_dictation().0.into_owned();
                 self.history.len() - 1
             }
         };
@@ -2832,6 +2846,7 @@ impl PromptInput {
         self.redo.clear();
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
+        self.rebase_live_dictation_after_edit(&range, insert.len());
         self.content = edited.into();
         self.marked_range = None;
         self.history_index = None;
@@ -2960,8 +2975,8 @@ impl PromptInput {
             && !(self.content.trim() == "/model"
                 || self.content.trim_start().starts_with("/model "))
         {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            let draft = self.draft_without_live_dictation().0.into_owned();
+            self.model_menu_draft = Some((draft.into(), std::mem::take(&mut self.attachments)));
             self.attachment_preview = None;
         }
         self.model_stage = Default::default();
@@ -3147,6 +3162,7 @@ impl PromptInput {
     }
 
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.live_dictation = None;
         self.dismiss_ghost();
         self.command_menu_closed = None;
         self.command_selection_explicit = None;
@@ -3679,6 +3695,7 @@ impl EntityInputHandler for PromptInput {
         self.control_revision = self.control_revision.wrapping_add(1);
         self.command_menu_closed = None;
         self.command_selection_explicit = None;
+        self.rebase_live_dictation_after_edit(&range, new_text.len());
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -3714,6 +3731,7 @@ impl EntityInputHandler for PromptInput {
         self.control_revision = self.control_revision.wrapping_add(1);
         self.command_menu_closed = None;
         self.command_selection_explicit = None;
+        self.rebase_live_dictation_after_edit(&range, new_text.len());
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
