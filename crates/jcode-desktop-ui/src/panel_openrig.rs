@@ -744,6 +744,9 @@ impl Panel {
                     {
                         return;
                     }
+                    if state.attention_action.input_focused(window, cx) {
+                        return;
+                    }
                     let key = event.keystroke.key.as_str();
                     let text = event.keystroke.key_char.as_deref();
                     let key = if state.command.is_none() {

@@ -713,7 +713,7 @@ impl Inbox {
             serde_json::from_str(include_str!("../tests/fixtures/inbox.json")).unwrap(),
         )
         .unwrap();
-        inbox.apply_feed("local", serde_json::from_value(serde_json::json!({"items":[{"id":"queue:q1","answer":{"verb":"answer"},"revision":"fixture-revision"}],"sources":[]})).unwrap());
+        inbox.apply_feed("local", serde_json::from_value(serde_json::json!({"items":[{"id":"queue:q1","answer":{"verb":"answer"},"revision":"fixture-revision"},{"id":"queue:q2","answer":{"verb":"resolve"},"revision":"fixture-revision"}],"sources":[]})).unwrap());
         inbox.waits_loaded = true;
         inbox
     }

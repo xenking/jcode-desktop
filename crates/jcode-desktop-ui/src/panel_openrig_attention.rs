@@ -47,6 +47,12 @@ impl ActionState {
         }
     }
 
+    /// The confirmation's text field owns the keyboard while it is focused.
+    pub(super) fn input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        matches!(&self.phase, Phase::Confirm { input: Some(input), .. }
+            if input.read(cx).focus_handle.is_focused(window))
+    }
+
     pub(super) fn handle_key(&mut self, key: &str) -> bool {
         if matches!(self.phase, Phase::Confirm { .. }) {
             if key == "escape" {
@@ -434,5 +440,42 @@ impl Panel {
             });
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn typed_reason_reaches_the_confirmation_input(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new_openrig(crate::harness::spawn_recording().0, cx));
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Inbox");
+        click(vcx, "inbox-item:Queue { host: \"local\", item: \"q2\" }");
+        click(vcx, "openrig-attention-action:0");
+        vcx.simulate_keystrokes("o k");
+        vcx.run_until_parked();
+        let typed = panel.read_with(vcx, |panel, cx| {
+            match &panel.openrig.as_ref().unwrap().attention_action.phase {
+                Phase::Confirm {
+                    input: Some(input), ..
+                } => input.read(cx).content.to_string(),
+                _ => panic!("confirmation with an input must stay open while typing"),
+            }
+        });
+        assert_eq!(typed, "ok");
     }
 }
