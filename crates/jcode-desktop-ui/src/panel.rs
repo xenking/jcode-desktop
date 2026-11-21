@@ -10253,7 +10253,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn compaction_start_and_result_share_a_card(cx: &mut gpui::TestAppContext) {
+    fn queued_compaction_settles_one_row_with_result_or_error(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -10264,11 +10264,40 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.apply(&ApiEvent::Compacted { session_id: "session-a".into(), message: "Compacting".into() }, cx);
-            panel.apply(&ApiEvent::BackgroundProgress { session_id: "session-a".into(), task_id: "context-compaction".into(), label: "Context compaction".into(), percent: Some(100.0), summary: "10000 → 4000 tokens".into(), detail: None, done: true }, cx);
-            let cards: Vec<_> = panel.items.iter().filter(|item| matches!(item, Item::BackgroundTask { task_id, .. } if task_id == "context-compaction")).collect();
-            assert_eq!(cards.len(), 1);
-            assert!(matches!(cards[0], Item::BackgroundTask { summary, done: true, .. } if summary.contains("10000") && summary.contains("4000")));
+            let session_id = "session-a".to_owned();
+            let queued = ApiEvent::Compacted {
+                session_id: session_id.clone(),
+                message: "Context compaction queued.".into(),
+            };
+            let divider = |content: &str, running| ApiEvent::CompactionDivider {
+                session_id: session_id.clone(),
+                content: content.into(),
+                running,
+                method: None,
+                trigger: Some("manual".into()),
+                pre_tokens: None,
+                post_tokens: None,
+            };
+            let initial = panel.items.len();
+            panel.apply(&queued, cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if row.state.is_running() && row.label() == "Context compaction queued."));
+            panel.apply(&divider("compacting… · manual", true), cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if row.state.is_running() && row.label() == "compacting… · manual"));
+            panel.apply(&divider("compacted · 10k→4k", false), cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row)] if !row.state.is_running() && row.label() == "compacted · 10k→4k"));
+
+            panel.apply(&queued, cx);
+            panel.apply(&divider("compacting… · manual", true), cx);
+            panel.apply(&ApiEvent::BackgroundProgress {
+                session_id,
+                task_id: "context-compaction".into(),
+                label: "Context compaction".into(),
+                percent: None,
+                summary: "Compaction failed: provider unavailable".into(),
+                detail: None,
+                done: true,
+            }, cx);
+            assert!(matches!(&panel.items[initial..], [Item::Compaction(row), Item::Error(error)] if !row.state.is_running() && error == "Compaction failed: provider unavailable"));
         });
     }
 
