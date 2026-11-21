@@ -261,6 +261,31 @@ impl Workspace {
         match request.action {
             DesktopAction::OpenSession {
                 session_id,
+                destination: jcode_sdk::desktop_control::OpenDestination::NewWindow,
+            } => {
+                if !self
+                    .sessions
+                    .iter()
+                    .any(|session| session.session_id == session_id)
+                {
+                    return error("session_not_found", "session is not in the session catalog");
+                }
+                let launch = jcode_desktop_api::WindowLaunch::from_parts(
+                    [
+                        "--single-panel".to_owned(),
+                        format!("--session={session_id}"),
+                    ],
+                    [],
+                );
+                match jcode_desktop_api::WindowLaunches::open_in_background(cx, launch) {
+                    Ok(id) => ok(
+                        json!({"window_id": format!("{}:{id}", std::process::id()), "session_id": session_id}),
+                    ),
+                    Err(reason) => error("open_window_failed", &reason),
+                }
+            }
+            DesktopAction::OpenSession {
+                session_id,
                 destination:
                     jcode_sdk::desktop_control::OpenDestination::BackgroundPanel {
                         window_id: target_window,
@@ -294,6 +319,49 @@ impl Workspace {
             DesktopAction::List {} => ok(
                 json!({"window_id":window_id(window), "navigation": self.navigation_state(window, cx), "sessions":self.sessions}),
             ),
+            DesktopAction::Focus {
+                target,
+                allow_user_window,
+            } => {
+                if !allow_user_window {
+                    return error("user_window_protected", "focus requires allow_user_window");
+                }
+                let index = match self.control_target(&target, window, cx) {
+                    Ok(index) => index,
+                    Err(response) => return response,
+                };
+                if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
+                    return error(
+                        "window_busy",
+                        "dismiss the current dialog before focusing a session",
+                    );
+                }
+                if self.resume_open() {
+                    self.close_session_search(window, cx);
+                }
+                self.set_active(index, cx);
+                self.overview = false;
+                self.overview_progress.set(0.0, Instant::now());
+                self.focus_active(window, cx);
+                if !crate::fixture_control_targets::enabled() {
+                    window.activate_window();
+                    cx.activate(true);
+                }
+                ok(json!({"window_id": target.window_id, "session_id": target.session_id}))
+            }
+            DesktopAction::Reveal { target, row } => {
+                let index = match self.control_target(&target, window, cx) {
+                    Ok(index) => index,
+                    Err(response) => return response,
+                };
+                match self.slots[index]
+                    .panel
+                    .update(cx, |panel, cx| panel.control_reveal(row, cx))
+                {
+                    Ok(range) => ok(json!({"index": range.start(), "end_index": range.end()})),
+                    Err((code, message)) => error(code, message),
+                }
+            }
             DesktopAction::State { target } => {
                 let index = match self.control_target(&target, window, cx) {
                     Ok(index) => index,

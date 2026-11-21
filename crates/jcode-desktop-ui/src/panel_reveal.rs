@@ -7,8 +7,88 @@
 //! makes it a reliable needle even though whitespace differs.
 
 use super::*;
+use jcode_sdk::desktop_control::RevealRow;
+use std::ops::RangeInclusive;
+
+pub(super) struct ControlReveal {
+    pub range: RangeInclusive<usize>,
+    pub text: Option<String>,
+    revision: u64,
+    expires_at: Instant,
+}
 
 impl Panel {
+    pub(super) fn control_highlight(&self) -> Option<&ControlReveal> {
+        self.control_reveal.as_ref().filter(|reveal| {
+            reveal.revision == self.items.revision() && Instant::now() < reveal.expires_at
+        })
+    }
+
+    pub(crate) fn control_reveal(
+        &mut self,
+        row: RevealRow,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeInclusive<usize>, (&'static str, &'static str)> {
+        let not_found = ("row_not_found", "no loaded transcript row matches");
+        let (range, text) = match row {
+            RevealRow::Index { index, end_index } => (index..=end_index.unwrap_or(index), None),
+            RevealRow::Text { text } => {
+                if text.trim().is_empty() {
+                    return Err(("invalid_row", "text must not be blank"));
+                }
+                let mut matches =
+                    self.items
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, item)| match item {
+                            Item::User(message)
+                            | Item::Assistant(message)
+                            | Item::Reasoning(message)
+                            | Item::AgentMessage { message, .. }
+                                if message.contains(&text) =>
+                            {
+                                Some(index)
+                            }
+                            _ => None,
+                        });
+                let index = matches.next().ok_or(not_found)?;
+                if matches.next().is_some() {
+                    return Err(("ambiguous_row", "multiple messages match; specify an index"));
+                }
+                (index..=index, Some(text))
+            }
+        };
+        if range.is_empty() || *range.end() >= self.items.len() {
+            return Err((
+                "invalid_row",
+                "index range must be within loaded_transcript_items",
+            ));
+        }
+        let position = self.transcript_derived(cx).rows.iter().position(|row| {
+            matches!(row.source, TranscriptRowSource::Settled(index) if range.contains(&index))
+        }).ok_or(not_found)?;
+        if !self.scroll_to_revealed_row(position) {
+            return Err((
+                "transcript_not_ready",
+                "the transcript has not been laid out yet",
+            ));
+        }
+        let duration = Duration::from_secs(5);
+        self.control_reveal = Some(ControlReveal {
+            range: range.clone(),
+            text,
+            revision: self.items.revision(),
+            expires_at: Instant::now() + duration,
+        });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+        cx.notify();
+        Ok(range)
+    }
+
     /// Returns false if the matching row exists but has not been laid out yet.
     pub(crate) fn reveal_transcript_match(
         &mut self,
@@ -44,6 +124,14 @@ impl Panel {
         }) else {
             return true;
         };
+        if !self.scroll_to_revealed_row(position) {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    fn scroll_to_revealed_row(&mut self, position: usize) -> bool {
         if position >= self.transcript_list.item_count() {
             return false;
         }
@@ -57,7 +145,6 @@ impl Panel {
             item_ix: position,
             offset_in_item: -clearance,
         });
-        cx.notify();
         true
     }
 

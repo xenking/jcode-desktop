@@ -114,7 +114,9 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
         Item::User(text) | Item::Assistant(text) | Item::Reasoning(text) | Item::Error(text) => {
             text.hash(&mut state)
         }
-        Item::RuntimeError { message, .. } => message.hash(&mut state),
+        Item::RuntimeError { message, .. } | Item::AgentMessage { message, .. } => {
+            message.hash(&mut state)
+        }
         Item::Tool {
             call_id,
             name,
@@ -223,6 +225,9 @@ fn segments_with_regions(
             return markdown::selection_segments(visible, index, false, true);
         }
         Item::Assistant(text) => return markdown::selection_segments(text, index, false, false),
+        Item::AgentMessage { message, .. } => {
+            push(format!("{index}-agent-message"), message.clone())
+        }
         Item::Reasoning(text) => return markdown::selection_segments(text, index, true, false),
         Item::Tool {
             call_id,

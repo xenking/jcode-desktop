@@ -371,6 +371,11 @@ pub enum Item {
     User(String),
     Image(TranscriptImage),
     Assistant(String),
+    AgentMessage {
+        from_session: String,
+        from_name: Option<String>,
+        message: String,
+    },
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
@@ -825,6 +830,7 @@ pub struct Panel {
     applet_rows_version: u64,
     /// Transcript-derived data reused while its inputs are unchanged.
     transcript_derived: Option<TranscriptDerived>,
+    control_reveal: Option<reveal::ControlReveal>,
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
@@ -1706,6 +1712,7 @@ impl Panel {
             applet_rows: Vec::new(),
             applet_rows_version: 0,
             transcript_derived: None,
+            control_reveal: None,
             tool_started: HashMap::new(),
             tool_durations: fixture_tool_durations,
             tool_wall_times: fixture_tool_wall_times,
@@ -4015,6 +4022,20 @@ impl Panel {
                 self.items.push(Item::User(content.clone()));
                 self.stick_to_bottom = true;
             }
+            ApiEvent::AgentMessage {
+                from_session,
+                from_name,
+                message,
+                ..
+            } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.items.push(Item::AgentMessage {
+                    from_session: from_session.clone(),
+                    from_name: from_name.clone(),
+                    message: message.clone(),
+                });
+            }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
                     &mut self.pending_users,
@@ -5373,6 +5394,21 @@ impl Panel {
                         )
                         .into_any_element()
                     },
+                ))
+                .into_any_element(),
+            Item::AgentMessage { message, .. } => div()
+                .debug_selector(|| "agent-message".into())
+                .px_2()
+                .py_1()
+                .rounded_lg()
+                .bg(Theme::global().ACCENT.opacity(0.09))
+                .text_color(Theme::global().TEXT)
+                .child(text_selection::plain(
+                    self.transcript_selection.clone(),
+                    format!("{index}-agent-message"),
+                    message.clone(),
+                    window,
+                    cx,
                 ))
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
@@ -6840,7 +6876,12 @@ impl Render for Panel {
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let terms = panel.search_terms.clone();
+                                let mut terms = panel.search_terms.clone();
+                                let highlighted = matches!(row.source, TranscriptRowSource::Settled(index)
+                                    if panel.control_highlight().is_some_and(|reveal| reveal.range.contains(&index)));
+                                if highlighted && let Some(text) = panel.control_highlight().and_then(|reveal| reveal.text.as_ref()) {
+                                    terms.push(text.clone());
+                                }
                                 let element = markdown::with_search_terms(&terms, || {
                                     panel.render_item(
                                         row.index,
@@ -6854,6 +6895,7 @@ impl Render for Panel {
                                 let padded = div()
                                     .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
+                                    .when(highlighted, |el| el.rounded_lg().bg(Theme::global().ACCENT.opacity(0.14)))
                                     .px_3()
                                     .pt(px(top_padding))
                                     .pb(if rewind_inset > px(0.) {
@@ -7529,7 +7571,8 @@ fn role_of(item: &Item) -> Option<&'static str> {
             name, done: true, ..
         } if name == "ask" => Some("you"),
         Item::Assistant(_) => Some("jcode"),
-        Item::Image(_)
+        Item::AgentMessage { .. }
+        | Item::Image(_)
         | Item::ResponseStats(_)
         | Item::Reasoning(_)
         | Item::Tool { .. }
@@ -11365,6 +11408,60 @@ mod tests {
                 panel.items.as_slice(),
                 [Item::User(_), Item::Image(_)]
             ));
+        });
+    }
+
+    #[gpui::test]
+    fn signed_agent_message_paints_without_replacing_a_draft(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            workspace.push_test_panel("sender", cx);
+            workspace
+        });
+        let (recipient, sender) = workspace.update(vcx, |workspace, _| {
+            (
+                workspace.test_panel(0).unwrap(),
+                workspace.test_panel(1).unwrap(),
+            )
+        });
+        recipient.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("unsent draft".into(), cx));
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::Event {
+                    session_id: "recipient".into(),
+                    event: ApiEvent::AgentMessage {
+                        session_id: "recipient".into(),
+                        from_session: "sender".into(),
+                        from_name: Some("fox".into()),
+                        message: "DM from fox: check the output".into(),
+                    },
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message").is_some());
+        recipient.update(vcx, |panel, cx| {
+            assert!(
+                matches!(panel.items.last(), Some(Item::AgentMessage { from_session, message, .. })
+                if from_session == "sender" && message == "DM from fox: check the output")
+            );
+            assert_eq!(panel.input.read(cx).snapshot().content, "unsent draft");
+        });
+        sender.update(vcx, |panel, _| {
+            assert!(
+                !panel
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::AgentMessage { .. }))
+            );
         });
     }
 

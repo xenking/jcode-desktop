@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("accept_native_control", REPO / "scripts/accept-native-control.py")
 NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
-ACTIONS = ("list", "state", "open_session", "set_composer", "send", "press_key", "search", "click", "expand_tool", "wait_for")
+ACTIONS = ("list", "state", "open_session", "set_composer", "send", "press_key", "search", "click", "expand_tool", "wait_for", "focus", "reveal")
 SWARM_JOURNEYS = ("swarm-sidebar", "swarm-status")
 SWARM_WORKER = "swarm-fixture-0"
 SCHEMA = 1
@@ -340,7 +340,7 @@ class Instance:
         if action == "open_session":
             return self.native({"action": action, **params, "destination": {"background_panel": {"window_id": target["window_id"]}}})
         request = {"action": action, **params, "target": target}
-        if action in ("set_composer", "send", "press_key", "search", "click"):
+        if action in ("set_composer", "send", "press_key", "search", "click", "focus"):
             request["allow_user_window"] = True  # Only this supervisor's hidden window.
         return self.native(request)
 
@@ -1173,6 +1173,9 @@ def launch(args):
     control = scratch / "control"
     env = environment(scratch / "profile", control)
     try:
+        # Keep the process and doctor tied to the same bytes if a later build
+        # replaces the mutable target executable while this run is alive.
+        binary = Path(shutil.copy2(binary, scratch / "jcode-desktop"))
         version = subprocess.check_output([str(binary), "--version"], env=env, text=True, timeout=10).strip()
     except BaseException:
         shutil.rmtree(scratch)

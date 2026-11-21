@@ -396,7 +396,7 @@ fn dispatch_instance_command(
     cx: &mut App,
 ) -> anyhow::Result<()> {
     if let InstanceCommand::OpenWindow(launch) = command {
-        return open_shared_window(manager, launch, cx);
+        return open_shared_window(manager, launch, true, true, cx).map(|_| ());
     }
     // Releasing a global chord must not pull focus back from another app or
     // reopen a closed surface. Suspending the UI cancels its recording.
@@ -458,8 +458,10 @@ fn dispatch_global_voice(
 fn open_shared_window(
     manager: &Rc<RefCell<ReloadManager>>,
     launch: jcode_desktop_api::WindowLaunch,
+    show: bool,
+    focus: bool,
     cx: &mut App,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let bounds = initial_window_bounds(LaunchMode::SinglePanel.initial_window_size(), cx);
     let window = cx.open_window(
         WindowOptions {
@@ -467,6 +469,8 @@ fn open_shared_window(
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(titlebar_options()),
             app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            show,
+            focus,
             ..Default::default()
         },
         |_, cx| cx.new(|_| HostFallback),
@@ -478,9 +482,11 @@ fn open_shared_window(
         let _ = handle.update(cx, |_, window, _| window.remove_window());
         return Err(error);
     }
-    let _ = handle.update(cx, |_, window, _| window.activate_window());
-    cx.activate(true);
-    Ok(())
+    if focus {
+        let _ = handle.update(cx, |_, window, _| window.activate_window());
+        cx.activate(true);
+    }
+    Ok(handle.window_id().as_u64())
 }
 
 /// The request a single-panel launch forwards to the shared host.
@@ -703,6 +709,13 @@ fn main() {
             // register their own launch arguments under their window ID.
             jcode_desktop_api::WindowLaunches::install(cx);
         }
+        jcode_desktop_api::WindowLaunches::set_background_opener(cx, {
+            let manager = manager.clone();
+            move |launch, cx| {
+                open_shared_window(&manager, launch, !control_fixture, false, cx)
+                    .map_err(|error| error.to_string())
+            }
+        });
         cx.on_window_closed({
             let manager = manager.clone();
             move |cx, closed| {

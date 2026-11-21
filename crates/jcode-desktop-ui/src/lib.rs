@@ -341,8 +341,12 @@ unsafe extern "C-unwind" fn activate(
         app.on_action(|_: &Quit, cx| {
             // A shared single-panel host owns other people's windows. Quit
             // closes this one; the process exits after its last window.
-            if jcode_desktop_api::WindowLaunches::shared(cx)
-                && let Some(window) = cx.active_window()
+            if let Some(window) = cx.active_window()
+                && (jcode_desktop_api::WindowLaunches::shared(cx)
+                    || jcode_desktop_api::WindowLaunches::is_forwarded(
+                        cx,
+                        window.window_id().as_u64(),
+                    ))
             {
                 cx.defer(move |cx| {
                     let _ = window.update(cx, |_, window, cx| {

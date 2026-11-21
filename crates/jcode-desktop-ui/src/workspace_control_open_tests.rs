@@ -31,6 +31,9 @@ fn background_open_preserves_focused_panel(cx: &mut gpui::TestAppContext) {
             std::process::id(),
             window.window_handle().window_id().as_u64()
         );
+        let agent = DesktopTarget { window_id: target_window.clone(), session_id: "agent".into() };
+        let user = w.slots[w.active].panel.read(cx).input.clone();
+        user.update(cx, |input, cx| input.set_content("unsent draft".into(), cx));
         let action = DesktopAction::OpenSession {
             session_id: "agent".into(),
             destination: jcode_sdk::desktop_control::OpenDestination::BackgroundPanel {
@@ -57,5 +60,18 @@ fn background_open_preserves_focused_panel(cx: &mut gpui::TestAppContext) {
                 .count(),
             1
         );
+        for (allow_user_window, expected_success) in [(false, false), (true, true)] {
+            let response = w.handle_desktop_request(
+                DesktopRequest {
+                    v: DESKTOP_CONTROL_VERSION,
+                    action: DesktopAction::Focus { target: agent.clone(), allow_user_window },
+                },
+                window,
+                cx,
+            );
+            assert_eq!(matches!(response, DesktopResponse::Ok { .. }), expected_success);
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, if expected_success { "agent" } else { "user" });
+            assert_eq!(user.read(cx).snapshot().content, "unsent draft");
+        }
     });
 }

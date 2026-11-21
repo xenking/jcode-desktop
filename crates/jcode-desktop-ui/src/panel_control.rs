@@ -265,6 +265,7 @@ impl Panel {
             "picker_trigger_focus": picker_trigger_focus,
             "swarm_trigger_focus": self.swarm_trigger_focus.is_focused(window),
             "loaded_transcript_items": &*self.items,
+            "highlighted_transcript_items": self.control_highlight().map(|reveal| [*reveal.range.start(), *reveal.range.end()]),
             "visible_transcript_items": visible,
             "streaming_text": self.streaming_text,
             "streaming_reasoning": self.streaming_reasoning,
