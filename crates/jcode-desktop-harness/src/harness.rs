@@ -4243,6 +4243,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
+        | ApiEvent::AgentMessage { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
@@ -4282,6 +4283,14 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
                     .as_deref()
                     .map(|id| address.ui_id(id));
             }
+        }
+        ApiEvent::AgentMessage {
+            session_id,
+            from_session,
+            ..
+        } => {
+            *session_id = address.ui_id(session_id);
+            *from_session = address.ui_id(from_session);
         }
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
@@ -5813,6 +5822,25 @@ mod side_panel_routing_tests {
             Some("ssh://example/lead")
         );
         assert_eq!(members[0].status, "running");
+    }
+
+    #[test]
+    fn swarm_dm_keeps_both_sessions_in_the_remote_namespace() {
+        let address = remote::SessionAddress::parse("ssh://example/recipient").unwrap();
+        let event = namespace_event(
+            ApiEvent::AgentMessage {
+                session_id: "recipient".into(),
+                from_session: "sender".into(),
+                from_name: Some("fox".into()),
+                message: "DM from fox: check the output".into(),
+            },
+            &address,
+        );
+        assert_eq!(event_session_id(&event), Some("ssh://example/recipient"));
+        assert!(matches!(event, ApiEvent::AgentMessage { from_session, from_name, message, .. }
+            if from_session == "ssh://example/sender"
+                && from_name.as_deref() == Some("fox")
+                && message == "DM from fox: check the output"));
     }
 
     #[test]
