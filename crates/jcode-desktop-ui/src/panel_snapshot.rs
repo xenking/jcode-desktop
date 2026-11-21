@@ -102,6 +102,11 @@ impl Panel {
             .iter()
             .filter_map(|item| match item {
                 Item::User(text) => Some(text.as_str()),
+                Item::AgentMessage {
+                    from_session,
+                    message,
+                    ..
+                } if from_session.is_empty() => Some(message.as_str()),
                 _ => None,
             })
             .collect();
@@ -131,10 +136,16 @@ impl Panel {
         for message in &messages[..end] {
             match message.role.as_str() {
                 "user" => {
-                    if let Some(at) = message.timestamp_ms {
+                    let item = agent_message::history_user_item(
+                        message.content.clone(),
+                        !message.attachments.is_empty(),
+                    );
+                    if let Some(at) = message.timestamp_ms
+                        && matches!(item, Item::User(_))
+                    {
                         prefix_times.insert(prefix.len(), at);
                     }
-                    prefix.push(Item::User(message.content.clone()))
+                    prefix.push(item);
                 }
                 "assistant" if !message.content.trim().is_empty() => {
                     prefix.push(Item::Assistant(message.content.clone()))
@@ -166,6 +177,11 @@ impl Panel {
             .iter()
             .filter_map(|item| match item {
                 Item::User(text) => Some(text.as_str()),
+                Item::AgentMessage {
+                    from_session,
+                    message,
+                    ..
+                } if from_session.is_empty() => Some(message.as_str()),
                 _ => None,
             })
             .collect();
@@ -204,10 +220,16 @@ impl Panel {
             for message in &messages[next_user..=latest_user] {
                 match message.role.as_str() {
                     "user" => {
-                        if let Some(at) = message.timestamp_ms {
+                        let item = agent_message::history_user_item(
+                            message.content.clone(),
+                            !message.attachments.is_empty(),
+                        );
+                        if let Some(at) = message.timestamp_ms
+                            && matches!(item, Item::User(_))
+                        {
                             self.user_times.insert(self.items.len(), at);
                         }
-                        self.items.push(Item::User(message.content.clone()))
+                        self.items.push(item);
                     }
                     "assistant" if !message.content.trim().is_empty() => {
                         self.items.push(Item::Assistant(message.content.clone()))

@@ -187,6 +187,8 @@ class Instance:
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
+        if self.manifest.get("window_width"):
+            env["JCODE_DESKTOP_CONTROL_WINDOW_WIDTH"] = str(self.manifest["window_width"])
         modes = ["--single-panel"]
         if self.manifest["fixture"] == "cache-card":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable",
@@ -241,9 +243,12 @@ class Instance:
                        JCODE_DESKTOP_CONTROL_SWARM_WORKTREE=str(worker),
                        JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
             modes = []
-        if self.manifest["fixture"] == "background-jobs":
+        if self.manifest["fixture"] in ("background-jobs", "swarm-dm"):
             self.start_background_runtime(env)
             modes = []
+        if self.manifest["fixture"] == "swarm-dm":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="empty",
+                       JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1")
         if self.manifest.get("queued"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         if self.manifest.get("queue_edit"):
@@ -278,7 +283,7 @@ class Instance:
                         state = self.native({"action": "state", "target": self.target})
                     fixture = self.manifest["fixture"]
                     if (state["panel"].get("visible_transcript_items")
-                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "voice-rt")
+                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "swarm-dm", "voice-rt")
                             or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
                         self.manifest.update(phase="ready", target=self.target, desktop_socket=str(self.endpoint))
                         save(self.run / "ready.json", {"target": self.target, "state": state})
@@ -984,14 +989,19 @@ class Instance:
         return report
 
     def swarm_dm_journey(self):
-        if self.manifest["fixture"] != "background-jobs":
-            raise RuntimeError("swarm-dm needs the private daemon from --fixture background-jobs")
+        if self.manifest["fixture"] not in ("background-jobs", "swarm-dm"):
+            raise RuntimeError("swarm-dm needs the private daemon from --fixture swarm-dm")
         recipient = self.target["session_id"]
         sender = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
         if sender == recipient:
             raise RuntimeError("DM sender must be a separate session")
         draft = "Keep this unsent draft"
-        body = "Native verification: please check the output"
+        body = (
+            "Please check the build output before sending the final report. "
+            "The narrow layout must keep this entire preview on one clipped line."
+            "\n\n**Hidden report:** the regression test caught the missing disclosure."
+            "\n\n- Review the captured screenshot.\n- Keep the draft intact."
+        )
         self.drive("set_composer", {"text": draft})
         save(self.run / "swarm-dm-before.json", self.drive("state"))
         command = {"type": "comm_message", "id": 1, "from_session": sender,
@@ -1013,20 +1023,45 @@ class Instance:
         def received():
             state = self.drive("state")
             panel = state["panel"]
-            for item in panel["loaded_transcript_items"]:
+            for index, item in enumerate(panel["loaded_transcript_items"]):
                 message = item.get("AgentMessage", {}) if isinstance(item, dict) else {}
                 name = message.get("from_name")
                 if (name and message["from_session"] == sender
                         and message["message"] == f"DM from {name}: {body}"):
                     if panel["session_id"] != recipient or panel["composer"] != draft:
                         raise RuntimeError("swarm DM reached the wrong session or replaced the draft")
-                    return state, name
+                    if not (self.run / "swarm-dm-arrival.png").exists():
+                        # Force a frame after the async event in the hidden window.
+                        self.screenshot("swarm-dm-arrival.png")
+                        panel = self.drive("state")["panel"]
+                    row = next((row for row in panel["visible_transcript_items"] or []
+                                if row["item"] == item), None)
+                    if row:
+                        return state, name, index, row["selector"]
             return None
 
-        after, name = self.runtime_wait(received, "signed DM in the recipient's native transcript")
+        after, name, index, selector = self.runtime_wait(received, "signed DM in the recipient's native transcript")
         save(self.run / "swarm-dm-after.json", after)
+        key = f"details:{index}"
+        if key in after["panel"]["expanded_regions"]:
+            raise RuntimeError("new DM is not collapsed")
+        collapsed = self.screenshot("swarm-dm-collapsed.png", selector)
+        self.drive("click", {"selector": f"agent-message:summary:{index}"})
+        expanded_state = self.drive("state")
+        if key not in expanded_state["panel"]["expanded_regions"]:
+            raise RuntimeError("click did not expand the DM")
+        expanded = self.screenshot("swarm-dm-expanded.png", selector)
+        self.drive("click", {"selector": f"agent-message:summary:{index}"})
+        collapsed_state = self.drive("state")
+        if key in collapsed_state["panel"]["expanded_regions"] or collapsed_state["panel"]["composer"] != draft:
+            raise RuntimeError("second click did not collapse the DM or keep the draft")
+        save(self.run / "swarm-dm-expanded.json", expanded_state)
+        save(self.run / "swarm-dm-recollapsed.json", collapsed_state)
+        if collapsed["sha256"] == expanded["sha256"]:
+            raise RuntimeError("DM screenshots did not change after disclosure")
         report = {"journey": "swarm-dm", "passed": True, "from_session": sender,
-                  "from_name": name, "recipient": recipient, "draft_preserved": True}
+                  "from_name": name, "recipient": recipient, "draft_preserved": True,
+                  "collapsed": collapsed, "expanded": expanded}
         save(self.run / "swarm-dm-proof.json", report)
         return report
 
@@ -1191,10 +1226,10 @@ def launch(args):
         raise RuntimeError("--fullscreen-layout requires --fixture tabbar")
     if args.no_sidebar and args.fixture != "tabbar":
         raise RuntimeError("--no-sidebar requires --fixture tabbar")
-    if args.fixture == "background-jobs" and not all(
+    if args.fixture in ("background-jobs", "swarm-dm") and not all(
         path and path.is_file() and os.access(path, os.X_OK) for path in (args.jcode_bin, args.bridge_bin)
     ):
-        raise RuntimeError("background-jobs requires --jcode-bin and --bridge-bin from the sibling checkout")
+        raise RuntimeError(f"{args.fixture} requires --jcode-bin and --bridge-bin from the sibling checkout")
     run = args.run.resolve()
     run.mkdir(parents=True, mode=0o700, exist_ok=False)
     build_dir = REPO / "target/verify-build"
@@ -1235,6 +1270,7 @@ def launch(args):
                 "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
                 "fullscreen_layout": args.fullscreen_layout,
                 "no_sidebar": args.no_sidebar,
+                "window_width": args.window_width,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
                 "lifetime_seconds": args.lifetime,
@@ -1275,11 +1311,13 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "cache-card", "resume-preview", "voice-rt"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",
                                help="render the tabbar fixture with the sidebar closed")
+            child.add_argument("--window-width", type=int, choices=range(360, 1601), metavar="360..1600",
+                               help="set the hidden native window's initial width in points")
             child.add_argument("--jcode-bin", type=Path)
             child.add_argument("--bridge-bin", type=Path)
             child.add_argument("--queued", type=int, choices=range(0, 9), default=0, metavar="0..8",

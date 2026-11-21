@@ -112,6 +112,8 @@ mod steady_activity;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
+#[path = "panel_agent_message.rs"]
+mod agent_message;
 #[path = "panel_ask.rs"]
 mod ask;
 #[path = "panel_ask_images.rs"]
@@ -3449,10 +3451,16 @@ impl Panel {
             }
             match message.role.as_str() {
                 "user" => {
-                    if let Some(at) = message.timestamp_ms {
+                    let prompt = agent_message::history_user_item(
+                        message.content,
+                        !message.attachments.is_empty()
+                            || images_by_prompt.contains_key(&user_ordinal),
+                    );
+                    if let Some(at) = message.timestamp_ms
+                        && matches!(prompt, Item::User(_))
+                    {
                         user_times.insert(items.len(), at);
                     }
-                    let prompt = Item::User(message.content);
                     let is_prompt = prompt::is_pinnable_prompt(&prompt);
                     items.push(prompt);
                     if let Some(images) = images_by_prompt.remove(&user_ordinal)
@@ -5440,21 +5448,18 @@ impl Panel {
                     },
                 ))
                 .into_any_element(),
-            Item::AgentMessage { message, .. } => div()
-                .debug_selector(|| "agent-message".into())
-                .px_2()
-                .py_1()
-                .rounded_lg()
-                .bg(Theme::global().ACCENT.opacity(0.09))
-                .text_color(Theme::global().TEXT)
-                .child(text_selection::plain(
-                    self.transcript_selection.clone(),
-                    format!("{index}-agent-message"),
-                    message.clone(),
-                    window,
-                    cx,
-                ))
-                .into_any_element(),
+            Item::AgentMessage {
+                from_session,
+                from_name,
+                message,
+            } => self.render_agent_message(
+                index,
+                from_session,
+                from_name.as_deref(),
+                message,
+                window,
+                cx,
+            ),
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
             // Never truncate it: there is deliberately no disclosure control.
@@ -6913,7 +6918,7 @@ impl Render for Panel {
                                 let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
                                     && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
-                                    || matches!(item, Item::ResponseStats(_))
+                                    || matches!(item, Item::ResponseStats(_) | Item::AgentMessage { .. })
                                     || matches!(item, Item::Tool { .. }) && follows_tool
                                 {
                                     2.0
@@ -11507,6 +11512,102 @@ mod tests {
                     .iter()
                     .any(|item| matches!(item, Item::AgentMessage { .. }))
             );
+        });
+    }
+
+    #[gpui::test]
+    fn agent_dm_discloses_its_body_on_click(cx: &mut gpui::TestAppContext) {
+        let opened_sender = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let reported_sender = opened_sender.clone();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            cx.subscribe(
+                &workspace.test_panel(0).unwrap(),
+                move |_, _, event: &OpenSwarmWorker, _| {
+                    reported_sender.replace(Some(event.0.clone()));
+                },
+            )
+            .detach();
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| panel.load_history(vec![], vec![], cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::Event {
+                    session_id: "recipient".into(),
+                    event: ApiEvent::AgentMessage {
+                        session_id: "recipient".into(),
+                        from_session: "sender".into(),
+                        from_name: Some("fox".into()),
+                        message: "DM from fox: First line\n\n**Hidden second line**".into(),
+                    },
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let summary = vcx
+            .debug_bounds("agent-message-summary")
+            .expect("one-line DM disclosure");
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        vcx.simulate_click(summary.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        vcx.simulate_click(summary.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+
+        let sender = vcx.debug_bounds("agent-message-sender").unwrap();
+        vcx.simulate_click(sender.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        assert_eq!(opened_sender.borrow().as_deref(), Some("sender"));
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+    }
+
+    #[gpui::test]
+    fn agent_dm_search_discloses_a_restored_message(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("recipient", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            let history = serde_json::from_value(serde_json::json!([{
+                "role": "user",
+                "content": "DM from fox: First line\n\n**Obscured search term**"
+            }]))
+            .unwrap();
+            panel.load_history(history, vec![], cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-summary").is_some());
+        assert!(vcx.debug_bounds("agent-message-body").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.search_terms = vec!["obscured".into()];
+            assert!(panel.reveal_transcript_match(Some("Obscured search term"), true, cx));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("agent-message-body").is_some());
+        panel.update(vcx, |panel, _| {
+            let item = panel.items.last().unwrap();
+            let open = expandable::Open::for_row(&panel.expanded_regions, item, 0, false);
+            let text: Vec<_> =
+                text_document::segments_with_display(item, 0, open, &crate::config::display())
+                    .into_iter()
+                    .map(|(_, text)| text.to_string())
+                    .collect();
+            assert_eq!(text, ["First line", "Obscured search term"]);
         });
     }
 

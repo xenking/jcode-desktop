@@ -676,7 +676,17 @@ fn main() {
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
-        let bounds = initial_window_bounds(launch_mode.initial_window_size(), cx);
+        let (width, height) = launch_mode.initial_window_size();
+        let width = if control_fixture {
+            env::var("JCODE_DESKTOP_CONTROL_WINDOW_WIDTH")
+                .ok()
+                .and_then(|width| width.parse::<u32>().ok())
+                .filter(|width| (360..=1600).contains(width))
+                .unwrap_or(width)
+        } else {
+            width
+        };
+        let bounds = initial_window_bounds((width, height), cx);
         let window = cx
             .open_window(
                 WindowOptions {

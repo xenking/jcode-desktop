@@ -73,6 +73,9 @@ impl Panel {
                 "the transcript has not been laid out yet",
             ));
         }
+        for index in range.clone() {
+            self.open_agent_message(index);
+        }
         let duration = Duration::from_secs(5);
         self.control_reveal = Some(ControlReveal {
             range: range.clone(),
@@ -99,7 +102,9 @@ impl Panel {
         let needle = needle.and_then(normalize_needle);
         let find = |matches: &dyn Fn(&str) -> bool| {
             self.items.iter().position(|item| match item {
-                Item::User(text) | Item::Assistant(text) => matches(text),
+                Item::User(text)
+                | Item::Assistant(text)
+                | Item::AgentMessage { message: text, .. } => matches(text),
                 _ => false,
             })
         };
@@ -127,6 +132,7 @@ impl Panel {
         if !self.scroll_to_revealed_row(position) {
             return false;
         }
+        self.open_agent_message(item_index);
         cx.notify();
         true
     }

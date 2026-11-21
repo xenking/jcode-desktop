@@ -121,7 +121,7 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
     })
 }
 
-fn action_icon(action: &str) -> &'static [u8] {
+pub(super) fn action_icon(action: &str) -> &'static [u8] {
     match action {
         "message" | "dm" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2 4h12v8H2z M2 4l6 5 6-5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>"#,
         "spawn" | "resume" => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>"#,

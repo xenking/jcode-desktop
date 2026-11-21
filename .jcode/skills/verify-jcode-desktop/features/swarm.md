@@ -22,3 +22,13 @@ closes after the click. Inspect the before/after PNGs and JSON in each run.
 
 This exercises GPUI layout, hit testing and production click handlers. It does
 not inject operating system mouse events or start a Jcode daemon or a worker.
+
+## Direct messages in the transcript
+
+Use `launch --fixture swarm-dm --window-width 420 --jcode-bin "$JCODE" --bridge-bin "$BRIDGE"`
+with binaries from the sibling checkout, then `drive --journey swarm-dm` and
+`cleanup` on the same run. The journey sends a signed multiline DM through its
+private daemon, clicks the summary twice and verifies that the draft survives.
+Inspect `swarm-dm-collapsed.png` for a single elided line and
+`swarm-dm-expanded.png` for the full Markdown. Repeat at a wider window width
+with a fresh run. The notify delivery path does not write daemon history.

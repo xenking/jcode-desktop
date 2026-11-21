@@ -226,9 +226,15 @@ fn segments_with_regions(
             return markdown::selection_segments(visible, index, false, true);
         }
         Item::Assistant(text) => return markdown::selection_segments(text, index, false, false),
-        Item::AgentMessage { message, .. } => {
-            push(format!("{index}-agent-message"), message.clone())
+        Item::AgentMessage { message, .. } if open.details => {
+            return markdown::selection_segments(
+                agent_message::dm_body(message),
+                index,
+                false,
+                false,
+            );
         }
+        Item::AgentMessage { .. } => {}
         Item::Reasoning(text) => return markdown::selection_segments(text, index, true, false),
         Item::Tool {
             call_id,
