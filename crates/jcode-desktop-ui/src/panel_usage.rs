@@ -24,17 +24,15 @@ impl RowsTooltip {
                 .collect(),
         }
     }
-}
 
-impl Render for RowsTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn content(&self, width: Option<gpui::Pixels>) -> gpui::Div {
         let theme = Theme::global();
         div()
             .debug_selector(|| "rows-tooltip".into())
             .px_3()
             .py_2()
-            .min_w(px(180.))
-            .max_w(px(320.))
+            .when_some(width, |el, width| el.w(width))
+            .when(width.is_none(), |el| el.min_w(px(180.)).max_w(px(320.)))
             .rounded_xl()
             .bg(theme.HEADER_BG)
             .border_1()
@@ -45,6 +43,8 @@ impl Render for RowsTooltip {
             .gap_1()
             .child(
                 div()
+                    .debug_selector(|| "rows-tooltip-title".into())
+                    .whitespace_normal()
                     .text_color(theme.TEXT)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.title.clone()),
@@ -54,9 +54,16 @@ impl Render for RowsTooltip {
                     .debug_selector(move || format!("rows-tooltip-row-{index}"))
                     .flex_none()
                     .line_height(px(16.))
+                    .whitespace_normal()
                     .text_color(theme.TEXT_DIM)
                     .child(row.clone())
             }))
+    }
+}
+
+impl Render for RowsTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.content(None)
     }
 }
 

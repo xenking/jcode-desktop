@@ -1,8 +1,18 @@
 use super::*;
+use crate::swarm_glyph::{Icon, Mark};
+use crate::swarm_view::Glyph;
 use jcode_sdk::api::{
     BackgroundTaskOutput, BackgroundTaskStatus as Status, BackgroundTaskSummary as Job,
     BackgroundTasksSnapshot, format_progress_summary,
 };
+
+struct JobTooltip(super::usage::RowsTooltip);
+
+impl Render for JobTooltip {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.0.content(Some(px(320.0).min(window.viewport_size().width)))
+    }
+}
 
 #[derive(Default)]
 pub(super) struct BackgroundJobs {
@@ -67,6 +77,10 @@ impl Panel {
             });
         }
         state.tickers.retain(|key| state.started.contains_key(key));
+        self.swarm_marks.retain(|key| {
+            key.strip_prefix("background:")
+                .is_none_or(|id| state.started.contains_key(id))
+        });
         if let Some(output) = &snapshot.output
             && state.selected.as_ref() == Some(&output.task_id)
             && state.output.as_ref() != Some(output)
@@ -74,7 +88,7 @@ impl Panel {
             state.output = Some(output.clone());
             state.scroll.scroll_to_bottom();
         }
-        if self.background_jobs.tasks.is_empty() && self.swarm_indicator().is_none() {
+        if self.background_jobs.tasks.is_empty() && self.swarm_workers.is_empty() {
             self.swarm_list_open = false;
             self.select_background_job(None, cx);
         }
@@ -102,20 +116,17 @@ impl Panel {
         index: usize,
         job: &Job,
         focus: &FocusHandle,
+        detail_index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let id = job.task_id.clone();
-        let tooltip = job.label.clone();
+        let title = one_line(&job.label);
         let selected = self.background_jobs.selected.as_ref() == Some(&id);
-        let status = job_status(job);
-        let color = if job.stalled || matches!(job.status, Status::Failed | Status::Interrupted) {
-            theme.WARN
-        } else if job.status == Status::Running {
-            theme.ACCENT
-        } else {
-            theme.TEXT_FAINT
-        };
+        let (status, mark) = job_status(job, theme);
+        let icon = self
+            .swarm_marks
+            .element(&format!("background:{id}"), mark, cx);
         let duration = job
             .duration_secs
             .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
@@ -130,11 +141,30 @@ impl Panel {
                 cx,
             )
         });
-        let progress = job
-            .progress
-            .as_ref()
-            .and_then(|progress| progress.percent)
-            .map(|p| format!("{p:.0}%"));
+        let progress = (job.status == Status::Running)
+            .then(|| {
+                job.progress
+                    .as_ref()
+                    .map(format_progress_summary)
+                    .or_else(|| job.last_output_line.clone())
+            })
+            .flatten()
+            .map(|value| one_line(&value))
+            .filter(|value| !value.is_empty());
+        let exit = (status == "failed")
+            .then_some(job.exit_code)
+            .flatten()
+            .map(|code| format!("exit {code}"));
+        let tooltip_title = title.clone();
+        let tooltip_rows = [
+            Some(status.into()),
+            exit.clone(),
+            duration.clone(),
+            progress.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
         crate::keyboard::tracked_button(
             div().id(SharedString::from(format!("background-job-{id}"))),
             focus,
@@ -143,7 +173,7 @@ impl Panel {
         .flex_none()
         .w_full()
         .min_w_0()
-        .min_h(px(20.0))
+        .min_h(px(22.0))
         .px_2()
         .flex()
         .items_center()
@@ -153,12 +183,21 @@ impl Panel {
         .rounded_full()
         .cursor_pointer()
         .text_size(px(11.0))
-        .text_color(theme.TEXT_DIM)
-        .when(selected, |el| el.bg(theme.chip_active_background()))
+        .text_color(theme.composer_secondary())
+        .border_1()
+        .border_color(if selected {
+            theme.PANEL_BORDER_FOCUS
+        } else {
+            gpui::transparent_black().into()
+        })
+        .when(selected, |el| el.bg(theme.USER_BG))
         .hover(|el| el.bg(theme.USER_BG))
         .tooltip(move |_, cx| {
-            cx.new(|_| super::usage::MeterTooltip(tooltip.clone().into()))
-                .into()
+            cx.new(|_| JobTooltip(super::usage::RowsTooltip {
+                title: tooltip_title.clone(),
+                rows: tooltip_rows.clone(),
+            }))
+            .into()
         })
         .children(crate::fixture_control_targets::marker(
             || format!("background-job:{}", job.task_id),
@@ -166,23 +205,48 @@ impl Panel {
         ))
         .child(
             div()
+                .debug_selector(move || format!("background-job-mark-{index}"))
+                .flex_none()
+                .child(icon),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("background-job-title-{index}"))
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .child(one_line(&job.label)),
+                .text_color(theme.TEXT)
+                .child(title),
         )
-        .children(progress.map(|progress| div().flex_none().child(progress)))
-        .child(div().flex_none().text_color(color).child(status))
-        .child(div().flex_none().children(duration).children(ticker))
+        .children(progress.map(|progress| {
+            div()
+                .debug_selector(move || format!("background-job-progress-{index}"))
+                .min_w_0()
+                .max_w(gpui::relative(0.3))
+                .truncate()
+                .child(progress)
+        }))
+        .child(div().flex_none().child(status))
+        .children(exit.map(|exit| {
+            div()
+                .debug_selector(move || format!("background-job-exit-{index}"))
+                .flex_none()
+                .child(exit)
+        }))
+        .child(
+            div()
+                .debug_selector(move || format!("background-job-duration-{index}"))
+                .flex_none()
+                .children(duration)
+                .children(ticker),
+        )
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
             let task_id = (this.background_jobs.selected.as_ref() != Some(&id)).then(|| id.clone());
             if task_id.is_some() {
                 // The detail follows all rows. Reveal it even when opening a
                 // task from a list taller than the viewport.
-                this.swarm_list_scroll.scroll_to_item(
-                    this.swarm_picker_rows.len() + this.background_jobs.tasks.len(),
-                );
+                this.swarm_list_scroll.scroll_to_item(detail_index);
             }
             this.select_background_job(task_id, cx);
         }))
@@ -217,7 +281,7 @@ impl Panel {
             },
         );
         let status = job.map(|job| {
-            let mut parts = vec![job_status(job).to_owned()];
+            let mut parts = vec![job_status(job, theme).0.to_owned()];
             if let Some(progress) = &job.progress {
                 parts.push(format_progress_summary(progress));
             }
@@ -264,7 +328,7 @@ impl Panel {
                 .rounded_xl()
                 .bg(theme.USER_BG)
                 .text_size(px(11.0))
-                .text_color(theme.TEXT_DIM)
+                .text_color(theme.composer_secondary())
                 .child(
                     div()
                         .flex()
@@ -299,13 +363,18 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn job_status(job: &Job) -> &'static str {
+fn job_status(job: &Job, theme: &Theme) -> (&'static str, Mark) {
+    let glyph = |glyph| Mark::glyph(glyph, 11.0);
+    let stopped = || Mark::still(Icon::Stop, theme.composer_secondary(), 11.0);
     match job.status {
-        Status::Running if job.stalled => "stalled",
-        Status::Running => "running",
-        Status::Completed => "completed",
-        Status::Failed => "failed",
-        Status::Superseded => "superseded",
-        Status::Interrupted => "interrupted",
+        Status::Running if job.stalled => ("stalled", glyph(Glyph::Pause)),
+        Status::Running => ("running", glyph(Glyph::Spinner)),
+        Status::Completed => ("completed", glyph(Glyph::Check)),
+        Status::Failed if job.cancelled || job.error.as_deref() == Some("Cancelled by user") => {
+            ("cancelled", stopped())
+        }
+        Status::Failed => ("failed", glyph(Glyph::Cross)),
+        Status::Superseded => ("superseded", stopped()),
+        Status::Interrupted => ("interrupted", stopped()),
     }
 }

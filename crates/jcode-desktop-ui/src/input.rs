@@ -4113,7 +4113,7 @@ impl Element for TextElement {
             {
                 text = full.clone();
             }
-            (text, to_hsla(Theme::global().TEXT_DIM))
+            (text, to_hsla(Theme::global().composer_secondary()))
         } else {
             (content, style.color)
         };
@@ -4217,7 +4217,7 @@ impl Element for TextElement {
         if let Some(ghost) = &ghost {
             runs.push(TextRun {
                 len: ghost.len(),
-                color: to_hsla(Theme::global().TEXT_FAINT),
+                color: to_hsla(Theme::global().composer_secondary()),
                 ..ghost_run
             });
         }
@@ -4639,7 +4639,10 @@ impl Render for PromptInput {
                                                             .px_3()
                                                             .py_2()
                                                             .text_size(px(12.0))
-                                                            .text_color(Theme::global().TEXT_FAINT)
+                                                            .text_color(
+                                                                Theme::global()
+                                                                    .composer_secondary(),
+                                                            )
                                                             .child(match self.picker_prefix {
                                                                 Some("/effort") => {
                                                                     "No effort levels match"
@@ -4770,7 +4773,7 @@ impl Render for PromptInput {
                             .px_3()
                             .pt_1()
                             .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_FAINT)
+                            .text_color(Theme::global().composer_secondary())
                             .child(notice)
                     }),
             )
@@ -4781,7 +4784,7 @@ impl Render for PromptInput {
                         .px_3()
                         .pt_1()
                         .text_size(px(10.0))
-                        .text_color(Theme::global().TEXT_FAINT)
+                        .text_color(Theme::global().composer_secondary())
                         .child("Prompt stashed · Ctrl+S to restore"),
                 )
             })

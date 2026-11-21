@@ -125,6 +125,11 @@ impl Theme {
         self.TEXT.opacity(0.2)
     }
 
+    /// Small secondary labels in the composer and its work overlay.
+    pub fn composer_secondary(&self) -> Rgba {
+        self.TEXT_DIM.blend(self.TEXT.opacity(0.2))
+    }
+
     /// Raised paper for the active pane, recessed backing for its neighbors.
     /// Use palette roles rather than dimming the entire pane so transcript text,
     /// code, images, and controls retain their original contrast and opacity.
@@ -1421,6 +1426,34 @@ mod tests {
                     preset.id(),
                     contrast(fill, surface)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn composer_secondary_labels_meet_aa_in_light_and_dark() {
+        for preset in [
+            ThemePreset::NeutralLight,
+            ThemePreset::NeutralDark,
+            ThemePreset::LightNeutral,
+            ThemePreset::DarkNeutral,
+            ThemePreset::PureBlack,
+        ] {
+            let theme = &themes()[preset.index()];
+            let overlay = painted(theme, theme.HEADER_BG);
+            let panel = painted(theme, theme.PANEL_BG);
+            let ink = theme.composer_secondary();
+            for (background, label) in [
+                (overlay, "work overlay / idle status"),
+                (over(theme.USER_BG, overlay), "hovered and selected rows"),
+                (panel, "focused status"),
+                (painted(theme, theme.INPUT_BG), "prompt input"),
+                (over(theme.chip_background(), panel), "focused pill"),
+                (over(theme.chip_background(), overlay), "idle pill"),
+            ] {
+                let ratio = contrast(ink, background);
+                println!("{} {label}: {ratio:.2}:1", preset.id());
+                assert!(ratio >= 4.5, "{} {label}: {ratio:.2}:1", preset.id());
             }
         }
     }

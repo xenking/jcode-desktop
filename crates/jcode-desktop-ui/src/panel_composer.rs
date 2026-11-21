@@ -126,7 +126,7 @@ impl Panel {
             .whitespace_nowrap()
             .text_size(px(10.0))
             .font_family(theme.FONT_MONO)
-            .text_color(theme.TEXT_FAINT)
+            .text_color(theme.composer_secondary())
             .child(
                 div()
                     .debug_selector(|| "panel-status".into())
@@ -250,7 +250,7 @@ impl Panel {
                                 .debug_selector(move || format!("panel-mode-icon-{}-{index}", icon.name()))
                                 .flex_none()
                                 .flex()
-                                .child(icon.render(BAR_ICON, theme.TEXT_DIM))
+                                .child(icon.render(BAR_ICON, theme.composer_secondary()))
                         });
                         crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
                             .flex_shrink(3.)
@@ -339,7 +339,7 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_color(theme.TEXT_DIM)
+                                    .text_color(theme.composer_secondary())
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(name),
                             )
@@ -694,7 +694,7 @@ pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .bg(theme.chip_background())
         .text_size(px(10.5))
         .font_family(theme.FONT_MONO)
-        .text_color(theme.TEXT_DIM)
+        .text_color(theme.composer_secondary())
         .whitespace_nowrap()
         .cursor_pointer()
         .hover(|el| el.text_color(theme.TEXT).bg(theme.chip_active_background()))

@@ -25,6 +25,7 @@ pub(crate) enum Icon {
     Spinner,
     Check,
     Cross,
+    Stop,
     Pause,
     Idle,
     Thinking,
@@ -51,6 +52,7 @@ impl Icon {
             Self::Spinner => icon!("spinner"),
             Self::Check => icon!("check"),
             Self::Cross => icon!("cross"),
+            Self::Stop => icon!("stop"),
             Self::Pause => icon!("pause"),
             Self::Idle => icon!("idle"),
             Self::Thinking => icon!("thinking"),
@@ -101,7 +103,7 @@ impl Mark {
     pub(crate) fn activity(activity: Activity, size: f32) -> Self {
         let theme = Theme::global();
         let (icon, color, motion) = match activity {
-            Activity::Idle => (Icon::Idle, theme.TEXT_FAINT, Motion::Still),
+            Activity::Idle => (Icon::Idle, theme.composer_secondary(), Motion::Still),
             Activity::Thinking => (
                 Icon::Thinking,
                 theme.ACCENT,

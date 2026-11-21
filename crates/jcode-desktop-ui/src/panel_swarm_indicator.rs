@@ -32,7 +32,7 @@ impl Panel {
     pub(crate) fn set_swarm_workers(&mut self, workers: Vec<Worker>, cx: &mut Context<Self>) {
         if self.swarm_workers != workers {
             self.swarm_workers = workers;
-            if self.swarm_indicator().is_none() && self.background_jobs.tasks.is_empty() {
+            if self.swarm_workers.is_empty() && self.background_jobs.tasks.is_empty() {
                 self.swarm_list_open = false;
             }
             cx.notify();
@@ -156,7 +156,7 @@ impl Panel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(theme.TEXT_FAINT)
+                .text_color(theme.composer_secondary())
                 .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(label.into())).into())
                 .child(icon)
                 .into_any_element(),
@@ -176,7 +176,7 @@ impl Panel {
         let awaiting = self.awaiting_ids();
         let jobs = self.background_jobs.active();
         let job_total = self.background_jobs.tasks.len();
-        if tally.total() == 0 && awaiting.is_empty() && job_total == 0 {
+        if self.swarm_workers.is_empty() && awaiting.is_empty() && job_total == 0 {
             return None;
         }
         let theme = Theme::global();
@@ -209,7 +209,7 @@ impl Panel {
         } else if live > 0 {
             (theme.WARN, Motion::Still)
         } else {
-            (theme.TEXT_FAINT, Motion::Still)
+            (theme.composer_secondary(), Motion::Still)
         };
         let cluster = div()
             .debug_selector(|| "composer-workers-icon".into())
@@ -303,9 +303,8 @@ impl Panel {
         if !self.swarm_list_open {
             return None;
         }
-        let workers = self
-            .swarm_indicator()
-            .map_or_else(Vec::new, |indicator| indicator.workers);
+        let mut workers = self.swarm_workers.clone();
+        workers.sort_by_key(|worker| (!worker.state.is_live(), !worker.state.is_active()));
         if workers.is_empty() && self.background_jobs.tasks.is_empty() {
             return None;
         }
@@ -317,7 +316,8 @@ impl Panel {
         self.swarm_picker_rows
             .resize_with(workers.len(), || cx.focus_handle());
         let mut row_focus = self.swarm_picker_rows.clone();
-        let mut rows = workers
+        let worker_count = workers.len();
+        let worker_rows = workers
             .iter()
             .enumerate()
             .map(|(index, worker)| {
@@ -347,7 +347,7 @@ impl Panel {
                     worker.meta.provider.as_deref(),
                     worker.meta.model.as_deref(),
                     11.0,
-                    theme.TEXT_FAINT,
+                    theme.composer_secondary(),
                 );
                 let tokens = worker.tokens_text();
                 let cost = worker.cost_text();
@@ -357,7 +357,7 @@ impl Panel {
                 )
                 .debug_selector(move || format!("swarm-list-worker-{index}"))
                 .flex_none()
-                .min_h(px(20.0))
+                .min_h(px(22.0))
                 .w_full()
                 .min_w_0()
                 .overflow_hidden()
@@ -370,7 +370,7 @@ impl Panel {
                 .cursor_pointer()
                 .hover(|el| el.bg(theme.USER_BG))
                 .text_size(px(11.0))
-                .text_color(theme.TEXT_DIM)
+                .text_color(theme.composer_secondary())
                 .tooltip(move |_, cx| {
                     cx.new(|_| {
                         super::usage::RowsTooltip::separated(
@@ -391,7 +391,13 @@ impl Panel {
                     || format!("status-worker:{}", worker.session_id),
                     || Some(self.session_id.clone()),
                 ))
-                .child(div().flex_none().size(px(11.0)).children(mark))
+                .child(
+                    div()
+                        .debug_selector(move || format!("swarm-list-mark-{index}"))
+                        .flex_none()
+                        .size(px(11.0))
+                        .children(mark),
+                )
                 .child(
                     div()
                         .flex_none()
@@ -404,7 +410,7 @@ impl Panel {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(theme.TEXT_FAINT)
+                        .text_color(theme.TEXT)
                         .child(label),
                 )
                 .children(model.map(|model| {
@@ -414,7 +420,6 @@ impl Panel {
                         .flex()
                         .items_center()
                         .gap(px(3.0))
-                        .text_color(theme.TEXT_FAINT)
                         .child(provider)
                         .child(div().min_w_0().truncate().child(model))
                         // Same circle as the composer pill, right after the
@@ -431,26 +436,38 @@ impl Panel {
                     div()
                         .debug_selector(move || format!("swarm-list-tokens-{index}"))
                         .flex_none()
-                        .text_color(theme.TEXT_FAINT)
                         .child(tokens)
                 }))
                 .children(cost.map(|cost| {
                     div()
                         .debug_selector(move || format!("swarm-list-cost-{index}"))
                         .flex_none()
-                        .text_color(theme.TEXT_FAINT)
                         .child(cost)
                 }))
                 .child(
                     div()
                         .debug_selector(move || format!("swarm-list-state-{index}"))
                         .flex_none()
-                        .text_color(theme.TEXT_FAINT)
+                        .max_w(gpui::relative(0.3))
+                        .truncate()
                         .child(worker.status_text()),
                 )
                 .into_any_element()
             })
             .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        if worker_count > 0 {
+            rows.push(work_section("Workers", worker_count, false));
+            rows.extend(worker_rows);
+        }
+        if !jobs.is_empty() {
+            rows.push(work_section(
+                "Background tasks",
+                jobs.len(),
+                worker_count > 0,
+            ));
+        }
+        let detail_index = rows.len() + jobs.len();
         for (index, job) in jobs.iter().enumerate() {
             let focus = self
                 .background_jobs
@@ -458,7 +475,7 @@ impl Panel {
                 .entry(job.task_id.clone())
                 .or_insert_with(|| cx.focus_handle())
                 .clone();
-            rows.push(self.render_background_job_row(index, job, &focus, cx));
+            rows.push(self.render_background_job_row(index, job, &focus, detail_index, cx));
             row_focus.push(focus);
         }
         let scroll = self.swarm_list_scroll.clone();
@@ -506,7 +523,15 @@ impl Panel {
                                     if let Some(index) =
                                         row_focus.iter().position(|row| row == &next)
                                     {
-                                        scroll.scroll_to_item(index);
+                                        // Section headings are scroll children, not focus stops.
+                                        let headings = 1 + usize::from(
+                                            worker_count > 0 && index >= worker_count,
+                                        );
+                                        scroll.scroll_to_item(if index == 0 {
+                                            0
+                                        } else {
+                                            index + headings
+                                        });
                                     }
                                     window.focus(&next, cx);
                                     cx.stop_propagation();
@@ -540,7 +565,7 @@ impl Panel {
                         ),
                     px(5.),
                 )
-                .at_composer_end(px(480.))
+                .at_composer()
                 .dismiss_outside(Some(std::rc::Rc::new(move |window, cx| {
                     let _ = owner.update(cx, |panel, cx| {
                         panel.dismiss_composer_popover(&focus, true, window, cx);
@@ -551,6 +576,25 @@ impl Panel {
             .into_any_element(),
         )
     }
+}
+
+fn work_section(label: &'static str, count: usize, separated: bool) -> gpui::AnyElement {
+    let theme = Theme::global();
+    div()
+        .debug_selector(move || format!("work-section-{label}"))
+        .flex_none()
+        .min_w_0()
+        .px_2()
+        .py(px(3.0))
+        .when(separated, |header| {
+            header.mt_1().border_t_1().border_color(theme.PANEL_BORDER)
+        })
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.composer_secondary())
+        .truncate()
+        .child(format!("{label} · {count}"))
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -713,7 +757,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn swarm_background_is_confined_to_a_card_above_the_composer(cx: &mut gpui::TestAppContext) {
+    fn swarm_background_spans_the_composer_without_covering_it(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         let window = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(window, gpui::size(px(1100.), px(650.)));
@@ -726,10 +770,8 @@ mod tests {
         vcx.run_until_parked();
         let card = vcx.debug_bounds("swarm-list").unwrap();
         let composer = vcx.debug_bounds("composer").unwrap();
-        assert!(
-            card.size.width < composer.size.width,
-            "{card:?} vs {composer:?}"
-        );
+        assert_eq!(card.left(), composer.left(), "{card:?} vs {composer:?}");
+        assert_eq!(card.right(), composer.right(), "{card:?} vs {composer:?}");
         assert!(card.bottom() < composer.top(), "{card:?} vs {composer:?}");
         assert!(pill.center().x >= card.left() && pill.center().x <= card.right());
         let outside = gpui::point(card.left() - px(5.), card.center().y);
@@ -939,6 +981,70 @@ mod tests {
     }
 
     #[gpui::test]
+    fn work_overlay_keeps_job_metadata_on_one_row_and_wraps_the_hover(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = setup(cx);
+        let window = vcx.update(|window, _| window.window_handle());
+        let title = "A task name long enough to need more than one tooltip line ".repeat(6);
+        panel.update(vcx, |panel, cx| {
+            panel.set_swarm_workers(vec![worker("rose", "ready")], cx);
+            panel.apply(&event(serde_json::json!({
+                "ev": "background_tasks",
+                "snapshot": {"tasks": [
+                    {"task_id":"active", "label":title, "status":"running", "last_output_line":"Compiling renderer", "started_at":"2026-11-20T13:00:00Z", "stalled":false, "can_cancel":true},
+                    {"task_id":"failed", "label":"Check API", "status":"failed", "exit_code":17, "duration_secs":4.0, "started_at":"2026-11-20T13:00:00Z", "stalled":false, "can_cancel":false},
+                    {"task_id":"cancelled", "label":"Stop watcher", "status":"failed", "cancelled":true, "duration_secs":1.0, "started_at":"2026-11-20T13:00:00Z", "stalled":false, "can_cancel":false},
+                    {"task_id":"done", "label":"Run tests", "status":"completed", "duration_secs":2.0, "started_at":"2026-11-20T13:00:00Z", "stalled":false, "can_cancel":false}
+                ]}
+            })), cx);
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("composer-workers").unwrap();
+        vcx.simulate_click(pill.center(), Default::default());
+        for width in [1100., 430.] {
+            vcx.simulate_window_resize(window, gpui::size(px(width), px(700.)));
+            vcx.run_until_parked();
+            let workers = vcx.debug_bounds("work-section-Workers").unwrap();
+            let jobs = vcx.debug_bounds("work-section-Background tasks").unwrap();
+            assert!(workers.bottom() <= jobs.top());
+            for (index, selectors) in [
+                (0, ["mark", "title", "progress", "duration"].as_slice()),
+                (1, ["mark", "title", "exit", "duration"].as_slice()),
+                (2, ["mark", "title", "duration"].as_slice()),
+                (3, ["mark", "title", "duration"].as_slice()),
+            ] {
+                let mut bounds = |field| {
+                    let selector = format!("background-job-{field}-{index}");
+                    vcx.debug_bounds(Box::leak(selector.into_boxed_str()))
+                        .unwrap()
+                };
+                let row = bounds("row");
+                assert_eq!(row.size.height, px(22.0));
+                let mut right = row.left();
+                for field in selectors {
+                    let field = bounds(field);
+                    assert!(inside(field, row));
+                    assert!(field.left() >= right);
+                    right = field.right();
+                }
+            }
+        }
+        let row = vcx.debug_bounds("background-job-row-0").unwrap();
+        vcx.simulate_mouse_move(row.center(), None, Default::default());
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_secs(1));
+        vcx.run_until_parked();
+        let hover = vcx
+            .debug_bounds("rows-tooltip-title")
+            .expect("job title on hover");
+        assert!(
+            hover.size.height > row.size.height,
+            "tooltip title must wrap"
+        );
+    }
+
+    #[gpui::test]
     fn background_job_row_opens_live_output(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         let snapshot = |status: &str, tail: Option<&str>| {
@@ -1031,7 +1137,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closing_the_last_live_worker_closes_the_list(cx: &mut gpui::TestAppContext) {
+    fn finishing_the_last_worker_keeps_its_status_until_removed(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
@@ -1042,6 +1148,10 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "ready")], cx)
         });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list-state-0").is_some());
+        assert!(vcx.debug_bounds("swarm-list-mark-0").is_some());
+        panel.update(vcx, |panel, cx| panel.set_swarm_workers(Vec::new(), cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-list").is_none());
     }
