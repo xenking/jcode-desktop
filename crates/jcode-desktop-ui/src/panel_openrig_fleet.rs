@@ -124,7 +124,12 @@ impl FleetView {
             self.collapsed.remove(&Item::Host(host).key());
             for rig in host.rigs.iter().flatten().filter(|rig| rig.id == rig_id) {
                 self.collapsed.remove(&Item::Rig(host, rig).key());
-                for pod in rig.pods.iter().flatten().filter(|pod| pod.seats.iter().any(|seat| seat.id == seat_id)) {
+                for pod in rig
+                    .pods
+                    .iter()
+                    .flatten()
+                    .filter(|pod| pod.seats.iter().any(|seat| seat.id == seat_id))
+                {
                     self.collapsed.remove(&Item::Pod(host, rig, pod).key());
                 }
             }
@@ -511,6 +516,11 @@ impl Panel {
         let mut properties = div()
             .id("fleet-properties")
             .debug_selector(|| "fleet-properties".into())
+            .relative()
+            .children(crate::fixture_control_targets::marker(
+                || format!("inspector:{}:{}:{}", host.id, rig.id, seat.id),
+                || None,
+            ))
             .min_w_0()
             .min_h_0()
             .flex()

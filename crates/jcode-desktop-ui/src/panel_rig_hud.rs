@@ -35,6 +35,17 @@ fn identify(fleet: &Fleet, session: &str, daemon_host_id: Option<&str>) -> Optio
     })
 }
 
+fn status_label(status: &str) -> &str {
+    match status {
+        "attention_required" => "Needs attention",
+        other => other,
+    }
+}
+
+fn in_progress_label(count: u64) -> String {
+    format!("{count} {}", if count == 1 { "item" } else { "items" })
+}
+
 struct Tooltip {
     panel: gpui::WeakEntity<Panel>,
 }
@@ -80,11 +91,19 @@ impl Render for Tooltip {
             .child(row("Rig", identity.rig))
             .children(identity.pod.map(|v| row("Pod", v)))
             .child(row("Host", identity.host))
-            .children(identity.status.map(|v| row("Status", v)))
+            .children(
+                identity
+                    .status
+                    .map(|v| row("Status", status_label(&v).to_owned())),
+            )
             .children(identity.activity.map(|v| row("Activity", v)))
             .child(row("Runtime", "Jcode".into()))
             .children(panel.model.as_ref().map(|v| row("Model", v.clone())))
-            .children(identity.work.map(|v| row("Current work", v.to_string())))
+            .children(
+                identity
+                    .work
+                    .map(|v| row("In progress", in_progress_label(v))),
+            )
             .child(usage::meter_detail(
                 "Click to open in OpenRig".into(),
                 theme,
@@ -155,6 +174,15 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_measured_status_and_work_counts() {
+        assert_eq!(status_label("attention_required"), "Needs attention");
+        assert_eq!(status_label("unrecognized"), "unrecognized");
+        assert_eq!(in_progress_label(0), "0 items");
+        assert_eq!(in_progress_label(1), "1 item");
+        assert_eq!(in_progress_label(2), "2 items");
+    }
 
     #[test]
     fn only_exact_native_session_on_exact_host_gets_identity() {

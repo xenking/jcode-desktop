@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")
+    parser.add_argument("--rig-hud-click", action="store_true", help="click the OpenRig HUD and capture its selected inspector")
     parser.add_argument("--accounts", action="store_true",
                         help="open the Accounts panel with offline multi-account fixtures")
     parser.add_argument("--sign-in-steps", action="store_true",
@@ -168,6 +169,8 @@ def main():
     parser.add_argument("--selection-drag", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"),
                         help="drag a native text selection on the private display before capture")
     args = parser.parse_args()
+    if args.rig_hud_click:
+        args.rig_hud = True
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "onboarding_interact")
@@ -481,6 +484,8 @@ def main():
         env = isolated_env(root)
         if args.rig_hud:
             env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
+        if args.rig_hud_click:
+            env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD_CLICK"] = "1"
         if args.fps_header_interact:
             env["JCODE_DESKTOP_SHOW_FPS"] = "1"
         if args.release_status:

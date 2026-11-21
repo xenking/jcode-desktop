@@ -408,6 +408,22 @@ unsafe extern "C-unwind" fn activate(
                             cx.update(|_, cx| cx.quit()).ok();
                             return;
                         }
+                        if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD_CLICK").is_some() {
+                            let clicked = cx.update(|window, cx| fixture_control_targets::dispatch("click:panel-openrig", "screenshot-fixture", window, cx)).unwrap_or(false);
+                            for _ in 0..30 {
+                                let _ = cx.update(|window, cx| {
+                                    window.refresh();
+                                    window.draw(cx).clear(cx);
+                                });
+                                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                            }
+                            let selected = cx.update(|window, cx| fixture_control_targets::locate("inspector:host-fixture-local:local-kernel:local-operator.agent", "screenshot-fixture", window, cx).is_some()).unwrap_or(false);
+                            if !clicked || !selected {
+                                eprintln!("screenshot: OpenRig HUD click did not select the expected inspector");
+                                cx.update(|_, cx| cx.quit()).ok();
+                                return;
+                            }
+                        }
                     }
                     let _ = cx.update(|window, _| window.refresh());
                     cx.background_executor()

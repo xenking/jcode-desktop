@@ -187,6 +187,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     }
     let marker = if selector == "scroll:momentum" {
         "scroll:tool"
+    } else if selector == "click:panel-openrig" {
+        "hover:panel-openrig"
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
     } else {
