@@ -48,6 +48,13 @@ enum ActionState {
 }
 
 impl Action {
+    fn operation(self) -> Option<SessionOperation> {
+        match self {
+            Self::Compact => Some(SessionOperation::Compact),
+            Self::Shake => None,
+        }
+    }
+
     fn selector(self) -> &'static str {
         match self {
             Self::Compact => "context-usage-compact",
@@ -98,7 +105,7 @@ impl Panel {
     }
 
     fn context_action_enabled(&self, action: Action) -> bool {
-        matches!(action, Action::Compact)
+        action.operation().is_some()
             && !matches!(self.context_usage.action, ActionState::Running(_))
             && !self.context_usage.compacting
             && !self.activity_active()
@@ -400,6 +407,16 @@ impl Panel {
             } else {
                 theme.TEXT_FAINT
             })
+            .when(action == Action::Shake && !enabled && !running, |el| {
+                el.tooltip(|_, cx| {
+                    cx.new(|_| {
+                        super::usage::MeterTooltip(
+                            "Manual tool shaking is unavailable on this runtime.".into(),
+                        )
+                    })
+                    .into()
+                })
+            })
             .when(enabled, |el| {
                 crate::keyboard::button(el)
                     .cursor_pointer()
@@ -408,9 +425,11 @@ impl Panel {
                         if !panel.context_usage.is_open() || !panel.context_action_enabled(action) {
                             return;
                         }
+                        let Some(operation) = action.operation() else {
+                            return;
+                        };
                         panel.context_usage.action = ActionState::Running(action);
-                        panel
-                            .run_session_operation(SessionOperation::Compact, "Context compacted.");
+                        panel.run_session_operation(operation, action.label());
                         cx.notify();
                         cx.stop_propagation();
                     }))

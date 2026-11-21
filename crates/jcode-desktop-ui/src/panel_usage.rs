@@ -1148,6 +1148,10 @@ mod tests {
             item_count
         );
         assert!(commands.try_recv().is_err());
+        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "unavailable Shake must not run Compact");
         let close = vcx.debug_bounds("context-usage-close").unwrap();
         let viewport = vcx.update(|window, _| window.viewport_size());
         assert!(close.right() <= viewport.width);

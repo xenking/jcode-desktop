@@ -1433,6 +1433,7 @@ impl Panel {
         session: jcode_sdk::SessionInfo,
         cx: &mut Context<Self>,
     ) {
+        self.context_usage = context_usage::State::default();
         self.session_id = session.session_id;
         self.title = session
             .title
@@ -4276,9 +4277,13 @@ impl Panel {
             } if task_id == "context-compaction" => {
                 self.context_usage.compacting = false;
                 self.fail_compaction(summary);
+                let reason = summary.lines().rev().find(|line| !line.trim().is_empty());
                 self.settle_context_action(
                     context_usage::Action::Compact,
-                    summary.clone(),
+                    reason
+                        .unwrap_or(summary)
+                        .trim_start_matches("⚠ ")
+                        .replace("**", ""),
                     true,
                     cx,
                 );
