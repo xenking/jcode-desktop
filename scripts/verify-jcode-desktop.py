@@ -360,6 +360,8 @@ class Instance:
         if any((self.run / f"{name}-{suffix}").exists() for suffix in ("before.json", "before.png", "after.json", "after.png", "proof.json")):
             raise RuntimeError("journey evidence already exists; launch a fresh run")
         self.doctor()
+        if name == "swarm-dm":
+            return self.swarm_dm_journey()
         if name in SWARM_JOURNEYS:
             return self.swarm_journey(name)
         if name == "compaction":
@@ -981,6 +983,53 @@ class Instance:
         save(self.run / "background-jobs-proof.json", report)
         return report
 
+    def swarm_dm_journey(self):
+        if self.manifest["fixture"] != "background-jobs":
+            raise RuntimeError("swarm-dm needs the private daemon from --fixture background-jobs")
+        recipient = self.target["session_id"]
+        sender = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        if sender == recipient:
+            raise RuntimeError("DM sender must be a separate session")
+        draft = "Keep this unsent draft"
+        body = "Native verification: please check the output"
+        self.drive("set_composer", {"text": draft})
+        save(self.run / "swarm-dm-before.json", self.drive("state"))
+        command = {"type": "comm_message", "id": 1, "from_session": sender,
+                   "to_session": recipient, "message": body, "delivery": "notify", "require_target": True}
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(10)
+            conn.connect(str(self.legacy_socket))
+            conn.sendall(json.dumps(command).encode() + b"\n")
+            with conn.makefile("rb") as reader:
+                for line in reader:
+                    reply = json.loads(line)
+                    if reply.get("id") == command["id"] and reply.get("type") in ("done", "error"):
+                        break
+                else:
+                    raise RuntimeError("swarm DM ended without an acknowledgment")
+        if reply["type"] != "done":
+            raise RuntimeError(f"swarm DM failed: {reply['message']}")
+
+        def received():
+            state = self.drive("state")
+            panel = state["panel"]
+            for item in panel["loaded_transcript_items"]:
+                message = item.get("AgentMessage", {}) if isinstance(item, dict) else {}
+                name = message.get("from_name")
+                if (name and message["from_session"] == sender
+                        and message["message"] == f"DM from {name}: {body}"):
+                    if panel["session_id"] != recipient or panel["composer"] != draft:
+                        raise RuntimeError("swarm DM reached the wrong session or replaced the draft")
+                    return state, name
+            return None
+
+        after, name = self.runtime_wait(received, "signed DM in the recipient's native transcript")
+        save(self.run / "swarm-dm-after.json", after)
+        report = {"journey": "swarm-dm", "passed": True, "from_session": sender,
+                  "from_name": name, "recipient": recipient, "draft_preserved": True}
+        save(self.run / "swarm-dm-proof.json", report)
+        return report
+
     def swarm_journey(self, name):
         def open_panels(state):
             return [panel for row in state["navigation"]["rows"]
@@ -1240,7 +1289,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", "swarm-dm", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")
