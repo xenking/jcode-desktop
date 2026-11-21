@@ -718,6 +718,7 @@ pub struct Panel {
     /// Coordinator-only: background swarm awaits still in flight. The daemon
     /// persists them, so a reload no longer makes the coordinator look idle.
     pending_awaits: Vec<jcode_sdk::PendingAwait>,
+    pending_await_refresh: Option<gpui::Task<()>>,
     tab_dependency_waiting: bool,
     /// This session's own record, when it is a swarm worker. Headless workers
     /// answer no model probe on attach, so their model and effort come from
@@ -1627,6 +1628,7 @@ impl Panel {
             swarm_workers: Vec::new(),
             background_jobs: Default::default(),
             pending_awaits: Vec::new(),
+            pending_await_refresh: None,
             tab_dependency_waiting: false,
             worker_record: None,
             swarm_list_open: false,
@@ -8967,8 +8969,14 @@ mod tests {
             }], cx);
             assert_eq!(mode(panel), Some(TabMode::Waiting));
             panel.set_tab_waiting(false, cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_pending_awaits(Vec::new(), cx);
             assert_eq!(mode(panel), None);
             assert!(panel.awaiting_ids().is_empty());
+            panel.set_tab_waiting(true, cx);
+            panel.set_pending_awaits(Vec::new(), cx);
+            assert_eq!(mode(panel), Some(TabMode::Waiting));
+            panel.set_tab_waiting(false, cx);
 
             for (wire, expected) in [
                 (serde_json::json!({"ev":"tool_start", "session_id":"waiting-tab", "call_id":"bg-1", "name":"bg"}), TabMode::Working),

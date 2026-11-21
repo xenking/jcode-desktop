@@ -32,7 +32,8 @@ impl State {
             return;
         }
         if let Ok(snapshot) = client.todo_state(real_id) {
-            let waiting = waiting_on_dependencies(&snapshot, real_id);
+            let waiting =
+                waiting_on_dependencies(&snapshot, real_id, super::remote_host(display_id).is_some());
             if std::mem::replace(&mut self.waiting, waiting) != waiting {
                 let _ = updates.send(Update::TabWaitingState {
                     session_id: display_id.to_string(),
@@ -46,8 +47,10 @@ impl State {
     }
 }
 
-fn waiting_on_dependencies(state: &TodoSnapshot, session_id: &str) -> bool {
-    state.pending_swarm_await == Some(true)
+fn waiting_on_dependencies(state: &TodoSnapshot, session_id: &str, remote: bool) -> bool {
+    // Local tabs follow the named registrations in the workspace. Remote tabs
+    // cannot see those files and use the bridge's boolean instead.
+    (remote && state.pending_swarm_await == Some(true))
         || state.todos.iter().any(|todo| {
             is_incomplete_todo(todo)
                 && !todo_assigned_elsewhere(todo, session_id)
@@ -71,15 +74,19 @@ mod tests {
             "session_id":"s1", "running_background_tasks":["build"],
             "todos":[{"id":"a","content":"Check", "priority":"high", "status":"pending", "waiting_on":["build"]}]
         })).unwrap();
-        assert!(waiting_on_dependencies(&state, "s1"));
+        assert!(waiting_on_dependencies(&state, "s1", false));
         state.todos[0].assigned_to = Some("some-other-session".into());
-        assert!(!waiting_on_dependencies(&state, "s1"));
+        assert!(!waiting_on_dependencies(&state, "s1", false));
         state.todos[0].assigned_to = None;
+        state.todos[0].status = "completed".into();
+        assert!(!waiting_on_dependencies(&state, "s1", false));
+        state.todos[0].status = "pending".into();
         state.running_background_tasks.clear();
-        assert!(!waiting_on_dependencies(&state, "s1"));
+        assert!(!waiting_on_dependencies(&state, "s1", false));
         state.pending_swarm_await = Some(true);
-        assert!(waiting_on_dependencies(&state, "s1"));
+        assert!(waiting_on_dependencies(&state, "s1", true));
+        assert!(!waiting_on_dependencies(&state, "s1", false));
         state.pending_swarm_await = Some(false);
-        assert!(!waiting_on_dependencies(&state, "s1"));
+        assert!(!waiting_on_dependencies(&state, "s1", true));
     }
 }

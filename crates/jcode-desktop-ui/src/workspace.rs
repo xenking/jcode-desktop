@@ -2809,9 +2809,16 @@ impl Workspace {
                         self.sync_swarm_strips(cx);
                     }
                 }
+                let swarm_tool_finished =
+                    matches!(&event, jcode_sdk::ApiEvent::ToolDone { name, .. } if name == "swarm");
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.apply(&event, cx);
+                            if swarm_tool_finished {
+                                panel.refresh_local_pending_awaits(cx);
+                            }
+                        });
                         if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. }) {
                             let panel = slot.panel.read(cx);
                             if let Some(provider) = panel.provider.as_deref() {
@@ -3090,6 +3097,7 @@ impl Workspace {
                             // A subsequent SessionStatus event will replace this
                             // with idle/running. Clear the stale lost banner now.
                             panel.status = "connected".into();
+                            panel.refresh_local_pending_awaits(cx);
                             cx.notify();
                         });
                         break;

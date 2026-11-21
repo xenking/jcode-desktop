@@ -9,6 +9,15 @@ use crate::input::popup::{self, Popup};
 use crate::swarm_glyph::{Icon, Mark, Motion};
 use crate::swarm_view::{Activity, Indicator, Turn, Worker};
 
+const AWAIT_RECHECK_MS: u64 = 3_000;
+
+fn await_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 /// A worker row (composer list, sidebar, or transcript card) was clicked.
 pub(crate) struct OpenSwarmWorker(pub String);
 
@@ -43,13 +52,52 @@ impl Panel {
     /// registered them, so they are what keeps the agent from reading as idle.
     pub(crate) fn set_pending_awaits(
         &mut self,
-        awaits: Vec<jcode_sdk::PendingAwait>,
+        mut awaits: Vec<jcode_sdk::PendingAwait>,
         cx: &mut Context<Self>,
     ) {
+        let now = await_now_ms();
+        awaits.retain(|await_| await_.deadline_unix_ms > now);
         if self.pending_awaits != awaits {
             self.pending_awaits = awaits;
+            self.pending_await_refresh = None;
             cx.notify();
         }
+        if self.pending_await_refresh.is_some() {
+            return;
+        }
+        let Some(deadline) = self
+            .pending_awaits
+            .iter()
+            .map(|await_| await_.deadline_unix_ms)
+            .min()
+        else {
+            return;
+        };
+        // Worker/catalog notifications may never arrive for an unknown member.
+        // Track local registrations until they resolve, no later than the deadline.
+        let delay = Duration::from_millis((deadline - now).min(AWAIT_RECHECK_MS));
+        self.schedule_pending_await_refresh(delay, cx);
+    }
+
+    pub(crate) fn refresh_local_pending_awaits(&mut self, cx: &mut Context<Self>) {
+        if crate::harness::remote_host(&self.session_id).is_none() {
+            self.schedule_pending_await_refresh(Duration::ZERO, cx);
+        }
+    }
+
+    fn schedule_pending_await_refresh(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        let session_id = self.session_id.clone();
+        self.pending_await_refresh = Some(cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(delay).await;
+            let awaits = cx
+                .background_executor()
+                .spawn(async move { jcode_sdk::pending_awaits_for_session(&session_id) })
+                .await;
+            let _ = panel.update(cx, |panel, cx| {
+                panel.pending_await_refresh = None;
+                panel.set_pending_awaits(awaits, cx);
+            });
+        }));
     }
 
     /// Ids this coordinator is still waiting for, in request order,
@@ -58,13 +106,20 @@ impl Panel {
     /// the daemon resolves the whole await. Ids the worker list does not know
     /// stay: nothing says they are done.
     pub(crate) fn awaiting_ids(&self) -> Vec<String> {
+        if self.pending_awaits.is_empty() {
+            return Vec::new();
+        }
         let finished = |id: &str| {
             self.swarm_workers
                 .iter()
                 .any(|worker| worker.session_id == id && worker.state.is_finished())
         };
         let mut ids = Vec::new();
+        let now = await_now_ms();
         for await_ in &self.pending_awaits {
+            if await_.deadline_unix_ms <= now {
+                continue;
+            }
             for id in &await_.requested_ids {
                 if !ids.contains(id) && !finished(id) {
                     ids.push(id.clone());
