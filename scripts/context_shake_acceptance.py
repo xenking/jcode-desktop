@@ -92,10 +92,13 @@ class ShakeAcceptance(ContextUsage):
 
         def visible(name, *expected):
             frame, text = self.capture_text(f"{name}.png")
-            return frame if all(label in text.lower() for label in expected) else None
+            normalized = " ".join(text.lower().split())
+            return frame if all(label in normalized for label in expected) else None
 
         click("panel-context-meter")
-        self.runtime_wait(lambda: visible("before", "context usage", "shake tools", "conversation"), "the actual Shake tools button")
+        forecast = before[FIRST]["action_forecast"]
+        assert 0 < forecast["shake"]["tokens"] < forecast["current_tokens"], forecast
+        self.runtime_wait(lambda: visible("before", "context usage", "shake tools", "of current context", "est."), "native Shake forecast before clicking")
         click("context-usage-shake")
         preview = self.runtime_wait(lambda: visible("preview", "confirm shake", "cache"), "native warm-cache Shake preview and confirm button")
         assert before == {s: self.context_usage(s) for s in (FIRST, SECOND)}, "preview changed context"
@@ -104,9 +107,9 @@ class ShakeAcceptance(ContextUsage):
         click("context-usage-shake")
         self.runtime_wait(lambda: visible("confirm", "confirm shake", "cache"), "new preview after cancel")
         click("context-usage-shake-confirm")
-        applied = self.runtime_wait(lambda: visible("applied", "tokens saved"), "native Shake savings")
+        applied = self.runtime_wait(lambda: visible("applied", "local estimate", "% saved"), "native measured Shake savings")
         after = {s: self.context_usage(s) for s in (FIRST, SECOND)}
-        assert after[FIRST]["total_tokens"] < before[FIRST]["total_tokens"], (before, after)
+        assert after[FIRST]["action_forecast"]["current_tokens"] < forecast["current_tokens"], (before, after)
         assert after[SECOND] == before[SECOND]
         assert self.drive("state")["panel"]["composer"] == draft
         written = {m["id"]: m for m in json.loads(first_path.read_text())["messages"]}

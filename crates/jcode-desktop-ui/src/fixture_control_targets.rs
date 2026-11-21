@@ -143,7 +143,6 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || matches!(
             selector,
             "panel-context-meter"
-                | "context-usage-close"
                 | "context-usage-compact"
                 | "context-usage-shake"
                 | "context-usage-shake-confirm"

@@ -94,8 +94,10 @@ class ContextUsage(VERIFY.Instance):
 
         click("panel-context-meter")
         frames["first"] = self.runtime_wait(lambda: panel("first.png", 0), "native first-session breakdown")
+        _, forecast = self.capture_text("forecast.png")
+        assert "of current context" in forecast.lower(), forecast
         click("context-usage-shake")
-        click("context-usage-close")
+        self.drive("press_key", {"key": "fixture:escape"})
         _, closed = self.capture_text("closed.png")
         assert "context usage" not in closed.lower(), closed
         click("panel-context-meter")
@@ -114,7 +116,7 @@ class ContextUsage(VERIFY.Instance):
         if self.manifest["compact"]:
             def compacted():
                 frame, text = self.capture_text("compacted.png")
-                if "context compacted in this session" in text.lower():
+                if "context compacted in this session" in text.lower() and "local estimate" in text.lower():
                     return frame
                 if "cannot compact" in text.lower() or "compaction failed" in text.lower():
                     raise RuntimeError(text)

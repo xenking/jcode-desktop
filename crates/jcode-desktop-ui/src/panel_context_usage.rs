@@ -2,7 +2,8 @@ use super::*;
 use crate::fixture_control_targets::marker;
 use crate::harness::ContextBreakdownTarget;
 use jcode_sdk::api::{
-    ContextBreakdown, ContextBreakdownKind, ShakeToolsAction, ShakeToolsResult, ShakeToolsStats,
+    ContextActionMeasurement, ContextActionSavings, ContextBreakdown, ContextBreakdownKind,
+    ShakeToolsAction, ShakeToolsResult, ShakeToolsStats,
 };
 
 #[derive(Default)]
@@ -14,6 +15,7 @@ pub(super) struct State {
     shake_supported: bool,
     shake_task: Option<Task<()>>,
     pub(super) compacting: bool,
+    compact_measurement_supported: bool,
 }
 
 impl State {
@@ -81,7 +83,63 @@ impl Action {
     }
 }
 
+fn percent_of(tokens: u64, total: u64) -> String {
+    let percent = 100. * tokens as f64 / total as f64;
+    if tokens == 0 {
+        "0%".into()
+    } else if percent < 0.1 {
+        "<0.1%".into()
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+fn action_result(label: &str, measurement: Option<ContextActionMeasurement>) -> String {
+    let Some(ContextActionMeasurement {
+        before_tokens,
+        after_tokens,
+    }) = measurement
+    else {
+        return format!("{label} Before/after unavailable.");
+    };
+    let change = match before_tokens.cmp(&after_tokens) {
+        std::cmp::Ordering::Greater => format!(
+            " · {} saved",
+            percent_of(before_tokens - after_tokens, before_tokens)
+        ),
+        std::cmp::Ordering::Equal => " · no change".into(),
+        std::cmp::Ordering::Less => " · context grew".into(),
+    };
+    format!(
+        "{label} Local estimate: {} → {} tokens{change}.",
+        format_tokens(before_tokens),
+        format_tokens(after_tokens),
+    )
+}
+
 impl Panel {
+    pub(super) fn finish_manual_context_compaction(
+        &mut self,
+        triggered_manually: bool,
+        before: Option<u64>,
+        after: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let measurement = before
+            .zip(after)
+            .filter(|_| triggered_manually && self.context_usage.compact_measurement_supported)
+            .map(|(before_tokens, after_tokens)| ContextActionMeasurement {
+                before_tokens,
+                after_tokens,
+            });
+        self.settle_context_action(
+            Action::Compact,
+            action_result("Context compacted in this session.", measurement),
+            false,
+            cx,
+        );
+    }
+
     pub(super) fn settle_context_action(
         &mut self,
         action: Action,
@@ -100,6 +158,7 @@ impl Panel {
 
     pub(super) fn lose_context_action(&mut self) {
         self.context_usage.compacting = false;
+        self.context_usage.compact_measurement_supported = false;
         self.context_usage.shake_supported = false;
         self.context_usage.shake_task = None;
         if matches!(
@@ -165,25 +224,27 @@ impl Panel {
                             ActionState::Idle
                         };
                     }
-                    Ok(ShakeToolsResult::Applied { stats }) if !is_preview => panel
+                    Ok(ShakeToolsResult::Applied { stats, measurement }) if !is_preview => panel
                         .settle_context_action(
                             Action::Shake,
-                            format!(
-                                "{} {} shortened · ~{} tokens saved",
-                                stats.outputs_elided,
-                                if stats.outputs_elided == 1 {
-                                    "output"
-                                } else {
-                                    "outputs"
-                                },
-                                format_tokens(stats.estimated_tokens_saved)
+                            action_result(
+                                &format!(
+                                    "{} {} shortened.",
+                                    stats.outputs_elided,
+                                    if stats.outputs_elided == 1 {
+                                        "output"
+                                    } else {
+                                        "outputs"
+                                    },
+                                ),
+                                measurement,
                             ),
                             false,
                             cx,
                         ),
                     Ok(ShakeToolsResult::NoChange) => {
                         panel.context_usage.action = ActionState::Finished {
-                            label: "No eligible tool outputs to shake.".into(),
+                            label: "No eligible tool outputs to shake. Context unchanged.".into(),
                             error: false,
                         };
                     }
@@ -201,17 +262,21 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn toggle_context_usage(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.context_usage.is_open() {
             self.close_context_usage(cx);
         } else {
             self.context_usage.open = true;
+            window.focus(&self.focus_handle, cx);
             self.refresh_context_usage(cx);
             cx.notify();
         }
     }
 
-    fn close_context_usage(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_context_usage(&mut self, cx: &mut Context<Self>) {
+        if !self.context_usage.open {
+            return;
+        }
         self.context_usage.open = false;
         self.context_usage.read = None;
         self.context_usage.breakdown = None;
@@ -283,32 +348,7 @@ impl Panel {
             (None, Some(limit)) => format!("{} token limit", format_tokens(limit)),
             (None, None) => String::new(),
         };
-        let close = crate::keyboard::button(div().id("context-usage-close"))
-            .debug_selector(|| "context-usage-close".into())
-            .relative()
-            .children(marker(
-                || "context-usage-close".into(),
-                || Some(self.session_id.clone()),
-            ))
-            .flex_none()
-            .size(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .text_color(theme.composer_secondary())
-            .hover(|el| el.bg(theme.chip_background()))
-            .cursor_pointer()
-            .tooltip(|_, cx| {
-                cx.new(|_| super::usage::MeterTooltip("Close Context Usage".into()))
-                    .into()
-            })
-            .on_click(cx.listener(|panel, _, window, cx| {
-                panel.close_context_usage(cx);
-                panel.focus_input(window, cx);
-                cx.stop_propagation();
-            }))
-            .child("−");
+        let owner = cx.weak_entity();
         Some(
             div()
                 .id("context-usage")
@@ -318,6 +358,18 @@ impl Panel {
                     || "context-usage".into(),
                     || Some(self.session_id.clone()),
                 ))
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            crate::popover::dismiss_outside(window, [bounds], move |_, cx| {
+                                let _ = owner.update(cx, |panel, cx| panel.close_context_usage(cx));
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
                 .w_full()
                 .min_w_0()
                 .mb_2()
@@ -350,13 +402,19 @@ impl Panel {
                                 .flex_1()
                                 .min_w(px(174.))
                                 .flex()
-                                .items_center()
+                                .items_start()
                                 .justify_end()
-                                .gap_1()
-                                .child(self.render_context_action(Action::Compact, cx))
-                                .child(self.render_context_action(Action::Shake, cx))
-                                .child(close),
+                                .flex_wrap()
+                                .gap_2()
+                                .child(self.render_context_action_forecast(Action::Compact, cx))
+                                .child(self.render_context_action_forecast(Action::Shake, cx)),
                         ),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.composer_secondary())
+                        .child("Savings are a share of current context, not of the limit."),
                 )
                 .child(
                     div()
@@ -498,7 +556,7 @@ impl Panel {
             .when(enabled, |el| {
                 crate::keyboard::button(el)
                     .cursor_pointer()
-                    .on_click(cx.listener(|panel, _, _, cx| {
+                    .on_click(cx.listener(|panel, _, window, cx| {
                         if !panel.context_usage.open
                             || !panel.context_can_mutate()
                             || !panel.context_usage.shake_supported
@@ -507,6 +565,7 @@ impl Panel {
                         }
                         if let ActionState::ConfirmShake(preview) = &panel.context_usage.action {
                             let confirmation = preview.confirmation.clone();
+                            window.focus(&panel.focus_handle, cx);
                             panel.run_shake_tools(ShakeToolsAction::Apply { confirmation }, cx);
                             cx.stop_propagation();
                         }
@@ -525,8 +584,9 @@ impl Panel {
             .py_1()
             .bg(theme.chip_background())
             .cursor_pointer()
-            .on_click(cx.listener(|panel, _, _, cx| {
+            .on_click(cx.listener(|panel, _, window, cx| {
                 if matches!(panel.context_usage.action, ActionState::ConfirmShake(_)) {
+                    window.focus(&panel.focus_handle, cx);
                     panel.context_usage.action = ActionState::Idle;
                     cx.notify();
                     cx.stop_propagation();
@@ -557,6 +617,58 @@ impl Panel {
                 )
             })
             .child(div().flex().gap_2().child(confirm).child(cancel))
+    }
+
+    fn render_context_action_forecast(&self, action: Action, cx: &mut Context<Self>) -> gpui::Div {
+        let forecast = self
+            .context_usage
+            .breakdown
+            .as_ref()
+            .and_then(|snapshot| snapshot.action_forecast);
+        let (prediction, total) = forecast.map_or((None, None), |forecast| {
+            (
+                match action {
+                    Action::Compact => forecast.compact,
+                    Action::Shake => forecast.shake,
+                },
+                forecast.current_tokens.filter(|tokens| *tokens > 0),
+            )
+        });
+        let label = if self.context_usage.read.is_some() {
+            "Estimating…".into()
+        } else if !self.context_can_mutate()
+            || action == Action::Shake && !self.context_usage.shake_supported
+        {
+            "Savings unknown".into()
+        } else {
+            match (prediction, total) {
+                (Some(ContextActionSavings::NoChange), _) => "0% · no change".into(),
+                (Some(ContextActionSavings::Estimate { tokens }), Some(total))
+                    if tokens <= total =>
+                {
+                    format!("Est. {}", percent_of(tokens, total))
+                }
+                (Some(ContextActionSavings::UpperBound { tokens }), Some(total))
+                    if tokens <= total =>
+                {
+                    format!("Est. up to {}", percent_of(tokens, total))
+                }
+                _ => "Savings unknown".into(),
+            }
+        };
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_0p5()
+            .child(self.render_context_action(action, cx))
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(Theme::global().composer_secondary())
+                    .child(label),
+            )
     }
 
     fn render_context_action(
@@ -604,12 +716,18 @@ impl Panel {
                 crate::keyboard::button(el)
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.chip_active_background()))
-                    .on_click(cx.listener(move |panel, _, _, cx| {
+                    .on_click(cx.listener(move |panel, _, window, cx| {
                         if !panel.context_usage.is_open() || !panel.context_action_enabled(action) {
                             return;
                         }
+                        window.focus(&panel.focus_handle, cx);
                         match action {
                             Action::Compact => {
+                                panel.context_usage.compact_measurement_supported = panel
+                                    .context_usage
+                                    .breakdown
+                                    .as_ref()
+                                    .is_some_and(|snapshot| snapshot.action_forecast.is_some());
                                 panel.context_usage.action = ActionState::Running(action);
                                 panel.run_session_operation(
                                     SessionOperation::Compact,

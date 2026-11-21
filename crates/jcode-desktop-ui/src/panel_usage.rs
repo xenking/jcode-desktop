@@ -878,8 +878,8 @@ impl Panel {
                 })
                 .child(context_ring(percent))
                 .children(label)
-                .on_click(cx.listener(|panel, _, _, cx| {
-                    panel.toggle_context_usage(cx);
+                .on_click(cx.listener(|panel, _, window, cx| {
+                    panel.toggle_context_usage(window, cx);
                     cx.stop_propagation();
                 }))
                 .into_any_element(),
@@ -1136,6 +1136,7 @@ mod tests {
                     total_tokens: Some(41_000),
                     limit_tokens: Some(200_000),
                     estimated: true,
+                    action_forecast: None,
                     categories: vec![jcode_sdk::api::ContextBreakdownCategory {
                         kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
                         tokens: Some(41_000),
@@ -1158,10 +1159,8 @@ mod tests {
             commands.try_recv().is_err(),
             "unavailable Shake must not run Compact"
         );
-        let close = vcx.debug_bounds("context-usage-close").unwrap();
-        let viewport = vcx.update(|window, _| window.viewport_size());
-        assert!(close.right() <= viewport.width);
-        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("context-usage-close").is_none());
+        vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage").is_none());
         let meter = vcx.debug_bounds("panel-context-meter").unwrap();
@@ -1277,6 +1276,10 @@ mod tests {
             commands.try_recv(),
             Ok(Command::ReadContextBreakdown { .. })
         ));
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        vcx.simulate_click(input.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage").is_none());
     }
 
     #[gpui::test]

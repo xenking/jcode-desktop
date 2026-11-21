@@ -4235,6 +4235,7 @@ impl Panel {
             ApiEvent::CompactionDivider {
                 content,
                 running,
+                pre_tokens,
                 post_tokens,
                 trigger,
                 ..
@@ -4251,10 +4252,10 @@ impl Panel {
                         self.context_tokens = Some(*post_tokens);
                     }
                     if matches!(trigger.as_deref(), None | Some("manual")) {
-                        self.settle_context_action(
-                            context_usage::Action::Compact,
-                            "Context compacted in this session.".into(),
-                            false,
+                        self.finish_manual_context_compaction(
+                            trigger.as_deref() == Some("manual"),
+                            *pre_tokens,
+                            *post_tokens,
                             cx,
                         );
                     } else {
@@ -7229,7 +7230,11 @@ impl Render for Panel {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.handle_rewind_key(event, window, cx)
+                if this.context_usage.is_open() && event.keystroke.key == "escape" {
+                    this.close_context_usage(cx);
+                    this.focus_input(window, cx);
+                    cx.stop_propagation();
+                } else if this.handle_rewind_key(event, window, cx)
                     || this.handle_queue_card_key(event, window, cx)
                     || this.handle_ask_key(event, window, cx)
                     || this.resume_composer_typing(event, false, window, cx)
