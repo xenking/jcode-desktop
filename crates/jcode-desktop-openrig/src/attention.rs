@@ -281,6 +281,26 @@ pub(crate) struct ParkedSeat {
     parked: ParkedVerdict,
     pub reason: String,
     pub activity: ParkedActivity,
+    obligations: Option<ParkedObligations>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ParkedObligations {
+    open_count: u64,
+    unhealthy_held_count: u64,
+    complete: bool,
+}
+
+impl ParkedSeat {
+    /// A seat parks on open or unhealthy held obligations. With a complete read
+    /// of none, unknown activity (a terminal seat has no activity hook) cannot
+    /// hide parked work.
+    fn nothing_to_park_on(&self) -> bool {
+        self.obligations.as_ref().is_some_and(|read| {
+            read.complete && read.open_count == 0 && read.unhealthy_held_count == 0
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -382,6 +402,7 @@ pub(crate) fn load_waits(fleet: &Fleet, inbox: &mut Inbox) {
                             match seat.parked {
                                 ParkedVerdict::Known(true) => inbox.include_parked(host, rig, seat),
                                 ParkedVerdict::Known(false) => {}
+                                ParkedVerdict::Unknown(_) if seat.nothing_to_park_on() => {}
                                 ParkedVerdict::Unknown(_) => inbox.issues.push(format!(
                                     "{} / {}: work status indeterminate for {}",
                                     host.name, rig.name, seat.session_name
@@ -480,6 +501,9 @@ mod tests {
             let seats = parked(&target, "rig/one").unwrap();
             assert!(matches!(seats[0].parked, ParkedVerdict::Known(false)));
             assert!(matches!(seats[1].parked, ParkedVerdict::Unknown(_)));
+            assert!(seats[1].nothing_to_park_on());
+            assert!(matches!(seats[2].parked, ParkedVerdict::Unknown(_)));
+            assert!(!seats[2].nothing_to_park_on());
             assert!(held(&target, "seat@rig").unwrap().is_empty());
         });
     }

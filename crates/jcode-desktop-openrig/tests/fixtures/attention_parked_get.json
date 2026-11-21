@@ -13,7 +13,16 @@
         "sessionName": "operator-human@kernel",
         "parked": "indeterminate",
         "reason": "activity is unknown for operator-human@kernel — the oracle cannot support a parked verdict (obligation face read anyway: 0 open, 0 held)",
-        "activity": { "since": "2026-11-21T08:42:05.608Z" }
+        "activity": { "since": "2026-11-21T08:42:05.608Z" },
+        "obligations": { "openCount": 0, "heldCount": 0, "unhealthyHeldCount": 0, "complete": true, "limit": 500 }
+      },
+      {
+        "seatNodeId": "01M7DM5FWCE1MZPPC9XVB1ERWF",
+        "sessionName": "dev-human@kernel",
+        "parked": "indeterminate",
+        "reason": "activity is unknown for dev-human@kernel — the oracle cannot support a parked verdict (obligation face read anyway: 2 open, 0 held)",
+        "activity": { "since": "2026-11-21T08:42:05.608Z" },
+        "obligations": { "openCount": 2, "heldCount": 0, "unhealthyHeldCount": 0, "complete": true, "limit": 500 }
       }
     ]
   }
