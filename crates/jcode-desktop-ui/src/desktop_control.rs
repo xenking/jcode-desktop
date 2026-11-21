@@ -3,7 +3,8 @@
 #[cfg(unix)]
 mod unix {
     use jcode_sdk::desktop_control::{
-        DESKTOP_CONTROL_VERSION, DesktopAction, DesktopRequest, DesktopResponse,
+        COMPUTER_USE_TIMEOUT_SECS, DESKTOP_CONTROL_VERSION, DesktopAction, DesktopRequest,
+        DesktopResponse,
     };
     use std::{
         io::{self, Read, Write},
@@ -25,6 +26,7 @@ mod unix {
         pub request: DesktopRequest,
         pub reply: mpsc::SyncSender<DesktopResponse>,
         pub deadline: Instant,
+        pub cancelled: Arc<AtomicBool>,
     }
 
     pub struct Server {
@@ -148,6 +150,23 @@ mod unix {
             }
         }
         let request: DesktopRequest = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if matches!(request.action, DesktopAction::ComputerUse { .. }) {
+            if request.v != DESKTOP_CONTROL_VERSION {
+                return Err(io::Error::other("unsupported Desktop control version"));
+            }
+            let mut socket = stream.try_clone()?;
+            if !reserve(waiters) {
+                return Err(io::Error::other("too many concurrent desktop requests"));
+            }
+            let tx = tx.clone();
+            let stop = stop.clone();
+            let waiters = waiters.clone();
+            thread::spawn(move || {
+                let _ = computer(&mut socket, request, &tx, &stop);
+                waiters.fetch_sub(1, Ordering::AcqRel);
+            });
+            return Ok(());
+        }
         if let DesktopAction::WaitFor {
             target,
             condition,
@@ -170,13 +189,7 @@ mod unix {
                     "only transcript selector visibility is supported",
                 ));
             }
-            #[allow(deprecated, reason = "try_update is newer than the supported MSRV")]
-            let admitted = waiters
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    (count < 8).then_some(count + 1)
-                })
-                .is_ok();
-            if !admitted {
+            if !reserve(waiters) {
                 return Err(io::Error::other("too many concurrent desktop waits"));
             }
             let mut socket = match stream.try_clone() {
@@ -210,6 +223,7 @@ mod unix {
                             },
                             reply,
                             deadline: poll_deadline,
+                            cancelled: Arc::default(),
                         })
                         .is_err()
                     {
@@ -263,6 +277,7 @@ mod unix {
             request,
             reply,
             deadline,
+            cancelled: Arc::default(),
         })
         .map_err(io::Error::other)?;
         loop {
@@ -283,6 +298,73 @@ mod unix {
         }
     }
 
+    #[allow(deprecated, reason = "try_update is newer than the supported MSRV")]
+    fn reserve(waiters: &AtomicUsize) -> bool {
+        waiters
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < 8).then_some(count + 1)
+            })
+            .is_ok()
+    }
+
+    fn computer(
+        stream: &mut UnixStream,
+        request: DesktopRequest,
+        tx: &async_channel::Sender<Pending>,
+        stop: &AtomicBool,
+    ) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(COMPUTER_USE_TIMEOUT_SECS);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (reply, responses) = mpsc::sync_channel(1);
+        let queued = tx.try_send(Pending {
+            request,
+            reply,
+            deadline,
+            cancelled: cancelled.clone(),
+        });
+        let error = |code: &str, message: &str| DesktopResponse::Error {
+            code: code.into(),
+            message: message.into(),
+        };
+        let response = if queued.is_err() {
+            error("busy", "Desktop request queue is full or closed")
+        } else {
+            loop {
+                if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    break error("desktop_timeout", "Desktop computer use timed out");
+                }
+                match responses.try_recv() {
+                    Ok(response) => break response,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        break error(
+                            "desktop_unavailable",
+                            "Desktop stopped handling the request",
+                        );
+                    }
+                    Err(mpsc::TryRecvError::Empty) => (),
+                }
+                // This one-request protocol expects no more bytes. EOF means the
+                // client gave up before consent or execution could begin.
+                match stream.read(&mut [0]) {
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        ()
+                    }
+                    _ => {
+                        cancelled.store(true, Ordering::Release);
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        cancelled.store(true, Ordering::Release);
+        writeln!(stream, "{}", serde_json::to_string(&response)?)
+    }
+
     impl Drop for Server {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
@@ -297,5 +379,7 @@ mod unix {
         }
     }
 }
+#[cfg(target_os = "macos")]
+pub(crate) use unix::Pending;
 #[cfg(unix)]
 pub(crate) use unix::Server;

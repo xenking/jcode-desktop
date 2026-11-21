@@ -5,6 +5,10 @@ use jcode_sdk::desktop_control::{
 };
 use serde_json::json;
 
+#[cfg(target_os = "macos")]
+#[path = "computer_control.rs"]
+mod computer_control;
+
 fn error(code: &str, message: &str) -> DesktopResponse {
     DesktopResponse::Error {
         code: code.into(),
@@ -198,6 +202,11 @@ impl Workspace {
                 let Some(workspace) = this.upgrade() else {
                     break;
                 };
+                #[cfg(target_os = "macos")]
+                if matches!(&pending.request.action, DesktopAction::ComputerUse { .. }) {
+                    computer_control::handle(&workspace, pending, cx);
+                    continue;
+                }
                 let Ok(response) = cx.update(|window, cx| {
                     handle_window_request(
                         &workspace,
@@ -259,6 +268,28 @@ impl Workspace {
             return error("version", "unsupported Desktop control version");
         }
         match request.action {
+            DesktopAction::ComputerTarget { session_id } => {
+                #[cfg(target_os = "macos")]
+                {
+                    let target = DesktopTarget {
+                        window_id: window_id(window),
+                        session_id,
+                    };
+                    match computer_control::validate_target(self, &target, window, cx) {
+                        Ok(()) => ok(json!(target)),
+                        Err(response) => response,
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = session_id;
+                    error("unsupported", "native computer use requires macOS")
+                }
+            }
+            DesktopAction::ComputerUse { .. } => error(
+                "unsupported",
+                "native computer use requires the Desktop broker",
+            ),
             DesktopAction::OpenSession {
                 session_id,
                 destination: jcode_sdk::desktop_control::OpenDestination::NewWindow,

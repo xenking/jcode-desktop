@@ -3593,6 +3593,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-computer"
+version = "1.0.3"
+dependencies = [
+ "anyhow",
+ "base64",
+ "core-foundation 0.9.4",
+ "core-graphics 0.23.2",
+ "jcode-base",
+ "jcode-tool-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "jcode-config-types"
 version = "0.1.0"
 dependencies = [
@@ -3721,6 +3738,7 @@ dependencies = [
  "image",
  "jcode-applet-types",
  "jcode-base",
+ "jcode-computer",
  "jcode-core",
  "jcode-desktop-accounts-ui",
  "jcode-desktop-api",
@@ -4188,6 +4206,7 @@ dependencies = [
 name = "jcode-tool-types"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 
