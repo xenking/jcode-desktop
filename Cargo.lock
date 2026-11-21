@@ -3694,6 +3694,7 @@ version = "0.7.0"
 name = "jcode-desktop-openrig"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "ureq",

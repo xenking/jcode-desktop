@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::{encode, get};
+use crate::{encode, get, inbox};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fleet {
@@ -67,6 +67,15 @@ pub struct Seat {
     pub jcode_session_id: Option<String>,
     pub context_percent: Option<f64>,
     pub current_work_count: Option<u64>,
+    pub(crate) attention: Option<SeatAttention>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SeatAttention {
+    pub kind: inbox::Kind,
+    pub reason: Option<String>,
+    pub evidence: Option<String>,
+    pub observed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +105,89 @@ struct Node {
     native_ref: Option<String>,
     context_usage: Option<ContextUsage>,
     in_progress_work_count: Option<u64>,
+    arbitrated_needs_input: Option<bool>,
+    activity_state: Option<ActivityState>,
+    agent_activity: Option<AgentActivity>,
+    needs_attention: Option<bool>,
+    held_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivityState {
+    needs_input: Option<NeedsInput>,
+}
+
+#[derive(Deserialize)]
+struct NeedsInput {
+    count: Option<u64>,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentActivity {
+    state: Option<String>,
+    reason: Option<String>,
+    evidence: Option<String>,
+    event_at: Option<String>,
+    stale: Option<bool>,
+}
+
+impl Node {
+    fn attention(&self) -> Option<SeatAttention> {
+        let observed = self
+            .agent_activity
+            .as_ref()
+            .filter(|activity| activity.stale != Some(true));
+        let arbitration = self
+            .activity_state
+            .as_ref()
+            .and_then(|state| state.needs_input.as_ref());
+        let needs_input = self
+            .arbitrated_needs_input
+            .or_else(|| arbitration.and_then(|signal| signal.count.map(|count| count > 0)))
+            .unwrap_or_else(|| observed.and_then(|a| a.state.as_deref()) == Some("needs_input"));
+        let held = self
+            .held_reason
+            .as_ref()
+            .filter(|reason| !reason.trim().is_empty());
+        let input_reason = arbitration
+            .and_then(|signal| signal.reason.as_deref())
+            .or_else(|| {
+                observed
+                    .filter(|a| a.state.as_deref() == Some("needs_input"))
+                    .and_then(|a| a.reason.as_deref())
+            });
+        let (kind, reason) = if needs_input {
+            (
+                if input_reason == Some("permission_prompt") {
+                    inbox::Kind::Permission
+                } else {
+                    inbox::Kind::SeatAttention
+                },
+                input_reason,
+            )
+        } else if let Some(reason) = held {
+            (inbox::Kind::Held, Some(reason.as_str()))
+        } else if self.needs_attention == Some(true) {
+            (inbox::Kind::SeatAttention, None)
+        } else {
+            return None;
+        };
+        let observed =
+            observed.filter(|a| needs_input && a.state.as_deref() == Some("needs_input"));
+        Some(SeatAttention {
+            kind,
+            reason: reason
+                .filter(|reason| !reason.trim().is_empty())
+                .map(str::to_owned),
+            evidence: observed
+                .and_then(|a| a.evidence.clone())
+                .filter(|text| !text.trim().is_empty()),
+            observed_at: inbox::timestamp(observed.and_then(|a| a.event_at.as_deref())),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -107,6 +199,7 @@ struct ContextUsage {
 
 impl From<Node> for Seat {
     fn from(node: Node) -> Self {
+        let attention = node.attention();
         let runtime = node.runtime.filter(|value| !value.is_empty()).map(|value| {
             if value == "jcode" {
                 Runtime::Jcode
@@ -134,6 +227,7 @@ impl From<Node> for Seat {
                 .and_then(|context| context.used_percentage)
                 .filter(|percent| (0.0..=100.0).contains(percent)),
             current_work_count: node.in_progress_work_count,
+            attention,
         }
     }
 }
@@ -341,6 +435,33 @@ fn populate_nodes(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn inbox_seat_attention_uses_arbitration_and_never_guesses_an_age() {
+        let attention = |activity| {
+            serde_json::from_value::<Node>(activity)
+                .unwrap()
+                .attention()
+        };
+        let observed = json!({"nodeId":"n1", "logicalId":"dev.one", "agentActivity": {
+            "state":"needs_input", "reason":"permission_prompt", "eventAt":"2026-11-21T01:00:00Z"
+        }});
+        let signal = attention(observed.clone()).unwrap();
+        assert_eq!(signal.kind, inbox::Kind::Permission);
+        assert!(signal.observed_at.is_some());
+        let mut vetoed = observed.clone();
+        vetoed["arbitratedNeedsInput"] = json!(false);
+        assert_eq!(attention(vetoed), None);
+        let mut stale = observed;
+        stale["agentActivity"]["stale"] = json!(true);
+        assert_eq!(attention(stale), None);
+        let held = attention(
+            json!({"nodeId":"n1", "logicalId":"dev.one", "heldReason":"waiting for owner"}),
+        )
+        .unwrap();
+        assert_eq!(held.kind, inbox::Kind::Held);
+        assert_eq!(held.observed_at, None);
+    }
 
     #[test]
     fn captured_legacy_daemon_groups_local_and_remote_seats_without_inventing_sessions() {

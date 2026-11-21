@@ -2,7 +2,7 @@ use super::*;
 use crate::ui_actions::OpenFleetSession;
 use jcode_desktop_openrig::fleet::HostTarget;
 
-fn session_address(target: &HostTarget, native_id: &str, known_hosts: &[String]) -> Option<String> {
+fn session_address(target: &HostTarget, native_id: &str, ssh_hosts: &[String]) -> Option<String> {
     if native_id.is_empty()
         || native_id.len() > 200
         || !native_id
@@ -16,14 +16,18 @@ fn session_address(target: &HostTarget, native_id: &str, known_hosts: &[String])
     };
     // Prefer the operator's configured alias (including an SSH username) over
     // a DNS name. An OpenRig ID by itself is not necessarily an SSH destination.
-    let host = known_hosts
+    let host = ssh_hosts
         .iter()
         .find(|host| *host == alias)
         .or_else(|| {
-            known_hosts.iter().find(|host| {
-                let hostname = host.rsplit('@').next().unwrap_or(host);
-                endpoint.as_deref() == Some(hostname) || hostname == alias
-            })
+            ssh_hosts
+                .iter()
+                .find(|host| host.rsplit('@').next() == Some(alias))
+        })
+        .or_else(|| {
+            ssh_hosts
+                .iter()
+                .find(|host| host.rsplit('@').next() == endpoint.as_deref())
         })
         .map(String::as_str)
         .or(endpoint.as_deref())?;
@@ -52,10 +56,43 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(address) = session_address(&action.target, &action.native_id, &self.remotes.hosts)
-        else {
-            return;
-        };
+        if !cfg!(test) && matches!(&action.target, HostTarget::Remote { .. }) {
+            let target = action.target.clone();
+            let native_id = action.native_id.clone();
+            let mut ssh_hosts = self.remotes.hosts.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                let discovered = cx
+                    .background_executor()
+                    .spawn(async { crate::remote_targets::discover_hosts() })
+                    .await;
+                for host in discovered {
+                    if !ssh_hosts
+                        .iter()
+                        .any(|known| known.rsplit('@').next() == Some(host.as_str()))
+                    {
+                        ssh_hosts.push(host);
+                    }
+                }
+                if let Some(address) = session_address(&target, &native_id, &ssh_hosts) {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.activate_fleet_address(address, window, cx)
+                    });
+                }
+            })
+            .detach();
+        } else if let Some(address) =
+            session_address(&action.target, &action.native_id, &self.remotes.hosts)
+        {
+            self.activate_fleet_address(address, window, cx);
+        }
+    }
+
+    fn activate_fleet_address(
+        &mut self,
+        address: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let session = self
             .sessions
             .iter()
@@ -104,8 +141,22 @@ mod tests {
             Some("ssh://east.example.test/session_a")
         );
         assert_eq!(
-            session_address(&remote, "session_a", &["alice@east".into()]).as_deref(),
+            session_address(
+                &remote,
+                "session_a",
+                &["bob@east.example.test".into(), "alice@east".into()]
+            )
+            .as_deref(),
             Some("ssh://alice%40east/session_a")
+        );
+        assert_eq!(
+            session_address(
+                &remote,
+                "session_a",
+                &["bob@east.example.test".into(), "east".into()]
+            )
+            .as_deref(),
+            Some("ssh://east/session_a")
         );
         assert_eq!(session_address(&remote, "", &[]), None);
         assert_eq!(
@@ -123,6 +174,48 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[gpui::test]
+    fn inbox_filters_and_opens_a_read_only_inspector(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("current-chat", cx);
+            workspace
+        });
+        workspace.update_in(vcx, |workspace, window, cx| {
+            workspace.open_openrig(&OpenOpenrig, window, cx)
+        });
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        if vcx.debug_bounds("openrig-section-menu").is_some() {
+            click(vcx, "openrig-section-menu");
+        }
+        click(vcx, "openrig-section:Inbox");
+        let local = "inbox-item:Queue { host: \"local\", item: \"q1\" }";
+        let remote = "inbox-item:Queue { host: \"worker-east\", item: \"q1\" }";
+        assert!(vcx.debug_bounds(remote).is_some());
+        click(vcx, "inbox-filter:Approval");
+        assert!(vcx.debug_bounds(remote).is_none());
+        click(vcx, local);
+        assert!(vcx.debug_bounds("inbox-inspector").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("inbox-inspector").is_none());
+        assert!(!commands.try_iter().any(|command| matches!(
+            command,
+            Command::CreateSession { .. } | Command::Watch { .. }
+        )));
     }
 
     #[gpui::test]

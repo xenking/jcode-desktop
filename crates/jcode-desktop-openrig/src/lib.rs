@@ -1,5 +1,6 @@
 pub mod connections;
 pub mod cost;
+pub mod inbox;
 pub mod sections;
 pub mod usage;
 pub mod util;
@@ -104,6 +105,7 @@ pub mod fleet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SectionKind {
     Fleet,
+    Inbox,
     Specs,
     Scopes,
     Terminals,
@@ -221,6 +223,7 @@ pub struct Section {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub fleet: fleet::Fleet,
+    pub inbox: Option<inbox::Inbox>,
     pub sections: Vec<Section>,
     pub error: Option<String>,
 }
@@ -505,8 +508,9 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         "/api/provider/usage/hosts",
         "/api/telemetry/usage/cost",
     ];
-    let results: Vec<_> = std::thread::scope(|scope| {
-        routes
+    let (results, inbox) = std::thread::scope(|scope| {
+        let inbox = scope.spawn(|| inbox::fetch_inbox(base_url));
+        let results: Vec<_> = routes
             .iter()
             .map(|route| scope.spawn(move || get_typed(base_url, route)))
             .collect::<Vec<_>>()
@@ -520,7 +524,13 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
                     })
                 })
             })
-            .collect()
+            .collect();
+        (
+            results,
+            inbox
+                .join()
+                .unwrap_or_else(|_| Err("Inbox read worker failed".into())),
+        )
     });
     let mut errors: Vec<String> = results
         .iter()
@@ -528,6 +538,14 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         .collect();
     let val = |i: usize| results[i].as_ref().ok();
     let fleet = fleet::Fleet::fetch(base_url, val(0), val(1), val(2), &mut errors);
+    let mut inbox = inbox.unwrap_or_else(|error| inbox::Inbox {
+        issues: vec![error],
+        ..inbox::Inbox::default()
+    });
+    if val(1).is_none() {
+        inbox.issues.push("OpenRig host list unavailable".into());
+    }
+    inbox.include_seat_attention(&fleet);
     let mut sections = vec![make_section(SectionKind::Fleet, "Fleet", Vec::new())];
     for (kind, title, index, keys) in [
         (SectionKind::Specs, "Specs", 3, vec![]),
@@ -605,8 +623,10 @@ pub fn fetch_snapshot(base_url: &str) -> Snapshot {
         3,
         make_section(SectionKind::Terminals, "Terminals", terminals),
     );
+    sections.insert(1, make_section(SectionKind::Inbox, "Inbox", Vec::new()));
     Snapshot {
         fleet,
+        inbox: Some(inbox),
         sections,
         error: (!errors.is_empty()).then(|| errors.join("\n")),
     }
@@ -637,6 +657,7 @@ impl Snapshot {
     pub fn fixture() -> Self {
         let kinds = [
             (SectionKind::Fleet, "Fleet"),
+            (SectionKind::Inbox, "Inbox"),
             (SectionKind::Specs, "Specs"),
             (SectionKind::Scopes, "Scopes"),
             (SectionKind::Terminals, "Terminals"),
@@ -650,11 +671,12 @@ impl Snapshot {
         ];
         Self {
             fleet: fleet::Fleet::fixture(),
+            inbox: Some(inbox::Inbox::fixture()),
             sections: kinds
                 .into_iter()
                 .map(|(kind, title)| {
                     let rows =
-                        if kind == SectionKind::Fleet {
+                        if matches!(kind, SectionKind::Fleet | SectionKind::Inbox) {
                             Vec::new()
                         } else {
                             demo_rows(kind).unwrap_or_else(|| vec![row(&json!({
@@ -682,7 +704,7 @@ mod tests {
     #[test]
     fn fixture_has_all_sections_and_fleet() {
         let s = Snapshot::fixture();
-        assert_eq!(s.sections.len(), 11);
+        assert_eq!(s.sections.len(), 12);
         assert_eq!(s.sections[0].kind, SectionKind::Fleet);
         assert_eq!(s.fleet.hosts.len(), 2);
     }
@@ -694,7 +716,8 @@ mod tests {
     fn failed_reads_are_not_success() {
         let s = fetch_snapshot("http://127.0.0.1:1");
         assert!(s.error.is_some());
-        assert_eq!(s.sections.len(), 11);
+        assert_eq!(s.sections.len(), 12);
+        assert!(!s.inbox.unwrap().issues.is_empty());
     }
 
     /// A closed mission-control pane must stop its subscription even when the

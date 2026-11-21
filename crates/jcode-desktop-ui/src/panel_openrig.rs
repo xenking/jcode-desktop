@@ -13,6 +13,8 @@ use std::{
 
 #[path = "panel_openrig_fleet.rs"]
 mod fleet;
+#[path = "panel_openrig_inbox.rs"]
+mod inbox;
 
 pub(crate) const SESSION_ID: &str = "openrig://mission-control";
 
@@ -78,6 +80,7 @@ fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, Str
 pub(super) struct State {
     snapshot: Snapshot,
     fleet: fleet::FleetView,
+    inbox: inbox::InboxView,
     compact: bool,
     show_sections: bool,
     section: usize,
@@ -101,6 +104,7 @@ impl State {
             fleet: fleet::FleetView::fixture(
                 std::env::var_os("JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR").is_some(),
             ),
+            inbox: inbox::InboxView::default(),
             compact: false,
             show_sections: false,
             section: 0,
@@ -127,6 +131,12 @@ impl State {
             .sections
             .get(self.section)
             .is_none_or(|section| section.kind == SectionKind::Fleet)
+    }
+    fn is_inbox(&self) -> bool {
+        self.snapshot
+            .sections
+            .get(self.section)
+            .is_some_and(|section| section.kind == SectionKind::Inbox)
     }
     fn is_open(&self, row: &jcode_desktop_openrig::Row) -> bool {
         row.default_open != self.toggled.contains(&row.id)
@@ -363,6 +373,7 @@ impl Panel {
         let state = self.openrig.as_ref().expect("openrig state");
         let theme = Theme::global();
         let is_fleet = state.is_fleet();
+        let is_inbox = state.is_inbox();
         let compact = state.compact;
         let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
         explorer = if compact {
@@ -375,6 +386,7 @@ impl Panel {
             explorer = explorer.child(
                 div()
                     .id(("openrig-section", index))
+                    .debug_selector(|| format!("openrig-section:{}", section.title))
                     .rounded_full()
                     .px_3()
                     .py_1()
@@ -531,13 +543,17 @@ impl Panel {
                 }
             }
         }
-        let status = state.snapshot.error.as_ref().cloned().unwrap_or_else(|| {
-            if crate::harness::screenshot_mode() {
-                "Fixture data".into()
-            } else {
-                "Live · polling every 2s".into()
-            }
-        });
+        let status = (!is_inbox)
+            .then_some(state.snapshot.error.as_ref())
+            .flatten()
+            .cloned()
+            .unwrap_or_else(|| {
+                if crate::harness::screenshot_mode() {
+                    "Fixture data".into()
+                } else {
+                    "Live · polling every 2s".into()
+                }
+            });
         let command = state.command.clone().unwrap_or_else(|| {
             if state.filter.is_empty() {
                 ":section    /filter".into()
@@ -575,6 +591,17 @@ impl Panel {
                         cx.stop_propagation();
                         return;
                     }
+                    if state.is_inbox()
+                        && !state.explorer
+                        && state.command.is_none()
+                        && state
+                            .inbox
+                            .key(state.snapshot.inbox.as_ref(), &state.filter, key)
+                    {
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     if state.is_fleet()
                         && state.command.is_none()
                         && state.fleet.properties
@@ -607,6 +634,7 @@ impl Panel {
                         header.child(
                             div()
                                 .id("openrig-section-menu")
+                                .debug_selector(|| "openrig-section-menu".into())
                                 .rounded_full()
                                 .bg(theme.HEADER_BG)
                                 .px_3()
@@ -644,7 +672,8 @@ impl Panel {
                     .flex()
                     .children(side_sections)
                     .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
-                    .when(!is_fleet, |el| el.child(list).child(detail)),
+                    .when(is_inbox, |el| el.child(self.render_inbox(state, cx)))
+                    .when(!is_fleet && !is_inbox, |el| el.child(list).child(detail)),
             )
             .child(
                 div()
