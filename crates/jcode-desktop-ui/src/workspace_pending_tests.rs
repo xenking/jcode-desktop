@@ -672,6 +672,7 @@ fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui:
 fn new_draft_without_a_directory_can_choose_one_in_place(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, _commands) = setup(cx);
     workspace.update(vcx, |w, cx| w.open_local_draft(None, cx));
+    vcx.executor().advance_clock(Duration::from_secs(2));
     vcx.run_until_parked();
     let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
     let id = panel.read_with(vcx, |panel, _| panel.session_id.clone());
@@ -1028,16 +1029,20 @@ fn draft_pickers_show_the_selected_fable_low_and_mode_before_the_first_prompt(
     vcx.run_until_parked();
     click_draft_control(vcx, "panel-mode");
     click_draft_control(vcx, "slash-command-row-0");
-    vcx.simulate_keystrokes("enter");
-    vcx.run_until_parked();
     assert!(vcx.debug_bounds("panel-mode-icon-moon-0").is_some());
     assert!(commands.try_recv().is_err());
 
+    click_draft_control(vcx, "panel-mode");
+    assert!(vcx.debug_bounds("slash-command-row-0").is_none());
+    click_draft_control(vcx, "prompt-editor");
     vcx.simulate_input("first prompt");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
+    let create = commands.try_recv();
     assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateSession { request_id: Some(id), .. }) if id == draft)
+        matches!(&create, Ok(Command::CreateSession { request_id: Some(id), .. }) if id == &draft),
+        "unexpected first command (channel error: {:?})",
+        create.err()
     );
     workspace.update(vcx, |w, cx| {
         w.apply(
