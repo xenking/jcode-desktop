@@ -206,10 +206,10 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
                 "{width}x{height} fresh={fresh}: {model:?} {identity:?}"
             );
             if let Some(effort) = vcx.debug_bounds("panel-model-effort") {
-                assert!(
-                    model.right() <= effort.left(),
-                    "{width}x{height} fresh={fresh}: {model:?} {effort:?}"
-                );
+                let control = vcx.debug_bounds("panel-model-control").unwrap();
+                assert_eq!(model.right(), effort.left());
+                assert_eq!(effort.right(), control.right());
+                assert!(control.right() <= identity.right());
             }
             let location = vcx
                 .debug_bounds("composer-location")

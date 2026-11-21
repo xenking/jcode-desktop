@@ -204,9 +204,13 @@ mod tests {
 
     #[gpui::test]
     fn mode_pill_names_the_pinned_skill_and_opens_the_mode_menu(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-mode").is_none(), "no mode, no pill");
+        assert!(
+            vcx.debug_bounds("panel-mode").is_none(),
+            "no modes to choose from"
+        );
         panel.update(vcx, |panel, cx| {
             panel.skills = vec![
                 ("poteto-mode".into(), "Concise style".into()),
@@ -250,5 +254,27 @@ mod tests {
                 Some("/mode poteto-mode")
             );
         });
+        panel.update(vcx, |panel, cx| {
+            panel.active_skill = None;
+            panel.sync_mode_menu(cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-mode-icon-crown-0").is_none());
+        let trigger = panel.read_with(vcx, |panel, _| {
+            panel.picker_triggers[PickerKind::Mode as usize].clone()
+        });
+        assert!(vcx.update(|window, _| trigger.is_focused(window)));
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_some());
     }
 }

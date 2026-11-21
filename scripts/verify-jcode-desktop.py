@@ -211,6 +211,10 @@ class Instance:
             (self.profile / "00-sample-project").mkdir()
             pinned = self.profile / "99-pinned-project"
             pinned.mkdir()
+            for name in ("footer-alpha", "footer-beta"):
+                path = self.profile / "jcode" / "skills" / name / "SKILL.md"
+                path.parent.mkdir(parents=True)
+                path.write_text(f"---\nname: {name}\ndescription: Verify mode selection\nmode: true\n---\nFixture mode.\n")
             with (self.profile / "desktop.toml").open("a") as config:
                 config.write(f"pinned_working_dir = {json.dumps(str(pinned))}\n")
             modes = []
@@ -395,6 +399,8 @@ class Instance:
             return self.tab_status_journey()
         if name == "mode-picker":
             return self.mode_picker_journey()
+        if name == "composer-footer":
+            return self.composer_footer_journey()
         if name == "transcript-scroll":
             return self.transcript_scroll_journey()
         if name == "draft-session":
@@ -792,6 +798,64 @@ class Instance:
         report = {"journey": name, "passed": True, "active_modes": expected, "frames": frames,
                   "scope": "native menu and chips with seeded runtime response; no backend mutations"}
         save(self.run / f"{name}-proof.json", report)
+        return report
+
+    def composer_footer_journey(self):
+        if self.manifest["fixture"] != "draft-session":
+            raise RuntimeError("composer-footer journey requires --fixture draft-session")
+
+        def key(value):
+            self.drive("press_key", {"key": f"fixture:{value}"})
+
+        def click(selector):
+            self.drive("click", {"selector": selector})
+
+        def panel():
+            return self.drive("state")["panel"]
+
+        draft = "Keep this draft"
+        self.drive("set_composer", {"text": draft})
+        before = self.screenshot("composer-footer-before.png")
+        click("panel-mode")
+        modes = ["footer-alpha", "footer-beta"]
+        if [row["name"] for row in panel()["mode_rows"]][:2] != modes:
+            raise RuntimeError("mode button did not open the two fixture modes")
+        for navigation in ("tab", "down", "tab"):
+            key(navigation)
+        opened = panel()
+        if opened["active_modes"] != modes or not all(row["active"] for row in opened["mode_rows"][:2]):
+            raise RuntimeError("Tab did not toggle and retain both modes")
+        key("enter")
+        if panel()["mode_rows"]:
+            raise RuntimeError("Enter did not close the mode picker")
+        key("space")
+        if not panel()["mode_rows"]:
+            raise RuntimeError("the mode trigger did not regain keyboard focus")
+        key("escape")
+        click("panel-model")
+        click("draft-model-row:gpt-5.6-sol")
+        click("panel-model-effort")
+        click("draft-effort-high")
+        configured = panel()
+        if (configured["composer"] != draft or configured["active_modes"] != modes
+                or configured["model"].split(":")[-1] != "gpt-5.6-sol"
+                or configured["reasoning_effort"] != "high"):
+            raise RuntimeError("footer controls lost the draft, modes, model, or effort")
+        selected = self.screenshot("composer-footer-selected.png")
+
+        self.drive("set_composer", {"text": "/effort"})
+        slash = self.screenshot("composer-footer-slash-effort.png")
+        for _ in range(3):
+            key("down")
+        key("enter")
+        after = panel()
+        if (after["composer"] or after["reasoning_effort"] != "medium"
+                or after["model"] != configured["model"] or after["active_modes"] != modes):
+            raise RuntimeError("standalone /effort did not change only effort with Down and Enter")
+        report = {"passed": True, "before": before, "selected": selected, "slash_effort": slash,
+                  "model": after["model"], "effort": after["reasoning_effort"], "modes": modes,
+                  "scope": "hidden macOS GPUI mouse and keyboard dispatch, offline draft"}
+        save(self.run / "composer-footer-proof.json", report)
         return report
 
     def transcript_scroll_journey(self):
@@ -1453,7 +1517,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", "swarm-dm", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "composer-footer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", "swarm-dm", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

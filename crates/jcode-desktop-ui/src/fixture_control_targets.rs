@@ -134,6 +134,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                         | "tab-new-session"
                         | "folder-picker-entry-0"
                         | "folder-picker-open"
+                        | "panel-mode"
                         | "panel-model"
                         | "panel-model-effort"
                         | "draft-effort-high"

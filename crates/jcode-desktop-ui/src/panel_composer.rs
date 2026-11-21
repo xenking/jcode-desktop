@@ -1,9 +1,7 @@
 //! Composer chrome: the input with one row of compact pills below it.
 //!
-//! The bottom row holds the model pill, a separate reasoning effort pill,
-//! the credential method pill and the context
-//! ring on the left, and the publish button plus the location (repo or
-//! directory) on the right. The voice button lives inside the input box.
+//! Mode, model and effort, and context are on the left. Publish and location
+//! are on the right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
 //! prompt cards, so nothing reads as a folder tab, but they are filled with a
 //! lift of the pane surface: prompt paper is only a few steps away from the
@@ -185,54 +183,7 @@ impl Panel {
                     .items_center()
                     .gap_1()
                     .overflow_hidden()
-                    .child(
-                        crate::keyboard::popover_trigger(composer_pill("panel-model"), &self.picker_triggers[PickerKind::Model as usize])
-                            .relative()
-                            .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
-                            .flex_shrink_1()
-                            .min_w(px(56.))
-                            .child(
-                                div()
-                                    .debug_selector(|| "panel-model-name".into())
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(model_label),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_model_picker(window, cx);
-                                this.remember_picker_trigger(PickerKind::Model);
-                                cx.stop_propagation();
-                            })),
-                    )
-                    .children(effort.map(|effort| {
-                        let hover = crate::effort::tooltip(&effort);
-                        // The level is a drawn circle the size of the context
-                        // ring beside it, filled to the rung and heat-tinted.
-                        // An unknown value keeps its word.
-                        let mark = crate::effort_icon::icon(&effort, BAR_ICON);
-                        let word = (mark.is_none() || self.session_deferred()).then(|| {
-                            div().min_w_0().truncate().child(if effort == "default" {
-                                "Effort".to_owned()
-                            } else {
-                                crate::effort::label(&effort).to_string()
-                            })
-                        });
-                        crate::keyboard::popover_trigger(composer_pill("panel-model-effort"), &self.picker_triggers[PickerKind::Effort as usize])
-                            .relative()
-                            .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
-                            .flex_shrink(3.)
-                            .gap_1()
-                            .px_1p5()
-                            .children(mark)
-                            .children(word)
-                            .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_effort_picker(window, cx);
-                                this.remember_picker_trigger(PickerKind::Effort);
-                                cx.stop_propagation();
-                            }))
-                    }))
-                    .children((!self.mode_names().is_empty() || self.session_deferred()).then(|| {
+                    .children((!self.mode_names().is_empty() || !self.skills.is_empty() || self.session_deferred()).then(|| {
                         let names = self.mode_names();
                         let hover = if names.is_empty() {
                             "Choose session modes".to_owned()
@@ -253,8 +204,10 @@ impl Panel {
                                 .child(icon.render(BAR_ICON, theme.composer_secondary()))
                         });
                         crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
+                            .relative()
+                            .children(crate::fixture_control_targets::marker(|| "panel-mode".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
-                            .min_w_0()
+                            .min_w(px(46.))
                             .max_w(relative(0.4))
                             .overflow_hidden()
                             .children(icons)
@@ -266,6 +219,7 @@ impl Panel {
                                 cx.stop_propagation();
                             }))
                     }))
+                    .child(self.render_model_control(model_label, effort, cx))
                     .children(self.render_context_meter()),
             )
             .child(
@@ -391,6 +345,69 @@ impl Panel {
             )
             .child(pills)
             .into_any_element()
+    }
+
+    fn render_model_control(
+        &self,
+        model_label: String,
+        effort: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        const MODEL_MIN: f32 = 56.;
+        const EFFORT_MIN: f32 = BAR_ICON + 12.;
+        div()
+            .debug_selector(|| "panel-model-control".into())
+            .flex()
+            .items_center()
+            .flex_shrink_1()
+            .min_w(px(MODEL_MIN + if effort.is_some() { EFFORT_MIN } else { 0. }))
+            .rounded_full()
+            .bg(Theme::global().chip_background())
+            .child(
+                crate::keyboard::popover_trigger(composer_button("panel-model"), &self.picker_triggers[PickerKind::Model as usize])
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
+                    .flex_shrink_1()
+                    .min_w(px(MODEL_MIN))
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-model-name".into())
+                            .min_w_0()
+                            .truncate()
+                            .child(model_label),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_model_picker(window, cx);
+                        this.remember_picker_trigger(PickerKind::Model);
+                        cx.stop_propagation();
+                    })),
+            )
+            .children(effort.map(|effort| {
+                let hover = crate::effort::tooltip(&effort);
+                let mark = crate::effort_icon::icon(&effort, BAR_ICON);
+                let word = mark.is_none().then(|| {
+                    div().min_w_0().truncate().child(if effort == "default" {
+                        "Effort".to_owned()
+                    } else {
+                        crate::effort::label(&effort).to_string()
+                    })
+                });
+                crate::keyboard::popover_trigger(composer_button("panel-model-effort"), &self.picker_triggers[PickerKind::Effort as usize])
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
+                    .flex_shrink(3.)
+                    .min_w(px(EFFORT_MIN))
+                    .gap_1()
+                    .px_1p5()
+                    .children(mark)
+                    .children(word)
+                    .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_effort_picker(window, cx);
+                        this.remember_picker_trigger(PickerKind::Effort);
+                        cx.stop_propagation();
+                    }))
+            }))
     }
 
     fn remember_picker_trigger(&mut self, kind: PickerKind) {
@@ -682,6 +699,10 @@ impl Panel {
 }
 
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    composer_button(id).bg(Theme::global().chip_background())
+}
+
+fn composer_button(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div().id(id)
         .debug_selector(move || id.into())
@@ -691,7 +712,6 @@ pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .items_center()
         .gap_1p5()
         .rounded_full()
-        .bg(theme.chip_background())
         .text_size(px(10.5))
         .font_family(theme.FONT_MONO)
         .text_color(theme.composer_secondary())
@@ -845,6 +865,7 @@ mod tests {
                 panel.reasoning_effort = Some("high".into());
                 panel.provider = Some("anthropic".into());
                 panel.auth_method = Some("oauth".into());
+                panel.pinned_modes = vec!["selfdev".into(), "swarm".into()];
                 panel.working_dir = Some("/srv/projects/jcode".into());
                 *panel.items = vec![Item::User("Hello".into())];
                 cx.notify();
@@ -852,26 +873,40 @@ mod tests {
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             let editor = vcx.debug_bounds("prompt-editor").unwrap();
+            let identity = vcx.debug_bounds("panel-identity").unwrap();
+            let mode = vcx.debug_bounds("panel-mode").unwrap();
+            let control = vcx.debug_bounds("panel-model-control").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
             let name = vcx.debug_bounds("panel-model-name").unwrap();
             let effort = vcx.debug_bounds("panel-model-effort").unwrap();
             let context = vcx.debug_bounds("panel-context-meter").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            for (tab_name, tab) in [("model", model), ("context", context)] {
+            for (tab_name, tab) in [
+                ("mode", mode),
+                ("model and effort", control),
+                ("context", context),
+            ] {
                 assert!(
                     tab.top() > input.bottom(),
                     "{tab_name} pill sits below the input at {width}: {tab:?} {input:?}"
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
-            assert!(name.right() <= model.right());
-            assert!(model.right() <= effort.left(), "effort follows the model");
-            // Usage left the bar: the context ring now follows the effort
-            // glyph directly, and the cache countdown lives in the status row.
-            assert!(
-                effort.right() <= context.left(),
-                "context ring follows effort"
+            assert_eq!(mode.left(), identity.left(), "mode is first at {width}");
+            assert_eq!(
+                control.left() - mode.right(),
+                px(4.),
+                "only the pill gap follows mode"
             );
+            assert_eq!(model.left(), control.left());
+            assert_eq!(
+                model.right(),
+                effort.left(),
+                "segments share one surface"
+            );
+            assert_eq!(effort.right(), control.right());
+            assert!(name.right() <= model.right());
+            assert!(control.right() <= context.left());
             // The voice button lives inside the input box, on its right, and
             // the editor never runs underneath it.
             assert!(
