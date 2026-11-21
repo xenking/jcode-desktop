@@ -1,6 +1,7 @@
 //! Real native editor tests with deliberately withheld backend creation replies.
 use super::*;
 use base64::Engine as _;
+use std::sync::mpsc::Receiver;
 
 fn created(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
@@ -204,7 +205,9 @@ fn repeated_local_drafts_keep_earlier_entrances_and_focus_the_latest_editor(
         }
         w.set_active(3, cx);
     });
-    let ids: Vec<_> = (0..3).map(|_| request(&workspace, vcx, &commands).0).collect();
+    let ids: Vec<_> = (0..3)
+        .map(|_| request(&workspace, vcx, &commands).0)
+        .collect();
     assert!(ids.windows(2).all(|pair| pair[0] != pair[1]));
     vcx.run_until_parked();
     vcx.simulate_input("latest draft");
@@ -322,7 +325,9 @@ fn concurrent_drafts_attach_out_of_order_without_stealing_focus(cx: &mut gpui::T
     vcx.simulate_keystrokes("enter");
     assert!(commands.try_recv().is_err(), "send waits for history");
     workspace.update(vcx, |w, cx| {
-        w.slots[2].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+        w.slots[2]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "second-ready" && content == "second draft stays focused")
@@ -481,7 +486,9 @@ fn reload_restarts_only_live_pending_drafts_with_fresh_ids_and_original_local_pa
     vcx.simulate_keystrokes("enter");
     assert!(commands.try_recv().is_err(), "send waits for history");
     workspace.update(vcx, |w, cx| {
-        w.slots[1].panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+        w.slots[1]
+            .panel
+            .update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
     });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "restored-ready" && content == "restored draft[#image 1] after reload")
@@ -949,4 +956,131 @@ fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::T
         ["model", "effort", "prompt"],
         "the picked model and effort reach the new session before its prompt"
     );
+}
+
+fn fable_draft(
+    cx: &mut gpui::TestAppContext,
+) -> (
+    Entity<Workspace>,
+    &mut gpui::VisualTestContext,
+    Receiver<Command>,
+) {
+    cx.update(crate::input::bind_keys);
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::DraftModels {
+                current: Some("claude-opus-5-5".into()),
+                routes: ["claude-opus-5-5", "claude-fable-5-2"]
+                    .into_iter()
+                    .map(|model| jcode_sdk::ModelRouteInfo {
+                        model: model.into(),
+                        provider: "claude".into(),
+                        api_method: "claude-oauth".into(),
+                        available: true,
+                        detail: String::new(),
+                        usage: None,
+                    })
+                    .collect(),
+            },
+            cx,
+        );
+        w.open_new_session(cx);
+    });
+    vcx.executor().advance_clock(Duration::from_secs(2));
+    vcx.run_until_parked();
+    (workspace, vcx, commands)
+}
+
+fn click_draft_control(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
+    let bound = vcx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    vcx.simulate_click(bound.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+}
+
+#[gpui::test]
+fn draft_pickers_show_the_selected_fable_low_and_mode_before_the_first_prompt(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = fable_draft(cx);
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    let draft = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+    click_draft_control(vcx, "panel-model");
+    vcx.simulate_input("fable");
+    vcx.run_until_parked();
+    click_draft_control(vcx, "model-row-effort-0-low");
+    panel.read_with(vcx, |panel, _| {
+        let (model, effort) = panel.composer_identity_for_test();
+        assert!(model.contains("Fable"), "model pill says {model}");
+        assert_eq!(effort.as_deref(), Some("low"));
+    });
+
+    panel.update(vcx, |panel, cx| {
+        panel.apply(&jcode_sdk::ApiEvent::RuntimeCommandResult {
+            session_id: draft.clone(), command: jcode_sdk::api::RuntimeCommand::Skills,
+            data: serde_json::json!({"pinned_skills": [], "skills": [
+                {"name": "quiet", "description": "Keep output brief", "mode": true, "icon": "moon"}
+            ]}), message: String::new(),
+        }, cx);
+    });
+    vcx.run_until_parked();
+    click_draft_control(vcx, "panel-mode");
+    click_draft_control(vcx, "slash-command-row-0");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("panel-mode-icon-moon-0").is_some());
+    assert!(commands.try_recv().is_err());
+
+    vcx.simulate_input("first prompt");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { request_id: Some(id), .. }) if id == draft)
+    );
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: created("ready"),
+                request_id: Some(draft),
+            },
+            cx,
+        );
+        panel.update(cx, |panel, cx| panel.load_history(vec![], vec![], cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "ready" && model == "claude-oauth:claude-fable-5-2")
+    );
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SessionOperation { session_id, operation: harness::SessionOperation::SetEffort(effort) }) if session_id == "ready" && effort == "low")
+    );
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::Mode, args }) if session_id == "ready" && args == ["toggle", "quiet"])
+    );
+    // Promotion may subscribe before the queued prompt is dispatched.
+    assert!(commands.try_iter().any(|cmd| matches!(cmd, Command::Send { session_id, content, .. } if session_id == "ready" && content == "first prompt")));
+}
+
+#[gpui::test]
+fn model_and_effort_chosen_on_a_draft_are_used_on_the_next_new_draft(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = fable_draft(cx);
+    let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+    panel.update(vcx, |panel, cx| {
+        panel
+            .handle_slash_command_for_test("/model claude-oauth:claude-fable-5-2 --effort low", cx);
+    });
+    let selected = panel.read_with(vcx, |panel, _| panel.composer_identity_for_test());
+    assert!(selected.0.contains("Fable"));
+    assert_eq!(selected.1.as_deref(), Some("low"));
+    workspace.update(vcx, |w, cx| w.open_new_session(cx));
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        let next = &w.slots[w.active].panel;
+        assert_ne!(next, &panel);
+        assert_eq!(next.read(cx).composer_identity_for_test(), selected);
+    });
+    assert!(commands.try_recv().is_err());
 }

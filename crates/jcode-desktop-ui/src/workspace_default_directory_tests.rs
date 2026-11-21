@@ -378,6 +378,19 @@ fn choosing_default_directory_changes_preference_without_spawning_and_next_enter
 }
 
 #[gpui::test]
+fn tab_plus_and_new_session_action_use_the_configured_local_directory(
+    cx: &mut gpui::TestAppContext,
+) {
+    let pinned = tempfile::tempdir().unwrap();
+    let (workspace, vcx, commands) = setup(cx, pinned.path());
+    click(vcx, "tab-new-session");
+    assert_created_in(&workspace, vcx, &commands, pinned.path());
+    vcx.update(|window, cx| window.dispatch_action(Box::new(NewPanel), cx));
+    vcx.run_until_parked();
+    assert_created_in(&workspace, vcx, &commands, pinned.path());
+}
+
+#[gpui::test]
 fn default_directory_search_enter_sets_preference_without_spawning(cx: &mut gpui::TestAppContext) {
     let prior = tempfile::tempdir().unwrap();
     let selected = prior.path().join("selected");
