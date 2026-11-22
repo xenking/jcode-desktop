@@ -2,6 +2,51 @@ use super::*;
 use jcode_sdk::api::RewindMessageKey;
 
 #[gpui::test]
+fn clean_chat_rewind_cancel_restores_tail_without_extra_whitespace(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.set_clean_chat(Some(true), cx);
+        for i in 0..20 {
+            panel.items.push(Item::User(format!("Prompt {i}")));
+            panel
+                .items
+                .push(Item::Assistant(jcode_render_core::reasoning_line_markup(
+                    "hidden",
+                )));
+            panel.items.push(Item::Assistant(format!("Answer {i}")));
+        }
+        cx.notify();
+    });
+    let settle = |vcx: &mut gpui::VisualTestContext| {
+        for _ in 0..6 {
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+        }
+    };
+    settle(vcx);
+    let baseline = vcx.debug_bounds("transcript-row-39").expect("tail visible");
+    let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    assert!(
+        viewport.contains(&baseline.center()),
+        "{baseline:?} outside {viewport:?}"
+    );
+    panel.update(vcx, |panel, cx| panel.start_rewind(cx));
+    settle(vcx);
+    vcx.simulate_keystrokes("left left");
+    settle(vcx);
+    vcx.simulate_keystrokes("escape");
+    settle(vcx);
+    let restored = vcx
+        .debug_bounds("transcript-row-39")
+        .expect("tail restored");
+    assert!(
+        (f32::from(restored.bottom() - baseline.bottom())).abs() < 2.,
+        "before {baseline:?}, after {restored:?}"
+    );
+}
+
+#[gpui::test]
 fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::TestAppContext) {
     let (bridge, _) = crate::harness::spawn_recording();
     let (panel, vcx) =
