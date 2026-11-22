@@ -148,6 +148,7 @@ fn filtered_sessions(
     filter: Filter,
     working: &HashSet<String>,
     content: &[String],
+    preferences: sidebar_session_catalog::Preferences,
 ) -> Vec<jcode_sdk::SessionInfo> {
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut metadata_hits = HashSet::new();
@@ -163,6 +164,7 @@ fn filtered_sessions(
         )
         .to_lowercase();
         !session.archived
+            && preferences.origin.matches(session)
             && match filter {
                 Filter::All => true,
                 Filter::Active => {
@@ -198,6 +200,12 @@ fn filtered_sessions(
                 } else {
                     rank(&a.session_id).cmp(&rank(&b.session_id))
                 }
+            })
+            .then_with(|| match preferences.sort {
+                sidebar_session_catalog::Sort::Recent => std::cmp::Ordering::Equal,
+                sidebar_session_catalog::Sort::AgentActivity => b
+                    .last_agent_activity_at_ms()
+                    .cmp(&a.last_agent_activity_at_ms()),
             })
             .then_with(|| b.saved.cmp(&a.saved))
             .then_with(|| {
@@ -375,6 +383,7 @@ impl Workspace {
             state.filter,
             &self.resume_working(cx),
             &content,
+            self.session_catalog,
         )
     }
 
@@ -1176,6 +1185,11 @@ impl Workspace {
                                             .text_ellipsis()
                                             .child(title),
                                     )
+                                    .children(session.is_agent_started().then(|| {
+                                        sidebar_session_catalog::agent_badge().debug_selector(
+                                            move || format!("resume-agent-origin-{index}"),
+                                        )
+                                    }))
                                     .children(badge),
                             )
                             .child(
@@ -1471,6 +1485,7 @@ impl Workspace {
                             .child(status),
                     ),
             )
+            .child(self.session_catalog_controls("resume", cx))
             .child(
                 div()
                     .flex()
@@ -1561,6 +1576,14 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
                 reasoning_effort: Some("high".into()),
                 modes: vec!["swarm".into(), "selfdev".into()],
                 cache_expires_at_ms: Some(if index == 0 { i64::MAX } else { 1 }),
+                activity: Some(jcode_sdk::api::SessionCatalogActivity {
+                    origin: if index == 0 {
+                        jcode_sdk::api::SessionOrigin::User
+                    } else {
+                        jcode_sdk::api::SessionOrigin::Agent
+                    },
+                    last_agent_activity_at_ms: Some(index as i64 + 1),
+                }),
             }),
         });
     }
@@ -2241,6 +2264,7 @@ mod tests {
             Filter::All,
             &HashSet::new(),
             &[],
+            Default::default(),
         );
         assert_eq!(
             matches
@@ -2259,12 +2283,27 @@ mod tests {
         let sessions = vec![alpha.clone(), beta];
         for query in ["  RÉSUMÉ   client ", "alpha-123", "PLANNER"] {
             assert_eq!(
-                filtered_sessions(sessions.clone(), query, Filter::All, &HashSet::new(), &[]),
+                filtered_sessions(
+                    sessions.clone(),
+                    query,
+                    Filter::All,
+                    &HashSet::new(),
+                    &[],
+                    Default::default()
+                ),
                 vec![alpha.clone()]
             );
         }
         assert!(
-            filtered_sessions(sessions, "not-found", Filter::All, &HashSet::new(), &[]).is_empty()
+            filtered_sessions(
+                sessions,
+                "not-found",
+                Filter::All,
+                &HashSet::new(),
+                &[],
+                Default::default()
+            )
+            .is_empty()
         );
     }
 
@@ -2282,15 +2321,36 @@ mod tests {
         archived.archived = true;
         let sessions = vec![duplicate, saved.clone(), archived, running.clone()];
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::All, &HashSet::new(), &[]),
+            filtered_sessions(
+                sessions.clone(),
+                "",
+                Filter::All,
+                &HashSet::new(),
+                &[],
+                Default::default()
+            ),
             vec![saved.clone(), running.clone()]
         );
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::Active, &HashSet::new(), &[]),
+            filtered_sessions(
+                sessions.clone(),
+                "",
+                Filter::Active,
+                &HashSet::new(),
+                &[],
+                Default::default()
+            ),
             vec![running]
         );
         assert_eq!(
-            filtered_sessions(sessions, "", Filter::Saved, &HashSet::new(), &[]),
+            filtered_sessions(
+                sessions,
+                "",
+                Filter::Saved,
+                &HashSet::new(),
+                &[],
+                Default::default()
+            ),
             vec![saved]
         );
         assert!(is_resume_command(" /session \n"));
@@ -2311,7 +2371,8 @@ mod tests {
                 "",
                 Filter::Active,
                 &working,
-                &[]
+                &[],
+                Default::default(),
             ),
             vec![streaming]
         );
@@ -2344,6 +2405,7 @@ mod tests {
                 Filter::All,
                 &HashSet::new(),
                 content,
+                Default::default(),
             )
             .into_iter()
             .map(|s| s.session_id)
@@ -2416,6 +2478,99 @@ mod tests {
         w.apply_snapshot(snapshot, cx);
         w.restore_resume(Some(picker), true, window, cx);
         w.restore_focus(window, cx);
+    }
+
+    #[gpui::test]
+    fn session_catalog_sorts_by_latest_agent_activity(cx: &mut gpui::TestAppContext) {
+        use jcode_sdk::api::{SessionCatalogActivity, SessionCatalogContext, SessionOrigin};
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.open_startup_draft(cx);
+            w.sessions = [
+                ("updated", 100, Some(10), SessionOrigin::User),
+                ("answered", 40, Some(30), SessionOrigin::Agent),
+                ("unanswered", 200, None, SessionOrigin::Agent),
+            ]
+            .into_iter()
+            .map(|(id, updated, replied, origin)| {
+                let mut session = session_info(id, Some(id));
+                session.updated_at_ms = Some(updated);
+                session.saved = id == "updated";
+                session.context = Some(SessionCatalogContext {
+                    activity: Some(SessionCatalogActivity {
+                        origin,
+                        last_agent_activity_at_ms: replied,
+                    }),
+                    ..Default::default()
+                });
+                session
+            })
+            .collect();
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        vcx.run_until_parked();
+        let ids = |w: &Workspace, cx: &App| {
+            w.resume_matches(cx)
+                .into_iter()
+                .map(|s| s.session_id)
+                .filter(|id| ["updated", "answered", "unanswered"].contains(&id.as_str()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            workspace.read_with(vcx, ids),
+            ["updated", "unanswered", "answered"]
+        );
+        let control = vcx
+            .debug_bounds("resume-sort-agent-activity")
+            .expect("Agent activity sort must be selectable");
+        vcx.simulate_click(control.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(vcx, ids),
+            ["answered", "updated", "unanswered"]
+        );
+        assert!(vcx.debug_bounds("resume-agent-origin-0").is_some());
+        assert!(vcx.debug_bounds("resume-agent-origin-1").is_none());
+    }
+
+    #[gpui::test]
+    fn session_catalog_sort_and_origin_filter_survive_window_snapshot(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        vcx.run_until_parked();
+        for id in ["resume-sort-agent-activity", "resume-origin-agents"] {
+            let control = vcx.debug_bounds(id).expect(id);
+            vcx.simulate_click(control.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        }
+        let encoded = workspace.update_in(vcx, |w, window, cx| {
+            w.snapshot_for_reload(window, cx).unwrap().encode().unwrap()
+        });
+        let snapshot = WorkspaceSnapshot::decode(&encoded).unwrap();
+        for id in ["resume-sort-recent", "resume-origin-all"] {
+            let control = vcx.debug_bounds(id).expect(id);
+            vcx.simulate_click(control.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        }
+        workspace.update_in(vcx, |w, window, cx| {
+            let picker = snapshot.resume.clone();
+            w.apply_snapshot(snapshot, cx);
+            w.restore_resume(Some(picker), true, window, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("resume-sort-agent-activity-selected")
+                .is_some()
+        );
+        assert!(vcx.debug_bounds("resume-origin-agents-selected").is_some());
     }
 
     #[gpui::test]

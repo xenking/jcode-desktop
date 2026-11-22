@@ -81,6 +81,8 @@ mod sidebar_metadata;
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
+#[path = "sidebar_session_catalog.rs"]
+mod sidebar_session_catalog;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
 #[path = "sidebar_worktrees.rs"]
@@ -669,6 +671,8 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     sidebar_view: SidebarView,
     #[serde(default)]
+    session_catalog: sidebar_session_catalog::Preferences,
+    #[serde(default)]
     tutorial_page: usize,
     slots: Vec<SlotSnapshot>,
     active: usize,
@@ -812,6 +816,7 @@ pub struct Workspace {
     layout_mode: crate::config::LayoutMode,
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
+    session_catalog: sidebar_session_catalog::Preferences,
     worktrees: sidebar_worktrees::State,
     /// User-created collections of sessions (issue #7).
     collections: sidebar_collections::State,
@@ -1194,6 +1199,7 @@ impl Workspace {
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            session_catalog: Default::default(),
             worktrees: sidebar_worktrees::State::default(),
             collections: Default::default(),
             pending_collection_drafts: Vec::new(),
@@ -1409,6 +1415,13 @@ impl Workspace {
                 session.working_dir = Some("/workspace/side-project".into());
                 session.transcript_bytes = Some(65_600_000);
                 session.user_connected = true;
+                session.context = Some(jcode_sdk::api::SessionCatalogContext {
+                    activity: Some(jcode_sdk::api::SessionCatalogActivity {
+                        origin: jcode_sdk::api::SessionOrigin::Agent,
+                        last_agent_activity_at_ms: Some(42),
+                    }),
+                    ..Default::default()
+                });
                 workspace.sidebar_todo_progress =
                     harness::todo_progress_in(&home, std::slice::from_ref(&session));
                 workspace.sessions.push(session);
@@ -1770,6 +1783,7 @@ impl Workspace {
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            session_catalog: Default::default(),
             worktrees: sidebar_worktrees::State::default(),
             collections: Default::default(),
             pending_collection_drafts: Vec::new(),
@@ -1967,6 +1981,7 @@ impl Workspace {
                 HashSet::new()
             },
             sidebar_view: self.sidebar_view,
+            session_catalog: self.session_catalog,
             tutorial_page: self.tutorial_page,
             slots: slots
                 .iter()
@@ -2008,6 +2023,7 @@ impl Workspace {
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_closed_sessions = snapshot.sidebar_closed_sessions;
         self.sidebar_view = snapshot.sidebar_view;
+        self.session_catalog = snapshot.session_catalog;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
         // Saved indices refer to the saved slot list. Some saved slots are
@@ -6589,12 +6605,33 @@ impl Workspace {
         // Headless swarm workers are never opened or closed in this window,
         // but they belong under a coordinator that is listed here.
         sidebar_swarm::keep_workers_of(&catalog, &mut kept);
-        catalog.retain(|session| kept.contains(&session.session_id));
+        let preferences = self.session_catalog;
+        catalog.retain(|session| {
+            preferences.origin.matches(session)
+                && (kept.contains(&session.session_id)
+                    || (session.is_agent_started()
+                        && (preferences.origin == sidebar_session_catalog::OriginFilter::Agents
+                            || working.contains(&session.session_id))))
+        });
         let original_catalog = duplicate_catalog_ids.then(|| catalog.clone());
         // Sort the owned render catalog in place, avoiding a second session clone.
-        sort_sidebar_sessions(&mut catalog);
+        sort_sidebar_sessions(&mut catalog, preferences.sort);
         let ordered_sessions = catalog;
         let swarm = sidebar_swarm::groups(&ordered_sessions);
+        let reply_times: HashMap<_, _> =
+            if preferences.sort == sidebar_session_catalog::Sort::AgentActivity {
+                ordered_sessions
+                    .iter()
+                    .filter_map(|session| {
+                        Some((
+                            session.session_id.clone(),
+                            session.last_agent_activity_at_ms()?,
+                        ))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
         // Swarms and worktrees are one concept here: an agent is a thread. It
         // nests under its coordinator while it shares that checkout, and
         // surfaces under its own branch when it works in a separate worktree.
@@ -6660,6 +6697,11 @@ impl Workspace {
             if hidden > 0 {
                 folded_workers.insert(root.clone(), hidden);
             }
+            if preferences.sort == sidebar_session_catalog::Sort::AgentActivity {
+                workers.sort_by_key(|(_, worker)| {
+                    std::cmp::Reverse(reply_times.get(&worker.session_id))
+                });
+            }
         }
         // Fading local panels stay mounted, but must not reappear as history
         // or stale globally connected rows before their close completes.
@@ -6695,12 +6737,14 @@ impl Workspace {
                 )
             })
             .collect::<HashMap<_, _>>();
-        open_sessions.sort_by_key(|session| {
-            panel_positions
-                .get(&session.session_id)
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
+        if preferences.sort == sidebar_session_catalog::Sort::Recent {
+            open_sessions.sort_by_key(|session| {
+                panel_positions
+                    .get(&session.session_id)
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+        }
         // External user clients are live too, but are not locally open panels.
         // Keep their rows without changing navigation or selection semantics.
         // Group by project (Git repository, else spawn directory). Projects
@@ -7128,6 +7172,7 @@ impl Workspace {
                             let close_id = session.session_id.clone();
                             let pin_id = session.session_id.clone();
                             let pinned = session.saved;
+                            let agent_started = session.is_agent_started();
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let context_id = session.session_id.clone();
@@ -7263,6 +7308,7 @@ impl Workspace {
                                                     None => container.child(title),
                                                 }
                                             })
+                                            .children(agent_started.then(|| sidebar_session_catalog::agent_badge()))
                                             .when(agent_working > 0, |row| row.child(
                                                 div()
                                                     .id(("sidebar-agents", sidebar_index))
@@ -7878,6 +7924,10 @@ impl Workspace {
             })
             // Folder mode's header already is the destination row.
             .children((!folders).then(|| self.render_machine_switcher(None, cx)))
+            .children(
+                (self.sidebar_view == SidebarView::Sessions)
+                    .then(|| self.session_catalog_controls("sidebar", cx).px_2().py_1()),
+            )
             .child(
                 div()
                     .flex_1()
@@ -10623,7 +10673,10 @@ fn sidebar_session_title_with_open_title(
     let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
     // An open panel owns the tab title, including provisional first-prompt titles
     // that have not reached the session catalog yet.
-    let title = open_title.or(session.title.as_deref()).unwrap_or_default();
+    let title = open_title
+        .or(session.title.as_deref())
+        .or(session.agent_label.as_deref())
+        .unwrap_or_default();
     (
         icon,
         crate::panel::folder_session_title(&session.session_id, title).to_string(),
@@ -10633,12 +10686,23 @@ fn sidebar_session_title_with_open_title(
 #[cfg(test)]
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
     let mut ordered = sessions.to_vec();
-    sort_sidebar_sessions(&mut ordered);
+    sort_sidebar_sessions(&mut ordered, sidebar_session_catalog::Sort::Recent);
     ordered
 }
 
-fn sort_sidebar_sessions(ordered: &mut [jcode_sdk::SessionInfo]) {
-    ordered.sort_by_key(sidebar_session_sort_key);
+fn sort_sidebar_sessions(
+    ordered: &mut [jcode_sdk::SessionInfo],
+    sort: sidebar_session_catalog::Sort,
+) {
+    match sort {
+        sidebar_session_catalog::Sort::Recent => ordered.sort_by_key(sidebar_session_sort_key),
+        sidebar_session_catalog::Sort::AgentActivity => ordered.sort_by_key(|session| {
+            (
+                std::cmp::Reverse(session.last_agent_activity_at_ms()),
+                sidebar_session_sort_key(session),
+            )
+        }),
+    }
 }
 
 fn sidebar_session_sort_key(session: &jcode_sdk::SessionInfo) -> std::cmp::Reverse<(bool, i64)> {
@@ -11448,6 +11512,7 @@ mod tests {
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
+            session_catalog: Default::default(),
             tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
@@ -11564,7 +11629,7 @@ mod tests {
             session.saved = session.session_id.starts_with("saved");
         }
         let allocation = sessions.as_ptr();
-        sort_sidebar_sessions(&mut sessions);
+        sort_sidebar_sessions(&mut sessions, sidebar_session_catalog::Sort::Recent);
         assert_eq!(sessions.as_ptr(), allocation, "reuse the owned catalog");
         assert_eq!(
             sessions
@@ -11574,6 +11639,34 @@ mod tests {
             ["saved-first", "saved-second", "first", "second"],
         );
         assert_eq!(sessions[2].title.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn sidebar_session_catalog_sorts_replies_ahead_of_renames_and_missing_times() {
+        use jcode_sdk::api::{SessionCatalogActivity, SessionCatalogContext, SessionOrigin};
+        let mut sessions = [
+            ("newest-update", 100, Some(10)),
+            ("latest-reply", 40, Some(30)),
+            ("unanswered", 200, None),
+        ]
+        .map(|(id, updated, replied)| {
+            let mut session = session_info(id, Some(id));
+            session.updated_at_ms = Some(updated);
+            session.saved = id == "newest-update";
+            session.context = Some(SessionCatalogContext {
+                activity: Some(SessionCatalogActivity {
+                    origin: SessionOrigin::User,
+                    last_agent_activity_at_ms: replied,
+                }),
+                ..Default::default()
+            });
+            session
+        });
+        sort_sidebar_sessions(&mut sessions, sidebar_session_catalog::Sort::AgentActivity);
+        assert_eq!(
+            sessions.map(|session| session.session_id),
+            ["latest-reply", "newest-update", "unanswered"]
+        );
     }
 
     #[test]
@@ -11724,6 +11817,7 @@ mod tests {
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
+                    session_catalog: Default::default(),
                     tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {

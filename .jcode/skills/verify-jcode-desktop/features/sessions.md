@@ -9,6 +9,8 @@ their current draft.
 - sessions.cancel: close the browser without replacing the conversation.
 - sessions.resume: select a conversation with its existing history.
 - sessions.standalone: resume within a standalone window.
+- sessions.catalog: sort by latest reply and filter by session origin. The sidebar
+  and resume picker share these settings for one window.
 
 ## How to get to it (user POV)
 
@@ -46,6 +48,12 @@ the user's real history.
   **Verify a background project**, phases 1 and 2, and the Review and Verification
   lanes. `drive --action list` must show one orchestration panel and the original
   chat only. This uses a private persisted snapshot, not a live daemon.
+- **Catalog controls:** in `sidebar-todos`, click `sidebar-sort-agent-activity`
+  and then `sidebar-origin-agents`. Capture the selected controls and check that
+  the ordinary chat leaves the list while the background project remains marked
+  **Agent**. In `resume-preview`, search for `Resume acceptance`, then click
+  `resume-sort-agent-activity`. Beta must move above the saved Alpha. Click
+  `resume-origin-agents` and check that only Beta remains.
 - **Native browser paths, Linux:**
   `python3 scripts/verify-resume-panel.py target/resume-proof.png --binary target/debug/jcode-desktop`.
   Existing private-Xvfb acceptance covers workspace/single-panel browsing,

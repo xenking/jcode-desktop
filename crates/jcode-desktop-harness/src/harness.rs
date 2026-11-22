@@ -2687,7 +2687,13 @@ struct PersistedSession {
     /// Session this one was created from: a swarm coordinator, or a user fork.
     #[serde(default)]
     parent_id: Option<String>,
-    /// Set for sessions the daemon spawns headless as swarm workers.
+    #[serde(default)]
+    agent_started: bool,
+    #[serde(default)]
+    is_swarm_worker: bool,
+    #[serde(default)]
+    side_question_message_start: Option<usize>,
+    /// Older headless workers used the debug flag before storing worker provenance.
     #[serde(default)]
     is_debug: bool,
     #[serde(default)]
@@ -2701,13 +2707,24 @@ impl PersistedSession {
         } else {
             self.pinned_skills.clone()
         };
-        (self.model.is_some() || self.reasoning_effort.is_some() || !modes.is_empty()).then(|| {
-            jcode_sdk::api::SessionCatalogContext {
-                model: self.model.clone(),
-                reasoning_effort: self.reasoning_effort.clone(),
-                modes,
-                cache_expires_at_ms: None,
-            }
+        let activity = (self.agent_started
+            || self.is_swarm_worker
+            || self.hidden
+            || self.side_question_message_start.is_some())
+        .then_some(jcode_sdk::api::SessionCatalogActivity {
+            origin: jcode_sdk::api::SessionOrigin::Agent,
+            last_agent_activity_at_ms: None,
+        });
+        (self.model.is_some()
+            || self.reasoning_effort.is_some()
+            || !modes.is_empty()
+            || activity.is_some())
+        .then(|| jcode_sdk::api::SessionCatalogContext {
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            modes,
+            cache_expires_at_ms: None,
+            activity,
         })
     }
 
@@ -3103,6 +3120,15 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
             .and_then(|value| value.as_u64())
             .and_then(|pid| u32::try_from(pid).ok()),
         parent_id: json_string_field(&head, "parent_id", false),
+        agent_started: json_value_field(&head, "agent_started", false)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        is_swarm_worker: json_value_field(&tail, "is_swarm_worker", true)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        side_question_message_start: json_value_field(&head, "side_question_message_start", false)
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok()),
         is_debug: json_value_field(&tail, "is_debug", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
@@ -3229,8 +3255,18 @@ pub fn merge_persisted_sessions(
                 return false;
             }
             session.status = record.lifecycle_status();
-            if session.context.is_none() {
-                session.context = record.catalog_context();
+            if let Some(local) = record.catalog_context() {
+                let context = session.context.get_or_insert_with(Default::default);
+                if context.model.is_none()
+                    && context.reasoning_effort.is_none()
+                    && context.cache_expires_at_ms.is_none()
+                    && context.modes.is_empty()
+                {
+                    context.model = local.model;
+                    context.reasoning_effort = local.reasoning_effort;
+                    context.modes = local.modes;
+                }
+                context.activity = context.activity.or(local.activity);
             }
             if session.parent_session_id.is_none() {
                 session.parent_session_id = record.swarm_parent();
@@ -6145,6 +6181,9 @@ mod tests {
             last_pid,
             parent_id: None,
             is_debug: false,
+            agent_started: false,
+            is_swarm_worker: false,
+            side_question_message_start: None,
             hidden: false,
         };
         // A pid beyond the kernel's pid_max can never be alive.

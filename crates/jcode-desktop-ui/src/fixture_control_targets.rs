@@ -153,6 +153,19 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector == "hover:panel-context-meter"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
+        || matches!(
+            selector,
+            "sidebar-sort-agent-activity"
+                | "sidebar-sort-recent"
+                | "sidebar-origin-all"
+                | "sidebar-origin-mine"
+                | "sidebar-origin-agents"
+                | "resume-sort-agent-activity"
+                | "resume-sort-recent"
+                | "resume-origin-all"
+                | "resume-origin-mine"
+                | "resume-origin-agents"
+        )
         || selector.starts_with("status-worker:")
         || selector.starts_with("background-job:")
         || selector.starts_with("agent-message:")

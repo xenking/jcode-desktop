@@ -327,6 +327,7 @@ pub(super) fn render_workers(
                             el.children(worker.label.clone().map(|label| format!(" · {label}")))
                         })
                 })
+                .child(sidebar_session_catalog::agent_badge())
                 .when(label_truncated, |el| {
                     let key = toggle_key.clone();
                     el.child(expandable::glyph_toggle(
