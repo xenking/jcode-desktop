@@ -22,6 +22,7 @@ const DOCK_FADE: f32 = 28.;
 /// Opacity of the veil behind the composer. High enough that history behind
 /// the controls is a quiet hint, never competing with the draft.
 const DOCK_VEIL_ALPHA: f32 = 0.86;
+pub(super) const OVERLAY_GAP: f32 = 4.;
 /// Right padding the input reserves so text never runs under the voice
 /// button. Linux shows a single-glyph keycap; other platforms spell out the
 /// chord, so their button is wider.
@@ -270,6 +271,14 @@ impl Panel {
             );
         let strips = self.render_composer_applets(window, cx);
         let ask = self.render_ask_card(window, cx);
+        let picker_open = self.picker_search.is_some();
+        let hide_voice = picker_open && !self.input.read(cx).has_user_draft();
+        if self.input.read(cx).external_picker_open != picker_open {
+            self.input.update(cx, |input, cx| {
+                input.external_picker_open = picker_open;
+                cx.notify();
+            });
+        }
         div()
             .debug_selector(|| "composer".into())
             .relative()
@@ -280,27 +289,19 @@ impl Panel {
             .children(self.render_context_usage(cx))
             .children(self.render_swarm_list(window, cx))
             .children(strips)
-            .children(self.render_provider_picker(window, cx))
-            .children(self.picker_search.as_ref().map(|(_, search)| {
-                div()
-                    .debug_selector(|| "picker-search".into())
-                    .child(search.clone())
-            }))
             .children(ask)
-            .when(
-                self.ask_card.is_none()
-                    && (self.picker_search.is_none() || self.input.read(cx).has_draft()),
-                |el| {
-                    el.child(
-                        // The voice button floats inside the input's right edge. The
-                        // input reserves matching trailing space for it.
-                        div()
-                            .debug_selector(|| "composer-text-slot".into())
-                            .relative()
-                            .w_full()
-                            .min_w_0()
-                            .child(self.render_voice_input_slot(cx))
-                            .child(
+            .when(self.ask_card.is_none(), |el| {
+                el.child(
+                    // The voice button floats inside the input's right edge. The
+                    // input reserves matching trailing space for it.
+                    div()
+                        .debug_selector(|| "composer-text-slot".into())
+                        .relative()
+                        .w_full()
+                        .min_w_0()
+                        .child(self.render_voice_input_slot(cx))
+                        .when(!hide_voice, |el| {
+                            el.child(
                                 div()
                                     .absolute()
                                     .top_0()
@@ -309,10 +310,10 @@ impl Panel {
                                     .flex()
                                     .items_center()
                                     .child(self.render_voice_tab(cx)),
-                            ),
-                    )
-                },
-            )
+                            )
+                        }),
+                )
+            })
             .child(pills)
             .into_any_element()
     }
@@ -449,18 +450,56 @@ impl Panel {
         });
     }
 
-    pub(super) fn render_composer_cards(
-        &self,
-        window: &Window,
+    pub(super) fn render_composer_stack(
+        &mut self,
+        bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+        docked: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl Iterator<Item = gpui::AnyElement> + use<> {
-        [
+    ) -> gpui::Div {
+        let overlays = [
             self.render_side_question_card(window, cx),
-            self.render_prompt_queue(cx),
-            self.render_voice_pending(),
-        ]
-        .into_iter()
-        .flatten()
+            self.render_provider_picker(window, cx),
+            self.picker_search.as_ref().map(|(_, search)| {
+                div()
+                    .id("picker-search")
+                    .debug_selector(|| "picker-search".into())
+                    .occlude()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(search.clone())
+                    .into_any_element()
+            }),
+        ];
+        div()
+            .relative()
+            .w_full()
+            .max_w(px(1120.))
+            .when(docked, |el| el.mx_auto())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(
+                self.has_visible_queued_prompts() && (!docked || self.ask_card.is_none()),
+                |el| el.gap_0(),
+            )
+            .children(self.render_prompt_queue(cx))
+            .children(self.render_voice_pending())
+            .child(self.render_composer(window, cx))
+            .when(!docked || self.ask_card.is_none(), |el| {
+                el.child(startup::input_marker(bounds))
+            })
+            // Keep both popover inputs and results out of the measured dock.
+            .children(overlays.into_iter().flatten().map(|overlay| {
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(gpui::relative(1.))
+                        .mb(px(OVERLAY_GAP))
+                        .child(overlay),
+                )
+            }))
     }
 
     /// The ordinary composer, floating over the bottom of the transcript.
@@ -554,25 +593,7 @@ impl Panel {
                     })
                     .children(self.render_voice_overlay(window, cx))
                     .children(self.render_preview_badge(cx))
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .max_w(px(1120.))
-                            .mx_auto()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .when(
-                                self.has_visible_queued_prompts() && self.ask_card.is_none(),
-                                |el| el.gap_0(),
-                            )
-                            .children(self.render_composer_cards(window, cx))
-                            .child(self.render_composer(window, cx))
-                            .when(self.ask_card.is_none(), |el| {
-                                el.child(startup::input_marker(input_bounds))
-                            }),
-                    ),
+                    .child(self.render_composer_stack(input_bounds, true, window, cx)),
             )
             .child(
                 gpui::canvas(

@@ -254,6 +254,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         selector.strip_prefix("hover:").unwrap()
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
+    } else if matches!(selector, "side-question-resize-up" | "side-question-resize-down") {
+        "side-question-resize"
     } else if matches!(
         selector,
         "gallery:wheel" | "gallery-nav:lines" | "gallery-nav:first" | "gallery-nav:last"
@@ -352,8 +354,14 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         }),
         cx,
     );
-    let release_position = if selector == "composer:resize-drag" {
-        let position = position - point(px(0.), px(50.));
+    let drag_y = match selector {
+        "composer:resize-drag" => Some(position.y - px(50.)),
+        "side-question-resize-up" => Some(px(0.)),
+        "side-question-resize-down" => Some(window.viewport_size().height - px(1.)),
+        _ => None,
+    };
+    let release_position = if let Some(y) = drag_y {
+        let position = point(position.x, y);
         window.dispatch_event(
             PlatformInput::MouseMove(gpui::MouseMoveEvent {
                 position,

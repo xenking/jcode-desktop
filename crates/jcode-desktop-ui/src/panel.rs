@@ -977,6 +977,8 @@ pub struct Panel {
     /// `/btw` answer streaming from a hidden fork of this conversation.
     side_question: Option<side_question::SideQuestionCard>,
     side_question_history: Option<side_question::HistoryView>,
+    side_question_resize: crate::input::VerticalResize,
+    composer_overlay_room: std::cell::Cell<gpui::Pixels>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
     picker_triggers: [FocusHandle; 3],
@@ -1926,6 +1928,8 @@ impl Panel {
             pending_ask_draft: None,
             side_question: None,
             side_question_history: None,
+            side_question_resize: crate::input::VerticalResize::collapsible(),
+            composer_overlay_room: Default::default(),
             model_picker_open: false,
             picker_search: None,
             picker_triggers: std::array::from_fn(|_| cx.focus_handle()),
@@ -7598,17 +7602,7 @@ impl Render for Panel {
                                 .text_color(Theme::global().TEXT)
                                 .child("What would you like to work on?"),
                         )
-                        .child(
-                            div()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                .children(self.render_composer_cards(window, cx))
-                                .child(self.render_composer(window, cx))
-                                .child(startup::input_marker(input_bounds.clone())),
-                        ),
+                        .child(self.render_composer_stack(input_bounds.clone(), false, window, cx)),
                 )
                 .into_any_element()
         } else if row_count == 0 {
@@ -7822,19 +7816,7 @@ impl Render for Panel {
                             .pb(px(COMPOSER_BOTTOM_INSET))
                             .flex()
                             .justify_center()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .max_w(px(1120.))
-                                    .relative()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                    .children(self.render_composer_cards(window, cx))
-                                    .child(self.render_composer(window, cx))
-                                    .child(startup::input_marker(input_bounds.clone())),
-                            ),
+                            .child(self.render_composer_stack(input_bounds.clone(), false, window, cx)),
                     )
                     .into_any_element()
             } else {

@@ -200,6 +200,7 @@ pub struct PromptInput {
     ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
     pub content: SharedString,
     placeholder: SharedString,
+    pub(crate) external_picker_open: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -1214,6 +1215,7 @@ impl PromptInput {
             ime_log_focus_subscriptions: None,
             content: "".into(),
             placeholder: placeholder.into(),
+            external_picker_open: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -1699,6 +1701,9 @@ impl PromptInput {
         if !self.example_prompts {
             return (self.placeholder.clone(), None, false);
         }
+        if self.external_picker_open {
+            return (SharedString::default(), None, false);
+        }
         let reduced = motion_reduced(cx);
         let mut state = self.motion.borrow_mut();
         let source = cx
@@ -1755,10 +1760,6 @@ impl PromptInput {
         if self.working_dir.as_deref() != working_dir {
             self.working_dir = working_dir.map(str::to_owned);
         }
-    }
-
-    pub(crate) fn has_draft(&self) -> bool {
-        !self.content.is_empty() || !self.attachments.is_empty()
     }
 
     pub(crate) fn has_user_draft(&self) -> bool {
@@ -4708,7 +4709,8 @@ impl Render for PromptInput {
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
         }
-        let command_visible = self.command_completion
+        let command_visible = !self.external_picker_open
+            && self.command_completion
             && self.current_command_menu_close().is_none()
             && (!suggestions.is_empty()
                 || self.picker_prefix.is_some()

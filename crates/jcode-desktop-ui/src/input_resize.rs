@@ -1,11 +1,14 @@
 use super::*;
-use gpui::{DispatchPhase, ScrollHandle, canvas};
+use gpui::{DispatchPhase, canvas};
 use std::cell::Cell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 #[derive(Clone, Default)]
-pub(crate) struct VerticalResize(Rc<Cell<ResizeState>>);
+pub(crate) struct VerticalResize {
+    state: Rc<Cell<ResizeState>>,
+    collapsible: bool,
+}
 
 #[derive(Clone, Copy, Default)]
 struct ResizeState {
@@ -20,33 +23,48 @@ struct ResizeDrag {
 }
 
 impl VerticalResize {
+    pub(crate) fn collapsible() -> Self {
+        Self {
+            collapsible: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn requested_height(&self) -> Option<Pixels> {
+        self.state.get().height
+    }
+
+    pub(crate) fn end_drag(&self) {
+        let mut state = self.state.get();
+        state.drag = None;
+        self.state.set(state);
+    }
+
     pub(crate) fn height(&self, bounds: RangeInclusive<Pixels>) -> Pixels {
-        self.0
-            .get()
-            .height
+        self.requested_height()
             .unwrap_or(*bounds.start())
             .clamp(*bounds.start(), *bounds.end())
     }
 
     fn set_height(&self, height: Pixels, bounds: RangeInclusive<Pixels>) {
         let height = height.clamp(*bounds.start(), *bounds.end());
-        let mut state = self.0.get();
-        state.height = (height > *bounds.start()).then_some(height);
-        self.0.set(state);
+        let mut state = self.state.get();
+        state.height = (self.collapsible || height > *bounds.start()).then_some(height);
+        self.state.set(state);
     }
 
     pub(crate) fn handle<T: 'static>(
         &self,
         id: &'static str,
         control_id: &'static str,
-        scroll: &ScrollHandle,
+        measured_height: impl Fn() -> Pixels + 'static,
         bounds: RangeInclusive<Pixels>,
         cx: &Context<T>,
     ) -> impl IntoElement {
         let owner = cx.entity().entity_id();
         let resize = self.clone();
         let pressed = self.clone();
-        let scroll = scroll.clone();
+        let minimum = *bounds.start();
         div()
             .relative()
             .flex()
@@ -61,8 +79,7 @@ impl VerticalResize {
                             if phase != DispatchPhase::Capture {
                                 return;
                             }
-                            let mut state = moving.0.get();
-                            if let Some(drag) = state.drag {
+                            if let Some(drag) = moving.state.get().drag {
                                 if event.dragging() {
                                     moving.set_height(
                                         drag.height + drag.y - event.position.y,
@@ -70,8 +87,7 @@ impl VerticalResize {
                                     );
                                     cx.notify(owner);
                                 } else {
-                                    state.drag = None;
-                                    moving.0.set(state);
+                                    moving.end_drag();
                                 }
                                 cx.stop_propagation();
                             }
@@ -82,9 +98,8 @@ impl VerticalResize {
                             {
                                 return;
                             }
-                            let mut state = released.0.get();
-                            if state.drag.take().is_some() {
-                                released.0.set(state);
+                            if released.state.get().drag.is_some() {
+                                released.end_drag();
                                 cx.stop_propagation();
                             }
                         });
@@ -118,16 +133,20 @@ impl VerticalResize {
                     .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
-                        let mut state = pressed.0.get();
+                        let mut state = pressed.state.get();
                         if event.click_count == 2 {
-                            state = ResizeState::default();
+                            state = ResizeState {
+                                height: (pressed.collapsible && state.height != Some(minimum))
+                                    .then_some(minimum),
+                                drag: None,
+                            };
                         } else {
                             state.drag = Some(ResizeDrag {
                                 y: event.position.y,
-                                height: scroll.bounds().size.height,
+                                height: measured_height(),
                             });
                         }
-                        pressed.0.set(state);
+                        pressed.state.set(state);
                         cx.notify(owner);
                     }),
             )
@@ -200,6 +219,7 @@ impl PromptInput {
         window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let scroll = self.editor_scroll.clone();
         div()
             .absolute()
             .top_0()
@@ -208,7 +228,7 @@ impl PromptInput {
             .child(self.editor_resize.handle(
                 "prompt-resize-handle",
                 "composer:resize",
-                &self.editor_scroll,
+                move || scroll.bounds().size.height,
                 self.editor_height_bounds(window),
                 cx,
             ))

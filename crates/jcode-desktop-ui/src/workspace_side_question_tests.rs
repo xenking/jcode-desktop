@@ -403,8 +403,7 @@ fn side_question_wheel_stays_in_the_card_even_at_both_edges(cx: &mut gpui::TestA
         );
         assert_eq!(vcx.debug_bounds("side-question-card").unwrap(), card);
     }
-    let parent = vcx.debug_bounds("composer-dock").unwrap();
-    let outside = gpui::point(card.center().x, parent.top() - px(8.));
+    let outside = gpui::point(card.center().x, card.top() - px(8.));
     wheel(
         vcx,
         outside,

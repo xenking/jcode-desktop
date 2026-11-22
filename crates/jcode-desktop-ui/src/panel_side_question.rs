@@ -8,11 +8,18 @@
 use super::ask::{CardActionTooltip, embedded_reply_frame};
 use super::*;
 use crate::harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
-use crate::input::VerticalResize;
 use jcode_sdk::{ApiEvent, SessionInfo};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{cell::Cell, rc::Rc};
+
+#[cfg(test)]
+#[path = "panel_composer_overlay_tests.rs"]
+mod overlay_tests;
 
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+// Resize handle (9), action row (23), gap (4), bottom padding (8), borders (2).
+const HEADER_HEIGHT: f32 = 46.;
+const FOLLOW_UP_ROOM: f32 = 46.;
 
 pub(super) enum HistoryView {
     Loading(u64),
@@ -38,7 +45,6 @@ pub(crate) struct SideQuestionCard {
     previous: Vec<SideQuestionTurn>,
     editor: Entity<PromptInput>,
     scroll: gpui::ScrollHandle,
-    resize: VerticalResize,
     selection: Entity<TextSelection>,
     error: Option<String>,
     /// Kept so the answer can be promoted without another session list read.
@@ -62,7 +68,6 @@ impl SideQuestionCard {
             previous: Vec::new(),
             editor,
             scroll: gpui::ScrollHandle::new(),
-            resize: VerticalResize::default(),
             selection: cx.new(TextSelection::new),
             error: None,
             session,
@@ -295,6 +300,7 @@ impl Panel {
     }
 
     fn show_side_question(&mut self, card: SideQuestionCard, cx: &mut Context<Self>) {
+        self.side_question_resize.end_drag();
         if let Some(previous) = self.side_question.take() {
             self.bridge.send(Command::DismissSideQuestion {
                 session_id: previous.child_session_id,
@@ -378,12 +384,13 @@ impl Panel {
 
     pub(crate) fn dismiss_side_question(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let card = self.take_side_question(cx)?;
+        self.side_question_resize.end_drag();
         Some(card.child_session_id)
     }
 
     pub(super) fn render_side_question_card(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         if let Some(history) = &self.side_question_history {
@@ -397,12 +404,27 @@ impl Panel {
             SideQuestionStatus::Done => "Done",
             SideQuestionStatus::Failed => "Failed",
         };
-        let height = window.viewport_size().height;
-        let default_height = px((f32::from(height) * 0.32).clamp(56., 220.));
-        // Leave room for the follow-up and the main composer when docked.
-        let height_bounds = default_height..=(height * 0.55).max(default_height);
+        let minimum = px(HEADER_HEIGHT);
+        let available = self.composer_overlay_room.get().max(minimum);
+        let height_bounds = minimum..=available;
+        let resized = self.side_question_resize.requested_height().is_some();
+        let height = if resized {
+            self.side_question_resize.height(height_bounds.clone())
+        } else {
+            (available * 0.6)
+                .clamp(px(HEADER_HEIGHT + FOLLOW_UP_ROOM), px(300.))
+                .min(available)
+        };
+        let collapsed = height <= minimum;
+        let show_follow_up = height >= minimum + px(FOLLOW_UP_ROOM);
+        if !show_follow_up && card.editor.read(cx).focus_handle.is_focused(window) {
+            self.return_side_question_focus(window, cx);
+        }
+        let measured = Rc::new(Cell::new(height));
+        let drag_height = measured.clone();
         let header =
             div()
+                .flex_none()
                 .flex()
                 .items_center()
                 .gap_1()
@@ -481,70 +503,93 @@ impl Panel {
                             }
                         })),
                 );
-        let turns = div()
-            .id("side-question-turns")
-            .debug_selector(|| "side-question-turns".into())
-            .max_h(card.resize.height(height_bounds.clone()))
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .gap_3()
-            .pr_2()
-            .child(side_turn(
-                &card.question,
-                &card.answer,
-                card.previous.len(),
-                true,
-                card,
-                window,
-                cx,
-            ))
-            .when(!card.previous.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(theme.TEXT_DIM)
-                        .child("Earlier in this side chat"),
-                )
-                .children(card.previous.iter().enumerate().rev().map(|(index, turn)| {
-                    side_turn(&turn.question, &turn.answer, index, false, card, window, cx)
-                }))
-            });
+        let turns = || {
+            div()
+                .id("side-question-turns")
+                .debug_selector(|| "side-question-turns".into())
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .min_h_0()
+                .gap_3()
+                .pr_2()
+                .child(side_turn(
+                    &card.question,
+                    &card.answer,
+                    card.previous.len(),
+                    true,
+                    card,
+                    window,
+                    cx,
+                ))
+                .when(!card.previous.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .child("Earlier in this side chat"),
+                    )
+                    .children(card.previous.iter().enumerate().rev().map(|(index, turn)| {
+                        side_turn(&turn.question, &turn.answer, index, false, card, window, cx)
+                    }))
+                })
+        };
 
         Some(
             side_card("side-question-card")
-                .child(card.resize.handle(
+                .relative()
+                .max_h(height)
+                .when(resized, |el| el.h(height))
+                .overflow_hidden()
+                .child(self.side_question_resize.handle(
                     "side-question-resize",
                     "side-question-resize",
-                    &card.scroll,
+                    move || drag_height.get(),
                     height_bounds,
                     cx,
                 ))
                 .child(header)
                 .child(
-                    div()
-                        .relative()
-                        .child(crate::transcript_scroll::tracked_vertical(
-                            turns,
-                            &card.scroll,
-                        ))
-                        .child(crate::scrollbar::vertical(
-                            &card.scroll,
-                            "side-question-scrollbar",
-                        )),
+                    gpui::canvas(
+                        move |bounds, _, _| measured.set(bounds.size.height + px(2.)),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
                 )
-                .child(
-                    div()
-                        .id("side-question-follow-up")
-                        .debug_selector(|| "side-question-follow-up".into())
-                        .relative()
-                        .flex()
-                        .children(crate::fixture_control_targets::marker(
-                            || "side-question-follow-up".into(),
-                            || Some(self.session_id.clone()),
-                        ))
-                        .child(embedded_reply_frame(&card.editor, false, window, cx)),
-                )
+                .when(!collapsed, |el| {
+                    el.child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .min_h_0()
+                            .when(resized, |el| el.flex_1())
+                            .child(crate::transcript_scroll::tracked_vertical(
+                                turns(),
+                                &card.scroll,
+                            ))
+                            .child(crate::scrollbar::vertical(
+                                &card.scroll,
+                                "side-question-scrollbar",
+                            )),
+                    )
+                })
+                .when(show_follow_up, |el| {
+                    el.child(
+                        div()
+                            .id("side-question-follow-up")
+                            .debug_selector(|| "side-question-follow-up".into())
+                            .relative()
+                            .flex()
+                            .flex_none()
+                            .children(crate::fixture_control_targets::marker(
+                                || "side-question-follow-up".into(),
+                                || Some(self.session_id.clone()),
+                            ))
+                            .child(embedded_reply_frame(&card.editor, false, window, cx)),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -603,6 +648,7 @@ impl Panel {
             HistoryView::Ready(topics) => crate::transcript_scroll::vertical(
                 div()
                     .id("side-question-topics")
+                    .min_h_0()
                     .max_h(window.viewport_size().height * 0.4)
                     .flex()
                     .flex_col()
@@ -639,6 +685,8 @@ impl Panel {
             .into_any_element(),
         };
         side_card("side-question-history")
+            .max_h(self.composer_overlay_room.get().max(px(HEADER_HEIGHT)))
+            .overflow_hidden()
             .child(
                 div()
                     .flex()

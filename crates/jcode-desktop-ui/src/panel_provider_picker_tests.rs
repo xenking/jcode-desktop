@@ -58,8 +58,11 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
     let picker = vcx
         .debug_bounds("composer-provider-picker")
         .expect("inline picker");
-    let input = vcx.debug_bounds("prompt-input").unwrap();
-    assert!(picker.bottom() <= input.top());
+    let input = vcx.debug_bounds("composer-text-slot").unwrap();
+    assert!(
+        picker.bottom() <= input.top(),
+        "picker {picker:?}, composer {input:?}"
+    );
     assert!(vcx.debug_bounds("accounts-panel").is_none());
     assert!(
         vcx.debug_bounds("login-close").is_none(),
