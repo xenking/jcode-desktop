@@ -5,6 +5,7 @@
 //! Test a change here with `justrust test -p jcode-desktop-model`.
 
 pub mod command_workflows;
+pub mod context_files;
 pub mod diff;
 pub mod diff_model;
 pub mod friendly_error;
