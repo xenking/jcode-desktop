@@ -888,6 +888,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn context_overlay_keeps_long_draft_and_scrolled_transcript_in_place(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("usage-scroll".into(), None, None, bridge, cx));
+        let window = vcx.update(|window, cx| {
+            Panel::connect_input(&panel, cx);
+            window.window_handle()
+        });
+        let draft = "An unsent draft with a long editor.\n".repeat(70);
+        vcx.simulate_window_resize(window, gpui::size(px(1100.), px(650.)));
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-sonnet-4-6".into());
+            *panel.items = (0..80)
+                .map(|index| Item::Assistant(format!("Transcript row {index}")))
+                .collect();
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content(draft.clone().into(), cx));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+        panel.update(vcx, |panel, cx| panel.scroll_transcript_direct(400.0, cx));
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
+
+        let geometry = |panel: &Panel, _app: &App| {
+            let top = panel.transcript_list.logical_scroll_top();
+            (
+                panel.transcript_list.viewport_bounds(),
+                panel.test_scroll_offset_y(),
+                top.item_ix,
+                top.offset_in_item,
+                panel.transcript_end_pad,
+            )
+        };
+        let before = panel.read_with(vcx, geometry);
+        assert_ne!(before.1, px(0.), "exercise a scrolled transcript");
+        let composer = vcx.debug_bounds("composer").unwrap();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        let trigger = vcx.debug_bounds("panel-context-meter").unwrap();
+
+        for open in [true, false] {
+            vcx.simulate_click(trigger.center(), Default::default());
+            vcx.run_until_parked();
+            scroll_momentum_tests::settle(vcx);
+            assert_eq!(vcx.debug_bounds("composer").unwrap(), composer);
+            assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), input);
+            assert_eq!(panel.read_with(vcx, geometry), before);
+            panel.read_with(vcx, |panel, cx| {
+                assert_eq!(panel.input.read(cx).content.as_ref(), draft);
+            });
+            let overlay = vcx.debug_bounds("context-usage");
+            assert_eq!(overlay.is_some(), open);
+            if let Some(overlay) = overlay {
+                assert_eq!(overlay.left(), composer.left());
+                assert_eq!(overlay.right(), composer.right());
+                assert!(overlay.bottom() < composer.top());
+            }
+        }
+    }
+
+    #[gpui::test]
     fn context_meter_opens_read_only_usage_and_can_reopen(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
@@ -961,7 +1026,11 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-breakdown").is_some());
         assert!(vcx.debug_bounds("context-usage-value-41k / 65k").is_some());
-        assert!(vcx.debug_bounds("context-pill-value-63%").is_some());
+        let percent = vcx.debug_bounds("context-pill-value-63%").unwrap();
+        let ring = vcx.debug_bounds("panel-context-ring").unwrap();
+        assert_eq!(ring.size, gpui::size(px(13.), px(13.)));
+        assert!(px(3.) <= percent.left() - ring.right());
+        assert!(percent.left() - ring.right() <= px(5.));
         assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_none());
         let bar = vcx.debug_bounds("context-usage-bar").unwrap();
         let tools = vcx.debug_bounds("context-usage-segment-Tools").unwrap();
