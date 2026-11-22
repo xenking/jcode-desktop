@@ -552,7 +552,8 @@ impl Panel {
             .iter()
             .flat_map(|snapshot| &snapshot.categories)
             .filter(|bucket| {
-                bucket.kind != ContextBreakdownKind::Snapcompact || bucket.tokens.is_some()
+                bucket.kind != ContextBreakdownKind::Snapcompact
+                    || bucket.tokens.is_some_and(|tokens| tokens > 0)
             })
             .map(|bucket| {
                 let (label, color) = category(bucket.kind, theme);

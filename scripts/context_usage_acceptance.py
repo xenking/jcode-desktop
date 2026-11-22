@@ -29,7 +29,8 @@ class ContextUsage(VERIFY.Instance):
 
     def runtime_spawn(self, name, command):
         if name == "fake-provider":
-            self.runtime_env.update(JCODE_MODEL="gpt-5.6-terra", JCODE_OPENAI_COMPAT_DEFAULT_MODEL="gpt-5.6-terra")
+            self.runtime_env.update(JCODE_MODEL="gpt-5.6-terra", JCODE_OPENAI_COMPAT_DEFAULT_MODEL="gpt-5.6-terra",
+                                    JCODE_MEMORY_ENABLED="false", JCODE_MEMORY_SIDECAR_ENABLED="false")
         return super().runtime_spawn(name, command)
 
     def start_background_runtime(self, env):
@@ -42,7 +43,9 @@ class ContextUsage(VERIFY.Instance):
                 id=self.second, title="Snapcompact fixture", created_at=now, updated_at=now,
                 model="gpt-5.6-terra", provider_key="openai-compatible", working_dir=str(self.profile / "home"),
                 messages=[dict(id="saved-tail", role="user", timestamp=now,
-                               content=[dict(type="text", text="Keep the recent tail.")])],
+                               content=[dict(type="text", text="Keep the recent tail.")]),
+                          dict(id="saved-answer", role="assistant", timestamp=now,
+                               content=[dict(type="text", text="The recent tail is intact.")])],
                 compaction=dict(summary_text="Saved fixture checkpoint", covers_up_to_turn=0,
                                 original_turn_count=0, compacted_count=0, snapcompact=dict(
                                     source="older input kept in the archive", pages=[],
@@ -94,6 +97,7 @@ class ContextUsage(VERIFY.Instance):
                 hello = {"req": "hello", "min_version": 1, "max_version": 1, "client": "desktop-context-acceptance"}
                 for id_, request in enumerate((hello, {
                     "req": "session_context_breakdown", "session_id": session,
+                    "include_snapcompact": True,
                 }), 1):
                     stream.write(json.dumps({"v": 1, "id": id_, **request}).encode() + b"\n")
                     stream.flush()

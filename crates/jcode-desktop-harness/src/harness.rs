@@ -2946,6 +2946,7 @@ fn read_context_breakdown(
                 model,
                 cwd,
                 summary_only,
+                include_snapcompact: !summary_only,
             })
             .ok()
             .and_then(|frame| match frame.event {
