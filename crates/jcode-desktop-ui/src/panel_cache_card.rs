@@ -46,6 +46,10 @@ impl CacheTelemetry {
         self.usage.count() != 0
     }
 
+    pub(super) fn last_hit_rate(&self) -> Option<f32> {
+        self.usage.last.and_then(Tokens::percent)
+    }
+
     pub(super) fn miss(&mut self, notice: &CacheMissNotice) {
         self.misses.record(notice);
     }
@@ -160,6 +164,7 @@ fn tokens(provider: &str, input: Option<u64>, read: Option<u64>, write: Option<u
 
 pub(super) struct CacheTooltip {
     pub(super) panel: gpui::WeakEntity<Panel>,
+    pub(super) pill: gpui::WeakEntity<cache_timer::CachePill>,
 }
 
 impl Render for CacheTooltip {
@@ -191,6 +196,10 @@ impl Render for CacheTooltip {
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
+            .children(self.pill.upgrade().map(|pill| {
+                usage::meter_detail(pill.read(cx).caption().into(), theme)
+                    .debug_selector(|| "panel-cache-footer-metric".into())
+            }))
             .child(usage_row(
                 "session",
                 "Session",
@@ -488,6 +497,7 @@ mod tests {
         vcx.run_until_parked();
         for selector in [
             "panel-cache-tooltip",
+            "panel-cache-footer-metric",
             "panel-cache-session-value-90% cached",
             "panel-cache-session-bar",
             "panel-cache-last-request-value-83% cached",

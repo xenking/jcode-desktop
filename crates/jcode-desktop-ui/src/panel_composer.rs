@@ -368,6 +368,7 @@ impl Panel {
                     .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
                     .flex_shrink_1()
                     .min_w(px(MODEL_MIN))
+                    .when(effort.is_some(), |el| el.pl_4().pr_1())
                     .child(
                         div()
                             .debug_selector(|| "panel-model-name".into())
@@ -397,7 +398,8 @@ impl Panel {
                     .flex_shrink(3.)
                     .min_w(px(EFFORT_MIN))
                     .gap_1()
-                    .px_1p5()
+                    .pl_0p5()
+                    .pr_2p5()
                     .children(mark)
                     .children(word)
                     .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
@@ -818,6 +820,32 @@ mod tests {
         assert!(crate::effort_icon::icon("future", BAR_ICON).is_none());
     }
 
+    #[gpui::test]
+    fn joined_model_and_effort_stay_close_with_full_hit_targets(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        let handle = vcx.update(|window, _| window.window_handle());
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-opus-5-5".into());
+            panel.provider = Some("anthropic".into());
+            panel.reasoning_effort = Some("high".into());
+            cx.notify();
+        });
+        for width in [320., 1000.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(500.)));
+            vcx.run_until_parked();
+            let model = vcx.debug_bounds("panel-model").unwrap();
+            let name = vcx.debug_bounds("panel-model-name").unwrap();
+            let effort = vcx.debug_bounds("panel-model-effort").unwrap();
+            let icon = vcx.debug_bounds("effort-icon-high").unwrap();
+            assert_eq!(model.right(), effort.left());
+            assert!(model.size.width >= px(56.));
+            assert!(effort.size.width >= px(BAR_ICON + 12.));
+            assert_eq!(model.size.height, px(TAB_HEIGHT));
+            assert_eq!(effort.size.height, px(TAB_HEIGHT));
+            assert!(icon.left() - name.right() <= px(8.), "width {width}");
+        }
+    }
+
     #[test]
     fn location_label_only_shows_the_last_component() {
         let home = std::env::var("HOME").unwrap();
@@ -941,29 +969,31 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.provider = Some("openai".into());
             panel.model = Some("gpt-6.2-sol".into());
-            panel.reasoning_effort = Some("high".into());
             cx.notify();
         });
-        let mut focused_inset = None;
-        for focused in [true, false] {
-            panel.update(vcx, |panel, cx| {
-                panel.set_surface_focused(focused, cx);
-                cx.notify();
-            });
-            vcx.run_until_parked();
-            let pill = vcx.debug_bounds("panel-model").expect("model pill");
-            let name = vcx.debug_bounds("panel-model-name").expect("model name");
-            assert!(
-                name.left() - pill.left() >= px(9.),
-                "focused={focused}: the label keeps its left padding: {name:?} in {pill:?}"
-            );
-            assert!(
-                pill.right() - name.right() >= px(9.),
-                "focused={focused}: the label keeps its right padding: {name:?} in {pill:?}"
-            );
-            match focused_inset {
-                None => focused_inset = Some(pill.left()),
-                Some(left) => assert_eq!(pill.left(), left, "the row does not move with focus"),
+        for joined in [false, true] {
+            let mut focused_bounds = None;
+            for focused in [true, false] {
+                panel.update(vcx, |panel, cx| {
+                    panel.reasoning_effort = joined.then(|| "high".into());
+                    panel.set_surface_focused(focused, cx);
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let pill = vcx.debug_bounds("panel-model").expect("model pill");
+                let name = vcx.debug_bounds("panel-model-name").expect("model name");
+                assert!(
+                    name.left() - pill.left() >= px(9.),
+                    "focused={focused}: the label keeps its left padding: {name:?} in {pill:?}"
+                );
+                assert!(
+                    pill.right() - name.right() >= px(if joined { 4. } else { 9. }),
+                    "focused={focused} joined={joined}: expected right padding: {name:?} in {pill:?}"
+                );
+                match focused_bounds {
+                    None => focused_bounds = Some((pill, name)),
+                    Some(bounds) => assert_eq!((pill, name), bounds, "focus does not move the row"),
+                }
             }
         }
     }

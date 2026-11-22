@@ -257,21 +257,19 @@ impl Marks {
         view.into_any_element()
     }
 
-    /// The cache countdown pill, updated in place when a newer turn refreshes the
-    /// window so its countdown anchor moves with the facts.
     pub(crate) fn cache_pill<T: 'static>(
         &mut self,
-        facts: Option<crate::panel::cache_timer::CacheFacts>,
+        value: crate::panel::cache_timer::CachePillValue,
         panel: gpui::WeakEntity<crate::panel::Panel>,
         cx: &mut Context<T>,
     ) -> AnyElement {
         match self.cache.clone() {
             Some(view) => {
-                view.update(cx, |view, cx| view.set(facts, cx));
+                view.update(cx, |view, cx| view.set(value, cx));
                 view.into_any_element()
             }
             None => {
-                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(facts, panel));
+                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(value, panel));
                 self.cache = Some(view.clone());
                 view.into_any_element()
             }
