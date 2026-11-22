@@ -473,6 +473,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn live_tool_done_and_history_share_exact_typed_summary() {
+        let entries = screenshot_history();
+        for message in &entries[2..] {
+            let tool = message.tool.as_ref().unwrap();
+            let history_json = serde_json::to_value(tool).unwrap();
+            let live: ApiEvent = serde_json::from_value(serde_json::json!({
+                "ev": "tool_done", "session_id": "tool-cards-test", "call_id": tool.id,
+                "name": tool.name, "output": message.content,
+                "codemode_status": history_json["codemode_status"],
+                "codemode_calls": history_json["codemode_calls"],
+                "report_body_bytes": history_json["report_body_bytes"],
+            }))
+            .unwrap();
+            let ApiEvent::ToolDone {
+                codemode, output, ..
+            } = live
+            else {
+                panic!("expected a tool_done event");
+            };
+            assert_eq!(codemode, tool.codemode);
+            assert_eq!(output, message.content);
+        }
+    }
+
     #[gpui::test]
     fn codemode_single_swarm_keeps_provenance_and_reports_wrapper_failure(
         cx: &mut gpui::TestAppContext,
