@@ -175,6 +175,42 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// The strip displays rounded ages, not a new value every millisecond.
+    pub fn same_strip_row(&self, other: &Self) -> bool {
+        fn age_key(worker: &Worker) -> Option<u64> {
+            let age = worker.age_ms? / 1_000;
+            Some(if worker.state.is_finished() {
+                if age < 3_600 { 0 } else { 3_600 }
+            } else {
+                match age {
+                    0..60 => age,
+                    60..3600 => age / 60 * 60,
+                    3600..86400 => age / 3600 * 3600,
+                    _ => age / 86400 * 86400,
+                }
+            })
+        }
+
+        let Self {
+            session_id,
+            name,
+            label,
+            title,
+            state,
+            age_ms: _,
+            icon,
+            meta,
+        } = self;
+        session_id == &other.session_id
+            && name == &other.name
+            && label == &other.label
+            && title == &other.title
+            && state == &other.state
+            && icon == &other.icon
+            && meta == &other.meta
+            && age_key(self) == age_key(other)
+    }
+
     pub fn from_session(session: &SessionInfo, meta: Option<&WorkerMeta>, now_ms: u64) -> Self {
         let meta = meta.cloned().unwrap_or_default();
         // A worker's own newest message is fresher than the daemon's

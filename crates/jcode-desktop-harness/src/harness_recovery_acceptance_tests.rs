@@ -71,7 +71,8 @@ fn real_bundle_bridge_replaces_stale_bridge_and_delivers_peer_prompt_live() {
     }
     println!("BUNDLE_BRIDGE_WRONG_PID {}", wrong.0.id());
     let (startup, _startup_updates) = update_channel();
-    start_local_runtime(startup);
+    let (startup_commands, _startup_rx) = channel();
+    start_local_runtime(startup, &startup_commands);
     let deadline = Instant::now() + Duration::from_secs(5);
     while wrong.0.try_wait().unwrap().is_none() {
         assert!(Instant::now() < deadline, "mismatched bridge did not retire after restart");

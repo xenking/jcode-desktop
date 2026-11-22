@@ -350,6 +350,7 @@ pub enum Command {
     Shutdown,
     RefreshSessions,
     SetCatalogForeground(bool),
+    RefreshSessionsInitial,
     /// Search every stored session's titles and transcripts. Answers with
     /// `Update::SessionSearch` carrying the same `generation`.
     SearchSessions {
@@ -1581,7 +1582,7 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
-fn start_local_runtime(updates: UpdateSender) -> Option<JcodeClient> {
+fn start_local_runtime(updates: UpdateSender, commands: &Sender<Command>) -> Option<JcodeClient> {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
     // while it comes back instead of turning a transient failure into a dead
@@ -1624,11 +1625,7 @@ fn start_local_runtime(updates: UpdateSender) -> Option<JcodeClient> {
     }
     // Neither persisted history scanning nor a busy daemon's list request
     // should delay creating the first interactive session.
-    refresh_sessions(
-        updates.clone(),
-        true,
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    );
+    let _ = commands.send(Command::RefreshSessionsInitial);
     let _ = updates.send(Update::Connected);
     let client = connect("draft-models").ok()?;
     if let Ok((current, routes)) = client.list_draft_models() {
@@ -1645,8 +1642,9 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
         .name("jcode-bridge-local-startup".into())
         .spawn({
             let updates = updates.clone();
+            let internal = internal.clone();
             move || {
-                if let Some(_client) = start_local_runtime(updates)
+                if let Some(_client) = start_local_runtime(updates, &internal)
                     && cfg!(target_os = "macos")
                 {
                     // The rollout daemon checks for a live Desktop peer for up
@@ -1673,7 +1671,7 @@ fn run_with_transports(
     internal: Sender<Command>,
     transports: transport::RemoteTransports,
 ) {
-    let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session_refresh = SessionRefresh::spawn(updates.clone());
 
     let edit_home = jcode_home();
     let mut edit_stamp = None;
@@ -1695,14 +1693,9 @@ fn run_with_transports(
                     .as_ref()
                     .is_some_and(|previous| *previous != current)
                 {
-                    // If another refresh is running, keep the old stamp and retry.
-                    if !session_refresh_in_flight.load(std::sync::atomic::Ordering::Acquire) {
-                        refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone());
-                        edit_stamp = Some(current);
-                    }
-                } else {
-                    edit_stamp = Some(current);
+                    session_refresh.request(false);
                 }
+                edit_stamp = Some(current);
             }
         }
         let command = match match next_edit_check {
@@ -1715,14 +1708,13 @@ fn run_with_transports(
         };
         match command {
             Command::Shutdown => break,
-            Command::RefreshSessions => {
-                refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
-            }
             Command::SetCatalogForeground(focused) => {
                 // Preserve the previous stamp so edits made while hidden are
                 // noticed immediately on activation, without scanning in the background.
                 next_edit_check = focused.then(std::time::Instant::now);
             }
+            Command::RefreshSessions => session_refresh.request(false),
+            Command::RefreshSessionsInitial => session_refresh.request(true),
             Command::SearchSessions { query, generation } => {
                 search::spawn_search(updates.clone(), query, generation)
             }
@@ -2487,60 +2479,113 @@ fn create_remote_session(
     }
 }
 
-fn refresh_sessions(
-    updates: UpdateSender,
-    include_disk_snapshot: bool,
-    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
-    let home = jcode_home();
-    // The workspace asks for this periodically so the sidebar follows sessions
-    // created or changed by other Jcode processes. Coalesce requests while the
-    // daemon is slow instead of accumulating 30-second list calls.
-    if in_flight.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return;
+struct SessionRefresh {
+    wake: std::sync::mpsc::SyncSender<()>,
+    initial: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SessionRefresh {
+    fn spawn(updates: UpdateSender) -> Self {
+        let (wake, requests) = std::sync::mpsc::sync_channel(1);
+        let initial = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let read_initial = initial.clone();
+        std::thread::Builder::new()
+            .name("jcode-bridge-sessions".into())
+            .spawn(move || {
+                run_session_refreshes(requests, Duration::from_millis(150), || {
+                    let include_disk_snapshot =
+                        read_initial.swap(false, std::sync::atomic::Ordering::AcqRel);
+                    refresh_session_catalog(&updates, include_disk_snapshot);
+                });
+            })
+            .expect("spawn session list thread");
+        Self { wake, initial }
     }
 
-    std::thread::Builder::new()
-        .name("jcode-bridge-sessions".into())
-        .spawn(move || {
-            if include_disk_snapshot {
-                let started = std::time::Instant::now();
-                let mut sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
-                jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
-                jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
-                log::debug!(
-                    "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
-                    started.elapsed().as_secs_f64() * 1_000.0,
-                    sessions.len()
-                );
-                send_worker_facts(&updates, &sessions);
-                let _ = updates.send(Update::Sessions { sessions });
+    fn request(&self, include_disk_snapshot: bool) {
+        if include_disk_snapshot {
+            self.initial
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let _ = self.wake.try_send(());
+    }
+}
+
+fn run_session_refreshes(requests: Receiver<()>, debounce: Duration, mut refresh: impl FnMut()) {
+    while requests.recv().is_ok() {
+        std::thread::sleep(debounce);
+        // A wake during the debounce is covered by this read. A wake during
+        // the read is retained for one trailing refresh, never dropped.
+        match requests.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            _ => refresh(),
+        }
+    }
+}
+
+#[test]
+fn a_refresh_burst_during_a_read_has_exactly_one_trailing_read() {
+    let (wake, requests) = std::sync::mpsc::sync_channel(1);
+    let (started, received) = channel();
+    let (release, resume) = channel();
+    let worker = std::thread::spawn(move || {
+        let mut reads = 0;
+        run_session_refreshes(requests, Duration::ZERO, || {
+            reads += 1;
+            started.send(reads).unwrap();
+            if reads == 1 {
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
             }
-            let started = std::time::Instant::now();
-            let listed =
-                match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
-                    Ok(sessions) => sessions,
-                    Err(error) => {
-                        log::debug!(
-                            "jcode desktop: session list failed after {:.1}ms: {error}",
-                            started.elapsed().as_secs_f64() * 1_000.0
-                        );
-                        Vec::new()
-                    }
-                };
-            let mut sessions = merge_persisted_sessions(listed, home.as_deref());
-            jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
-            jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
+        });
+        reads
+    });
+    wake.try_send(()).unwrap();
+    assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+    for _ in 0..100 {
+        let _ = wake.try_send(());
+    }
+    release.send(()).unwrap();
+    assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), 2);
+    drop(wake);
+    assert_eq!(worker.join().unwrap(), 2);
+}
+
+fn refresh_session_catalog(updates: &UpdateSender, include_disk_snapshot: bool) {
+    let home = jcode_home();
+    if include_disk_snapshot {
+        let started = std::time::Instant::now();
+        let mut sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
+        jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
+        jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
+        log::debug!(
+            "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
+            started.elapsed().as_secs_f64() * 1_000.0,
+            sessions.len()
+        );
+        send_worker_facts(updates, &sessions);
+        let _ = updates.send(Update::Sessions { sessions });
+    }
+    let started = std::time::Instant::now();
+    let listed = match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
+        Ok(sessions) => sessions,
+        Err(error) => {
             log::debug!(
-                "jcode desktop: session list completed in {:.1}ms ({} sessions)",
-                started.elapsed().as_secs_f64() * 1_000.0,
-                sessions.len()
+                "jcode desktop: session list failed after {:.1}ms: {error}",
+                started.elapsed().as_secs_f64() * 1_000.0
             );
-            send_worker_facts(&updates, &sessions);
-            let _ = updates.send(Update::Sessions { sessions });
-            in_flight.store(false, std::sync::atomic::Ordering::Release);
-        })
-        .expect("spawn session list thread");
+            Vec::new()
+        }
+    };
+    let mut sessions = merge_persisted_sessions(listed, home.as_deref());
+    jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
+    jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
+    log::debug!(
+        "jcode desktop: session list completed in {:.1}ms ({} sessions)",
+        started.elapsed().as_secs_f64() * 1_000.0,
+        sessions.len()
+    );
+    send_worker_facts(updates, &sessions);
+    let _ = updates.send(Update::Sessions { sessions });
 }
 
 /// Publish what each swarm worker's own record says about it, before the

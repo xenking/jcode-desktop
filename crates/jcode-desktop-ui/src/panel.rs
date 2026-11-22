@@ -805,7 +805,7 @@ pub struct Panel {
     /// Coordinator-only: background swarm awaits still in flight. The daemon
     /// persists them, so a reload no longer makes the coordinator look idle.
     pending_awaits: Vec<jcode_sdk::PendingAwait>,
-    pending_await_refresh: Option<gpui::Task<()>>,
+    pending_await_refresh: Option<swarm_indicator::AwaitRefresh>,
     tab_dependency_waiting: bool,
     /// This session's own record, when it is a swarm worker. Headless workers
     /// answer no model probe on attach, so their model and effort come from
@@ -1556,6 +1556,9 @@ impl Panel {
     ) {
         self.context_usage = context_usage::State::default();
         self.session_id = session.session_id;
+        self.pending_await_refresh = None;
+        self.pending_awaits.clear();
+        self.refresh_local_pending_awaits(cx);
         self.title = session
             .title
             .filter(|title| !title.is_empty())
@@ -6875,6 +6878,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
         let _render_scope = crate::render_stats::scope("Panel");
         self.watch_composer_popover_focus(window, cx);
         if let Some(scope) = self.ask_focus_return.take()

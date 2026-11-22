@@ -6,6 +6,12 @@ use crate::swarm_glyph::{Icon, Mark, Motion};
 use crate::swarm_view::{Indicator, Worker};
 
 const AWAIT_RECHECK_MS: u64 = 3_000;
+const AWAIT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(75);
+
+pub(super) enum AwaitRefresh {
+    Waiting { _task: gpui::Task<()>, poll: bool },
+    Reading { _task: gpui::Task<()>, again: bool },
+}
 
 fn await_now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -20,6 +26,33 @@ pub(crate) struct OpenSwarmWorker(pub String);
 impl gpui::EventEmitter<OpenSwarmWorker> for Panel {}
 
 impl Panel {
+    pub(crate) fn sync_worker_strip(
+        &mut self,
+        workers: &[Worker],
+        record: Option<&jcode_sdk::WorkerMeta>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.worker_record.as_ref() != record {
+            self.set_worker_record(record.cloned(), cx);
+        }
+        if !self.swarm_strip_matches(workers) {
+            self.set_swarm_workers(workers.to_vec(), cx);
+        }
+    }
+
+    pub(crate) fn swarm_strip_matches(&self, workers: &[Worker]) -> bool {
+        self.swarm_workers.len() == workers.len()
+            && self
+                .swarm_workers
+                .iter()
+                .zip(workers)
+                .all(|(a, b)| a.same_strip_row(b))
+    }
+
+    pub(crate) fn worker_record_matches(&self, record: Option<&jcode_sdk::WorkerMeta>) -> bool {
+        self.worker_record.as_ref() == record
+    }
+
     /// This panel's own session record, when the workspace read one for it.
     /// Only swarm workers have one; an ordinary chat learns its identity from
     /// the runtime and ignores this.
@@ -55,45 +88,72 @@ impl Panel {
         awaits.retain(|await_| await_.deadline_unix_ms > now);
         if self.pending_awaits != awaits {
             self.pending_awaits = awaits;
-            self.pending_await_refresh = None;
             cx.notify();
         }
-        if self.pending_await_refresh.is_some() {
-            return;
-        }
-        let Some(deadline) = self
-            .pending_awaits
-            .iter()
-            .map(|await_| await_.deadline_unix_ms)
-            .min()
-        else {
-            return;
-        };
-        // Worker/catalog notifications may never arrive for an unknown member.
-        // Track local registrations until they resolve, no later than the deadline.
-        let delay = Duration::from_millis((deadline - now).min(AWAIT_RECHECK_MS));
-        self.schedule_pending_await_refresh(delay, cx);
     }
 
     pub(crate) fn refresh_local_pending_awaits(&mut self, cx: &mut Context<Self>) {
-        if crate::harness::remote_host(&self.session_id).is_none() {
-            self.schedule_pending_await_refresh(Duration::ZERO, cx);
+        if !self.session_id.starts_with("session_")
+            || crate::harness::remote_host(&self.session_id).is_some()
+        {
+            return;
+        }
+        match &mut self.pending_await_refresh {
+            Some(AwaitRefresh::Reading { again, .. }) => *again = true,
+            Some(AwaitRefresh::Waiting { poll: false, .. }) => {}
+            _ => self.schedule_pending_await_refresh(AWAIT_REFRESH_DEBOUNCE, false, cx),
         }
     }
 
-    fn schedule_pending_await_refresh(&mut self, delay: Duration, cx: &mut Context<Self>) {
-        let session_id = self.session_id.clone();
-        self.pending_await_refresh = Some(cx.spawn(async move |panel, cx| {
+    fn schedule_pending_await_refresh(
+        &mut self,
+        delay: Duration,
+        poll: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.spawn(async move |panel, cx| {
             cx.background_executor().timer(delay).await;
+            let _ = panel.update(cx, |panel, cx| panel.read_pending_awaits(cx));
+        });
+        self.pending_await_refresh = Some(AwaitRefresh::Waiting { _task: task, poll });
+    }
+
+    fn read_pending_awaits(&mut self, cx: &mut Context<Self>) {
+        let session_id = self.session_id.clone();
+        let task = cx.spawn(async move |panel, cx| {
             let awaits = cx
                 .background_executor()
                 .spawn(async move { jcode_sdk::pending_awaits_for_session(&session_id) })
                 .await;
             let _ = panel.update(cx, |panel, cx| {
-                panel.pending_await_refresh = None;
+                let again = matches!(
+                    panel.pending_await_refresh.take(),
+                    Some(AwaitRefresh::Reading { again: true, .. })
+                );
                 panel.set_pending_awaits(awaits, cx);
+                if again {
+                    panel.refresh_local_pending_awaits(cx);
+                } else if let Some(deadline) = panel
+                    .pending_awaits
+                    .iter()
+                    .map(|a| a.deadline_unix_ms)
+                    .min()
+                {
+                    // Unknown members need no live subscription. Poll only while
+                    // an actual registration exists, stopping at its deadline.
+                    let delay = Duration::from_millis(
+                        deadline
+                            .saturating_sub(await_now_ms())
+                            .min(AWAIT_RECHECK_MS),
+                    );
+                    panel.schedule_pending_await_refresh(delay, true, cx);
+                }
             });
-        }));
+        });
+        self.pending_await_refresh = Some(AwaitRefresh::Reading {
+            _task: task,
+            again: false,
+        });
     }
 
     /// Ids this coordinator is still waiting for, in request order,

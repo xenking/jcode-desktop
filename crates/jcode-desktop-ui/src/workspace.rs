@@ -2363,6 +2363,7 @@ impl Workspace {
     /// SDK snapshot, so treating them as changes would rebuild the complete
     /// sidebar and every open panel for no user-visible result.
     pub(crate) fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
+        let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
         if let Update::Sessions { sessions } = &mut update {
             // A desktop window can disappear while its daemon-owned sessions keep
             // running. Those panels are restored from the workspace snapshot before
@@ -2407,10 +2408,14 @@ impl Workspace {
                 });
             }
         }
-        if let Update::Sessions { sessions } = &update
-            && sessions == &self.sessions
-        {
-            return false;
+        if let Update::Sessions { sessions } = &mut update {
+            self.live_swarm_status.merge(sessions);
+            if same_session_catalog(&self.sessions, sessions) {
+                // Keep exact recency metadata for future changes without
+                // redrawing a catalog whose rows and order are unchanged.
+                std::mem::swap(&mut self.sessions, sessions);
+                return false;
+            }
         }
         if let Update::WorkerFacts { workers } = &update
             && workers == &self.worker_meta
@@ -2475,14 +2480,20 @@ impl Workspace {
                 // runtime has not sent an identity yet.
                 self.sync_swarm_strips(cx);
             }
-            Update::Sessions { mut sessions } => {
-                self.live_swarm_status.merge(&mut sessions);
+            Update::Sessions { sessions } => {
                 if self.pinned_working_dir.is_none()
                     && let Some(directory) = most_used_working_dir(&sessions)
                 {
-                    if let Err(error) = crate::config::persist_pinned_working_dir(&directory) {
-                        eprintln!("could not persist fixed directory shortcut: {error}");
-                    }
+                    let persisted = directory.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Err(error) =
+                                crate::config::persist_pinned_working_dir(&persisted)
+                            {
+                                eprintln!("could not persist fixed directory shortcut: {error}");
+                            }
+                        })
+                        .detach();
                     self.pinned_working_dir = Some(directory);
                 }
                 for session in &sessions {
@@ -2800,8 +2811,9 @@ impl Workspace {
                         if unknown_worker {
                             self.bridge.send(Command::RefreshSessions);
                         }
+                        return true;
                     }
-                    return true;
+                    return false;
                 }
                 if self.route_side_question_event(&session_id, &event, cx) {
                     return true;
@@ -3196,6 +3208,9 @@ impl Workspace {
 
     fn wire_session_panel(panel: &Entity<Panel>, cx: &mut Context<Self>) {
         Panel::connect_input(panel, cx);
+        if !cfg!(test) {
+            panel.update(cx, |panel, cx| panel.refresh_local_pending_awaits(cx));
+        }
         cx.subscribe(
             panel,
             |this, _, event: &crate::panel::OpenSwarmWorker, cx| {
@@ -3297,28 +3312,17 @@ impl Workspace {
         let now = swarm_now_ms();
         let workers =
             crate::swarm_view::workers_by_coordinator(&self.sessions, &self.worker_meta, now);
-        for slot in &self.slots {
-            let id = slot.panel.read(cx).session_id.clone();
-            let list = workers.get(&id).cloned().unwrap_or_default();
-            slot.panel
-                .update(cx, |panel, cx| panel.set_swarm_workers(list, cx));
-            // A worker's own panel has no runtime identity until it answers a
-            // model probe; its record already names the model and effort, so
-            // the composer footer shows those instead of asking to choose one.
-            let record = self.worker_meta.get(&id).cloned();
-            slot.panel
-                .update(cx, |panel, cx| panel.set_worker_record(record, cx));
-            // A background await outlives the turn and the daemon reload that
-            // ended it. Read the daemon's durable registration so a parked
-            // coordinator says what it waits for instead of looking idle.
-            let awaits = crate::harness::remote_host(&id)
-                .is_none()
-                .then(|| jcode_sdk::pending_awaits_for_session(&id))
-                .unwrap_or_default();
-            slot.panel
-                .update(cx, |panel, cx| panel.set_pending_awaits(awaits, cx));
+        for slot in self.slots.iter().filter(|slot| !slot.closing) {
+            let panel = slot.panel.read(cx);
+            let list = workers
+                .get(&panel.session_id)
+                .map_or(&[][..], Vec::as_slice);
+            let record = self.worker_meta.get(&panel.session_id);
+            if !panel.swarm_strip_matches(list) || !panel.worker_record_matches(record) {
+                slot.panel
+                    .update(cx, |panel, cx| panel.sync_worker_strip(list, record, cx));
+            }
         }
-        cx.notify();
     }
 
     fn seed_tab_status_fixture(&self, cx: &mut Context<Self>) {
@@ -9539,6 +9543,7 @@ impl Render for SidebarChrome {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
         // Single-panel and modal layouts return before rendering the version
         // footer. They still need the launch check and periodic updater.
         updates::ensure_release_check();
@@ -10448,11 +10453,67 @@ fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::
 }
 
 fn sort_sidebar_sessions(ordered: &mut [jcode_sdk::SessionInfo]) {
-    ordered.sort_by(|a, b| {
-        b.saved
-            .cmp(&a.saved)
-            .then_with(|| sidebar_session_recency_ms(b).cmp(&sidebar_session_recency_ms(a)))
-    });
+    ordered.sort_by_key(sidebar_session_sort_key);
+}
+
+fn sidebar_session_sort_key(session: &jcode_sdk::SessionInfo) -> std::cmp::Reverse<(bool, i64)> {
+    std::cmp::Reverse((session.saved, sidebar_session_recency_ms(session)))
+}
+
+fn same_session_catalog(a: &[jcode_sdk::SessionInfo], b: &[jcode_sdk::SessionInfo]) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.len() != b.len() || !a.iter().zip(b).all(|(a, b)| same_session_row(a, b)) {
+        return false;
+    }
+    // Only timestamps changed. Avoid invalidating views unless their stable
+    // newest-first order changes. Compare borrowed rows, not transcript data.
+    let mut a: Vec<_> = a.iter().collect();
+    let mut b: Vec<_> = b.iter().collect();
+    a.sort_by_key(|session| sidebar_session_sort_key(session));
+    b.sort_by_key(|session| sidebar_session_sort_key(session));
+    a.into_iter()
+        .zip(b)
+        .all(|(a, b)| a.session_id == b.session_id)
+}
+
+fn same_session_row(a: &jcode_sdk::SessionInfo, b: &jcode_sdk::SessionInfo) -> bool {
+    let jcode_sdk::SessionInfo {
+        user_connected,
+        edit_stats,
+        context,
+        session_id,
+        parent_session_id,
+        agent_label,
+        swarm_status,
+        working_dir,
+        title,
+        status,
+        transcript_bytes,
+        saved,
+        save_label,
+        updated_at_ms: _,
+        last_active_at_ms,
+        archived,
+        archived_at_ms,
+    } = a;
+    *user_connected == b.user_connected
+        && edit_stats == &b.edit_stats
+        && context == &b.context
+        && session_id == &b.session_id
+        && parent_session_id == &b.parent_session_id
+        && agent_label == &b.agent_label
+        && swarm_status == &b.swarm_status
+        && working_dir == &b.working_dir
+        && title == &b.title
+        && status == &b.status
+        && transcript_bytes == &b.transcript_bytes
+        && *saved == b.saved
+        && save_label == &b.save_label
+        && last_active_at_ms == &b.last_active_at_ms
+        && *archived == b.archived
+        && archived_at_ms == &b.archived_at_ms
 }
 
 fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i64 {
@@ -11367,21 +11428,59 @@ mod tests {
     fn identical_sdk_session_snapshots_do_not_invalidate_the_sidebar(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, cx) =
+        let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
-        let sessions = vec![session_info(
-            "session_fox_1234567890_deadbeef",
-            Some("Release planning"),
-        )];
-
-        workspace.update(cx, |workspace, cx| {
+        let mut sessions: Vec<_> = (0..12)
+            .map(|i| {
+                let mut session =
+                    session_info(&format!("session_fox_{i}_deadbeef"), Some("Planning"));
+                session.updated_at_ms = Some(i + 1);
+                session
+            })
+            .collect();
+        let panel_updates = std::rc::Rc::new(std::cell::Cell::new(0));
+        workspace.update(vcx, |workspace, cx| {
+            for session in &sessions {
+                workspace.open_session(session.clone(), cx);
+            }
             assert!(workspace.apply(
                 Update::Sessions {
                     sessions: sessions.clone(),
                 },
                 cx,
             ));
-            assert!(!workspace.apply(Update::Sessions { sessions }, cx));
+            for slot in &workspace.slots {
+                let count = panel_updates.clone();
+                cx.observe(&slot.panel, move |_, _, _| count.set(count.get() + 1))
+                    .detach();
+            }
+        });
+        vcx.run_until_parked();
+        panel_updates.set(0);
+        let before = crate::render_stats::snapshot();
+        for _ in 0..25 {
+            for session in &mut sessions {
+                session.updated_at_ms = session.updated_at_ms.map(|ms| ms + 20);
+            }
+            workspace.update(vcx, |workspace, cx| {
+                // apply's SDK guard panics if it scans an await directory, even
+                // for the first non-identical snapshot.
+                assert!(!workspace.apply(
+                    Update::Sessions {
+                        sessions: sessions.clone()
+                    },
+                    cx
+                ));
+            });
+        }
+        vcx.run_until_parked();
+        assert_eq!(panel_updates.get(), 0);
+        assert_eq!(crate::render_stats::snapshot(), before);
+
+        // Recency still matters when it actually changes the displayed order.
+        sessions[0].updated_at_ms = Some(i64::MAX);
+        workspace.update(vcx, |workspace, cx| {
+            assert!(workspace.apply(Update::Sessions { sessions }, cx));
         });
     }
 
