@@ -6157,6 +6157,7 @@ impl Panel {
                 .flex_none()
                 .px_1()
                 .text_size(px(12.0))
+                .italic()
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
@@ -10519,6 +10520,7 @@ mod tests {
     #[gpui::test]
     fn inline_reasoning_paints_full_markdown_live_and_settled(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
+        let styles = markdown::capture_painted_font_styles();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -10543,12 +10545,17 @@ mod tests {
             );
         });
         vcx.run_until_parked();
+        assert_eq!(
+            styles.borrow()["The final sentence is still here."],
+            gpui::FontStyle::Italic
+        );
         let live_bounds = vcx.debug_bounds("reasoning-inline").unwrap();
         assert!(live_bounds.size.height > px(0.0));
         let live_tail_selector =
             Box::leak(format!("selectable-text-{}-2", usize::MAX - 1).into_boxed_str());
         assert!(vcx.debug_bounds(live_tail_selector).is_some());
 
+        styles.borrow_mut().clear();
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::ReasoningDone {
@@ -10559,6 +10566,10 @@ mod tests {
             );
         });
         vcx.run_until_parked();
+        assert_eq!(
+            styles.borrow()["The final sentence is still here."],
+            gpui::FontStyle::Italic
+        );
         let settled_bounds = vcx.debug_bounds("reasoning-inline").unwrap();
         assert_eq!(
             live_bounds.size, settled_bounds.size,

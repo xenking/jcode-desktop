@@ -1390,6 +1390,19 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     #[cfg(test)]
     static PAINTED_PROMPT_TEXT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static PAINTED_FONT_STYLES: std::cell::RefCell<Option<PaintedFontStyles>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+type PaintedFontStyles =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, gpui::FontStyle>>>;
+
+#[cfg(test)]
+pub(crate) fn capture_painted_font_styles() -> PaintedFontStyles {
+    let styles = PaintedFontStyles::default();
+    PAINTED_FONT_STYLES.with(|slot| slot.replace(Some(styles.clone())));
+    styles
 }
 
 #[cfg(test)]
@@ -1715,6 +1728,12 @@ fn styled_inline_layout(
         let keys = markers.iter().map(|(range, _)| inline.plain[range.clone()].to_owned()).collect();
         crate::image_chip::PositionedChips::new(layout.clone(), chips, key.clone(), keys, images.on_click.clone())
     });
+    #[cfg(test)]
+    let capture = PAINTED_FONT_STYLES.with(|slot| {
+        slot.borrow()
+            .clone()
+            .map(|styles| (inline.plain.clone(), styles))
+    });
     let selectable = text_selection::selectable_with_offsets(
         selection.clone(),
         key,
@@ -1737,6 +1756,24 @@ fn styled_inline_layout(
             .into_any_element()
     } else {
         selectable
+    };
+    #[cfg(test)]
+    let element = if let Some((text, styles)) = capture {
+        div()
+            .relative()
+            .child(element)
+            .child(
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |_, (), window, _| {
+                        styles.borrow_mut().insert(text, window.text_style().font_style);
+                    },
+                )
+                .absolute(),
+            )
+            .into_any_element()
+    } else {
+        element
     };
     (element, layout)
 }
@@ -2739,6 +2776,7 @@ fn render_blocks(
             Block::Reasoning(text) => div()
                 .debug_selector(|| "restored-reasoning".into())
                 .text_size(px(12.0))
+                .italic()
                 .text_color(Theme::global().REASONING)
                 .line_height(relative(1.55))
                 .child(render_document_with_prompt_background(
@@ -3848,6 +3886,7 @@ mod tests {
     fn restored_reasoning_paints_and_copies_without_transport_markup(
         cx: &mut gpui::TestAppContext,
     ) {
+        let styles = capture_painted_font_styles();
         let (view, vcx) = cx.add_window_view(|_, cx| RestoredReasoningView {
             selection: cx.new(TextSelection::new),
             source: format!(
@@ -3858,6 +3897,11 @@ mod tests {
             ),
         });
         vcx.run_until_parked();
+        assert_eq!(
+            styles.borrow()["Quiet reasoning body."],
+            gpui::FontStyle::Italic
+        );
+        assert_eq!(styles.borrow()["The answer."], gpui::FontStyle::Normal);
         assert!(vcx.debug_bounds("restored-reasoning").is_some());
         let heading = vcx.debug_bounds("selectable-text-0-0-0").unwrap();
         let body = vcx.debug_bounds("selectable-text-0-0-1").unwrap();

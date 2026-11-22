@@ -1707,7 +1707,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "reasoning", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",
