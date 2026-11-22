@@ -10,6 +10,7 @@ pub mod diff_model;
 pub mod friendly_error;
 pub mod global_search;
 pub mod learning;
+pub mod markdown_file;
 pub mod pdf_render;
 pub mod platform_dirs;
 pub mod prompt_completion;
