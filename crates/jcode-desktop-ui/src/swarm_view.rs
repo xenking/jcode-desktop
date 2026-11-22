@@ -678,46 +678,6 @@ impl Indicator {
     }
 }
 
-/// What the agent is doing, in one word for the composer's activity icon.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Activity {
-    Idle,
-    Thinking,
-    RunningTool,
-    WaitingOnWorkers,
-}
-
-/// The agent's own turn, as far as the icon cares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Turn {
-    Idle,
-    /// Reasoning, streaming text, or waiting for the model.
-    Thinking,
-    Tools,
-}
-
-impl Activity {
-    /// A running turn wins. An idle coordinator with live workers is
-    /// waiting on them, not hung.
-    pub fn resolve(turn: Turn, live_workers: usize) -> Self {
-        match (turn, live_workers) {
-            (Turn::Tools, _) => Self::RunningTool,
-            (Turn::Thinking, _) => Self::Thinking,
-            (Turn::Idle, 0) => Self::Idle,
-            (Turn::Idle, _) => Self::WaitingOnWorkers,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "Idle",
-            Self::Thinking => "Thinking",
-            Self::RunningTool => "Running tool",
-            Self::WaitingOnWorkers => "Waiting on workers",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1000,20 +960,6 @@ mod tests {
 
         let waiting = Indicator::from_workers(&[worker("a", Some("blocked"))]).unwrap();
         assert_eq!(waiting.glyph(), Glyph::Pause);
-    }
-
-    #[test]
-    fn activity_covers_idle_thinking_tool_and_waiting_on_workers() {
-        use Activity::*;
-        assert_eq!(Activity::resolve(Turn::Idle, 0), Idle);
-        assert_eq!(Activity::resolve(Turn::Thinking, 0), Thinking);
-        assert_eq!(Activity::resolve(Turn::Tools, 0), RunningTool);
-        // Idle with workers still running is waiting, not hung.
-        assert_eq!(Activity::resolve(Turn::Idle, 3), WaitingOnWorkers);
-        // The agent's own turn wins over its workers.
-        assert_eq!(Activity::resolve(Turn::Thinking, 3), Thinking);
-        assert_eq!(Activity::resolve(Turn::Tools, 3), RunningTool);
-        assert_eq!(WaitingOnWorkers.label(), "Waiting on workers");
     }
 
     #[test]

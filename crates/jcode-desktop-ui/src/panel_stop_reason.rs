@@ -202,6 +202,11 @@ impl Panel {
             // A transport loss alone is ambiguous and must preserve them for
             // reconnect reconciliation rather than claiming delivery.
             self.pending_users.clear();
+            self.turn_outcome = Some(if notice.failure {
+                session_status::TurnOutcome::Error
+            } else {
+                session_status::TurnOutcome::Stopped
+            });
         }
         self.pause_queue_for_stop();
         self.sound_events.cancel();

@@ -1216,33 +1216,6 @@ impl Panel {
         )
     }
 
-    /// Footer status text. Active work is shown by the transcript activity
-    /// indicator instead, so the footer does not duplicate it.
-    pub(super) fn render_voice_status(&self, status: String) -> Option<gpui::AnyElement> {
-        // Idle "Ready" is noise. Only surface states worth reading.
-        if self.activity_active() || status == "Ready" {
-            return None;
-        }
-        Some(
-            div()
-                .debug_selector(|| "panel-status-badge".into())
-                .flex()
-                .items_center()
-                .flex_shrink_1()
-                .min_w(px(40.))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(
-                    div()
-                        .debug_selector(|| "voice-ready-status".into())
-                        .min_w_0()
-                        .flex_shrink_1()
-                        .truncate()
-                        .child(status),
-                )
-                .into_any_element(),
-        )
-    }
-
     /// The shortcut is in the tooltip, never in place of the microphone.
     pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();

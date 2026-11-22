@@ -36,6 +36,31 @@ fn idle(panel: &mut Panel, cx: &mut Context<Panel>) {
 }
 
 #[gpui::test]
+fn done_stays_distinct_from_idle_after_ui_reload(cx: &mut gpui::TestAppContext) {
+    let (original, original_view) = setup(cx);
+    original.update(original_view, |panel, cx| {
+        panel.apply(
+            &ApiEvent::TurnDone {
+                session_id: "reload-test".into(),
+                pending_soft_interrupts: None,
+            },
+            cx,
+        );
+    });
+    let snapshot = original.read_with(original_view, |panel, cx| {
+        serde_json::to_string(&panel.snapshot_for_reload(cx)).unwrap()
+    });
+    let (restored, restored_view) = setup(cx);
+    restored.update(restored_view, |panel, cx| {
+        panel.restore_snapshot(serde_json::from_str(&snapshot).unwrap(), cx);
+        idle(panel, cx);
+    });
+    restored_view.run_until_parked();
+    assert!(restored_view.debug_bounds("session-status-done").is_some());
+    assert!(restored_view.debug_bounds("session-status-idle").is_none());
+}
+
+#[gpui::test]
 fn reload_snapshot_roundtrips_rich_transcript_without_checkpoint_payload(
     cx: &mut gpui::TestAppContext,
 ) {

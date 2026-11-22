@@ -141,6 +141,8 @@ mod fork_prompt;
 mod rig_hud;
 #[path = "panel_side_question.rs"]
 mod side_question;
+#[path = "panel_session_status.rs"]
+mod session_status;
 #[path = "panel_swarm_card.rs"]
 mod swarm_card;
 #[path = "panel_swarm_indicator.rs"]
@@ -702,6 +704,7 @@ pub struct Panel {
     pub working_dir: Option<String>,
     pub status: String,
     pub connection_phase: String,
+    turn_outcome: Option<session_status::TurnOutcome>,
     /// Model id serving this session, e.g. `gpt-5.6-sol`.
     pub model: Option<String>,
     /// Provider display name, e.g. `openai` or `anthropic`.
@@ -1122,9 +1125,7 @@ impl Panel {
                 return Some(TabRing::waiting());
             }
             _ if self.activity_active() => MinimapSessionState::Working,
-            _ if self.tab_dependency_waiting
-                || self.agent_activity() == crate::swarm_view::Activity::WaitingOnWorkers =>
-            {
+            _ if self.tab_dependency_waiting || !self.awaiting_ids().is_empty() => {
                 return Some(TabRing::waiting());
             }
             _ if self.finished_unseen => MinimapSessionState::Complete,
@@ -1634,6 +1635,7 @@ impl Panel {
             title: display_title.into(),
             working_dir,
             status: activity_status.into(),
+            turn_outcome: None,
             connection_phase: String::new(),
             model: effort_fixture.then(|| "gpt-5.6-sol".into()),
             provider: effort_fixture.then(|| "openai".into()),
@@ -3882,6 +3884,9 @@ impl Panel {
         }
         let was_active = self.activity_active();
         self.apply_event(event, cx);
+        if self.activity_active() && !activity_state::is_retry_phase(&self.connection_phase) {
+            self.turn_outcome = None;
+        }
         self.note_turn_transition(was_active, cx);
     }
 
@@ -4366,6 +4371,7 @@ impl Panel {
                 self.refresh_context_usage(cx);
                 self.reconcile_reconnect_response();
                 self.finish_response();
+                self.turn_outcome = Some(self.finished_turn_outcome());
             }
             ApiEvent::ProviderGuardrailRetry {
                 turn_id,
@@ -4402,6 +4408,7 @@ impl Panel {
                     message,
                     provider_stop_reason.as_deref(),
                 ));
+                self.dismiss_stopped_asks(cx);
             }
             ApiEvent::SessionStatus { status, .. }
                 if status == "attached" || (status == "connected" && self.activity_active()) =>
@@ -4416,6 +4423,7 @@ impl Panel {
                     {
                         self.record_stop(notice);
                     }
+                    self.dismiss_stopped_asks(cx);
                     cx.notify();
                     return;
                 }
@@ -4560,6 +4568,7 @@ impl Panel {
             }
             ApiEvent::Error { code, message } => {
                 self.finish_response();
+                self.turn_outcome = Some(session_status::TurnOutcome::Error);
                 if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
                 {
                     self.items.push(Item::RuntimeError {
@@ -4804,6 +4813,7 @@ impl Panel {
             crate::sounds::play(crate::sounds::Cue::Error, cx);
         }
         self.finish_response();
+        self.turn_outcome = Some(session_status::TurnOutcome::Error);
         self.items.push(Item::Error(message));
         self.status = "idle".into();
         self.connection_phase.clear();
@@ -4899,6 +4909,7 @@ impl Panel {
     fn render_transcript_activity(&self) -> gpui::AnyElement {
         div()
             .debug_selector(|| "transcript-activity".into())
+            .relative()
             .flex_none()
             .flex()
             .items_center()
@@ -4907,6 +4918,10 @@ impl Panel {
             .px_3()
             .pt(px(10.0))
             .pb_2()
+            .children(crate::fixture_control_targets::marker(
+                || "transcript-activity".into(),
+                || Some(self.session_id.clone()),
+            ))
             .child(self.activity_spinner.clone())
             .into_any_element()
     }
@@ -6777,7 +6792,8 @@ impl Render for Panel {
         let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
-        let row_count = rows.len() + usize::from(self.activity_active());
+        let show_turn_activity = self.activity_active() && self.ask_card.is_none();
+        let row_count = rows.len() + usize::from(show_turn_activity);
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
         let fresh_session = !self.transcript_only
@@ -7541,7 +7557,7 @@ impl Render for Panel {
                                                 this.jump_to_latest(cx);
                                             }),
                                         )
-                                        .when(self.activity_active(), |el| {
+                                        .when(show_turn_activity, |el| {
                                             el.child(
                                                 div()
                                                     .debug_selector(|| "latest-activity".into())

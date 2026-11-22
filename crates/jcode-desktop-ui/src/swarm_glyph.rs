@@ -13,7 +13,7 @@ use gpui::{
     prelude::*, px, radians, svg,
 };
 
-use crate::swarm_view::{Activity, Glyph};
+use crate::swarm_view::Glyph;
 use crate::theme::Theme;
 
 /// 20 Hz, the rate every other decorative pulse uses.
@@ -27,11 +27,8 @@ pub(crate) enum Icon {
     Cross,
     Stop,
     Pause,
-    Idle,
     Thinking,
-    Tool,
     Background,
-    Waiting,
     /// The swarm: three connected nodes, the upstream sidebar's worker mark.
     Workers,
     /// The prompt-cache countdown while the window is open.
@@ -55,11 +52,8 @@ impl Icon {
             Self::Cross => icon!("cross"),
             Self::Stop => icon!("stop"),
             Self::Pause => icon!("pause"),
-            Self::Idle => icon!("idle"),
             Self::Thinking => icon!("thinking"),
-            Self::Tool => icon!("tool"),
             Self::Background => include_bytes!("../../../assets/icons/tools/bg.svg"),
-            Self::Waiting => icon!("waiting"),
             Self::Workers => icon!("workers"),
             Self::Timer => icon!("timer"),
             Self::Snowflake => icon!("snowflake"),
@@ -100,33 +94,12 @@ impl Mark {
         }
     }
 
-    /// Idle is a quiet dot. Thinking pulses, a running tool turns slowly and
-    /// waiting on workers breathes, all subtle enough to sit in the bar.
-    pub(crate) fn activity(activity: Activity, size: f32) -> Self {
-        let theme = Theme::global();
-        let (icon, color, motion) = match activity {
-            Activity::Idle => (Icon::Idle, theme.composer_secondary(), Motion::Still),
-            Activity::Thinking => (
-                Icon::Thinking,
-                theme.ACCENT,
-                Motion::Pulse(Duration::from_millis(1600)),
-            ),
-            Activity::RunningTool => (
-                Icon::Tool,
-                theme.ACCENT,
-                Motion::Spin(Duration::from_millis(3200)),
-            ),
-            Activity::WaitingOnWorkers => (
-                Icon::Waiting,
-                theme.WARN,
-                Motion::Pulse(Duration::from_millis(2200)),
-            ),
-        };
+    pub(crate) fn thinking(size: f32) -> Self {
         Self {
-            icon,
-            color,
+            icon: Icon::Thinking,
+            color: Theme::global().ACCENT,
             size,
-            motion,
+            motion: Motion::Pulse(Duration::from_millis(1600)),
         }
     }
 
@@ -307,18 +280,7 @@ mod tests {
                 "{glyph:?}"
             );
         }
-        for (activity, animated) in [
-            (Activity::Idle, false),
-            (Activity::Thinking, true),
-            (Activity::RunningTool, true),
-            (Activity::WaitingOnWorkers, true),
-        ] {
-            assert_eq!(
-                Mark::activity(activity, 12.0).motion != Motion::Still,
-                animated,
-                "{activity:?}"
-            );
-        }
+        assert_ne!(Mark::thinking(12.0).motion, Motion::Still);
     }
 
     #[test]
@@ -328,10 +290,7 @@ mod tests {
             Icon::Check,
             Icon::Cross,
             Icon::Pause,
-            Icon::Idle,
             Icon::Thinking,
-            Icon::Tool,
-            Icon::Waiting,
             Icon::Workers,
             Icon::Timer,
             Icon::Snowflake,

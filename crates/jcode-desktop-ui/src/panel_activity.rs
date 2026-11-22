@@ -930,12 +930,13 @@ mod tests {
                 vcx.debug_bounds("panel-activity-label").is_none(),
                 "{terminal}"
             );
-            let idle = panel.read_with(vcx, |panel, _| panel.status_line() == "Ready");
-            assert_eq!(
-                vcx.debug_bounds("panel-status-badge").is_some(),
-                !idle,
-                "non-active, non-idle status stays in footer ({terminal})"
-            );
+            let state = match terminal {
+                "done" => "session-status-done",
+                "error" | "failed" => "session-status-error",
+                "cancelled" => "session-status-stopped",
+                _ => "session-status-idle",
+            };
+            assert!(vcx.debug_bounds(state).is_some(), "{terminal}");
             panel.read_with(vcx, |panel, _| {
                 assert!(!panel.activity_active(), "{terminal}");
                 assert!(panel.streaming_reasoning.is_empty());

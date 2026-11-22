@@ -122,6 +122,8 @@ pub(crate) fn marker(
 
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
+        || selector == "transcript-activity"
+        || selector.starts_with("session-status-")
         || selector == "openrig-section-menu"
         || selector.starts_with("openrig-section:")
         || selector.starts_with("work-row:")

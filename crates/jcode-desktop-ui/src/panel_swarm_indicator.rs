@@ -1,13 +1,9 @@
-//! The composer bar's swarm and activity marks. Replaces the old text strip:
-//! a coordinator shows a small spinner plus a count while workers run, and
-//! every panel shows one icon for what its agent is doing (idle, thinking,
-//! running a tool, waiting on workers). Clicking the count lists the workers
-//! with their status, and each row opens that worker's chat.
+//! The composer bar's worker and background-job picker.
 
 use super::*;
 use crate::input::popup::{self, Popup};
 use crate::swarm_glyph::{Icon, Mark, Motion};
-use crate::swarm_view::{Activity, Indicator, Turn, Worker};
+use crate::swarm_view::{Indicator, Worker};
 
 const AWAIT_RECHECK_MS: u64 = 3_000;
 
@@ -160,78 +156,16 @@ impl Panel {
         Indicator::from_workers(&self.swarm_workers)
     }
 
-    /// What this agent is doing right now, for the bar's activity icon.
-    pub(super) fn agent_activity(&self) -> Activity {
-        let turn = if !self.activity_active() {
-            Turn::Idle
-        } else if self.status_line() == "Running tools" {
-            Turn::Tools
-        } else {
-            Turn::Thinking
-        };
-        // A pending background await is live work even when every worker row
-        // still carries a stale terminal status.
-        let live = self
-            .swarm_indicator()
-            .map_or(0, |i| i.count())
-            .max(usize::from(!self.awaiting_ids().is_empty()));
-        Activity::resolve(turn, live)
-    }
-
-    /// The activity icon, present so a quiet agent reads as idle rather than
-    /// missing. Waiting on workers is drawn inside the swarm pill, next to the
-    /// count it is waiting on, so this slot steps aside for it.
-    pub(super) fn render_activity_icon(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let theme = Theme::global();
-        let activity = self.agent_activity();
-        if activity == Activity::WaitingOnWorkers {
-            return None;
-        }
-        let label = activity.label();
-        let icon = self.swarm_marks.element(
-            "activity",
-            Mark::activity(activity, super::composer::BAR_ICON),
-            cx,
-        );
-        Some(
-            div()
-                .id("composer-activity")
-                .debug_selector(move || {
-                    format!(
-                        "composer-activity-{}",
-                        label.to_ascii_lowercase().replace(' ', "-")
-                    )
-                })
-                .flex_none()
-                .h(px(super::composer::TAB_HEIGHT))
-                .w(px(18.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.composer_secondary())
-                .tooltip(move |_, cx| cx.new(|_| super::usage::MeterTooltip(label.into())).into())
-                .child(icon)
-                .into_any_element(),
-        )
-    }
-
-    /// The swarm pill: the worker cluster (the upstream sidebar's swarm mark,
-    /// breathing while anything runs), the number of live workers (running or
-    /// waiting on a dependency), and, when the coordinator is parked on them,
-    /// the hourglass right beside that number. Finished workers are not
-    /// counted: they are listed in the hover.
+    /// The worker cluster and count of live workers and jobs. Finished
+    /// workers stay available in the picker and the tooltip.
     pub(super) fn render_swarm_indicator(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let tally = crate::swarm_view::SwarmTally::of(&self.swarm_workers);
-        let awaiting = self.awaiting_ids();
         let jobs = self.background_jobs.active();
         let job_total = self.background_jobs.tasks.len();
-        if self.swarm_workers.is_empty() && awaiting.is_empty() && job_total == 0 {
+        if self.swarm_workers.is_empty() && job_total == 0 {
             return None;
         }
         let theme = Theme::global();
@@ -255,7 +189,6 @@ impl Panel {
         let tooltip = tooltip.join("\n");
         let open = self.swarm_list_open;
         let live = tally.running + tally.waiting + jobs;
-        let waiting_on_workers = self.agent_activity() == Activity::WaitingOnWorkers;
         // Running breathes, the way the activity mark does while thinking;
         // a swarm parked on dependencies is warm and still; a finished one
         // is faint, there only to carry the hover.
@@ -283,16 +216,6 @@ impl Panel {
             div()
                 .debug_selector(|| "composer-workers-count".into())
                 .child(live.to_string())
-        });
-        let wait = waiting_on_workers.then(|| {
-            div()
-                .debug_selector(|| "composer-workers-awaiting".into())
-                .flex_none()
-                .child(self.swarm_marks.element(
-                    "workers-awaiting",
-                    Mark::activity(Activity::WaitingOnWorkers, super::composer::BAR_ICON),
-                    cx,
-                ))
         });
         Some(
             crate::keyboard::popover_trigger(
@@ -340,7 +263,6 @@ impl Panel {
             ))
             .child(cluster)
             .children(count)
-            .children(wait)
             .into_any_element(),
         )
     }
@@ -749,60 +671,75 @@ mod tests {
     }
 
     #[gpui::test]
-    fn activity_icon_tracks_idle_thinking_tool_and_waiting(cx: &mut gpui::TestAppContext) {
+    fn footer_status_tracks_idle_work_tools_and_final(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
-        let selector = |label: &str| -> &'static str {
-            Box::leak(format!("composer-activity-{label}").into_boxed_str())
-        };
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds(selector("idle")).is_some(), "idle at rest");
+        assert!(vcx.debug_bounds("session-status-idle").is_some());
+        for (frame, expected) in [
+            (serde_json::json!({"ev":"reasoning_delta","text":"hm"}), "session-status-working"),
+            (serde_json::json!({"ev":"tool_start","call_id":"c1","name":"swarm"}), "session-status-tools"),
+            (serde_json::json!({"ev":"tool_input_delta","call_id":"c1","delta":"{\"action\":\"await_members\"}"}), "session-status-waiting"),
+            (serde_json::json!({"ev":"tool_done","call_id":"c1","name":"swarm","output":"timed out"}), "session-status-working"),
+            (serde_json::json!({"ev":"turn_done"}), "session-status-done"),
+            (serde_json::json!({"ev":"session_status","status":"idle"}), "session-status-done"),
+            (serde_json::json!({"ev":"message_accepted"}), "session-status-working"),
+            (serde_json::json!({"ev":"error","code":"internal","message":"Failed"}), "session-status-error"),
+            (serde_json::json!({"ev":"session_status","status":"idle"}), "session-status-error"),
+        ] {
+            let before = vcx.debug_bounds("session-status").expect("footer slot");
+            panel.update(vcx, |panel, cx| panel.apply(&event(frame.clone()), cx));
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(expected).is_some(), "{frame}");
+            assert_eq!(vcx.debug_bounds("session-status").unwrap().top(), before.top());
+        }
+    }
 
-        panel.update(vcx, |panel, cx| {
-            panel.apply(
-                &event(serde_json::json!({"ev":"reasoning_delta","text":"hm"})),
-                cx,
-            )
-        });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds(selector("thinking")).is_some());
+    #[gpui::test]
+    fn a_cancelled_tool_only_turn_is_stopped_but_a_later_final_is_done(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
+        for (case, events, expected) in [
+            ("turn cancelled", vec![
+                serde_json::json!({"ev":"tool_start","call_id":"ask","name":"ask"}),
+                serde_json::json!({"ev":"tool_done","call_id":"ask","name":"ask","output":"[Tool 'ask' cancelled by the user after 1.0s]","error":"cancelled by the user"}),
+                serde_json::json!({"ev":"turn_done"}),
+            ], "session-status-stopped"),
+            ("next turn", vec![
+                serde_json::json!({"ev":"message_accepted"}),
+            ], "session-status-working"),
+            ("assistant continues after a single cancelled tool", vec![
+                serde_json::json!({"ev":"tool_start","call_id":"bash","name":"bash"}),
+                serde_json::json!({"ev":"tool_done","call_id":"bash","name":"bash","output":"Tool cancelled","error":"cancelled by the user"}),
+                serde_json::json!({"ev":"text_delta","text":"Completed without that tool."}),
+                serde_json::json!({"ev":"turn_done"}),
+            ], "session-status-done"),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                for frame in &events {
+                    panel.apply(&event(frame.clone()), cx);
+                }
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(expected).is_some(), "{case}");
+        }
+    }
 
+    #[gpui::test]
+    fn workers_running_independently_do_not_mean_the_session_is_waiting(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
-            panel.apply(
-                &event(serde_json::json!({"ev":"tool_start","call_id":"c1","name":"bash"})),
-                cx,
-            )
-        });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds(selector("running-tool")).is_some());
-
-        panel.update(vcx, |panel, cx| {
-            panel.apply(
-                &ApiEvent::SessionStatus {
-                    session_id: "activity-bar".into(),
-                    status: "idle".into(),
-                    pending_soft_interrupts: None,
-                },
-                cx,
-            );
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
         });
         vcx.run_until_parked();
-        // Idle with a live worker is waiting, not hung. The wait mark is drawn
-        // inside the swarm pill, beside the count it waits on.
-        assert!(
-            vcx.debug_bounds("composer-workers-awaiting").is_some(),
-            "idle with a live worker is waiting, not hung"
-        );
-        assert!(vcx.debug_bounds(selector("waiting-on-workers")).is_none());
+        assert!(vcx.debug_bounds("session-status-idle").is_some());
+        assert!(vcx.debug_bounds("session-status-waiting").is_none());
         assert!(vcx.debug_bounds("composer-workers").is_some());
+        assert!(vcx.debug_bounds("composer-workers-count").is_some());
 
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "ready")], cx)
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds(selector("idle")).is_some());
-        // The worker reported, so the bar no longer claims anything runs: no
-        // live count, no wait mark.
+        assert!(vcx.debug_bounds("session-status-idle").is_some());
         assert!(vcx.debug_bounds("composer-workers-count").is_none());
         assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
     }
@@ -1310,8 +1247,8 @@ mod tests {
     ) {
         let (panel, vcx) = setup(cx);
         assert!(
-            vcx.debug_bounds("composer-workers-awaiting").is_none(),
-            "no await, no wait mark"
+            vcx.debug_bounds("session-status-waiting").is_none(),
+            "no await, no waiting status"
         );
         // kangaroo is not in the reloaded worker list at all, so nothing says
         // it finished; fox finished before the reload.
@@ -1332,26 +1269,24 @@ mod tests {
                 .as_deref(),
             Some("Waiting: kangaroo")
         );
-        // The information the removed text line carried now lives in the
-        // pill: a pause mark in the bar and the names in the hover.
         assert!(
-            vcx.debug_bounds("composer-workers-awaiting").is_some(),
-            "the pill says the coordinator is waiting"
+            vcx.debug_bounds("session-status-waiting").is_some(),
+            "the footer says the coordinator is waiting"
         );
         assert!(
             vcx.debug_bounds("composer-workers").is_some(),
             "no live worker, but the await still earns a pill"
         );
         assert!(
-            vcx.debug_bounds("composer-activity-idle").is_none(),
+            vcx.debug_bounds("session-status-idle").is_none(),
             "a parked coordinator is waiting, not idle"
         );
 
         // The wake delivered: the mark goes away with the registration.
         panel.update(vcx, |panel, cx| panel.set_pending_awaits(Vec::new(), cx));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
-        assert!(vcx.debug_bounds("composer-activity-idle").is_some());
+        assert!(vcx.debug_bounds("session-status-waiting").is_none());
+        assert!(vcx.debug_bounds("session-status-idle").is_some());
     }
 
     #[gpui::test]
@@ -1432,7 +1367,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert_eq!(panel.read_with(vcx, |panel, _| panel.await_line()), None);
-        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
+        assert!(vcx.debug_bounds("session-status-waiting").is_none());
         assert_ne!(
             panel.read_with(vcx, |panel, _| panel.tab_ring().map(|r| r.mode.label())),
             Some("waiting")
@@ -1560,11 +1495,8 @@ mod tests {
         }
     }
 
-    /// The hourglass used to sit apart from the pill, further right. It is
-    /// drawn inside the pill, right after the count, while the coordinator
-    /// waits; the separate activity slot steps aside.
     #[gpui::test]
-    fn the_wait_mark_sits_inside_the_swarm_pill_beside_the_count(cx: &mut gpui::TestAppContext) {
+    fn a_parked_session_keeps_its_footer_status_and_worker_picker(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = setup(cx);
         panel.update(vcx, |panel, cx| {
             panel.set_swarm_workers(vec![worker("rose", "running")], cx);
@@ -1579,16 +1511,12 @@ mod tests {
         vcx.run_until_parked();
         let pill = vcx.debug_bounds("composer-workers").expect("pill");
         let count = vcx.debug_bounds("composer-workers-count").expect("count");
-        let wait = vcx.debug_bounds("composer-workers-awaiting").expect("wait");
-        assert!(
-            inside(wait, pill),
-            "wait mark inside the pill: {wait:?} {pill:?}"
-        );
-        assert!(count.right() <= wait.left(), "wait mark follows the count");
-        assert!(
-            vcx.debug_bounds("composer-activity-waiting-on-workers")
-                .is_none(),
-            "no second hourglass outside the pill"
-        );
+        let status = vcx.debug_bounds("session-status-waiting").expect("waiting status");
+        assert!(inside(count, pill));
+        assert!(pill.right() <= status.left() || status.right() <= pill.left());
+        assert!(vcx.debug_bounds("composer-workers-awaiting").is_none());
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-list").is_some());
     }
 }

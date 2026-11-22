@@ -10,6 +10,8 @@ pub struct TranscriptSnapshot {
     status: String,
     connection_phase: String,
     #[serde(default)]
+    turn_outcome: Option<session_status::TurnOutcome>,
+    #[serde(default)]
     expanded_regions: HashSet<String>,
     #[serde(default)]
     user_times: HashMap<usize, i64>,
@@ -43,6 +45,7 @@ impl Panel {
             history_loaded: self.history_loaded,
             status: self.status.clone(),
             connection_phase: self.connection_phase.clone(),
+            turn_outcome: self.turn_outcome,
             expanded_regions: self.expanded_regions.clone(),
             user_times: self.user_times.clone(),
             history_paging: self.history_paging.clone(),
@@ -86,6 +89,7 @@ impl Panel {
         self.history_loaded = snapshot.history_loaded;
         self.status = snapshot.status;
         self.connection_phase = snapshot.connection_phase;
+        self.turn_outcome = snapshot.turn_outcome;
         self.transcript_measurements.dirty = true;
     }
 

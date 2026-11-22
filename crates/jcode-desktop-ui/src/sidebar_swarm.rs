@@ -223,10 +223,7 @@ pub(super) fn render_workers(
                             11.0,
                         );
                     } else if worker.meta.phase == Some(jcode_sdk::WorkerPhase::Thinking) {
-                        mark = crate::swarm_glyph::Mark::activity(
-                            crate::swarm_view::Activity::Thinking,
-                            11.0,
-                        );
+                        mark = crate::swarm_glyph::Mark::thinking(11.0);
                     }
                 }
                 mark

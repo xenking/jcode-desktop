@@ -95,18 +95,9 @@ impl Panel {
             (can_switch_location && self.session_deferred() && !screenshot_mode)
                 .then(|| ("Choose folder".into(), "Choose a working folder".into()))
         });
-        // Usage limits and status share the pill row, so the panel needs no
-        // separate footer bar below the composer. The build label is gone from
-        // the footer entirely: the version lives in Settings → About and the
-        // account popup.
-        let status_line = self.status_line();
-        // Worker count (only while workers run), the prompt-cache countdown,
-        // then the activity icon. All three are leaf views, so their animation
-        // and ticks never rebuild the composer.
         let workers_pill = self.render_swarm_indicator(cx);
         let cache_pill = self.render_cache_pill(cx);
         let rig_hud = self.render_rig_hud(cx);
-        let activity_icon = self.render_activity_icon(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
             .flex_shrink(4.)
@@ -132,34 +123,10 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
-                    .when(self.ask_card.is_some(), |el| {
-                        el.child(
-                            div()
-                                .id("composer-ask-pending")
-                                .debug_selector(|| "composer-ask-pending".into())
-                                .flex_none()
-                                .size(px(16.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .bg(theme.ACCENT_DIM)
-                                .text_color(theme.ACCENT)
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| {
-                                        super::usage::MeterTooltip("Waiting for your answer".into())
-                                    })
-                                    .into()
-                                })
-                                .child("?"),
-                        )
-                    })
                     .children(workers_pill)
                     .children(rig_hud)
                     .children(cache_pill)
-                    .children(activity_icon)
-                    .children(self.render_voice_status(status_line))
+                    .child(self.render_session_status())
                     .children(self.render_image_pane_toggle(cx)),
             );
         let pills = div()

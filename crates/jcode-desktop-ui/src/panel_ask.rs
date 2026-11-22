@@ -412,6 +412,20 @@ fn ask_editor(input: &Entity<PromptInput>, selected: bool, window: &Window, cx: 
 }
 
 impl Panel {
+    pub(super) fn dismiss_stopped_asks(&mut self, cx: &mut Context<Self>) {
+        self.ask_recovery = None;
+        self.pending_ask_draft = None;
+        self.answered_asks
+            .extend(self.queued_asks.drain(..).map(|ask| ask.request_id));
+        if self.ask_card.is_some() {
+            self.cancel_ask_voice(cx);
+            if let Some(card) = self.ask_card.take() {
+                self.ask_focus_return = card.focus_scope;
+                self.answered_asks.insert(card.request_id);
+            }
+        }
+    }
+
     pub(super) fn show_ask(
         &mut self,
         request_id: &str,
@@ -2963,16 +2977,31 @@ mod tests {
         });
         let event: jcode_sdk::ApiEvent =
             serde_json::from_str(REAL_ASK_REQUEST).expect("real ask_request frame parses");
-        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        let ApiEvent::AskRequest { tool_call_id, .. } = &event else {
+            unreachable!();
+        };
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &serde_json::from_value(serde_json::json!({
+                    "ev":"tool_start", "session_id": panel.session_id,
+                    "call_id":tool_call_id, "name":"ask"
+                })).unwrap(),
+                cx,
+            );
+            panel.apply(&event, cx);
+        });
         vcx.run_until_parked();
 
         assert!(vcx.debug_bounds("ask-card").is_some(), "ask card paints");
         assert!(
             vcx.debug_bounds("composer-tabs").is_some()
-                && vcx.debug_bounds("composer-ask-pending").is_some()
+                && vcx.debug_bounds("session-status-ask").is_some()
                 && vcx.debug_bounds("composer-text-slot").is_none(),
             "ask replaces only the text slot and leaves the composer bar visible"
         );
+        assert!(vcx.debug_bounds("composer-ask-pending").is_none());
+        assert!(vcx.debug_bounds("session-status-tools").is_none());
+        assert!(vcx.debug_bounds("transcript-activity").is_none());
         let ask = vcx.debug_bounds("ask-card").unwrap();
         let queue = vcx
             .debug_bounds("queue-card")
@@ -3071,5 +3100,39 @@ mod tests {
             vcx.debug_bounds("composer").is_some(),
             "composer returns after answering"
         );
+        panel.update(vcx, |panel, cx| {
+            let next_tool = serde_json::from_value(serde_json::json!({
+                "ev":"tool_start", "session_id":"session-a", "call_id":"next-tool", "name":"bash"
+            })).unwrap();
+            panel.apply(&next_tool, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("session-status-tools").is_some());
+        assert!(vcx.debug_bounds("transcript-activity").is_some());
+    }
+
+    #[gpui::test]
+    fn cancelled_turn_leaves_no_ask_even_if_the_request_replays(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("session-a".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        let ask = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&ask, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("session-status-ask").is_some());
+
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&ApiEvent::TurnStopped {
+                session_id: "session-a".into(),
+                reason: jcode_sdk::api::TurnStopReason::Interrupted,
+                message: "Cancelled".into(),
+                provider_stop_reason: None,
+            }, cx);
+            panel.apply(&ask, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("session-status-stopped").is_some());
+        assert!(vcx.debug_bounds("ask-card").is_none());
+        assert!(vcx.debug_bounds("composer-text-slot").is_some());
     }
 }
