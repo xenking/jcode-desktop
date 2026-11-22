@@ -904,6 +904,7 @@ pub struct Workspace {
     /// Persisted todo progress (completed, total) per session, refreshed in
     /// the background with the session list. Open panels override it live.
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
+    unfinished_sessions: Vec<harness::UnfinishedSession>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
     /// Animated status glyphs of nested workers, one leaf view each.
@@ -1256,6 +1257,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            unfinished_sessions: Vec::new(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -1816,6 +1818,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            unfinished_sessions: Vec::new(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -2046,7 +2049,7 @@ impl Workspace {
                 let workspace = cx.weak_entity();
                 cx.new(|cx| {
                     Panel::new_unfinished_work(
-                        harness::unfinished_sessions(&self.sessions),
+                        self.unfinished_sessions.clone(),
                         std::sync::Arc::new(move |session, window, cx| {
                             workspace
                                 .update(cx, |workspace, cx| {
@@ -2480,6 +2483,26 @@ impl Workspace {
                 // runtime has not sent an identity yet.
                 self.sync_swarm_strips(cx);
             }
+            Update::CatalogTodos(todos) => {
+                let progress_changed = self.sidebar_todo_progress != todos.progress;
+                self.sidebar_todo_progress = todos.progress;
+                if self.unfinished_sessions == todos.unfinished {
+                    return progress_changed;
+                }
+                self.unfinished_sessions = todos.unfinished;
+                crate::example_prompts::set(
+                    crate::example_prompts::from_unfinished(&self.unfinished_sessions),
+                    cx,
+                );
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == "unfinished-work" {
+                        let unfinished = self.unfinished_sessions.clone();
+                        slot.panel
+                            .update(cx, |panel, cx| panel.set_unfinished_work(unfinished, cx));
+                    }
+                }
+                return true;
+            }
             Update::Sessions { sessions } => {
                 if self.pinned_working_dir.is_none()
                     && let Some(directory) = most_used_working_dir(&sessions)
@@ -2528,30 +2551,7 @@ impl Workspace {
                 }
                 self.sessions = sessions;
                 self.sync_swarm_strips(cx);
-                // Composer examples come from todos left in closed sessions.
-                // Reading every todo file belongs off the UI thread, and unit
-                // tests must not pick up the developer's own sessions.
                 if !cfg!(test) {
-                    let sessions = self.sessions.clone();
-                    cx.spawn(async move |this, cx| {
-                        let (prompts, todos) = cx
-                            .background_executor()
-                            .spawn(async move {
-                                let todos = crate::harness::jcode_home()
-                                    .map(|home| crate::harness::todo_progress_in(&home, &sessions))
-                                    .unwrap_or_default();
-                                (crate::example_prompts::load(&sessions), todos)
-                            })
-                            .await;
-                        cx.update(|cx| crate::example_prompts::set(prompts, cx));
-                        let _ = this.update(cx, |this, cx| {
-                            if this.sidebar_todo_progress != todos {
-                                this.sidebar_todo_progress = todos;
-                                cx.notify();
-                            }
-                        });
-                    })
-                    .detach();
                     // Swarm cards show each named worker's own model and total
                     // spend, read from its session files off the UI thread.
                     let wanted = self
@@ -2586,18 +2586,6 @@ impl Workspace {
                             }
                         })
                         .detach();
-                    }
-                }
-                let mut unfinished = None;
-                for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == "unfinished-work" {
-                        // Most workspaces have no dashboard. Do not read every
-                        // session's todo file on the UI thread in that case.
-                        let unfinished = unfinished
-                            .get_or_insert_with(|| harness::unfinished_sessions(&self.sessions));
-                        slot.panel.update(cx, |panel, cx| {
-                            panel.set_unfinished_work(unfinished.clone(), cx)
-                        });
                     }
                 }
             }
@@ -4369,12 +4357,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = action
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| action.path.clone());
+        let requested = action.path.clone();
+        let fragment = action.fragment.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = cx
+                .background_executor()
+                .spawn(async move { requested.canonicalize().unwrap_or(requested) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.open_resolved_document_file(path, fragment, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn open_resolved_document_file(
+        &mut self,
+        path: PathBuf,
+        fragment: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let show_heading = |panel: &Entity<Panel>, cx: &mut App| {
-            if let Some(fragment) = &action.fragment {
+            if let Some(fragment) = &fragment {
                 panel.update(cx, |panel, cx| panel.show_file_heading(fragment, cx));
             }
         };
@@ -4454,7 +4459,7 @@ impl Workspace {
         let workspace = cx.weak_entity();
         let panel = cx.new(|cx| {
             Panel::new_unfinished_work(
-                harness::unfinished_sessions(&self.sessions),
+                self.unfinished_sessions.clone(),
                 std::sync::Arc::new(move |session, window, cx| {
                     workspace
                         .update(cx, |workspace, cx| {

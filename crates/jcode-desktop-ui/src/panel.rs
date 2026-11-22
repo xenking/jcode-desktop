@@ -1114,13 +1114,15 @@ pub(crate) enum MinimapSessionState {
 
 struct CodeFile {
     path: PathBuf,
-    contents: Result<String, String>,
+    contents: Option<Result<String, String>>,
     markdown: Option<MarkdownFilePreview>,
+    pending_heading: Option<String>,
 }
 
 struct MarkdownFilePreview {
     visible: bool,
     scroll: ScrollHandle,
+    document: markdown::FileDocument,
 }
 
 #[derive(Debug)]
@@ -2046,31 +2048,10 @@ impl Panel {
     }
 
     pub fn new_code_file(path: std::path::PathBuf, bridge: Bridge, cx: &mut Context<Self>) -> Self {
-        const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
         let title = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        let contents = std::fs::metadata(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|metadata| {
-                if !metadata.is_file() {
-                    Err("not a regular file".into())
-                } else if metadata.len() > MAX_FILE_BYTES {
-                    Err(format!(
-                        "file is too large to preview ({} bytes)",
-                        metadata.len()
-                    ))
-                } else {
-                    std::fs::read_to_string(&path).map_err(|error| {
-                        if error.kind() == std::io::ErrorKind::InvalidData {
-                            "binary files cannot be previewed".to_string()
-                        } else {
-                            error.to_string()
-                        }
-                    })
-                }
-            });
         let working_dir = path.parent().map(|parent| parent.display().to_string());
         let mut panel = Self::new(
             format!("file://{}", path.display()),
@@ -2084,15 +2065,67 @@ impl Panel {
         let is_text = path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"));
-        let markdown =
-            (contents.is_ok() && (is_markdown || is_text)).then(|| MarkdownFilePreview {
-                visible: is_markdown,
-                scroll: ScrollHandle::new(),
+        let requested = path.clone();
+        cx.spawn(async move |panel, cx| {
+            let (contents, document) = cx
+                .background_executor()
+                .spawn(async move {
+                    use std::io::Read;
+                    const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+                    let read = || -> std::io::Result<String> {
+                        let meta = std::fs::metadata(&requested)?;
+                        if !meta.is_file() {
+                            return Err(std::io::Error::other("not a regular file"));
+                        }
+                        if meta.len() > MAX_FILE_BYTES {
+                            return Err(std::io::Error::other("file is too large to preview"));
+                        }
+                        let mut contents = String::new();
+                        std::fs::File::open(requested)?
+                            .take(MAX_FILE_BYTES + 1)
+                            .read_to_string(&mut contents)?;
+                        if contents.len() as u64 > MAX_FILE_BYTES {
+                            return Err(std::io::Error::other("file is too large to preview"));
+                        }
+                        Ok(contents)
+                    };
+                    let contents = read().map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::InvalidData {
+                            "binary files cannot be previewed".to_owned()
+                        } else {
+                            error.to_string()
+                        }
+                    });
+                    let document = contents
+                        .as_ref()
+                        .ok()
+                        .filter(|_| is_markdown || is_text)
+                        .map(|source| markdown::FileDocument::parse(source));
+                    (contents, document)
+                })
+                .await;
+            let _ = panel.update(cx, |panel, cx| {
+                let Some(file) = &mut panel.code_file else {
+                    return;
+                };
+                file.markdown = document.map(|document| MarkdownFilePreview {
+                    visible: is_markdown,
+                    scroll: ScrollHandle::new(),
+                    document,
+                });
+                file.contents = Some(contents);
+                if let Some(fragment) = file.pending_heading.take() {
+                    panel.show_file_heading(&fragment, cx);
+                }
+                cx.notify();
             });
+        })
+        .detach();
         panel.code_file = Some(CodeFile {
             path,
-            contents,
-            markdown,
+            contents: None,
+            markdown: None,
+            pending_heading: None,
         });
         panel
     }
@@ -2102,15 +2135,20 @@ impl Panel {
     }
 
     pub(crate) fn show_file_heading(&mut self, fragment: &str, cx: &mut Context<Self>) {
+        if let Some(file) = &mut self.code_file
+            && file.contents.is_none()
+        {
+            file.pending_heading = Some(fragment.to_owned());
+            return;
+        }
         let Some(CodeFile {
-            contents: Ok(contents),
             markdown: Some(preview),
             ..
         }) = &mut self.code_file
         else {
             return;
         };
-        let Some(index) = markdown::file_heading_index(contents, fragment) else {
+        let Some(index) = preview.document.heading_index(fragment) else {
             return;
         };
         preview.visible = true;
@@ -2127,8 +2165,7 @@ impl Panel {
                 Some(LinkTarget::External(url)) => cx.open_url(&url),
                 Some(LinkTarget::Local { path, fragment }) => {
                     if let Some((current, panel)) = &document
-                        && (current == &path
-                            || path.canonicalize().is_ok_and(|target| target == *current))
+                        && current == &path
                     {
                         if let Some(fragment) = fragment {
                             let _ = panel
@@ -2156,7 +2193,6 @@ impl Panel {
         &self,
         file: &CodeFile,
         preview: &MarkdownFilePreview,
-        contents: &str,
         window: &Window,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
@@ -2171,8 +2207,7 @@ impl Panel {
             let LinkTarget::Local { path, .. } = markdown_file::resolve(&base, destination)? else {
                 return None;
             };
-            let metadata = std::fs::metadata(&path).ok()?;
-            (metadata.is_file() && metadata.len() <= 32 * 1024 * 1024).then_some(path)
+            Some(path)
         });
         div()
             .id("markdown-file")
@@ -2199,7 +2234,7 @@ impl Panel {
                 }
             })
             .child(markdown::render_file(
-                contents,
+                &preview.document,
                 &selection,
                 window,
                 cx,
@@ -3467,15 +3502,31 @@ impl Panel {
     }
 
     fn applet_session_tasks(&self) -> crate::applet_view::SessionTasks {
-        let payload = self.latest_todo_payload().unwrap_or_default();
-        let total = payload.todos.len();
-        let completed = payload.todos.iter()
+        let fallback;
+        let payload = if let Some(derived) = self.transcript_derived.as_ref()
+            && derived.key.items_revision == self.items.revision()
+        {
+            derived.latest_todo.as_deref()
+        } else {
+            fallback = self.latest_todo_payload();
+            fallback.as_ref()
+        };
+        let todos = payload.map_or(&[][..], |payload| payload.todos.as_slice());
+        let total = todos.len();
+        let completed = todos
+            .iter()
             .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
             .count();
-        let rows = payload.todos.into_iter().take(100)
-            .map(|todo| vec![todo.content, todo.status])
+        let rows = todos
+            .iter()
+            .take(100)
+            .map(|todo| vec![todo.content.clone(), todo.status.clone()])
             .collect();
-        crate::applet_view::SessionTasks { rows, completed, total }
+        crate::applet_view::SessionTasks {
+            rows,
+            completed,
+            total,
+        }
     }
 
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -6974,11 +7025,11 @@ impl Render for Panel {
                 .font_family(Theme::global().FONT_MONO)
                 .text_size(px(12.0))
                 .py_2();
-            let body = if let (Some(preview), Ok(contents)) = (preview, &file.contents) {
-                self.render_markdown_file(file, preview, contents, window, cx)
+            let body = if let Some(preview) = preview {
+                self.render_markdown_file(file, preview, window, cx)
             } else {
                 match &file.contents {
-                    Ok(contents) => {
+                    Some(Ok(contents)) => {
                         if !contents.is_empty() {
                             // One shaped leaf lets a drag span lines without copying
                             // the separate, nonselectable line-number gutter.
@@ -7021,7 +7072,7 @@ impl Render for Panel {
                             );
                         }
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
                             text_selection::plain(
                                 self.transcript_selection.clone(),
@@ -7031,6 +7082,14 @@ impl Render for Panel {
                                 cx,
                             ),
                         ));
+                    }
+                    None => {
+                        body = body.child(
+                            div()
+                                .p_4()
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child("Loading file…"),
+                        );
                     }
                 }
                 body.into_any_element()

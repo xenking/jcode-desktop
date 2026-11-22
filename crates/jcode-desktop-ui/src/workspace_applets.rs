@@ -236,7 +236,7 @@ impl Workspace {
                 output,
                 error,
                 ..
-            } => (call_id, name, Some(output.clone()), error.clone(), true),
+            } => (call_id, name, Some(output), error.as_ref(), true),
             _ => return,
         };
         let claimed = crate::applet_runtime::get(cx)
@@ -261,8 +261,8 @@ impl Workspace {
                 call_id: call_id.clone(),
                 tool: tool.clone(),
                 input,
-                output,
-                error,
+                output: output.cloned(),
+                error: error.cloned(),
                 done,
             },
         );
@@ -403,7 +403,8 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                     }
                     if generation != seen {
                         seen = generation;
-                        crate::applet_runtime::get(app).persist();
+                        let executor = app.background_executor().clone();
+                        crate::applet_runtime::get(app).persist(&executor);
                         workspace.update(app, |workspace, cx| {
                             workspace.sync_applet_panels(window, cx);
                             // Transcript, sidebar and overlay placements

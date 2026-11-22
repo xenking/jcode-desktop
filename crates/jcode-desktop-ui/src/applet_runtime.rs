@@ -46,12 +46,18 @@ pub(crate) struct LocalApplet {
 enum Inbound {
     Message(String, ProviderMessage),
     Invalid(String, String),
-    Exited(String, String),
+    Exited(String, u32, String),
 }
 
 struct Process {
     child: Child,
-    stdin: ChildStdin,
+    outgoing: mpsc::SyncSender<HostMessage>,
+}
+
+#[derive(Default)]
+struct InstanceWriteback {
+    pending: Option<crate::applet_host::HostSnapshot>,
+    running: bool,
 }
 
 pub(crate) struct Runtime {
@@ -73,8 +79,8 @@ pub(crate) struct Runtime {
     agent_states: RefCell<HashMap<String, serde_json::Value>>,
     /// Persistent instances were restored from disk once per process.
     restored: std::cell::Cell<bool>,
-    /// Last persisted bytes, so unchanged state is not rewritten.
-    persisted: RefCell<Vec<u8>>,
+    writeback: std::sync::Arc<std::sync::Mutex<InstanceWriteback>>,
+    persisted: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     /// Launches requested before their provider registered, such as a
     /// shortcut pressed while a local applet is still starting.
     pending_launches: RefCell<Vec<(String, jcode_applet_types::manifest::Trigger)>>,
@@ -141,7 +147,8 @@ impl Default for Runtime {
             agent_states: RefCell::new(HashMap::new()),
             effects: RefCell::new(Vec::new()),
             restored: std::cell::Cell::new(false),
-            persisted: RefCell::new(Vec::new()),
+            writeback: Default::default(),
+            persisted: Default::default(),
             pending_launches: RefCell::new(Vec::new()),
         }
     }
@@ -313,7 +320,7 @@ impl Runtime {
 
     /// Write persistent instances for the next run. Agent instances are
     /// owned by the server and restored through session attachment.
-    pub fn persist(&self) {
+    pub fn persist(&self, executor: &gpui::BackgroundExecutor) {
         if cfg!(test) || crate::harness::screenshot_mode() {
             return;
         }
@@ -325,16 +332,42 @@ impl Runtime {
         snapshot
             .manifests
             .retain(|manifest| manifest.id != jcode_applet_types::agent::APPLET_ID);
-        let Ok(json) = serde_json::to_vec_pretty(&snapshot) else {
-            return;
-        };
-        if *self.persisted.borrow() == json {
-            return;
+        {
+            let mut state = self
+                .writeback
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.pending = Some(snapshot);
+            if state.running {
+                return;
+            }
+            state.running = true;
         }
-        let _ = std::fs::create_dir_all(&dir);
-        if std::fs::write(dir.join("instances.json"), &json).is_ok() {
-            *self.persisted.borrow_mut() = json;
-        }
+        let state = self.writeback.clone();
+        let persisted = self.persisted.clone();
+        executor
+            .spawn(async move {
+                loop {
+                    let snapshot = {
+                        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                        let Some(snapshot) = state.pending.take() else {
+                            state.running = false;
+                            break;
+                        };
+                        snapshot
+                    };
+                    let Ok(json) = serde_json::to_vec_pretty(&snapshot) else {
+                        continue;
+                    };
+                    if *persisted.lock().unwrap_or_else(|error| error.into_inner()) == json {
+                        continue;
+                    }
+                    if write_instances(&dir, &json).is_ok() {
+                        *persisted.lock().unwrap_or_else(|error| error.into_inner()) = json;
+                    }
+                }
+            })
+            .detach();
     }
 
     /// Record a capability decision and persist every decision.
@@ -445,14 +478,28 @@ impl Runtime {
                 Inbound::Invalid(applet, error) => {
                     self.send(
                         &applet,
-                        &HostMessage::Rejected {
+                        HostMessage::Rejected {
                             instance: None,
                             reason: error,
                         },
                     );
                 }
-                Inbound::Exited(applet, reason) => {
-                    self.processes.borrow_mut().remove(&applet);
+                Inbound::Exited(applet, pid, reason) => {
+                    let mut processes = self.processes.borrow_mut();
+                    if processes
+                        .get(&applet)
+                        .is_none_or(|process| process.child.id() != pid)
+                    {
+                        continue;
+                    }
+                    let mut process = processes.remove(&applet).expect("matched provider");
+                    drop(processes);
+                    // A writer can fail before the reader sees EOF. Reap the
+                    // old process away from GPUI without waiting on its pipes.
+                    std::thread::spawn(move || {
+                        let _ = process.child.kill();
+                        let _ = process.child.wait();
+                    });
                     let mut host = self.host.borrow_mut();
                     host.provider_disconnected(&applet);
                     let ids: Vec<String> = host
@@ -478,7 +525,7 @@ impl Runtime {
             if applet == jcode_applet_types::agent::APPLET_ID {
                 self.route_agent(message);
             } else {
-                self.send(&applet, &message);
+                self.send(&applet, message);
             }
         }
     }
@@ -513,22 +560,17 @@ impl Runtime {
         }
     }
 
-    fn send(&self, applet: &str, message: &HostMessage) {
-        let mut processes = self.processes.borrow_mut();
-        let Some(process) = processes.get_mut(applet) else {
+    fn send(&self, applet: &str, message: HostMessage) {
+        let processes = self.processes.borrow();
+        let Some(process) = processes.get(applet) else {
             return;
         };
-        let Ok(mut line) = serde_json::to_string(message) else {
-            return;
-        };
-        line.push('\n');
-        if process
-            .stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| process.stdin.flush())
-            .is_err()
-        {
-            // The reader thread reports the exit.
+        if let Err(mpsc::TrySendError::Full(_)) = process.outgoing.try_send(message) {
+            let _ = self.inbound_tx.send(Inbound::Exited(
+                applet.to_owned(),
+                process.child.id(),
+                "provider input queue is full".into(),
+            ));
         }
     }
 
@@ -583,20 +625,65 @@ impl Runtime {
             .map_err(|error| format!("could not start applet {}: {error}", applet.id))?;
         let stdin = child.stdin.take().ok_or("applet stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("applet stdout unavailable")?;
+        let (outgoing, messages) = mpsc::sync_channel(32);
+        let pid = child.id();
         let tx = self.inbound_tx.clone();
         let id = applet.id.clone();
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("applet-{id}-input"))
+            .spawn(move || write_provider(id, pid, stdin, messages, tx))
+        {
+            let _ = child.kill();
+            return Err(error.to_string());
+        }
+        let tx = self.inbound_tx.clone();
+        let id = applet.id.clone();
+        if let Err(error) = std::thread::Builder::new()
             .name(format!("applet-{id}"))
-            .spawn(move || read_provider(id, stdout, tx))
-            .map_err(|error| error.to_string())?;
+            .spawn(move || read_provider(id, pid, stdout, tx))
+        {
+            let _ = child.kill();
+            return Err(error.to_string());
+        }
         self.processes
             .borrow_mut()
-            .insert(applet.id.clone(), Process { child, stdin });
+            .insert(applet.id.clone(), Process { child, outgoing });
         Ok(())
     }
 }
 
-fn read_provider(applet: String, stdout: std::process::ChildStdout, tx: mpsc::Sender<Inbound>) {
+fn write_instances(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(bytes)?;
+    file.persist(dir.join("instances.json"))?;
+    Ok(())
+}
+
+fn write_provider(
+    applet: String,
+    pid: u32,
+    mut stdin: ChildStdin,
+    messages: mpsc::Receiver<HostMessage>,
+    events: mpsc::Sender<Inbound>,
+) {
+    for message in messages {
+        let result = serde_json::to_writer(&mut stdin, &message)
+            .map_err(std::io::Error::other)
+            .and_then(|_| stdin.write_all(b"\n"));
+        if let Err(error) = result {
+            let _ = events.send(Inbound::Exited(applet, pid, error.to_string()));
+            break;
+        }
+    }
+}
+
+fn read_provider(
+    applet: String,
+    pid: u32,
+    stdout: std::process::ChildStdout,
+    tx: mpsc::Sender<Inbound>,
+) {
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
@@ -607,7 +694,7 @@ fn read_provider(applet: String, stdout: std::process::ChildStdout, tx: mpsc::Se
             .read_line(&mut line)
         {
             Ok(0) => {
-                let _ = tx.send(Inbound::Exited(applet, "exited".into()));
+                let _ = tx.send(Inbound::Exited(applet, pid, "exited".into()));
                 return;
             }
             Ok(_) if line.len() > MAX_LINE_BYTES => {
@@ -642,7 +729,7 @@ fn read_provider(applet: String, stdout: std::process::ChildStdout, tx: mpsc::Se
                 }
             }
             Err(error) => {
-                let _ = tx.send(Inbound::Exited(applet, error.to_string()));
+                let _ = tx.send(Inbound::Exited(applet, pid, error.to_string()));
                 return;
             }
         }

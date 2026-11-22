@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{App, Global, SharedString};
+#[cfg(test)]
 use jcode_sdk::SessionInfo;
 
 use crate::harness::UnfinishedSession;
@@ -65,14 +66,7 @@ pub(crate) fn set(prompts: Vec<ExamplePrompt>, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Reads durable todo snapshots, so call it off the UI thread.
-pub(crate) fn load(sessions: &[SessionInfo]) -> Vec<ExamplePrompt> {
-    match crate::harness::jcode_home() {
-        Some(home) => load_from(&home, sessions),
-        None => Vec::new(),
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn load_from(home: &Path, sessions: &[SessionInfo]) -> Vec<ExamplePrompt> {
     let mut sessions = sessions.to_vec();
     sessions.sort_by_key(|session| {
@@ -83,10 +77,10 @@ pub(crate) fn load_from(home: &Path, sessions: &[SessionInfo]) -> Vec<ExamplePro
                 .unwrap_or_default(),
         )
     });
-    from_unfinished(crate::harness::unfinished_sessions_in(home, &sessions))
+    from_unfinished(&crate::harness::unfinished_sessions_in(home, &sessions))
 }
 
-pub(crate) fn from_unfinished(sessions: Vec<UnfinishedSession>) -> Vec<ExamplePrompt> {
+pub(crate) fn from_unfinished(sessions: &[UnfinishedSession]) -> Vec<ExamplePrompt> {
     let mut prompts: Vec<ExamplePrompt> = Vec::new();
     for session in sessions {
         let mut todos: Vec<_> = session
@@ -270,7 +264,7 @@ mod tests {
 
     #[test]
     fn in_progress_todos_lead_and_each_session_is_capped() {
-        let prompts = from_unfinished(vec![
+        let prompts = from_unfinished(&[
             session(
                 "/repo/a",
                 vec![
@@ -315,7 +309,7 @@ mod tests {
         cx.update(|cx| {
             assert!(for_dir(cx, None).is_empty());
             set(
-                from_unfinished(vec![
+                from_unfinished(&[
                     session("/repo/a", vec![todo("Fix a", "pending")]),
                     session("/repo/b/sub", vec![todo("Fix b", "pending")]),
                 ]),

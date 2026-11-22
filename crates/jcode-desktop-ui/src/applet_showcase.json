@@ -265,6 +265,10 @@
                 ]
               },
               {
+                "type": "session_tasks",
+                "title": "Live session tasks"
+              },
+              {
                 "type": "code",
                 "language": "json",
                 "text": "{\"type\": \"button\", \"label\": \"Go\", \"on_press\": {\"action\": \"go\"}}"

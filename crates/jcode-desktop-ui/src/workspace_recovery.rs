@@ -15,6 +15,13 @@ use std::{
 
 const RECOVERY_WINDOW_MS: u64 = 30_000;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_CHECKPOINT_RETRY: Duration = Duration::from_secs(60);
+
+fn checkpoint_retry_after(previous: Option<Duration>) -> Duration {
+    previous.map_or(Duration::from_secs(5), |delay| {
+        (delay * 2).min(MAX_CHECKPOINT_RETRY)
+    })
+}
 
 #[derive(Deserialize, Serialize)]
 struct Checkpoint {
@@ -370,8 +377,11 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
     let window = window.window_handle();
     app.spawn(async move |cx| {
         let mut last = (std::time::Instant::now(), initial_key);
+        let mut retry = None;
         loop {
-            cx.background_executor().timer(CHECKPOINT_INTERVAL).await;
+            cx.background_executor()
+                .timer(retry.unwrap_or(CHECKPOINT_INTERVAL))
+                .await;
             let snapshot = window.update(cx, |_, window, app| {
                 workspace
                     .upgrade()
@@ -404,9 +414,18 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
                 .await;
             last = updated;
             match result {
-                Ok(true) => {}
+                Ok(true) => retry = None,
                 Ok(false) => break,
-                Err(error) => eprintln!("desktop crash checkpoint failed: {error:#}"),
+                Err(error) => {
+                    let delay = checkpoint_retry_after(retry);
+                    if retry.is_none() || retry == Some(MAX_CHECKPOINT_RETRY) {
+                        eprintln!(
+                            "desktop crash checkpoint failed: {error:#}; retry in {}s",
+                            delay.as_secs()
+                        );
+                    }
+                    retry = Some(delay);
+                }
             }
         }
     })
@@ -417,6 +436,16 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
 mod tests {
     use super::*;
     use gpui::AppContext;
+
+    #[test]
+    fn failed_checkpoints_back_off_and_stop_increasing_at_one_minute() {
+        let mut retry = None;
+        for seconds in [5, 10, 20, 40, 60, 60] {
+            let next = checkpoint_retry_after(retry);
+            assert_eq!(next, Duration::from_secs(seconds));
+            retry = Some(next);
+        }
+    }
 
     fn relaunch_restores_tabs_and_pending_ask(cx: &mut gpui::TestAppContext, single: bool) {
         use jcode_desktop_api::LaunchMode;

@@ -25,6 +25,7 @@ impl LiveSwarmStatus {
             .iter()
             .map(|member| member.session_id.clone())
             .collect::<HashSet<_>>();
+        let mut changed = false;
         if let Some((_, previous)) = self
             .snapshots
             .insert(source.to_owned(), (updated_at, ids.clone()))
@@ -34,21 +35,29 @@ impl LiveSwarmStatus {
                     && *seen < updated_at
                 {
                     *seen = updated_at;
-                    member.status = "stopped".into();
+                    if member.status != "stopped" {
+                        member.status = "stopped".into();
+                        changed = true;
+                    }
                 }
             }
         }
         for member in members {
-            if self
-                .members
-                .get(&member.session_id)
-                .is_none_or(|(seen, _)| *seen < updated_at)
-            {
+            if let Some((seen, previous)) = self.members.get_mut(&member.session_id) {
+                if *seen < updated_at {
+                    *seen = updated_at;
+                    if previous != member {
+                        previous.clone_from(member);
+                        changed = true;
+                    }
+                }
+            } else {
                 self.members
                     .insert(member.session_id.clone(), (updated_at, member.clone()));
+                changed = true;
             }
         }
-        true
+        changed
     }
 
     /// Overlay after each poll as well as each live event. Both UI projections
@@ -102,6 +111,15 @@ mod tests {
         live.apply("lead", 1_100, &[member("ready")]);
         live.merge(&mut sessions);
         assert_eq!(sessions[0].swarm_status.as_deref(), Some("ready"));
+    }
+
+    #[test]
+    fn newer_duplicate_advances_the_watermark_without_a_visible_change() {
+        let mut live = LiveSwarmStatus::default();
+        assert!(live.apply("lead", 10, &[member("running")]));
+        assert!(!live.apply("lead", 30, &[member("running")]));
+        assert!(!live.apply("other", 20, &[member("ready")]));
+        assert!(live.apply("lead", 40, &[member("ready")]));
     }
 
     #[test]

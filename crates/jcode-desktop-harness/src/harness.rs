@@ -159,6 +159,7 @@ pub enum Update {
     Sessions {
         sessions: Vec<SessionInfo>,
     },
+    CatalogTodos(CatalogTodos),
     /// Facts read from each swarm worker's own record: model, effort, spend
     /// and live phase. Sent before the catalog that lists those workers, so a
     /// sidebar row never renders without its model.
@@ -2492,10 +2493,11 @@ impl SessionRefresh {
         std::thread::Builder::new()
             .name("jcode-bridge-sessions".into())
             .spawn(move || {
+                let mut previous_todos = CatalogTodos::default();
                 run_session_refreshes(requests, Duration::from_millis(150), || {
                     let include_disk_snapshot =
                         read_initial.swap(false, std::sync::atomic::Ordering::AcqRel);
-                    refresh_session_catalog(&updates, include_disk_snapshot);
+                    refresh_session_catalog(&updates, include_disk_snapshot, &mut previous_todos);
                 });
             })
             .expect("spawn session list thread");
@@ -2550,7 +2552,49 @@ fn a_refresh_burst_during_a_read_has_exactly_one_trailing_read() {
     assert_eq!(worker.join().unwrap(), 2);
 }
 
-fn refresh_session_catalog(updates: &UpdateSender, include_disk_snapshot: bool) {
+#[test]
+fn todo_changes_publish_even_when_session_rows_are_identical() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("todos");
+    std::fs::create_dir(&dir).unwrap();
+    let session: SessionInfo = serde_json::from_value(serde_json::json!({
+        "session_id": "session_fox_1_review", "status": "closed", "title": "Review"
+    }))
+    .unwrap();
+    let path = dir.join("session_fox_1_review.json");
+    let (updates, inbox) = update_channel();
+    let mut previous = CatalogTodos::default();
+    for (status, pending) in [("pending", true), ("completed", false)] {
+        std::fs::write(
+            &path,
+            format!(r#"[{{"content":"Verify the build","status":"{status}"}}]"#),
+        )
+        .unwrap();
+        publish_session_catalog(
+            &updates,
+            Some(home.path()),
+            vec![session.clone()],
+            &mut previous,
+        );
+        assert!(
+            matches!(inbox.try_recv().unwrap(), Update::Sessions { sessions } if sessions == [session.clone()])
+        );
+        let Update::CatalogTodos(todos) = inbox.try_recv().unwrap() else {
+            panic!("todo change missing")
+        };
+        assert_eq!(
+            todos.progress[&session.session_id],
+            (usize::from(!pending), 1)
+        );
+        assert_eq!(!todos.unfinished.is_empty(), pending);
+    }
+}
+
+fn refresh_session_catalog(
+    updates: &UpdateSender,
+    include_disk_snapshot: bool,
+    previous_todos: &mut CatalogTodos,
+) {
     let home = jcode_home();
     if include_disk_snapshot {
         let started = std::time::Instant::now();
@@ -2562,8 +2606,7 @@ fn refresh_session_catalog(updates: &UpdateSender, include_disk_snapshot: bool) 
             started.elapsed().as_secs_f64() * 1_000.0,
             sessions.len()
         );
-        send_worker_facts(updates, &sessions);
-        let _ = updates.send(Update::Sessions { sessions });
+        publish_session_catalog(updates, home.as_deref(), sessions, previous_todos);
     }
     let started = std::time::Instant::now();
     let listed = match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
@@ -2584,8 +2627,24 @@ fn refresh_session_catalog(updates: &UpdateSender, include_disk_snapshot: bool) 
         started.elapsed().as_secs_f64() * 1_000.0,
         sessions.len()
     );
+    publish_session_catalog(updates, home.as_deref(), sessions, previous_todos);
+}
+
+fn publish_session_catalog(
+    updates: &UpdateSender,
+    home: Option<&Path>,
+    sessions: Vec<SessionInfo>,
+    previous_todos: &mut CatalogTodos,
+) {
+    let todos = home
+        .map(|home| catalog_todos_in(home, &sessions))
+        .unwrap_or_default();
     send_worker_facts(updates, &sessions);
     let _ = updates.send(Update::Sessions { sessions });
+    if *previous_todos != todos {
+        previous_todos.clone_from(&todos);
+        let _ = updates.send(Update::CatalogTodos(todos));
+    }
 }
 
 /// Publish what each swarm worker's own record says about it, before the
@@ -2717,6 +2776,76 @@ pub struct UnfinishedSession {
     pub todos: Vec<UnfinishedTodo>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CatalogTodos {
+    pub progress: HashMap<String, (usize, usize)>,
+    pub unfinished: Vec<UnfinishedSession>,
+}
+
+fn catalog_todos_in(home: &Path, sessions: &[SessionInfo]) -> CatalogTodos {
+    let mut out = CatalogTodos::default();
+    let mut unfinished = Vec::new();
+    let todos_dir = home.join("todos");
+    for session in sessions
+        .iter()
+        .filter(|s| !remote::is_remote(&s.session_id))
+    {
+        let Some(todos) = read_todo_items(&todos_dir, &session.session_id) else {
+            continue;
+        };
+        if todos.is_empty() {
+            continue;
+        }
+        let done = todos
+            .iter()
+            .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+            .count();
+        out.progress
+            .insert(session.session_id.clone(), (done, todos.len()));
+        if let Some(entry) = unfinished_session(home, session, todos) {
+            unfinished.push((session.last_active_at_ms.max(session.updated_at_ms), entry));
+        }
+    }
+    unfinished.sort_by_key(|(recency, _)| std::cmp::Reverse(*recency));
+    out.unfinished = unfinished.into_iter().map(|(_, entry)| entry).collect();
+    out
+}
+
+fn read_todo_items(dir: &Path, id: &str) -> Option<Vec<PersistedTodoTitleItem>> {
+    let bytes = std::fs::read(dir.join(format!("{id}.json"))).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn unfinished_session(
+    home: &Path,
+    session: &SessionInfo,
+    todos: Vec<PersistedTodoTitleItem>,
+) -> Option<UnfinishedSession> {
+    if matches!(session.status.as_str(), "active" | "running" | "working") {
+        return None;
+    }
+    let todos = todos
+        .into_iter()
+        .filter(|todo| !todo.status.eq_ignore_ascii_case("completed"))
+        .map(|todo| UnfinishedTodo {
+            content: todo.content,
+            status: todo.status,
+            group: todo.group,
+        })
+        .collect::<Vec<_>>();
+    (!todos.is_empty()).then(|| UnfinishedSession {
+        session_id: session.session_id.clone(),
+        title: session
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| persisted_todo_title(home, &session.session_id))
+            .unwrap_or_else(|| session.session_id.clone()),
+        working_dir: session.working_dir.clone(),
+        todos,
+    })
+}
+
 /// Read the durable todo snapshots for sessions which are no longer open.
 /// This intentionally avoids transcripts, so opening the dashboard remains cheap.
 pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
@@ -2733,30 +2862,11 @@ pub fn unfinished_sessions_in(home: &Path, sessions: &[SessionInfo]) -> Vec<Unfi
         .filter(|session| !remote::is_remote(&session.session_id))
         .filter(|session| !matches!(session.status.as_str(), "active" | "running" | "working"))
         .filter_map(|session| {
-            let todos: Vec<PersistedTodoTitleItem> =
-                std::fs::read(todos_dir.join(format!("{}.json", session.session_id)))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
-            let todos = todos
-                .into_iter()
-                .filter(|todo| !todo.status.eq_ignore_ascii_case("completed"))
-                .map(|todo| UnfinishedTodo {
-                    content: todo.content,
-                    status: todo.status,
-                    group: todo.group,
-                })
-                .collect::<Vec<_>>();
-            (!todos.is_empty()).then(|| UnfinishedSession {
-                session_id: session.session_id.clone(),
-                title: session
-                    .title
-                    .clone()
-                    .filter(|title| !title.trim().is_empty())
-                    .or_else(|| persisted_todo_title(home, &session.session_id))
-                    .unwrap_or_else(|| session.session_id.clone()),
-                working_dir: session.working_dir.clone(),
-                todos,
-            })
+            unfinished_session(
+                home,
+                session,
+                read_todo_items(&todos_dir, &session.session_id)?,
+            )
         })
         .collect()
 }
@@ -2769,10 +2879,7 @@ pub fn todo_progress_in(home: &Path, sessions: &[SessionInfo]) -> HashMap<String
         .iter()
         .filter(|session| !remote::is_remote(&session.session_id))
         .filter_map(|session| {
-            let todos: Vec<PersistedTodoTitleItem> =
-                std::fs::read(todos_dir.join(format!("{}.json", session.session_id)))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+            let todos = read_todo_items(&todos_dir, &session.session_id)?;
             (!todos.is_empty()).then(|| {
                 let done = todos
                     .iter()

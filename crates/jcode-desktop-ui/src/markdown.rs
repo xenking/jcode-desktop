@@ -39,23 +39,46 @@ pub(crate) fn with_file_link_handler<R>(handler: FileLinkHandler, render: impl F
 }
 
 pub(crate) fn render_file(
-    source: &str,
+    document: &FileDocument,
     selection: &gpui::Entity<TextSelection>,
     window: &gpui::Window,
     cx: &gpui::App,
     options: FileRenderOptions,
 ) -> gpui::AnyElement {
     let previous = FILE_OPTIONS.with(|slot| slot.replace(Some(Rc::new(options))));
-    let result = render_document(source, 0, "file", selection, window, cx, false, None, false);
+    let result = render_blocks(
+        &document.0,
+        0,
+        "file",
+        selection,
+        window,
+        cx,
+        false,
+        None,
+        false,
+        None,
+    );
     FILE_OPTIONS.with(|slot| {
         slot.replace(previous);
     });
     result
 }
 
-pub(crate) fn file_heading_index(source: &str, fragment: &str) -> Option<usize> {
+pub(crate) struct FileDocument(Vec<Block>);
+
+impl FileDocument {
+    pub(crate) fn parse(source: &str) -> Self {
+        Self(parse(source))
+    }
+
+    pub(crate) fn heading_index(&self, fragment: &str) -> Option<usize> {
+        file_heading_index(&self.0, fragment)
+    }
+}
+
+fn file_heading_index(blocks: &[Block], fragment: &str) -> Option<usize> {
     let mut used = std::collections::HashSet::new();
-    for (index, block) in parse(source).iter().enumerate() {
+    for (index, block) in blocks.iter().enumerate() {
         if let Block::Heading(_, text) = block {
             let plain = inline_spans(text).plain;
             let base: String = plain
@@ -155,8 +178,21 @@ impl gpui::Asset for FileImageAsset {
         cx: &mut gpui::App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let id = jcode_desktop_api::ImageIds::get(cx).next();
+        let path = match &source {
+            gpui::Resource::Path(path) => Some(path.clone()),
+            _ => None,
+        };
         let decode = <gpui::ImageAssetLoader as gpui::Asset>::load(source, cx);
         async move {
+            if let Some(path) = path {
+                let metadata = std::fs::metadata(path)?;
+                if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+                    return Err(std::io::Error::other(
+                        "image is not a regular file or is too large",
+                    )
+                    .into());
+                }
+            }
             let mut image = decode.await?;
             Arc::get_mut(&mut image).expect("fresh image decode").id = id;
             Ok(image)
@@ -201,11 +237,12 @@ impl gpui::RenderOnce for FileImage {
 #[cfg(test)]
 #[test]
 fn file_heading_indices_follow_scroll_children_and_disambiguate() {
-    let source = "# Hello, **world**!\n\nText\n\n## Hello, world!\n\n# Привет мир";
-    assert_eq!(file_heading_index(source, "hello-world"), Some(0));
-    assert_eq!(file_heading_index(source, "hello-world-1"), Some(4));
-    assert_eq!(file_heading_index(source, "привет-мир"), Some(6));
-    assert_eq!(file_heading_index(source, "missing"), None);
+    let document =
+        FileDocument::parse("# Hello, **world**!\n\nText\n\n## Hello, world!\n\n# Привет мир");
+    assert_eq!(document.heading_index("hello-world"), Some(0));
+    assert_eq!(document.heading_index("hello-world-1"), Some(4));
+    assert_eq!(document.heading_index("привет-мир"), Some(6));
+    assert_eq!(document.heading_index("missing"), None);
 }
 
 #[cfg(test)]
@@ -2468,16 +2505,46 @@ fn render_document_with_prompt_background(
     } else {
         parse(source)
     };
+    render_blocks(
+        &blocks,
+        row,
+        key_prefix,
+        selection,
+        window,
+        cx,
+        reasoning,
+        on_preview,
+        avatar,
+        prompt_background,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render signature carries the row's data"
+)]
+fn render_blocks(
+    blocks: &[Block],
+    row: usize,
+    key_prefix: &str,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    reasoning: bool,
+    on_preview: Option<MediaPreviewHandler>,
+    avatar: bool,
+    prompt_background: Option<gpui::Rgba>,
+) -> gpui::AnyElement {
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
     let fade = STREAM_FADE.take();
     let fades = if fade.active() {
-        block_fades(&blocks, fade)
+        block_fades(blocks, fade)
     } else {
         Vec::new()
     };
 
-    for (block_index, block) in blocks.into_iter().enumerate() {
+    for (block_index, block) in blocks.iter().enumerate() {
         // Only prose leaves fade. Table cells and code keep full contrast.
         LEAF_FADE.set(fades.get(block_index).copied().unwrap_or_default());
         let text_key = || -> SharedString { format!("{key_prefix}-{block_index}").into() };
@@ -2542,9 +2609,9 @@ fn render_document_with_prompt_background(
                                 Theme::global().HEADING
                             })
                             .line_height(relative(1.35))
-                            .child(inline_text(&text)),
+                            .child(inline_text(text)),
                     )
-                    .when(!reasoning && level <= 2, |el| {
+                    .when(!reasoning && *level <= 2, |el| {
                         el.child(div().h(px(1.0)).w_full().bg(Theme::global().PANEL_BORDER))
                     })
                     .into_any_element()
@@ -2555,7 +2622,7 @@ fn render_document_with_prompt_background(
                 .text_color(Theme::global().REASONING)
                 .line_height(relative(1.55))
                 .child(render_document_with_prompt_background(
-                    &text,
+                    text,
                     row,
                     &format!("{key_prefix}-{block_index}"),
                     selection,
@@ -2572,7 +2639,7 @@ fn render_document_with_prompt_background(
                     div()
                         .line_height(relative(1.55))
                         .child(styled_line_with_avatar(
-                            &text,
+                            text,
                             selection,
                             text_key(),
                             window,
@@ -2583,7 +2650,7 @@ fn render_document_with_prompt_background(
                 } else {
                     div()
                         .line_height(relative(1.55))
-                        .child(inline_text(&text))
+                        .child(inline_text(text))
                         .into_any_element()
                 }
             }
@@ -2604,16 +2671,16 @@ fn render_document_with_prompt_background(
                     None => Theme::global().ACCENT_MUTED,
                 };
                 list_row(
-                    depth,
+                    *depth,
                     marker,
                     marker_color,
-                    &text,
+                    text,
                     selection,
                     text_key(),
                     window,
                     cx,
                     tight,
-                    task,
+                    *task,
                     first_line_avatar,
                 )
             }
@@ -2622,14 +2689,14 @@ fn render_document_with_prompt_background(
                 number,
                 text,
             } => list_row(
-                depth,
+                *depth,
                 format!("{number}."),
                 if reasoning {
                     Theme::global().REASONING
                 } else {
                     Theme::global().ACCENT_MUTED
                 },
-                &text,
+                text,
                 selection,
                 text_key(),
                 window,
@@ -2690,25 +2757,26 @@ fn render_document_with_prompt_background(
             Block::Code { lang, body }
                 if lang.eq_ignore_ascii_case("diff") || lang.eq_ignore_ascii_case("patch") =>
             {
-                crate::diff_block::DiffBlock::new(&body, text_key()).into_any_element()
+                crate::diff_block::DiffBlock::new(body, text_key()).into_any_element()
             }
             Block::Code { lang, body } => {
-                code_block_with_selection(&lang, &body, window, Some((selection, text_key(), cx)))
+                code_block_with_selection(lang, body, window, Some((selection, text_key(), cx)))
             }
             Block::HtmlPreview(body)
                 if !reasoning && FILE_OPTIONS.with(|slot| slot.borrow().is_none()) =>
             {
-                crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
+                crate::html_preview::HtmlPreview::new(body.clone(), row, block_index)
+                    .into_any_element()
             }
             Block::HtmlPreview(body) => code_block_with_selection(
                 "html-preview",
-                &body,
+                body,
                 window,
                 Some((selection, text_key(), cx)),
             ),
-            Block::Mermaid(body) => mermaid_diagram(&body, text_key(), on_preview.clone()),
+            Block::Mermaid(body) => mermaid_diagram(body, text_key(), on_preview.clone()),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
-            Block::Math(source) => math_block(&source, selection, text_key(), window, cx),
+            Block::Math(source) => math_block(source, selection, text_key(), window, cx),
             Block::Rule => div()
                 .h(px(1.0))
                 .my_2()
@@ -2812,8 +2880,8 @@ fn list_row(
 }
 
 fn table(
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
+    header: &[String],
+    rows: &[Vec<String>],
     selection: &gpui::Entity<TextSelection>,
     key: SharedString,
     window: &gpui::Window,
@@ -2865,7 +2933,7 @@ fn table(
                     )
                 })),
         )
-        .children(rows.into_iter().enumerate().map(|(row_index, row)| {
+        .children(rows.iter().enumerate().map(|(row_index, row)| {
             div()
                 .flex()
                 .flex_row()
