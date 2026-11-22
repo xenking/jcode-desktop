@@ -9,6 +9,7 @@ use gpui::{
     FontWeight, HighlightStyle, InteractiveText, SharedString, StrikethroughStyle, StyledText,
     UnderlineStyle, div, prelude::*, px, relative,
 };
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -59,6 +60,39 @@ fn parse(source: &str) -> Vec<Block> {
 }
 
 fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block> {
+    parse_document(source, preserve_line_breaks, |_, _| {})
+}
+
+/// History encodes private reasoning as a Markdown block inside assistant text.
+/// Use the renderer's own block boundaries so literal markers in code stay public.
+pub(crate) fn public_transcript(source: &str) -> Cow<'_, str> {
+    if !source.contains(jcode_render_core::REASONING_SENTINEL) {
+        return Cow::Borrowed(source);
+    }
+    let offset = |line: &str| line.as_ptr() as usize - source.as_ptr() as usize;
+    let mut public = String::new();
+    let mut cursor = 0;
+    parse_document(source, false, |first, next| {
+        let start = offset(first);
+        public.push_str(&source[cursor..start]);
+        if !public.is_empty() && next.is_some() && !public.ends_with("\n\n") {
+            public.push('\n');
+        }
+        cursor = next.map_or(source.len(), offset);
+    });
+    if cursor == 0 {
+        Cow::Borrowed(source)
+    } else {
+        public.push_str(&source[cursor..]);
+        Cow::Owned(public)
+    }
+}
+
+fn parse_document(
+    source: &str,
+    preserve_line_breaks: bool,
+    mut reasoning_block: impl FnMut(&str, Option<&str>),
+) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut lines = source.lines().peekable();
     let mut paragraph = String::new();
@@ -104,6 +138,7 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
                 }
                 content.push_str(&next);
             }
+            reasoning_block(line, lines.peek().copied());
             blocks.push(Block::Reasoning(content));
         } else if trimmed == "$$" || trimmed == "\\[" {
             flush(&mut paragraph, &mut blocks);

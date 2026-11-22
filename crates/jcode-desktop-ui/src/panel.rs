@@ -5250,8 +5250,20 @@ impl Panel {
             {
                 rows.push(applet_row(ordinal, instance));
             }
-            if clean_chat && !clean_chat::conversation_item(item) {
-                continue;
+            let mut source = TranscriptRowSource::Settled(index);
+            if clean_chat {
+                if !clean_chat::conversation_item(item) {
+                    continue;
+                }
+                if let Item::Assistant(text) = item {
+                    let public = markdown::public_transcript(text);
+                    if public.trim().is_empty() {
+                        continue;
+                    }
+                    if let std::borrow::Cow::Owned(text) = public {
+                        source = TranscriptRowSource::Owned(Box::new(Item::Assistant(text)));
+                    }
+                }
             }
             if matches!(item, Item::User(_)) {
                 user_attachments_end = if prompt::is_pinnable_prompt(item) {
@@ -5342,7 +5354,7 @@ impl Panel {
             let role = role_of(item);
             rows.push(TranscriptRenderRow {
                 index,
-                source: TranscriptRowSource::Settled(index),
+                source,
                 role,
                 show_label: role.is_some() && role != previous_role,
             });
@@ -5370,7 +5382,14 @@ impl Panel {
             (!self.streaming_text.is_empty()).then(|| {
                 (
                     usize::MAX,
-                    Item::Assistant(self.text_reveal.visible(&self.streaming_text).to_owned()),
+                    Item::Assistant({
+                        let text = self.text_reveal.visible(&self.streaming_text);
+                        if clean_chat {
+                            markdown::public_transcript(text).into_owned()
+                        } else {
+                            text.to_owned()
+                        }
+                    }),
                 )
             }),
         ]
@@ -7150,8 +7169,8 @@ impl Render for Panel {
                                     prompt::PROMPT_TOP_PADDING
                                 };
                                 let mut terms = panel.search_terms.clone();
-                                let highlighted = matches!(row.source, TranscriptRowSource::Settled(index)
-                                    if panel.control_highlight().is_some_and(|reveal| reveal.range.contains(&index)));
+                                let highlighted = row.index < panel.items.len()
+                                    && panel.control_highlight().is_some_and(|reveal| reveal.range.contains(&row.index));
                                 if highlighted && let Some(text) = panel.control_highlight().and_then(|reveal| reveal.text.as_ref()) {
                                     terms.push(text.clone());
                                 }
@@ -7226,11 +7245,10 @@ impl Render for Panel {
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
                                     ));
-                                let rendered = match &row.source {
-                                    TranscriptRowSource::Settled(_) => {
-                                        panel.render_rewind_row(row.index, item, padded, cx)
-                                    }
-                                    TranscriptRowSource::Owned(_) => padded.into_any_element(),
+                                let rendered = if row.index < panel.items.len() {
+                                    panel.render_rewind_row(row.index, item, padded, cx)
+                                } else {
+                                    padded.into_any_element()
                                 };
                                 if rewind_inset > px(0.)
                                     && (row_index == 0 || row_index + 1 == row_count)
