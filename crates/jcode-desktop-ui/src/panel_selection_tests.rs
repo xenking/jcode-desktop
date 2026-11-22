@@ -465,7 +465,7 @@ fn clean_chat_filters_mixed_transcript_and_clipboard(cx: &mut gpui::TestAppConte
         );
         let history = serde_json::from_value(serde_json::json!([
             {"role":"user","content":"Real question","timestamp_ms":1795326000000_i64},
-            {"role":"assistant","content":"Public progress with no final marker"},
+            {"role":"assistant","content":format!("{}Public progress with no final marker", jcode_render_core::reasoning_line_markup("## Приватный заголовок"))},
             {"role":"tool","content":"private output","tool":{"id":"tool","name":"bash","input":{"command":"printf hidden"}}},
             {"role":"user","content":"DM from Worker: private coordination"},
             {"role":"memory","content":"private recall"},
@@ -487,11 +487,13 @@ fn clean_chat_filters_mixed_transcript_and_clipboard(cx: &mut gpui::TestAppConte
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("prompt-time-0").is_some());
     assert!(vcx.debug_bounds("tool-header").is_some());
+    assert!(vcx.debug_bounds("restored-reasoning").is_some());
     let toggle = vcx
         .debug_bounds("clean-chat-toggle")
         .expect("the chat exposes its display toggle");
     vcx.simulate_click(toggle.center(), Default::default());
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("restored-reasoning").is_none());
     let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
     let last = vcx.debug_bounds("selectable-text-5-0").unwrap();
     begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
