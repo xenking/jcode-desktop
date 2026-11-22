@@ -5670,7 +5670,7 @@ impl Panel {
                 let selection = self.applet_selection.clone();
                 crate::applet_surface::card_with_tasks(
                     instance, true, &selection,
-                    Some((&self.session_id, &self.applet_session_tasks())), window, cx,
+                    Some((&self.session_id, &|| self.applet_session_tasks())), window, cx,
                 )
                     .unwrap_or_else(|| div().into_any_element())
             }
@@ -6237,7 +6237,7 @@ impl Panel {
                                 &instance,
                                 true,
                                 &self.applet_selection,
-                                Some((&self.session_id, &self.applet_session_tasks())),
+                                Some((&self.session_id, &|| self.applet_session_tasks())),
                                 window,
                                 cx,
                             )

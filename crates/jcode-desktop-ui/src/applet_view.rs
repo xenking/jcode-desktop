@@ -47,7 +47,7 @@ pub(crate) struct RenderCx<'a> {
     /// Capabilities the applet declared AND the user granted. Nodes that
     /// need an ungranted capability render a placeholder instead.
     pub granted: &'a [jcode_applet_types::Capability],
-    pub session_tasks: Option<&'a SessionTasks>,
+    pub session_tasks: Option<&'a dyn Fn() -> SessionTasks>,
 }
 
 pub(crate) struct SessionTasks {
@@ -437,12 +437,14 @@ fn node(
             grid.into_any_element()
         }
         NodeKind::SessionTasks { title } => {
-            let Some(tasks) = cx.session_tasks else {
+            let Some(source) = cx.session_tasks else {
                 return div()
                     .text_color(theme.TEXT_DIM)
                     .child("Session tasks are unavailable in this placement.")
                     .into_any_element();
             };
+            let tasks = source();
+            let shown = tasks.rows.len();
             let progress = Node::new(NodeKind::Progress {
                 value: Some(if tasks.total == 0 {
                     0.0
@@ -453,7 +455,7 @@ fn node(
             });
             let table = Node::new(NodeKind::Table {
                 columns: vec!["Task".into(), "Status".into()],
-                rows: tasks.rows.clone(),
+                rows: tasks.rows,
             });
             div()
                 .flex()
@@ -473,10 +475,10 @@ fn node(
                 .when(tasks.total > 0, |el| {
                     el.child(node(cx, &table, &format!("{path}.table"), window, app))
                 })
-                .when(tasks.total > tasks.rows.len(), |el| {
+                .when(tasks.total > shown, |el| {
                     el.child(format!(
                         "Showing {} of {} tasks",
-                        tasks.rows.len(),
+                        shown,
                         tasks.total
                     ))
                 })
@@ -510,10 +512,13 @@ fn node(
                         .children(columns.iter().map(|c| cell(c.clone(), true))),
                 );
             for (index, row) in rows.iter().enumerate() {
+                #[cfg(test)]
                 let selector = format!("applet-table-row-{}", row.join("|"));
+                let row_el = div();
+                #[cfg(test)]
+                let row_el = row_el.debug_selector(move || selector.clone());
                 table = table.child(
-                    div()
-                        .debug_selector(move || selector.clone())
+                    row_el
                         .flex()
                         .flex_row()
                         .when(index % 2 == 0, |el| el.bg(theme.TABLE_STRIPE))
@@ -529,10 +534,14 @@ fn node(
                 .flex_col()
                 .gap_1()
                 .when_some(label.as_ref(), |el, label| {
-                    let selector = format!("applet-progress-{label}");
+                    let label_el = div();
+                    #[cfg(test)]
+                    let label_el = {
+                        let selector = format!("applet-progress-{label}");
+                        label_el.debug_selector(move || selector.clone())
+                    };
                     el.child(
-                        div()
-                            .debug_selector(move || selector.clone())
+                        label_el
                             .text_size(px(11.))
                             .text_color(theme.TEXT_DIM)
                             .child(label.clone()),
