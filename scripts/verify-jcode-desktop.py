@@ -194,6 +194,16 @@ class Instance:
         if self.manifest.get("window_width"):
             env["JCODE_DESKTOP_CONTROL_WINDOW_WIDTH"] = str(self.manifest["window_width"])
         modes = ["--single-panel"]
+        if self.manifest["fixture"] == "files-panel":
+            project = self.profile / "sample-project"
+            (project / "src").mkdir(parents=True)
+            (project / "src" / "main.rs").write_text('fn main() {\n    println!("Hello, Files!");\n}\n')
+            (project / "README.md").write_text("# Sample project\n\nA private Files fixture.\n")
+            (project / "Cargo.toml").write_text('[package]\nname = "sample-project"\n')
+            env.update(JCODE_DESKTOP_WORKING_DIR=str(project),
+                       JCODE_DESKTOP_CONTROL_FILES_PANEL="1",
+                       JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
+            modes = []
         if self.manifest["fixture"] == "gallery-navigation":
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="gallery-preload",
                        JCODE_DESKTOP_SCREENSHOT_PANELS="2",
@@ -1707,7 +1717,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "reasoning", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "reasoning", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split", "files-panel"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",

@@ -777,7 +777,12 @@ impl Workspace {
             } else {
                 0.0
             };
-        let controls_width = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH;
+        let files_toggle_width = if self.files_pane.open {
+            0.0
+        } else {
+            super::files::TAB_WIDTH
+        };
+        let controls_width = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH + files_toggle_width;
         let drag_width = if windowed_macos {
             TAB_WINDOW_DRAG_WIDTH
         } else {
@@ -1291,6 +1296,13 @@ impl Workspace {
             .child(tabs)
             .children(coach_chip)
             .children(overflow)
+            .when(!self.files_pane.open, |bar| {
+                bar.child(self.files_button(
+                    "workspace-files-toggle", "Show Files", "▤",
+                    |workspace, window, cx| workspace.toggle_files(&super::files::ToggleFiles, window, cx),
+                    cx,
+                ).absolute().top_0().right(px(TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH)))
+            })
             .child(self.render_next_workspace_button(cx))
             .child(
                 div()

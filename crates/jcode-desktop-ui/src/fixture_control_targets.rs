@@ -18,6 +18,10 @@ pub(crate) fn transcript_scroll_fixture() -> bool {
             == Ok("transcript-scroll")
 }
 
+pub(crate) fn files_panel() -> bool {
+    enabled() && std::env::var("JCODE_DESKTOP_CONTROL_FILES_PANEL").as_deref() == Ok("1")
+}
+
 pub(crate) fn context_overlay_fixture() -> bool {
     enabled()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_CONTEXT_OVERLAY_PROOF").as_deref() == Ok("1")
@@ -143,6 +147,9 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector == "transcript-activity"
         || selector.starts_with("session-status-")
         || selector == "openrig-section-menu"
+        || (files_panel()
+            && (matches!(selector, "workspace-files-toggle" | "workspace-files-close")
+                || selector.starts_with("right-file-tree-")))
         || selector.starts_with("openrig-section:")
         || selector.starts_with("work-row:")
         || selector.starts_with("build-row:")

@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
@@ -22,20 +23,34 @@ pub struct FileIndex {
 
 impl FileIndex {
     pub fn scan(root: &Path) -> Self {
+        Self::scan_with_hidden(root, false)
+    }
+
+    pub fn scan_for_explorer(root: &Path) -> Self {
+        Self::scan_with_hidden(root, true)
+    }
+
+    fn scan_with_hidden(root: &Path, include_hidden: bool) -> Self {
         let walker = WalkBuilder::new(root)
-            .hidden(true)
+            .hidden(!include_hidden)
             .follow_links(false)
             .require_git(false)
             .sort_by_file_path(|a, b| a.cmp(b))
             .filter_entry(|entry| {
                 entry.depth() == 0
-                    || !entry.file_type().is_some_and(|ty| ty.is_dir())
-                    || !matches!(
-                        entry.file_name().to_str(),
-                        Some(
-                            "target" | "node_modules" | "dist" | "build" | "__pycache__" | "vendor"
-                        )
-                    )
+                    || (!hidden_explorer_entry(entry.file_name())
+                        && (!entry.file_type().is_some_and(|ty| ty.is_dir())
+                            || !matches!(
+                                entry.file_name().to_str(),
+                                Some(
+                                    "target"
+                                        | "node_modules"
+                                        | "dist"
+                                        | "build"
+                                        | "__pycache__"
+                                        | "vendor"
+                                )
+                            )))
             })
             .build();
         let mut files = Vec::new();
@@ -62,20 +77,41 @@ impl FileIndex {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<PathBuf> {
-        if limit == 0 {
-            return Vec::new();
-        }
         let query = query.to_lowercase();
-        let mut best = BinaryHeap::new();
-        for file in &self.files {
-            let score = if query.is_empty() {
+        self.ranked(limit, |file| {
+            if query.is_empty() {
                 Some(0)
             } else {
                 fuzzy_score(&file.name, &query)
                     .map(|score| score + 10_000)
                     .or_else(|| fuzzy_score(&file.searchable_path, &query))
-            };
-            if let Some(score) = score {
+            }
+        })
+    }
+
+    pub fn search_terms(&self, query: &str, limit: usize) -> Vec<PathBuf> {
+        let query = query.to_lowercase();
+        let terms: Vec<_> = query.split_whitespace().collect();
+        self.ranked(limit, |file| {
+            terms
+                .iter()
+                .all(|term| file.searchable_path.contains(term))
+                .then(|| {
+                    terms
+                        .iter()
+                        .filter(|term| file.name.contains(**term))
+                        .count() as i64
+                })
+        })
+    }
+
+    fn ranked(&self, limit: usize, score: impl Fn(&IndexedFile) -> Option<i64>) -> Vec<PathBuf> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut best = BinaryHeap::new();
+        for file in &self.files {
+            if let Some(score) = score(file) {
                 // The heap root is the worst result: lowest score, then largest path.
                 best.push((Reverse(score), &file.path));
                 if best.len() > limit {
@@ -84,9 +120,16 @@ impl FileIndex {
             }
         }
         let mut results: Vec<_> = best.into_iter().collect();
-        results.sort_unstable_by(|a, b| b.0 .0.cmp(&a.0 .0).then_with(|| a.1.cmp(b.1)));
+        results.sort_unstable_by(|a, b| b.0.0.cmp(&a.0.0).then_with(|| a.1.cmp(b.1)));
         results.into_iter().map(|(_, path)| path.clone()).collect()
     }
+}
+
+pub fn hidden_explorer_entry(name: &OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(".git" | ".hg" | ".svn" | ".jj" | ".DS_Store")
+    )
 }
 
 fn fuzzy_score(haystack: &str, needle: &str) -> Option<i64> {
@@ -123,6 +166,32 @@ mod tests {
         let path = root.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "").unwrap();
+    }
+
+    #[test]
+    fn explorer_matches_every_term_and_ranks_file_names_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for path in [
+            "src/config/reader.rs",
+            "bin/config-reader.rs",
+            "config/reader.log",
+            ".git/config-reader.rs",
+            ".config-reader",
+        ] {
+            file(root, path);
+        }
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        let index = FileIndex::scan_for_explorer(root);
+        assert_eq!(
+            index.search_terms("CONFIG reader", 10),
+            [
+                ".config-reader",
+                "bin/config-reader.rs",
+                "src/config/reader.rs"
+            ]
+            .map(PathBuf::from)
+        );
     }
 
     #[test]

@@ -53,6 +53,8 @@ mod switch_directory;
 
 #[path = "workspace_responsive.rs"]
 mod responsive;
+#[path = "workspace_files.rs"]
+pub(crate) mod files;
 
 #[path = "workspace_notifications.rs"]
 mod notifications;
@@ -826,6 +828,7 @@ pub struct Workspace {
     onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
     file_tree: std::cell::RefCell<FileTree>,
+    files_pane: files::FilesPane,
     /// Truncated workspace text the user opened: a worker label, a coach
     /// hint. Runtime-only UI state, never part of the saved layout.
     expanded_lines: HashSet<String>,
@@ -1207,6 +1210,7 @@ impl Workspace {
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
             file_tree: Default::default(),
+            files_pane: Default::default(),
             expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1378,9 +1382,9 @@ impl Workspace {
                 session_id: "screenshot-fixture".into(),
                 // Keep this longer than the sidebar to exercise single-line ellipsis.
                 title: Some("Review markdown rendering with a very long session title".into()),
-                working_dir: worktree_fixture
-                    .as_ref()
-                    .and_then(|_| std::env::var("JCODE_DESKTOP_WORKING_DIR").ok())
+                working_dir: (worktree_fixture.is_some() || crate::fixture_control_targets::files_panel())
+                    .then(|| std::env::var("JCODE_DESKTOP_WORKING_DIR").ok())
+                    .flatten()
                     .or_else(|| Some("/workspace/example".into())),
                 status: "idle".into(),
                 transcript_bytes: None,
@@ -1791,6 +1795,7 @@ impl Workspace {
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
             file_tree: Default::default(),
+            files_pane: Default::default(),
             expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -6173,6 +6178,9 @@ impl Workspace {
     }
 
     fn file_browser_root(&self, cx: &App) -> PathBuf {
+        if let Some(root) = self.open_files_root(cx) {
+            return root;
+        }
         self.slots
             .get(self.active)
             .filter(|slot| !harness::is_remote_session(&slot.panel.read(cx).session_id))
@@ -6190,15 +6198,20 @@ impl Workspace {
         let mut tree = self.file_tree.borrow_mut();
         let cached = tree.rows.get(directory);
         let rows = cached.map(|(_, rows)| rows.clone()).unwrap_or_default();
-        if cached.is_some_and(|(loaded, _)| loaded.elapsed() < Duration::from_secs(2)) {
+        if !tree.dirty.contains(directory)
+            && cached.is_some_and(|(loaded, _)| {
+                self.files_pane.open || loaded.elapsed() < Duration::from_secs(2)
+            })
+        {
             return rows;
         }
         if let Some(reading) = &tree.reading {
-            tree.needs_frame |= cached.is_none() && reading != directory;
+            tree.needs_frame |= reading != directory;
             return rows;
         }
         let root = tree.root.clone();
         let directory = directory.to_path_buf();
+        tree.dirty.remove(&directory);
         tree.reading = Some(directory.clone());
         drop(tree);
         let read = cx.background_spawn({
@@ -6215,7 +6228,10 @@ impl Workspace {
                     && (root.as_ref() == Some(&directory)
                         || workspace.expanded_directories.contains(&directory))
                 {
-                    redraw |= tree.rows.get(&directory).is_none_or(|(_, old)| old != &rows);
+                    if tree.rows.get(&directory).is_none_or(|(_, old)| old != &rows) {
+                        tree.revision += 1;
+                        redraw = true;
+                    }
                     tree.rows.insert(directory, (Instant::now(), rows));
                 } else {
                     redraw = true;
@@ -6229,6 +6245,27 @@ impl Workspace {
         rows
     }
 
+    fn set_file_tree_root(&self, root: &Path) {
+        let mut tree = self.file_tree.borrow_mut();
+        if tree.root.as_deref() != Some(root) {
+            tree.rows.clear();
+            tree.dirty.clear();
+            tree.root = Some(root.to_path_buf());
+            tree.revision += 1;
+        }
+    }
+
+    fn toggle_file_directory(&mut self, path: &Path) {
+        let mut tree = self.file_tree.borrow_mut();
+        tree.revision += 1;
+        if !self.expanded_directories.remove(path) {
+            self.expanded_directories.insert(path.to_path_buf());
+        } else {
+            tree.rows.retain(|directory, _| !directory.starts_with(path));
+            tree.dirty.retain(|directory| !directory.starts_with(path));
+        }
+    }
+
     fn render_file_entries(
         &self,
         directory: &Path,
@@ -6237,7 +6274,7 @@ impl Workspace {
     ) -> Vec<gpui::AnyElement> {
         let entries = self.file_entries(directory, cx);
         let mut rows = Vec::new();
-        for FileRow { path, label, is_dir } in entries.iter() {
+        for FileRow { path, label, is_dir } in entries.iter().take(500) {
             let is_dir = *is_dir;
             let expanded = is_dir && self.expanded_directories.contains(path);
             let row_path = path.clone();
@@ -6262,14 +6299,7 @@ impl Workspace {
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
                             if is_dir {
-                                if !this.expanded_directories.remove(&row_path) {
-                                    this.expanded_directories.insert(row_path.clone());
-                                } else {
-                                    this.file_tree
-                                        .borrow_mut()
-                                        .rows
-                                        .retain(|path, _| !path.starts_with(&row_path));
-                                }
+                                this.toggle_file_directory(&row_path);
                                 cx.notify();
                             } else {
                                 this.open_code_file(row_path.clone(), window, cx);
@@ -6395,13 +6425,7 @@ impl Workspace {
                 .into_any_element();
         }
         let root = self.file_browser_root(cx);
-        {
-            let mut tree = self.file_tree.borrow_mut();
-            if tree.root.as_ref() != Some(&root) {
-                tree.rows.clear();
-                tree.root = Some(root.clone());
-            }
-        }
+        self.set_file_tree_root(&root);
         div()
             .id("sidebar-file-list")
             .debug_selector(|| "sidebar-file-list".into())
@@ -7651,7 +7675,9 @@ impl Workspace {
                                                     gpui::MouseButton::Left,
                                                     cx.listener(|this, _, _, cx| {
                                                         this.sidebar_view = SidebarView::Files;
-                                                        this.file_tree.borrow_mut().rows.clear();
+                                                        let mut tree = this.file_tree.borrow_mut();
+                                                        tree.rows.clear();
+                                                        tree.revision += 1;
                                                         cx.notify();
                                                     }),
                                                 )
@@ -9806,8 +9832,11 @@ impl Render for Workspace {
         } else {
             0.
         };
-        let canvas_w =
-            (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
+        let files_width = self.files_width(f32::from(viewport.width));
+        let canvas_w = (f32::from(viewport.width)
+            - sidebar_width - connector_width - right_margin
+            - if compact { 0.0 } else { files_width })
+            .max(0.0);
         let viewport_w = canvas_w.max(1.0);
         if self.last_canvas_width != Some(viewport_w) {
             self.last_canvas_width = Some(viewport_w);
@@ -9980,6 +10009,12 @@ impl Render for Workspace {
         } else {
             (None, Some(tab_bar))
         };
+        let files_pane = (files_width > 0.0).then(|| self.render_files_pane(files_width, cx));
+        let (files_column, files_drawer) = if compact {
+            (None, files_pane)
+        } else {
+            (files_pane, None)
+        };
         if window_tab_bar.is_some() {
             // Navigation diagnostics expose canvas-relative coordinates.
             self.live_tabs.header_offset -= sidebar_width + connector_width;
@@ -10096,6 +10131,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_hints))
             .on_action(cx.listener(Self::toggle_showcase))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .capture_action(cx.listener(Self::toggle_files))
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::open_changelog))
@@ -10176,9 +10212,18 @@ impl Render for Workspace {
                                         el.child(self.render_showcase_cue(cue, window))
                                     }),
                             ),
-                    ),
+                    )
+                    .when_some(files_column, |body, files| {
+                        body.child(div().h_full().flex_none().pt(px(if cfg!(target_os = "macos") {
+                            STRIP_PADDING_TOP + FOLDER_CONTENT_INSET
+                        } else { 0.0 })).child(files))
+                    }),
             )
             .children(window_tab_bar)
+            .when_some(files_drawer, |root, files| {
+                root.child(div().absolute().top(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET))
+                    .bottom_0().right_0().child(files))
+            })
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
                 |root| {
@@ -10207,6 +10252,9 @@ impl Render for Workspace {
             .children(self.render_applet_toast(cx))
             .when(self.sidebar_resizing, |root| {
                 root.child(self.render_sidebar_resize_overlay(cx))
+            })
+            .when(self.files_pane.resizing, |root| {
+                root.child(self.render_files_resize_overlay(cx))
             });
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
@@ -10397,6 +10445,8 @@ struct FileTree {
     fallback: PathBuf,
     root: Option<PathBuf>,
     rows: HashMap<PathBuf, (Instant, std::sync::Arc<[FileRow]>)>,
+    dirty: HashSet<PathBuf>,
+    revision: u64,
     reading: Option<PathBuf>,
     needs_frame: bool,
 }
@@ -10422,6 +10472,8 @@ impl Default for FileTree {
             fallback: std::env::current_dir().unwrap_or_else(|_| filesystem_root()),
             root: None,
             rows: HashMap::new(),
+            dirty: HashSet::new(),
+            revision: 0,
             reading: None,
             needs_frame: false,
         }
@@ -10444,7 +10496,7 @@ fn read_file_rows(directory: &Path) -> std::sync::Arc<[FileRow]> {
         .filter_map(|entry| {
             let name = entry.file_name();
             let label = name.to_string_lossy();
-            if label.starts_with('.') {
+            if jcode_desktop_model::context_files::hidden_explorer_entry(&name) {
                 return None;
             }
             let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
@@ -10459,7 +10511,7 @@ fn read_file_rows(directory: &Path) -> std::sync::Arc<[FileRow]> {
         })
         .collect::<Vec<_>>();
     rows.sort_unstable_by(|(key, _), (other, _)| key.cmp(other));
-    rows.into_iter().take(500).map(|(_, row)| row).collect()
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 fn contains_dot_directory(path: &Path, base: &Path) -> bool {
@@ -12903,6 +12955,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn right_files_panel_browses_the_active_session_without_covering_canvas(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("src")).unwrap();
+        std::fs::write(project.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(project.path().join(".env.example"), "example\n").unwrap();
+        std::fs::create_dir(project.path().join(".git")).unwrap();
+        cx.update(crate::input::bind_keys);
+        let (workspace, vcx) = focused_workspace(cx);
+        vcx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("project", cx);
+            workspace.slots[0].panel.update(cx, |panel, _| {
+                panel.working_dir = Some(project.path().display().to_string());
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+        vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-shift-e"
+        } else {
+            "super-shift-e"
+        });
+        vcx.run_until_parked();
+        let files = vcx
+            .debug_bounds("workspace-files-panel")
+            .expect("Files opens on the right");
+        assert!(canvas.size.width > vcx.debug_bounds("workspace-canvas").unwrap().size.width);
+        assert!(files.left() >= vcx.debug_bounds("workspace-canvas").unwrap().right());
+        assert!(vcx.debug_bounds("right-file-tree-.env.example").is_some());
+        assert!(vcx.debug_bounds("right-file-tree-.git").is_none());
+        assert!(vcx.debug_bounds("right-file-tree-main.rs").is_none());
+        let folder = vcx.debug_bounds("right-file-tree-src").unwrap();
+        vcx.simulate_click(folder.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let file = vcx.debug_bounds("right-file-tree-main.rs").unwrap();
+        vcx.simulate_click(file.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("code-file-contents").is_some());
+        assert!(vcx.debug_bounds("right-file-tree-main.rs").is_some());
+        let search = vcx.debug_bounds("workspace-files-search").unwrap();
+        vcx.simulate_click(search.center(), gpui::Modifiers::default());
+        vcx.simulate_input("src main");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("right-file-tree-src/main.rs").is_some());
+        assert!(vcx.debug_bounds("right-file-tree-.env.example").is_none());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("right-file-tree-.env.example").is_some());
+        let close = vcx.debug_bounds("workspace-files-close").unwrap();
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("workspace-files-panel").is_none());
+        assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
     }
 
     #[gpui::test]
