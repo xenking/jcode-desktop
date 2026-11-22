@@ -22,10 +22,8 @@ pub(super) struct State {
     compact_measurement_supported: bool,
 }
 
-#[derive(Clone)]
 pub(super) struct ContextDisplay {
-    pub meter: ContextMeter,
-    pub offline: bool,
+    meter: ContextMeter,
 }
 
 fn format_context_tokens(tokens: u64) -> String {
@@ -35,10 +33,14 @@ fn format_context_tokens(tokens: u64) -> String {
 }
 
 impl ContextDisplay {
+    fn threshold(&self) -> Option<u64> {
+        self.meter.compaction_threshold_tokens.filter(|&n| n > 0)
+    }
+
     pub(super) fn percent(&self) -> Option<f32> {
         self.meter
             .occupied_tokens
-            .zip(self.meter.compaction_threshold_tokens.filter(|&n| n > 0))
+            .zip(self.threshold())
             .map(|(used, threshold)| (used as f64 / threshold as f64 * 100.) as f32)
     }
 
@@ -51,10 +53,7 @@ impl ContextDisplay {
             };
             format!("{prefix}{}", format_context_tokens(used))
         });
-        match (
-            occupied,
-            self.meter.compaction_threshold_tokens.filter(|&n| n > 0),
-        ) {
+        match (occupied, self.threshold()) {
             (Some(used), Some(threshold)) => {
                 format!("{used} / {}", format_context_tokens(threshold))
             }
@@ -64,69 +63,13 @@ impl ContextDisplay {
         }
     }
 
-    pub(super) fn rows(&self) -> Vec<String> {
-        let meter = &self.meter;
-        let source = match meter.source {
-            ContextOccupancySource::ProviderReported => "Last provider report",
-            ContextOccupancySource::HistoricalReport => "Historical report (route unverified)",
-            ContextOccupancySource::CompactionEstimate => "Post-compaction estimate",
-            ContextOccupancySource::LocalEstimate => "Local estimate",
-            ContextOccupancySource::Unknown => "Occupancy not reported",
-        };
-        let state = if self.offline {
-            "Offline · "
-        } else {
-            match meter.state {
-                ContextMeterState::Saved => "Saved snapshot · ",
-                ContextMeterState::Draft => "Draft · ",
-                ContextMeterState::Live | ContextMeterState::Unavailable => "",
-            }
-        };
-        let route = meter
-            .route
-            .as_ref()
-            .map(|r| format!(" · {r}"))
-            .unwrap_or_default();
-        let measured = meter
-            .measured_at_ms
-            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-            .map(|at| format!(" · {} UTC", at.format("%b %d %H:%M:%S")))
-            .unwrap_or_default();
-        let mut rows = vec![format!("{state}{source}{route}{measured}")];
-        if let Some(window) = meter.model_window_tokens {
-            rows.push(format!("Model window: {} tokens", format_tokens(window)));
-        }
-        if let Some(cap) = meter.session_cap_tokens {
-            rows.push(format!("Session cap: {} tokens", format_tokens(cap)));
-        } else if let Some(budget) = meter
-            .effective_budget_tokens
-            .filter(|n| Some(*n) != meter.model_window_tokens)
-        {
-            rows.push(format!("Context budget: {} tokens", format_tokens(budget)));
-        }
-        if meter.compaction_threshold_tokens.is_none() {
-            rows.push(match meter.compaction_mode.as_deref() {
-                Some(mode) if mode != "reactive" => {
-                    format!("No fixed auto-compaction threshold ({mode})")
-                }
-                _ => "Auto-compaction threshold unknown".into(),
-            });
-        } else if meter.compaction_mode.as_deref() == Some("provider_native") {
-            rows.push("Auto-compaction: provider-native".into());
-        }
-        if let Some(idle) = meter.idle_precompaction_tokens {
-            rows.push(format!(
-                "Idle pre-compaction: {} tokens after cache cools",
-                format_tokens(idle)
-            ));
-        }
-        if let Some(cutoff) = meter.long_context_pricing_above_input_tokens {
-            rows.push(format!(
-                "Higher pricing above {} input tokens per request",
-                format_context_tokens(cutoff)
-            ));
-        }
-        rows
+    fn scale(&self) -> Option<u64> {
+        self.threshold().or_else(|| {
+            self.meter
+                .effective_budget_tokens
+                .filter(|&n| n > 0)
+                .or(self.meter.model_window_tokens.filter(|&n| n > 0))
+        })
     }
 }
 
@@ -138,11 +81,11 @@ impl State {
 
 fn category(kind: ContextBreakdownKind, theme: &Theme) -> (&'static str, gpui::Rgba) {
     match kind {
-        ContextBreakdownKind::SystemPrompt => ("System prompt", theme.TEXT_DIM),
-        ContextBreakdownKind::BuiltinTools => ("Tool definitions", theme.CODE_KEYWORD),
+        ContextBreakdownKind::SystemPrompt => ("System", theme.TEXT_DIM),
+        ContextBreakdownKind::BuiltinTools => ("Tools", theme.CODE_KEYWORD),
         ContextBreakdownKind::SkillsModes => ("Skills & modes", theme.WARN),
-        ContextBreakdownKind::DynamicTools => ("MCP & dynamic tools", theme.CODE_ATTRIBUTE),
-        ContextBreakdownKind::Agents => ("Subagent definitions", theme.LINK),
+        ContextBreakdownKind::DynamicTools => ("MCP", theme.CODE_ATTRIBUTE),
+        ContextBreakdownKind::Agents => ("Agents", theme.LINK),
         ContextBreakdownKind::Conversation => ("Conversation", theme.CODE_STRING),
         ContextBreakdownKind::Unattributed => ("Unattributed", theme.TEXT_FAINT),
     }
@@ -489,10 +432,7 @@ impl Panel {
                 ..ContextMeter::default()
             }
         });
-        ContextDisplay {
-            meter,
-            offline: self.status.starts_with("lost:"),
-        }
+        ContextDisplay { meter }
     }
 
     pub(super) fn render_context_usage(
@@ -503,22 +443,39 @@ impl Panel {
             return None;
         }
         let theme = Theme::global();
-        let breakdown = self.context_usage.breakdown.as_ref();
         let display = self.context_display();
         let value = display.value();
         let selector = format!("context-usage-value-{value}");
-        let percent = display.percent();
-        let categories = breakdown
-            .filter(|breakdown| {
-                breakdown
-                    .categories
-                    .iter()
-                    .any(|category| category.tokens.is_some())
+        let categories: Vec<_> = self
+            .context_usage
+            .breakdown
+            .iter()
+            .flat_map(|snapshot| &snapshot.categories)
+            .filter_map(|bucket| {
+                let tokens = bucket.tokens.filter(|&n| n > 0)?;
+                let (label, color) = category(bucket.kind, theme);
+                Some((label, color, tokens))
             })
-            .map_or(&[][..], |breakdown| breakdown.categories.as_slice());
-        let residual = breakdown
-            .and_then(|breakdown| breakdown.residual_tokens)
-            .filter(|&n| n != 0);
+            .collect();
+        let scale = display.scale();
+        let occupied = display
+            .meter
+            .occupied_tokens
+            .zip(scale)
+            .map(|(used, scale)| (used as f64 / scale as f64).min(1.) as f32);
+        let cutoff = display
+            .meter
+            .long_context_pricing_above_input_tokens
+            .filter(|&n| n > 0);
+        let marker_fraction = cutoff.zip(scale).and_then(|(cutoff, scale)| {
+            (cutoff < scale).then(|| (cutoff as f64 / scale as f64) as f32)
+        });
+        let sum: f64 = categories.iter().map(|(_, _, tokens)| *tokens as f64).sum();
+        // Keep any unmatched occupancy neutral. If estimates overshoot, scale them to fit.
+        let category_extent = display
+            .meter
+            .occupied_tokens
+            .map_or(sum, |used| sum.max(used as f64));
         let owner = cx.weak_entity();
         Some(
             div()
@@ -542,6 +499,8 @@ impl Panel {
                     .size_full(),
                 )
                 .w_full()
+                .max_w(px(460.))
+                .self_start()
                 .min_w_0()
                 .mb_2()
                 .p_3()
@@ -561,8 +520,9 @@ impl Panel {
                         .w_full()
                         .items_center()
                         .flex_wrap()
+                        .justify_between()
                         .gap_x_2()
-                        .gap_y_1()
+                        .gap_y_0p5()
                         .child(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
@@ -570,106 +530,103 @@ impl Panel {
                         )
                         .child(
                             div()
-                                .flex_1()
-                                .min_w(px(174.))
-                                .flex()
-                                .items_start()
-                                .justify_end()
-                                .flex_wrap()
-                                .gap_2()
-                                .child(self.render_context_action_forecast(Action::Compact, cx))
-                                .child(self.render_context_action_forecast(Action::Shake, cx)),
+                                .debug_selector(move || selector)
+                                .flex_none()
+                                .text_size(px(12.))
+                                .text_color(theme.composer_secondary())
+                                .child(if display.threshold().is_some() {
+                                    format!("{value} to compact")
+                                } else if display.meter.occupied_tokens.is_some() {
+                                    format!("{value} tokens")
+                                } else {
+                                    "Occupancy unknown".into()
+                                }),
                         ),
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(theme.composer_secondary())
-                        .child("Savings are a share of current context, not of the limit."),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .text_color(theme.composer_secondary())
-                        .child(div().child(if display.meter.compaction_threshold_tokens.is_some() {
-                            "Occupied / auto-compaction threshold"
-                        } else {
-                            "Occupied tokens"
-                        }))
-                        .child(div().debug_selector(move || selector).flex_none().child(value)),
-                )
-                .child(
-                    div()
                         .debug_selector(|| "context-usage-bar".into())
+                        .relative()
                         .w_full()
-                        .h(px(5.))
+                        .h(px(8.))
                         .flex()
                         .overflow_hidden()
                         .rounded_full()
                         .bg(theme.chip_background())
-                        .children(percent.map(|percent| {
+                        .children(occupied.map(|occupied| {
                             div()
-                                .w(relative((percent / 100.).min(1.)))
+                                .debug_selector(|| "context-usage-occupied".into())
+                                .w(relative(occupied))
                                 .h_full()
-                                .bg(super::usage::usage_color(percent, theme))
+                                .flex_none()
+                                .flex()
+                                .bg(theme.TEXT_FAINT)
+                                .children(categories.iter().map(|(label, color, tokens)| {
+                                    let label = *label;
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("context-usage-segment-{label}")
+                                        })
+                                        .flex_none()
+                                        .w(relative((*tokens as f64 / category_extent) as f32))
+                                        .h_full()
+                                        .bg(*color)
+                                }))
+                        }))
+                        .children(marker_fraction.map(|offset| {
+                            div()
+                                .debug_selector(|| "context-usage-billing-marker".into())
+                                .absolute()
+                                .left(relative(offset))
+                                .top_0()
+                                .h_full()
+                                .w(px(2.))
+                                .bg(theme.WARN)
                         })),
                 )
-                .child(div().flex().flex_col().gap_1().text_size(px(12.)).text_color(theme.composer_secondary())
-                    .children(display.rows().into_iter().map(|row| div().child(row))))
-                .when(categories.is_empty(), |panel| {
-                    let message = if self.context_usage.read.is_some() {
-                        "Loading breakdown…"
-                    } else {
-                        "Breakdown unavailable"
-                    };
-                    panel.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme.composer_secondary())
-                            .child(message),
-                    )
-                })
+                .children(cutoff.map(|cutoff| {
+                    div()
+                        .debug_selector(|| "context-usage-billing-label".into())
+                        .text_size(px(11.))
+                        .text_color(theme.composer_secondary())
+                        .child(format!(
+                            "Higher rates above {} input tokens per request",
+                            format_context_tokens(cutoff)
+                        ))
+                }))
                 .when(!categories.is_empty(), |panel| {
                     panel.child(
                         div()
                             .debug_selector(|| "context-usage-breakdown".into())
                             .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(div().text_size(px(12.)).text_color(theme.composer_secondary()).child("Estimated breakdown"))
-                            .children(categories.iter().map(|bucket| {
-                                let (label, color) = category(bucket.kind, theme);
+                            .flex_wrap()
+                            .gap_x_3()
+                            .gap_y_1()
+                            .text_size(px(11.))
+                            .children(categories.iter().map(|(label, color, tokens)| {
                                 div()
                                     .flex()
+                                    .flex_none()
                                     .items_center()
-                                    .gap_2()
-                                    .text_size(px(12.))
-                                    .child(div().flex_none().size(px(9.)).rounded_sm().bg(color))
-                                    .child(div().flex_1().min_w_0().truncate().child(label))
+                                    .gap_1()
+                                    .child(div().flex_none().size(px(6.)).rounded_full().bg(*color))
+                                    .child(*label)
                                     .child(
                                         div()
-                                            .flex_none()
-                                            .font_family(theme.FONT_MONO)
                                             .text_color(theme.composer_secondary())
-                                            .child(bucket.tokens.map_or_else(
-                                                || "Unavailable".into(),
-                                                |tokens| format!("~{tokens}"),
-                                            )),
+                                            .child(format!("~{}", format_context_tokens(*tokens))),
                                     )
-                            }))
-                            .children(residual.map(|residual| {
-                                let decision = if residual > 0 { "above" } else { "below" };
-                                div().text_size(px(12.)).text_color(theme.composer_secondary()).child(format!(
-                                    "Occupancy is {} tokens {decision} the sum of known estimates",
-                                    format_tokens(residual.unsigned_abs()),
-                                ))
                             })),
                     )
                 })
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(self.render_context_action(Action::Compact, cx))
+                        .child(self.render_context_action(Action::Shake, cx)),
+                )
                 .children(match &self.context_usage.action {
                     ActionState::ConfirmShake(preview) => {
                         Some(self.render_shake_preview(preview, cx))
@@ -782,56 +739,38 @@ impl Panel {
             .child(div().flex().gap_2().child(confirm).child(cancel))
     }
 
-    fn render_context_action_forecast(&self, action: Action, cx: &mut Context<Self>) -> gpui::Div {
+    fn context_action_forecast(&self, action: Action) -> Option<String> {
+        if self.context_usage.read.is_some() || !self.context_action_enabled(action) {
+            return None;
+        }
         let forecast = self
             .context_usage
             .breakdown
             .as_ref()
-            .and_then(|snapshot| snapshot.action_forecast);
-        let (prediction, total) = forecast.map_or((None, None), |forecast| {
-            (
-                match action {
-                    Action::Compact => forecast.compact,
-                    Action::Shake => forecast.shake,
-                },
-                forecast.current_tokens.filter(|tokens| *tokens > 0),
-            )
-        });
-        let label = if self.context_usage.read.is_some() {
-            "Estimating…".into()
-        } else if !self.context_can_mutate()
-            || action == Action::Shake && !self.context_usage.shake_supported
-        {
-            "Savings unknown".into()
-        } else {
-            match (prediction, total) {
-                (Some(ContextActionSavings::NoChange), _) => "0% · no change".into(),
-                (Some(ContextActionSavings::Estimate { tokens }), Some(total))
-                    if tokens <= total =>
-                {
-                    format!("Est. {}", percent_of(tokens, total))
-                }
-                (Some(ContextActionSavings::UpperBound { tokens }), Some(total))
-                    if tokens <= total =>
-                {
-                    format!("Est. up to {}", percent_of(tokens, total))
-                }
-                _ => "Savings unknown".into(),
+            .and_then(|snapshot| snapshot.action_forecast)?;
+        let prediction = match action {
+            Action::Compact => forecast.compact,
+            Action::Shake => forecast.shake,
+        }?;
+        if prediction == ContextActionSavings::NoChange {
+            return Some("0%".into());
+        }
+        let total = forecast.current_tokens.filter(|&tokens| tokens > 0)?;
+        match prediction {
+            ContextActionSavings::Estimate { tokens } if tokens <= total => {
+                let percent = percent_of(tokens, total);
+                Some(if percent.starts_with('<') {
+                    percent
+                } else {
+                    format!("~{percent}")
+                })
             }
-        };
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_0p5()
-            .child(self.render_context_action(action, cx))
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(Theme::global().composer_secondary())
-                    .child(label),
-            )
+            ContextActionSavings::UpperBound { tokens } if tokens <= total => {
+                let tenths = (u128::from(tokens) * 1000).div_ceil(u128::from(total));
+                Some(format!("≤{}.{}%", tenths / 10, tenths % 10))
+            }
+            _ => None,
+        }
     }
 
     fn render_context_action(
@@ -843,6 +782,7 @@ impl Panel {
         let enabled = self.context_action_enabled(action);
         let running =
             matches!(self.context_usage.action, ActionState::Running(current) if current == action);
+        let forecast = self.context_action_forecast(action);
         let selector = action.selector();
         div()
             .id(selector)
@@ -854,6 +794,7 @@ impl Panel {
             .flex_none()
             .flex()
             .items_center()
+            .gap_1()
             .rounded_full()
             .bg(theme.chip_background())
             .text_size(px(11.))
@@ -908,5 +849,11 @@ impl Panel {
             } else {
                 action.label()
             })
+            .children(forecast.map(|forecast| {
+                div()
+                    .debug_selector(move || format!("{selector}-savings"))
+                    .text_color(theme.composer_secondary())
+                    .child(forecast)
+            }))
     }
 }

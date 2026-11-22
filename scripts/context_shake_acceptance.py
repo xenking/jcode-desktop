@@ -4,6 +4,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sys
 
 from context_usage_acceptance import ContextUsage, VERIFY, main
@@ -98,7 +99,14 @@ class ShakeAcceptance(ContextUsage):
         click("panel-context-meter")
         forecast = before[FIRST]["action_forecast"]
         assert 0 < forecast["shake"]["tokens"] < forecast["current_tokens"], forecast
-        self.runtime_wait(lambda: visible("before", "context usage", "shake tools", "of current context", "est."), "native Shake forecast before clicking")
+        def forecast_visible():
+            frame, text = self.capture_text("before.png")
+            percent = 100 * forecast["shake"]["tokens"] / forecast["current_tokens"]
+            if re.search(rf"shake tools\D*{re.escape(f'{percent:.1f}')}%", text.lower()):
+                return frame
+            return None
+
+        self.runtime_wait(forecast_visible, "native Shake button with its savings percentage")
         click("context-usage-shake")
         preview = self.runtime_wait(lambda: visible("preview", "confirm shake", "cache"), "native warm-cache Shake preview and confirm button")
         assert before == {s: self.context_usage(s) for s in (FIRST, SECOND)}, "preview changed context"

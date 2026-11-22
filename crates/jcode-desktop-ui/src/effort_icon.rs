@@ -1,7 +1,7 @@
 //! Drawn reasoning-effort marks.
 //!
 //! The composer bar, the `/effort` picker and the worker rows draw the level
-//! as a shape, never as a text glyph: a circle the size of the context ring
+//! as a shape, never as a text glyph: a circle the size of the other bar icons
 //! with a sector filled to the rung, inked on the heat scale (`effort::tint`).
 //! Max is a solid disc with a halo, the swarm modes are a connected cluster.
 //! Painting goes through a canvas, so no font decides how a rung looks.

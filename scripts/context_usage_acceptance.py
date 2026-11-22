@@ -105,19 +105,35 @@ class ContextUsage(VERIFY.Instance):
                                 if bucket["kind"] == "conversation")
             meter = expected[index]["meter"]
             value = f"{compact_count(meter['occupied_tokens'])}/{compact_count(meter['compaction_threshold_tokens'])}"
-            if all(label.lower() in text.lower() for label in (
-                "Context Usage", "Compact now", "Shake tools", "Conversation", "Estimated breakdown", "Model window",
-            )) and re.search(rf"\b{conversation}\b", text) and value in re.sub(r"\s+", "", text).lower():
+            text = text.lower()
+            if all(label in text for label in (
+                "context usage", "compact now", "shake tools", "conversation", "to compact",
+            )) and re.search(rf"\b{compact_count(conversation)}\b", text) and value in re.sub(r"\s+", "", text):
+                assert all(label not in text for label in (
+                    "estimated breakdown", "model window", "of current context", "higher rates",
+                )), text
+                if index == 0 and not self.manifest["compact"]:
+                    if not (re.search(r"compact now\s*0%", text) and re.search(r"shake tools\s*0%", text)):
+                        return None
                 return frame
             return None
 
         def click(selector):
             self.drive("click", {"selector": selector})
 
+        def hovered():
+            frame, text = self.capture_text("hover.png")
+            labels = [line for line in text.lower().splitlines() if "context usage" in line]
+            if not labels:
+                return None
+            assert len(labels) == 1 and "/" in labels[0], text
+            assert "auto-compaction" not in text.lower(), text
+            return frame
+
+        click("hover:panel-context-meter")
+        frames["hover"] = self.runtime_wait(hovered, "one-line native context hover")
         click("panel-context-meter")
         frames["first"] = self.runtime_wait(lambda: panel("first.png", 0), "native first-session breakdown")
-        _, forecast = self.capture_text("forecast.png")
-        assert "of current context" in forecast.lower(), forecast
         click("context-usage-shake")
         self.drive("press_key", {"key": "fixture:escape"})
         _, closed = self.capture_text("closed.png")

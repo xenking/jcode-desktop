@@ -112,7 +112,7 @@ fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui:
     let context = vcx.debug_bounds("panel-context-meter").unwrap();
     assert!(
         model.right() <= context.left(),
-        "the context ring follows model"
+        "context usage follows the model"
     );
     vcx.simulate_click(model.center(), gpui::Modifiers::default());
     vcx.run_until_parked();

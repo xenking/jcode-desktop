@@ -11,8 +11,7 @@ use super::*;
 
 /// Pill height.
 pub(super) const TAB_HEIGHT: f32 = 22.;
-/// One size for every drawn mark in the bar: the context ring, the effort
-/// circle, the worker cluster, the wait mark and the cache timer.
+/// One size for the effort circle, worker cluster, wait mark and cache timer.
 pub(crate) const BAR_ICON: f32 = 13.;
 /// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
@@ -795,10 +794,10 @@ mod tests {
     }
 
     /// The bar's effort mark is drawn (canvas), not a `◑` glyph: the level's
-    /// shape sits in the pill at the context ring's size, and an unknown
+    /// shape sits in the pill at the shared icon size, and an unknown
     /// level keeps its word instead of inventing a rung.
     #[gpui::test]
-    fn the_effort_pill_draws_the_level_at_the_context_ring_size(cx: &mut gpui::TestAppContext) {
+    fn the_effort_pill_draws_the_level_at_the_bar_icon_size(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         for level in ["low", "medium", "high", "xhigh", "max"] {
             panel.update(vcx, |panel, cx| {
@@ -813,9 +812,8 @@ mod tests {
             let icon = vcx
                 .debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{level} icon"));
-            let ring = vcx.debug_bounds("panel-context-ring").expect("ring");
             assert!(icon.left() >= pill.left() && icon.right() <= pill.right());
-            assert_eq!(icon.size, ring.size, "{level} matches the context ring");
+            assert_eq!(icon.size, gpui::size(px(BAR_ICON), px(BAR_ICON)));
         }
         assert!(crate::effort_icon::icon("future", BAR_ICON).is_none());
     }

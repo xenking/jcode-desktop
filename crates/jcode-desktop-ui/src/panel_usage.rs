@@ -67,73 +67,6 @@ impl Render for RowsTooltip {
     }
 }
 
-struct ContextTooltip(super::context_usage::ContextDisplay);
-
-impl Render for ContextTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::global();
-        let value = self.0.value();
-        let selector = format!("context-tooltip-value-{value}");
-        div()
-            .debug_selector(|| "context-tooltip".into())
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
-            .min_w(px(220.))
-            .max_w(px(355.))
-            .rounded_xl()
-            .bg(theme.HEADER_BG)
-            .border_1()
-            .border_color(theme.PANEL_BORDER)
-            .text_size(px(11.))
-            .line_height(px(16.))
-            .child(
-                div()
-                    .text_color(theme.TEXT)
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Context usage"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_2()
-                    .flex_wrap()
-                    .text_color(theme.TEXT_DIM)
-                    .child(if self.0.meter.compaction_threshold_tokens.is_some() {
-                        "Occupied / auto-compaction threshold"
-                    } else {
-                        "Occupied tokens"
-                    })
-                    .child(
-                        div()
-                            .debug_selector(move || selector)
-                            .font_family(theme.FONT_MONO)
-                            .text_color(theme.TEXT)
-                            .child(value),
-                    ),
-            )
-            .children(self.0.percent().map(|percent| {
-                usage_bar(
-                    "context-tooltip-bar".into(),
-                    percent,
-                    usage_color(percent, theme),
-                    theme,
-                )
-            }))
-            .children(self.0.rows().into_iter().map(|row| {
-                let selector = format!("context-tooltip-row-{row}");
-                div()
-                    .debug_selector(move || selector)
-                    .whitespace_normal()
-                    .text_color(theme.TEXT_DIM)
-                    .child(row)
-            }))
-    }
-}
-
 pub(crate) struct MeterTooltip(pub(crate) String);
 impl Render for MeterTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -609,110 +542,6 @@ impl Panel {
     }
 }
 
-/// Filled annulus segment from 12 o'clock, clockwise, `fraction` of a turn.
-fn ring_path(
-    center: gpui::Point<gpui::Pixels>,
-    outer: f32,
-    inner: f32,
-    fraction: f32,
-) -> Option<gpui::Path<gpui::Pixels>> {
-    let fraction = fraction.clamp(0., 1.);
-    if fraction <= 0. {
-        return None;
-    }
-    let at = |r: f32, t: f32| {
-        let angle = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        center + gpui::point(px(r * angle.cos()), px(r * angle.sin()))
-    };
-    let mut builder = gpui::PathBuilder::fill();
-    if fraction >= 0.999 {
-        // Two half arcs per circle: a single full-turn arc is degenerate.
-        builder.move_to(at(outer, 0.));
-        builder.arc_to(
-            gpui::point(px(outer), px(outer)),
-            px(0.),
-            false,
-            true,
-            at(outer, 0.5),
-        );
-        builder.arc_to(
-            gpui::point(px(outer), px(outer)),
-            px(0.),
-            false,
-            true,
-            at(outer, 0.),
-        );
-        builder.close();
-        builder.move_to(at(inner, 0.));
-        builder.arc_to(
-            gpui::point(px(inner), px(inner)),
-            px(0.),
-            false,
-            false,
-            at(inner, 0.5),
-        );
-        builder.arc_to(
-            gpui::point(px(inner), px(inner)),
-            px(0.),
-            false,
-            false,
-            at(inner, 0.),
-        );
-        builder.close();
-    } else {
-        let large = fraction > 0.5;
-        builder.move_to(at(outer, 0.));
-        builder.arc_to(
-            gpui::point(px(outer), px(outer)),
-            px(0.),
-            large,
-            true,
-            at(outer, fraction),
-        );
-        builder.line_to(at(inner, fraction));
-        builder.arc_to(
-            gpui::point(px(inner), px(inner)),
-            px(0.),
-            large,
-            false,
-            at(inner, 0.),
-        );
-        builder.close();
-    }
-    builder.build().ok()
-}
-
-/// Circular context gauge: a faint full track with a colored used arc.
-fn context_ring(used: Option<f32>) -> gpui::AnyElement {
-    const SIZE: f32 = super::composer::BAR_ICON;
-    let theme = Theme::global();
-    let used = used.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
-    div()
-        .debug_selector(|| "panel-context-ring".into())
-        .flex_none()
-        .size(px(SIZE))
-        .child(
-            gpui::canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let center = bounds.center();
-                    let outer = SIZE / 2.;
-                    let inner = outer - 2.6;
-                    if let Some(track) = ring_path(center, outer, inner, 1.) {
-                        window.paint_path(track, theme.INLINE_CODE_BG);
-                    }
-                    if let Some(used) = used
-                        && let Some(arc) = ring_path(center, outer, inner, used / 100.)
-                    {
-                        window.paint_path(arc, usage_color(used, theme));
-                    }
-                },
-            )
-            .size_full(),
-        )
-        .into_any_element()
-}
-
 /// USD with cents above a dollar and more precision for small sessions.
 fn format_cost(usd: f64) -> String {
     if usd >= 1. {
@@ -818,7 +647,9 @@ impl Panel {
         let theme = Theme::global();
         let display = self.context_display();
         let percent = display.percent();
-        let label = display.meter.occupied_tokens.map(|_| display.value());
+        let label = percent.map_or_else(|| "—".into(), |percent| format!("{percent:.0}%"));
+        let selector = format!("context-pill-value-{label}");
+        let tooltip = format!("Context usage · {}", display.value());
         Some(
             crate::keyboard::button(div().id("panel-context-meter"))
                 .debug_selector(|| "panel-context-meter".into())
@@ -830,7 +661,6 @@ impl Panel {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap_1()
                 .h(px(22.))
                 .px_1()
                 .text_size(px(10.5))
@@ -843,13 +673,9 @@ impl Panel {
                     el.bg(theme.chip_active_background())
                 })
                 .when(!self.context_usage.is_open(), |el| {
-                    el.tooltip(move |_, cx| cx.new(|_| ContextTooltip(display.clone())).into())
+                    el.tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone())).into())
                 })
-                .child(context_ring(percent))
-                .children(label.map(|label| {
-                    let selector = format!("context-pill-value-{label}");
-                    div().debug_selector(move || selector).child(label)
-                }))
+                .child(div().debug_selector(move || selector).child(label))
                 .on_click(cx.listener(|panel, _, window, cx| {
                     panel.toggle_context_usage(window, cx);
                     cx.stop_propagation();
@@ -981,35 +807,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn context_tooltip_has_compaction_bar(cx: &mut gpui::TestAppContext) {
-        let (_, vcx) = cx.add_window_view(|_, _| {
-            ContextTooltip(super::super::context_usage::ContextDisplay {
-                meter: jcode_sdk::api::ContextMeter {
-                    occupied_tokens: Some(135_000),
-                    compaction_threshold_tokens: Some(500_000),
-                    model_window_tokens: Some(1_000_000),
-                    long_context_pricing_above_input_tokens: Some(272_000),
-                    source: jcode_sdk::api::ContextOccupancySource::ProviderReported,
-                    ..Default::default()
-                },
-                offline: false,
-            })
-        });
-        vcx.run_until_parked();
-        let card = vcx.debug_bounds("context-tooltip").unwrap();
-        assert!(
-            vcx.debug_bounds("context-tooltip-value-135k / 500k")
-                .is_some()
-        );
-        let bar = vcx.debug_bounds("context-tooltip-bar").unwrap();
-        assert!(bar.top() >= card.top() && bar.bottom() <= card.bottom());
-        let pricing = vcx
-            .debug_bounds("context-tooltip-row-Higher pricing above 272k input tokens per request")
-            .expect("route pricing cutoff is a separate visible row");
-        assert!(pricing.top() >= bar.bottom() && pricing.bottom() <= card.bottom());
-    }
-
-    #[gpui::test]
     fn rows_tooltip_wrapped_rows_do_not_overlap(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|_, _| RowsTooltip {
             title: "Workers".into(),
@@ -1116,6 +913,7 @@ mod tests {
         assert!(vcx.debug_bounds("context-usage").is_some());
         assert!(vcx.debug_bounds("context-usage-compact").is_some());
         assert!(vcx.debug_bounds("context-usage-shake").is_some());
+        assert!(vcx.debug_bounds("context-usage-billing-marker").is_none());
         let Ok(Command::ReadContextBreakdown { target, reply }) = commands.try_recv() else {
             panic!("Context Usage did not inspect the session");
         };
@@ -1129,6 +927,7 @@ mod tests {
                         occupied_tokens: Some(41_000),
                         compaction_threshold_tokens: Some(65_000),
                         model_window_tokens: Some(200_000),
+                        long_context_pricing_above_input_tokens: Some(30_000),
                         source: jcode_sdk::api::ContextOccupancySource::ProviderReported,
                         ..Default::default()
                     }),
@@ -1138,11 +937,23 @@ mod tests {
                     total_tokens: Some(41_000),
                     limit_tokens: Some(200_000),
                     estimated: true,
-                    action_forecast: None,
-                    categories: vec![jcode_sdk::api::ContextBreakdownCategory {
-                        kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
-                        tokens: Some(44_000),
-                    }],
+                    action_forecast: Some(jcode_sdk::api::ContextActionForecast {
+                        current_tokens: Some(44_000),
+                        compact: Some(jcode_sdk::api::ContextActionSavings::UpperBound {
+                            tokens: 11_000,
+                        }),
+                        shake: None,
+                    }),
+                    categories: vec![
+                        jcode_sdk::api::ContextBreakdownCategory {
+                            kind: jcode_sdk::api::ContextBreakdownKind::BuiltinTools,
+                            tokens: Some(11_000),
+                        },
+                        jcode_sdk::api::ContextBreakdownCategory {
+                            kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
+                            tokens: Some(33_000),
+                        },
+                    ],
                 }),
                 shake_supported: false,
             })
@@ -1150,7 +961,21 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-breakdown").is_some());
         assert!(vcx.debug_bounds("context-usage-value-41k / 65k").is_some());
-        assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_some());
+        assert!(vcx.debug_bounds("context-pill-value-63%").is_some());
+        assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_none());
+        let bar = vcx.debug_bounds("context-usage-bar").unwrap();
+        let tools = vcx.debug_bounds("context-usage-segment-Tools").unwrap();
+        let chat = vcx.debug_bounds("context-usage-segment-Conversation").unwrap();
+        assert!(f32::from(chat.left() - tools.right()).abs() <= 1.);
+        let occupied_width = f32::from(bar.size.width) * (41. / 65.);
+        assert!(f32::from(chat.right() - bar.left()) <= occupied_width + 1.);
+        let marker = vcx.debug_bounds("context-usage-billing-marker").unwrap();
+        let marker_offset = f32::from(bar.size.width) * (30. / 65.);
+        assert!((f32::from(marker.left() - bar.left()) - marker_offset).abs() <= 1.);
+        assert!(vcx.debug_bounds("context-usage-billing-label").is_some());
+        let compact = vcx.debug_bounds("context-usage-compact").unwrap();
+        let forecast = vcx.debug_bounds("context-usage-compact-savings").unwrap();
+        assert!(compact.contains(&forecast.center()));
         assert_eq!(
             panel.read_with(vcx, |panel, _| panel.items.len()),
             item_count
@@ -1544,7 +1369,7 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
         let context = vcx.debug_bounds("panel-context-meter").unwrap();
-        // Quota moved to the sidebar's bottom block; the bar keeps the ring
+        // Quota moved to the sidebar's bottom block; the bar keeps context usage
         // and no provider figure.
         assert!(vcx.debug_bounds("panel-provider-usage").is_none());
         assert!(vcx.debug_bounds("panel-login").is_none());
@@ -1587,7 +1412,7 @@ mod tests {
         // session state only.
         assert!(vcx.debug_bounds("panel-api-cost").is_none());
         assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
-        assert!(vcx.debug_bounds("panel-context-ring").is_some());
+        assert!(vcx.debug_bounds("panel-context-meter").is_some());
     }
 
     #[gpui::test]
@@ -1677,15 +1502,10 @@ mod tests {
     }
 
     #[test]
-    fn cost_labels_and_ring_paths_are_bounded() {
+    fn cost_labels_are_bounded() {
         assert_eq!(format_cost(0.), "$0.00");
         assert_eq!(format_cost(0.004), "<$0.01");
         assert_eq!(format_cost(0.123), "$0.123");
         assert_eq!(format_cost(12.345), "$12.35");
-        let center = gpui::point(px(10.), px(10.));
-        assert!(ring_path(center, 6., 3., 0.).is_none());
-        for fraction in [0.01, 0.25, 0.5, 0.75, 0.999, 1.0, 2.0] {
-            assert!(ring_path(center, 6., 3., fraction).is_some(), "{fraction}");
-        }
     }
 }

@@ -120,6 +120,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
         || selector == "hover:panel-openrig"
+        || selector == "hover:panel-context-meter"
         || selector.starts_with("sidebar-worker:")
         || selector.starts_with("sidebar-todos:")
         || selector.starts_with("status-worker:")
@@ -198,6 +199,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "scroll:tool"
     } else if selector == "click:panel-openrig" {
         "hover:panel-openrig"
+    } else if selector == "hover:panel-context-meter" {
+        "panel-context-meter"
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
     } else {
@@ -206,7 +209,7 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
     let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
-    if matches!(selector, "hover:panel-cache" | "hover:panel-openrig") {
+    if selector.starts_with("hover:") {
         window.dispatch_event(
             PlatformInput::MouseMove(gpui::MouseMoveEvent {
                 position,
