@@ -363,7 +363,7 @@ impl Panel {
             self.context_usage.action = ActionState::Finished { label, error };
             cx.notify();
         }
-        if !error {
+        if !error || action == Action::Compact {
             self.refresh_context_usage(cx);
         }
     }

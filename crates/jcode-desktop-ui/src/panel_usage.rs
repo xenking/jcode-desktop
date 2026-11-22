@@ -1359,10 +1359,64 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-result").is_some());
+        let Ok(Command::ReadContextBreakdown { reply, .. }) = commands.try_recv() else {
+            panic!("completion must refresh the open popover");
+        };
+        let inspection = |tokens| crate::harness::ContextInspection {
+            breakdown: Some(jcode_sdk::api::ContextBreakdown {
+                meter: Some(jcode_sdk::api::ContextMeter {
+                    occupied_tokens: Some(tokens),
+                    compaction_threshold_tokens: Some(65_000),
+                    ..Default::default()
+                }),
+                session_id: Some("usage-session".into()),
+                model: Some("claude-sonnet-4-6".into()),
+                total_tokens: Some(tokens),
+                limit_tokens: Some(200_000),
+                estimated: true,
+                residual_tokens: None,
+                action_forecast: None,
+                categories: vec![],
+            }),
+            shake_supported: false,
+        };
+        reply.try_send(inspection(10_000)).unwrap();
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-value-10k / 65k").is_some());
+        let compact = vcx.debug_bounds("context-usage-compact").unwrap();
+        vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::ReadContextBreakdown { .. })
+            Ok(Command::SessionOperation {
+                operation: SessionOperation::Compact,
+                ..
+            })
         ));
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::BackgroundProgress {
+                    session_id: "usage-session".into(),
+                    task_id: "context-compaction".into(),
+                    label: "Context compaction".into(),
+                    summary: "Compaction failed: provider unavailable".into(),
+                    detail: None,
+                    percent: None,
+                    done: true,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage").is_some());
+        assert!(vcx.debug_bounds("context-usage-result").is_some());
+        let Ok(Command::ReadContextBreakdown { reply, .. }) = commands.try_recv() else {
+            panic!("failure must refresh the open popover");
+        };
+        reply.try_send(inspection(12_000)).unwrap();
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("context-usage-value-12k / 65k").is_some());
+        assert!(vcx.debug_bounds("context-usage-result").is_some());
         let input = vcx.debug_bounds("prompt-input").unwrap();
         vcx.simulate_click(input.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
