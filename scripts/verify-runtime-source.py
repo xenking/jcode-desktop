@@ -20,6 +20,7 @@ API_REQUIREMENTS = {
         r"effective_budget\s*:\s*Option<usize>",
         r"pub\s+struct\s+HistoryTool\b",
         r"pub\s+tool\s*:\s*Option<HistoryTool>",
+        r"codemode\s*:\s*Option<Box<(?:jcode_session_types::)?CodemodeSummary>>",
     ),
     "crates/jcode-sdk/src/client.rs": (
         r"pub\s+supports_user_response\s*:\s*bool",

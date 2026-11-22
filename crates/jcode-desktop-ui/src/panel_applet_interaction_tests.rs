@@ -67,6 +67,7 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
                     name: "todo".into(),
                     output: output.into(),
                     error: None,
+                    codemode: None,
                 },
                 cx,
             )

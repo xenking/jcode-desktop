@@ -237,6 +237,7 @@ mod tests {
                     name: "bash".into(),
                     output: "passed".into(),
                     error: None,
+                    codemode: None,
                 },
                 cx,
             );
@@ -356,6 +357,7 @@ mod tests {
                         name: name.into(),
                         output: format!("finished {call_id}"),
                         error: None,
+                        codemode: None,
                     },
                     cx,
                 );

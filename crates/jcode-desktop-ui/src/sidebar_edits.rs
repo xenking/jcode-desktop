@@ -22,6 +22,7 @@ mod tests {
             let event = jcode_sdk::ApiEvent::ToolDone {
                 session_id: "session".into(), call_id: "call".into(), name: name.into(),
                 output: String::new(), error: Some("Partial patch failure".into()),
+                codemode: None,
             };
             assert!(super::refresh_after(&event));
         }

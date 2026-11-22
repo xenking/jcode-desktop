@@ -50,6 +50,7 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
                 .filter(|call| !call.id.is_empty())
                 .map(|call| jcode_sdk::HistoryTool {
                     duration_ms: message.tool_duration_ms,
+                    codemode: message.codemode,
                     id: call.id,
                     name: call.name,
                     input: call.input,

@@ -52,6 +52,7 @@ fn stored_memory_tool_calls_survive_a_reload() {
         content: "Remembered.".into(),
         tool: Some(jcode_sdk::HistoryTool {
             duration_ms: None,
+            codemode: None,
             id: "call-memory".into(),
             name: "memory".into(),
             input: serde_json::json!({"action": "remember", "content": "keep replies terse"}),

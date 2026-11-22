@@ -104,6 +104,7 @@ impl Panel {
             message: &summary,
             clock: timestamp_ms.and_then(swarm_card::render_swarm_timestamp),
             tokens: None,
+            via_codemode: false,
             done: true,
             failed: false,
         };
@@ -116,6 +117,7 @@ impl Panel {
             .child(row.render(
                 crate::keyboard::tracked_button(div().id(("agent-message-summary", index)), &focus)
                     .debug_selector(|| "agent-message-summary".into())
+                    .aria_expanded(expanded)
                     .relative()
                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if event.keystroke.key == "enter" && !event.is_held {

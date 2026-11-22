@@ -113,6 +113,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
                                 name,
                                 output,
                                 error: None,
+                                codemode: None,
                             },
                             cx,
                         )

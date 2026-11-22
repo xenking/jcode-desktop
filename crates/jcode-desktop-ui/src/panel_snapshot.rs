@@ -17,6 +17,8 @@ pub struct TranscriptSnapshot {
     expanded_regions: HashSet<String>,
     #[serde(default)]
     user_times: HashMap<usize, i64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    codemode_summaries: HashMap<String, Box<jcode_sdk::api::CodemodeSummary>>,
     #[serde(default)]
     history_paging: Option<history_paging::HistoryPaging>,
 }
@@ -51,6 +53,7 @@ impl Panel {
             turn_outcome: self.turn_outcome,
             expanded_regions: self.expanded_regions.clone(),
             user_times: self.user_times.clone(),
+            codemode_summaries: self.codemode_summaries.clone(),
             history_paging: self.history_paging.clone(),
         }
     }
@@ -68,6 +71,7 @@ impl Panel {
                 || !snapshot.streaming_reasoning.is_empty());
         self.expanded_regions = snapshot.expanded_regions;
         self.user_times = snapshot.user_times;
+        self.codemode_summaries = snapshot.codemode_summaries;
         self.history_paging = snapshot.history_paging;
         if let Some(paging) = &mut self.history_paging {
             paging.in_flight = false;

@@ -105,6 +105,8 @@ mod background_task;
 
 #[path = "panel_tool_output.rs"]
 mod tool_output;
+#[path = "panel_codemode_card.rs"]
+mod codemode_card;
 
 #[path = "panel_compaction.rs"]
 pub(crate) mod compaction;
@@ -932,6 +934,7 @@ pub struct Panel {
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
     tool_wall_times: HashMap<String, (Option<i64>, Option<i64>)>,
+    codemode_summaries: HashMap<String, Box<jcode_sdk::api::CodemodeSummary>>,
     /// A running tool's breathing veil and clock, each a leaf view that
     /// ticks on its own, so the transcript is not rebuilt 20 times a second
     /// while a tool runs. Filled while the transcript renders.
@@ -1647,12 +1650,30 @@ impl Panel {
             });
         });
         let fixture = screenshot_fixture_for(&session_id);
-        let items: Transcript = demo_items(fixture.as_deref()).into();
+        let tool_card_fixture = crate::harness::screenshot_mode()
+            && matches!(fixture.as_deref(), Some("tool-cards" | "tool-cards-details"));
+        let (mut fixture_tool_durations, mut fixture_tool_wall_times) = demo_tool_times(fixture.as_deref());
+        let (items, fixture_codemode_summaries) = if tool_card_fixture {
+            let history = codemode_card::screenshot_history();
+            let codemode = codemode_card::history_summaries(&history).collect();
+            for (id, (start, finish, duration)) in history_tool_times(&history) {
+                fixture_tool_wall_times.insert(id.clone(), (start, finish));
+                if let Some(duration) = duration {
+                    fixture_tool_durations.insert(id, duration);
+                }
+            }
+            (Self::history_items(history, Vec::new()).0, codemode)
+        } else {
+            (demo_items(fixture.as_deref()), HashMap::new())
+        };
+        let items: Transcript = items.into();
         // `JCODE_DESKTOP_SCREENSHOT_EXPANDED=1` opens every disclosure in the
         // fixture, so the capture shows the expanded text rather than only the
         // collapsed rows.
         let expanded_regions =
-            if crate::harness::screenshot_mode() && expandable::screenshot_expanded() {
+            if tool_card_fixture && fixture.as_deref() == Some("tool-cards-details") {
+                HashSet::from(["fixture-codemode-multi".into(), "codemode-calls:fixture-codemode-multi".into()])
+            } else if crate::harness::screenshot_mode() && expandable::screenshot_expanded() {
                 expandable::all_regions(&items)
             } else {
                 HashSet::new()
@@ -1729,7 +1750,6 @@ impl Panel {
             });
         }
         let activity_owner = cx.entity();
-        let (fixture_tool_durations, fixture_tool_wall_times) = demo_tool_times(fixture.as_deref());
         let queue_items_scroll = gpui::ScrollHandle::new();
         Self {
             session_id,
@@ -1877,6 +1897,7 @@ impl Panel {
             tool_started: HashMap::new(),
             tool_durations: fixture_tool_durations,
             tool_wall_times: fixture_tool_wall_times,
+            codemode_summaries: fixture_codemode_summaries,
             running_tool_tickers: Default::default(),
             superseded_drafts: Default::default(),
             terminal: None,
@@ -4016,7 +4037,8 @@ impl Panel {
         let request = cx.background_executor().spawn(async move {
             loader().map(|(messages, images)| {
                 let times = history_tool_times(&messages);
-                (Self::history_items(messages, images), times)
+                let codemode: Vec<_> = codemode_card::history_summaries(&messages).collect();
+                (Self::history_items(messages, images), times, codemode)
             })
         });
         self.provisional_task = Some(cx.spawn(async move |this, cx| {
@@ -4026,7 +4048,7 @@ impl Panel {
                 if std::mem::take(&mut panel.awaiting_persisted) {
                     cx.notify();
                 }
-                let Ok(((items, user_times), tool_times)) = result else {
+                let Ok(((items, user_times), tool_times, codemode)) = result else {
                     return;
                 };
                 if items.is_empty() || !panel.can_show_provisional() {
@@ -4039,6 +4061,7 @@ impl Panel {
                 );
                 panel.provisional_items = items.len();
                 panel.user_times = user_times;
+                panel.codemode_summaries.extend(codemode);
                 for (id, (start, finish, duration)) in tool_times {
                     panel.tool_wall_times.insert(id.clone(), (start, finish));
                     if let Some(duration) = duration {
@@ -4121,6 +4144,8 @@ impl Panel {
         }
         self.note_session_image_ordinal(images.iter().filter_map(|image| image.session_image.as_ref()).map(|image| image.ordinal).max(), cx);
         self.restore_tool_times(&messages);
+        self.codemode_summaries
+            .extend(codemode_card::history_summaries(&messages));
         if self.history_paging.is_none() {
             self.history_paging = history_paging::HistoryPaging::from_history(&messages);
             if self.history_loaded
@@ -4556,8 +4581,13 @@ impl Panel {
                 name,
                 output,
                 error,
+                codemode,
                 ..
             } => {
+                if codemode_card::is_codemode(name) && let Some(summary) = codemode {
+                    self.codemode_summaries
+                        .insert(call_id.clone(), summary.clone());
+                }
                 self.tool_wall_times
                     .entry(call_id.clone())
                     .or_insert((None, None))
@@ -6288,23 +6318,25 @@ impl Panel {
                 if animating {
                     window.request_animation_frame();
                 }
-                if !display.screenshot_mode
-                    && let Some(call) = swarm_card::parse(name, input, output)
-                {
-                    return self.render_swarm_card(
-                        index,
-                        call_id,
-                        &call,
-                        name,
-                        input,
-                        *done,
-                        output,
-                        error.as_deref(),
-                        offset,
-                        opacity,
-                        window,
-                        cx,
-                    );
+                let is_codemode = codemode_card::is_codemode(name);
+                let codemode = (is_codemode && *done)
+                    .then(|| self.codemode_summaries.get(call_id).map(Box::as_ref))
+                    .flatten();
+                let failed = error.is_some()
+                    || (is_codemode && codemode_card::wrapper_failed(codemode, None, output));
+                if !display.screenshot_mode {
+                    let nested = codemode.and_then(|summary| {
+                        codemode_card::single_swarm(summary).map(|call| (summary, call))
+                    });
+                    if let Some(call) = nested
+                        .map(|(_, call)| swarm_card::from_codemode(call, input))
+                        .or_else(|| swarm_card::parse(name, input, output))
+                    {
+                        return self.render_swarm_card(
+                            index, call_id, &call, name, input, *done, output, error.as_deref(),
+                            nested, offset, opacity, window, cx,
+                        );
+                    }
                 }
                 let expanded = self.expanded_regions.contains(call_id)
                     ^ (name == "agentgrep" && display.show_agentgrep_output);
@@ -6346,7 +6378,7 @@ impl Panel {
                 let has_detail = true;
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
-                let running_veil = (!*done && error.is_none()).then(|| {
+                let running_veil = (!*done && !failed).then(|| {
                     gpui::AnyView::from(self.running_tool_tickers.borrow_mut().get(
                         &format!("pulse:{call_id}"),
                         crate::tool_icon::running_veil(
@@ -6401,7 +6433,7 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(crate::tool_icon::render_badge(name, *done, error.is_some()))
+                            .child(crate::tool_icon::render_badge(name, *done, failed))
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -6423,7 +6455,7 @@ impl Panel {
                             .children(self.render_tool_clock(
                                 index,
                                 &call_id,
-                                *done || error.is_some(),
+                                *done || failed,
                                 cx,
                             ))
                             // The token pill shares the row's click target.
@@ -6447,7 +6479,7 @@ impl Panel {
                                 )
                             }),
                         *done,
-                        error.is_some(),
+                        failed,
                         running_veil,
                     ))
                     .when(detail_visible && !display.screenshot_mode && has_detail, |el| {
@@ -6639,7 +6671,12 @@ impl Panel {
                                                 )
                                             })
                                             .children(supplement)
-                                                .child(if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
+                                                .child(if is_codemode && *done {
+                                                    self.render_codemode_detail(
+                                                        index, &call_id, input, output, error.as_deref(),
+                                                        codemode, None, window, cx,
+                                                    )
+                                                } else if let Some((args, result)) = tool_output::bash_sections(name, input, output, error.as_deref()) {
                                                     div().flex().flex_col()
                                                         .child(div().debug_selector(|| "tool-bash-command".into()).child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .when(!result.is_empty(), |el| el.child(div().debug_selector(|| "tool-bash-output-code".into()).p_2().rounded_lg().bg(Theme::global().INLINE_CODE_BG).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-bash-output-{index}"), result, window, cx))))
@@ -12177,6 +12214,11 @@ mod tests {
         let time = vcx
             .debug_bounds("tool-elapsed")
             .expect("live DM shows its arrival time");
+        let icon = vcx.debug_bounds("swarm-action").unwrap();
+        let sender = vcx.debug_bounds("agent-message-sender").unwrap();
+        assert!(pill.left() < icon.left() && icon.right() < pill.right());
+        assert!(pill.right() < sender.left());
+        assert!(vcx.debug_bounds("swarm-direction").is_none());
         assert!(pill.left() >= summary.left() && time.right() <= summary.right());
         assert!(pill.right() < time.left());
         assert!(vcx.debug_bounds("tool-card-tokens").is_none());

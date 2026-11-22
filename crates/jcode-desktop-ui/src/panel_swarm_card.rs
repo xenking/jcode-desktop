@@ -2,6 +2,7 @@
 use super::*;
 use crate::swarm_view::friendly_name;
 use jcode_desktop_harness::swarm_usage::WorkerUsage;
+use jcode_sdk::api::{CodemodeCall, CodemodeCallStatus, CodemodeDirection, CodemodeSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Call {
@@ -9,6 +10,7 @@ pub(super) struct Call {
     pub session_ids: Vec<String>,
     target: String,
     text: String,
+    direction: Option<Direction>,
 }
 
 fn short_name(id: &str) -> &str {
@@ -90,14 +92,11 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
         }
     }
     let target = if action == "spawn" {
-        let label = get("label")
-            .map(str::to_owned)
-            .or_else(|| ids.first().map(|s| short_name(s).to_owned()))
-            .unwrap_or_default();
         if let Some(id) = ids.first() {
-            format!("{} {label}", jcode_core::id::session_icon(short_name(id)))
+            let name = short_name(id);
+            format!("{} {name}", jcode_core::id::session_icon(name))
         } else {
-            label
+            get("label").unwrap_or_default().to_owned()
         }
     } else if !ids.is_empty() {
         ids.iter()
@@ -115,16 +114,43 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
             .unwrap_or("all")
             .to_owned()
     };
-    let text = get("message")
-        .or_else(|| get("prompt"))
-        .unwrap_or("")
-        .to_owned();
+    let text = get("message").or_else(|| get("prompt")).unwrap_or("");
+    let text = if action == "spawn" && !ids.is_empty() {
+        match get("label") {
+            Some(label) if !text.is_empty() => format!("{label} · {text}"),
+            Some(label) => label.to_owned(),
+            None => text.to_owned(),
+        }
+    } else {
+        text.to_owned()
+    };
     Some(Call {
+        direction: matches!(action.as_str(), "dm" | "message").then_some(Direction::To),
         action,
         session_ids: ids,
         target,
         text,
     })
+}
+
+pub(super) fn from_codemode(call: &CodemodeCall, input: &str) -> Call {
+    let target = call.target.as_deref().unwrap_or_default();
+    let target = if jcode_core::id::is_memorable_session_name(target) {
+        format!("{} {target}", jcode_core::id::session_icon(target))
+    } else {
+        target.to_owned()
+    };
+    let intent = serde_json::from_str::<serde_json::Value>(input)
+        .ok()
+        .and_then(|args| args.get("intent")?.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    Call {
+        action: call.action.clone().unwrap_or_default(),
+        session_ids: Vec::new(),
+        target,
+        text: intent,
+        direction: (call.direction == Some(CodemodeDirection::Outbound)).then_some(Direction::To),
+    }
 }
 
 pub(super) fn detail(name: &str, input: &str, output: &str, error: Option<&str>) -> String {
@@ -145,30 +171,31 @@ fn action_icon(action: &str) -> &'static [u8] {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Direction {
     From,
     To,
 }
 
 impl Direction {
-    fn label(self) -> &'static str {
+    fn description(self) -> &'static str {
         match self {
-            Self::From => "From",
-            Self::To => "To",
+            Self::From => "Incoming swarm message",
+            Self::To => "Outgoing swarm message",
         }
     }
 
     fn icon(self) -> &'static [u8] {
         match self {
-            Self::From => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 9v4h10V9M8 2v7M5 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
-            Self::To => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3 9v4h10V9M8 10V3M5 6l3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+            Self::From => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M12 4l-8 8m0-6v6h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+            Self::To => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 12l8-8m-6 0h6v6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
         }
     }
 }
 
 pub(super) fn row_peer(peer: String) -> gpui::Div {
     div()
+        .debug_selector(|| "swarm-peer".into())
         .min_w_0()
         .max_w(px(260.0))
         .truncate()
@@ -177,7 +204,11 @@ pub(super) fn row_peer(peer: String) -> gpui::Div {
 }
 
 pub(super) fn render_swarm_timestamp(ms: i64) -> Option<gpui::AnyElement> {
-    Some(compact_clock().child(tool_clock_label(ms)?).into_any_element())
+    Some(
+        compact_clock()
+            .child(tool_clock_label(ms)?)
+            .into_any_element(),
+    )
 }
 
 pub(super) struct Row<'a> {
@@ -187,6 +218,7 @@ pub(super) struct Row<'a> {
     pub message: &'a str,
     pub clock: Option<gpui::AnyElement>,
     pub tokens: Option<gpui::Div>,
+    pub via_codemode: bool,
     pub done: bool,
     pub failed: bool,
 }
@@ -195,6 +227,7 @@ impl Row<'_> {
     pub(super) fn render(self, header: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
         let preview = row_preview(self.message);
+        let description = self.direction.map(Direction::description);
         header
             .flex()
             .items_center()
@@ -204,26 +237,38 @@ impl Row<'_> {
             .py(px(2.0))
             .text_size(px(12.0))
             .cursor_pointer()
-            .child(crate::tool_icon::render_badge("swarm", self.done, self.failed).flex_none())
+            .role(gpui::Role::Button)
+            .when_some(description, |el, description| {
+                el.aria_description(description)
+            })
             .child(
-                gpui::svg()
-                    .data(self.direction.map_or_else(|| action_icon(self.action), Direction::icon))
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(theme.TEXT_FAINT),
+                crate::tool_icon::render_badge("swarm", self.done, self.failed).child(
+                    div()
+                        .id("swarm-action")
+                        .debug_selector(|| "swarm-action".into())
+                        .flex_none()
+                        .size(px(14.0))
+                        .when_some(description, |el, description| {
+                            el.tooltip(move |_, cx| {
+                                cx.new(|_| ask::CardActionTooltip(description)).into()
+                            })
+                        })
+                        .child(
+                            gpui::svg()
+                                .data(
+                                    self.direction
+                                        .map_or_else(|| action_icon(self.action), Direction::icon),
+                                )
+                                .size(px(14.0))
+                                .text_color(theme.TEXT_FAINT),
+                        ),
+                ),
             )
-            .children(self.direction.map(|direction| {
-                div()
-                    .debug_selector(|| "swarm-direction".into())
-                    .flex_none()
-                    .text_color(theme.TEXT_FAINT)
-                    .child(direction.label())
-            }))
             .child(self.peer)
             .child(
                 div()
                     .debug_selector(|| "tool-swarm-preview".into())
-                    .min_w_0()
+                    .min_w(px(12.0))
                     .flex_1()
                     .truncate()
                     .text_color(theme.TOOL_TEXT)
@@ -233,6 +278,17 @@ impl Row<'_> {
                         format!("· {preview}")
                     }),
             )
+            .when(self.via_codemode, |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "swarm-codemode-provenance".into())
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(10.0))
+                        .text_color(theme.TEXT_FAINT)
+                        .child("via codemode"),
+                )
+            })
             .children(self.clock)
             .children(self.tokens)
     }
@@ -281,6 +337,7 @@ impl Panel {
         done: bool,
         output: &str,
         error: Option<&str>,
+        codemode: Option<(&CodemodeSummary, &CodemodeCall)>,
         offset: f32,
         opacity: f32,
         window: &mut Window,
@@ -297,9 +354,7 @@ impl Panel {
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         let click_focus = focus.clone();
-        let direction = (matches!(call.action.as_str(), "dm" | "message")
-            && !call.session_ids.is_empty())
-        .then_some(Direction::To);
+        let direction = call.direction;
         let clock = self
             .render_tool_clock(index, call_id, done || error.is_some(), cx)
             .or_else(|| {
@@ -314,8 +369,13 @@ impl Panel {
             message: &call.text,
             clock,
             tokens: tool_card_token_pill(output),
+            via_codemode: codemode.is_some(),
             done,
-            failed: error.is_some(),
+            failed: error.is_some()
+                || codemode.is_some_and(|(summary, call)| {
+                    codemode_card::wrapper_failed(Some(summary), None, output)
+                        || call.status != CodemodeCallStatus::Success
+                }),
         };
         let height = if self.expandable_viewport_height > px(0.) {
             (f32::from(self.expandable_viewport_height) * 0.6).clamp(1., expandable::MAX_HEIGHT)
@@ -330,26 +390,29 @@ impl Panel {
             .flex_col()
             .ml(px(offset))
             .opacity(opacity)
-            .child(row.render(
-                div()
-                    .id(("swarm-card-row", index))
-                    .debug_selector(|| "tool-swarm-header".into())
-                    .track_focus(&focus)
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "enter" && !event.is_held {
-                            expandable::flip(&mut this.expanded_regions, &key_for_enter);
+            .child(
+                row.render(
+                    div()
+                        .id(("swarm-card-row", index))
+                        .debug_selector(|| "tool-swarm-header".into())
+                        .aria_expanded(expanded)
+                        .track_focus(&focus)
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if event.keystroke.key == "enter" && !event.is_held {
+                                expandable::flip(&mut this.expanded_regions, &key_for_enter);
+                                this.transcript_measurements.dirty = true;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            window.focus(&click_focus, cx);
+                            expandable::flip(&mut this.expanded_regions, &key);
                             this.transcript_measurements.dirty = true;
-                            cx.stop_propagation();
                             cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        window.focus(&click_focus, cx);
-                        expandable::flip(&mut this.expanded_regions, &key);
-                        this.transcript_measurements.dirty = true;
-                        cx.notify();
-                    })),
-            ))
+                        })),
+                ),
+            )
             .when(expanded, |el| {
                 let scroll = self
                     .swarm_scrolls
@@ -381,20 +444,37 @@ impl Panel {
                                         )
                                         .text_size(px(12.0))
                                         .text_color(theme.TOOL_TEXT)
-                                        .child(text_selection::plain(
-                                            self.transcript_selection.clone(),
-                                            format!("tool-detail-{index}"),
-                                            detail(name, input, output, error),
-                                            window,
-                                            cx,
-                                        ))
+                                        .child(if let Some((summary, call)) = codemode {
+                                            self.render_codemode_detail(
+                                                index,
+                                                call_id,
+                                                input,
+                                                output,
+                                                error,
+                                                Some(summary),
+                                                Some(call),
+                                                window,
+                                                cx,
+                                            )
+                                        } else {
+                                            text_selection::plain(
+                                                self.transcript_selection.clone(),
+                                                format!("tool-detail-{index}"),
+                                                detail(name, input, output, error),
+                                                window,
+                                                cx,
+                                            )
+                                            .into_any_element()
+                                        })
                                         .child(
                                             div()
                                                 .debug_selector(|| "swarm-body-end".into())
                                                 .child(""),
                                         ),
                                 )
-                                .map(|body| crate::transcript_scroll::tracked_vertical(body, &scroll)),
+                                .map(|body| {
+                                    crate::transcript_scroll::tracked_vertical(body, &scroll)
+                                }),
                         )
                         .child(crate::scrollbar::vertical_with_track(
                             &scroll,
@@ -457,14 +537,24 @@ mod tests {
         vcx.run_until_parked();
         let row = vcx.debug_bounds("tool-swarm-header").unwrap();
         let preview = vcx.debug_bounds("tool-swarm-preview").unwrap();
+        let badge = vcx.debug_bounds("tool-identity-pill").unwrap();
+        let name = vcx.debug_bounds("tool-name").unwrap();
+        let icon = vcx.debug_bounds("swarm-action").unwrap();
+        let peer = vcx.debug_bounds("swarm-peer").unwrap();
+        assert!(name.right() < icon.left() && icon.right() < badge.right());
+        assert!(badge.right() < peer.left() && peer.right() < preview.left());
         assert!(
             preview.size.width > (row.right() - preview.left()) * 0.8,
             "{preview:?} in {row:?}"
         );
-        vcx.simulate_window_resize(window, gpui::size(px(800.), px(800.)));
+        vcx.simulate_window_resize(window, gpui::size(px(480.), px(800.)));
         vcx.run_until_parked();
         let narrower = vcx.debug_bounds("tool-swarm-preview").unwrap();
-        assert!(narrower.size.width < preview.size.width);
+        let narrowed_row = vcx.debug_bounds("tool-swarm-header").unwrap();
+        let tokens = vcx.debug_bounds("tool-card-tokens").unwrap();
+        assert!(narrower.size.width > px(0.) && narrower.size.width < preview.size.width);
+        assert_eq!(narrowed_row.size.height, row.size.height);
+        assert!(narrower.right() <= tokens.left() && tokens.right() <= narrowed_row.right());
     }
 
     #[test]
@@ -506,6 +596,8 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("swarm-card-worker-0").is_none());
         assert!(vcx.debug_bounds("tool-swarm-result-body").is_none());
+        assert!(vcx.debug_bounds("swarm-direction").is_none());
+        assert!(vcx.debug_bounds("swarm-action").is_some());
         let row = vcx.debug_bounds("tool-swarm-header").unwrap();
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

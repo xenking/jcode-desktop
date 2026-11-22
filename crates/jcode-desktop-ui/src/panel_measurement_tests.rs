@@ -162,6 +162,7 @@ fn tools_selection_and_recovery_still_invalidate_existing_rows(cx: &mut gpui::Te
                 name: "bash".into(),
                 output: "result".into(),
                 error: Some("Failure detail".into()),
+                codemode: None,
             },
             cx,
         );

@@ -1858,7 +1858,7 @@ pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui:
     code_block_with_selection(lang, body, window, None)
 }
 
-fn code_block_with_selection(
+pub(crate) fn code_block_with_selection(
     lang: &str,
     body: &str,
     window: &gpui::Window,

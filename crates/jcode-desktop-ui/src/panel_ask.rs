@@ -2477,6 +2477,7 @@ mod tests {
             panel.apply(&jcode_sdk::ApiEvent::ToolDone {
                 session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(),
                 name: "ask".into(), output: "User declined to answer the questions.".into(), error: None,
+                codemode: None,
             }, cx);
             assert!(panel.ask_card.is_none());
             let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
@@ -2499,9 +2500,9 @@ mod tests {
         let event: jcode_sdk::ApiEvent = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
         panel.update(vcx, |panel, cx| {
             panel.apply(&event, cx);
-            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "unrelated".into(), name: "ask".into(), output: "cancelled".into(), error: Some("cancelled".into()) }, cx);
+            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "unrelated".into(), name: "ask".into(), output: "cancelled".into(), error: Some("cancelled".into()), codemode: None }, cx);
             assert!(panel.ask_card.is_some());
-            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(), name: "ask".into(), output: "cancelled by the user".into(), error: Some("cancelled by the user".into()) }, cx);
+            panel.apply(&jcode_sdk::ApiEvent::ToolDone { session_id: "session-a".into(), call_id: "toolu_01J29QR2NCg12HueHJkMWtZU".into(), name: "ask".into(), output: "cancelled by the user".into(), error: Some("cancelled by the user".into()), codemode: None }, cx);
             assert!(panel.ask_card.is_none(), "completed tool must close its card");
             let Item::Tool { input, output, error, .. } = panel.items.iter().find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == "toolu_01J29QR2NCg12HueHJkMWtZU")).unwrap() else { unreachable!() };
             assert!(result_text(input, output, error.as_deref()).contains("Which database"));

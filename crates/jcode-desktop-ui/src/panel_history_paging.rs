@@ -157,6 +157,8 @@ impl Panel {
                 self.tool_durations.insert(id, duration);
             }
         }
+        self.codemode_summaries
+            .extend(super::codemode_card::history_summaries(&messages));
         let (mut expanded, new_times) = Self::history_items(messages, images);
         let Some(prefix_len) = paging.prefix_len(&expanded) else {
             // A rewind, clear, or changed snapshot must never duplicate or
@@ -263,6 +265,8 @@ impl Panel {
                 self.tool_durations.insert(id, duration);
             }
         }
+        self.codemode_summaries
+            .extend(super::codemode_card::history_summaries(&page.messages));
         if let Some(mut recovery) = paging.recovery.take() {
             let (mut items, mut times) = Self::history_items(page.messages, page.images);
             let added = items.len();

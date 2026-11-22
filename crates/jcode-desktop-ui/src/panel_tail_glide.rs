@@ -544,6 +544,7 @@ mod tests {
                             name: "bash".into(),
                             output: "one\ntwo\nthree\nfour".into(),
                             error: None,
+                            codemode: None,
                         },
                         _ => ApiEvent::TextDelta {
                             message_id: None,
@@ -645,6 +646,7 @@ mod pinned_header_tests {
                     name: "todo".into(),
                     output: output.into(),
                     error: None,
+                    codemode: None,
                 },
             ];
             for event in events {

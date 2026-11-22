@@ -247,6 +247,7 @@ pub(crate) fn run_showcase(
                                             name: name.clone(),
                                             output: output.clone(),
                                             error: None,
+                                            codemode: None,
                                         },
                                         cx,
                                     )
