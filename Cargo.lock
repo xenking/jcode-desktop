@@ -3680,6 +3680,7 @@ dependencies = [
  "jcode-build-support",
  "jcode-desktop-model",
  "jcode-sdk",
+ "jcode-session-types",
  "libc",
  "reqwest 0.12.28",
  "serde",

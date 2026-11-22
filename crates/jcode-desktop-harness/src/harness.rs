@@ -2418,6 +2418,8 @@ struct PersistedSession {
     /// Set for sessions the daemon spawns headless as swarm workers.
     #[serde(default)]
     is_debug: bool,
+    #[serde(default)]
+    hidden: bool,
 }
 
 impl PersistedSession {
@@ -2443,7 +2445,11 @@ impl PersistedSession {
     fn swarm_parent(&self) -> Option<String> {
         self.parent_id
             .clone()
-            .filter(|parent| self.is_debug && !parent.trim().is_empty())
+            .filter(|parent| self.is_debug && !self.hidden && !parent.trim().is_empty())
+    }
+
+    fn is_private_side_question(&self) -> bool {
+        self.hidden && self.parent_id.is_some()
     }
 
     /// Lifecycle status as the TUI picker reports it, including crashes the
@@ -2777,6 +2783,9 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         is_debug: json_value_field(&tail, "is_debug", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        hidden: json_value_field(&tail, "hidden", true)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -2826,6 +2835,30 @@ fn file_recency_ms(entry: &std::fs::DirEntry) -> u128 {
         .unwrap_or_default()
 }
 
+fn side_question_visibility(home: &Path) -> HashMap<String, bool> {
+    // The marker overrides the immutable hidden flag on promoted transcripts.
+    let dir = home
+        .join("state")
+        .join(jcode_session_types::SIDE_QUESTION_VISIBILITY_DIR);
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()?.to_str()? != "json" {
+                return None;
+            }
+            let hidden = match std::fs::read(&path).ok()?.as_slice() {
+                b"true" => true,
+                b"false" => false,
+                _ => return None,
+            };
+            Some((path.file_stem()?.to_str()?.to_owned(), hidden))
+        })
+        .collect()
+}
+
 /// Merge the API's live view with records on disk. This deliberately makes the
 /// desktop resilient to an older already-running bridge that only reports
 /// sessions created during its lifetime.
@@ -2849,19 +2882,29 @@ pub fn merge_persisted_sessions(
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    sessions.retain(|session| !archived.contains(&session.session_id));
+    let visibility = side_question_visibility(home);
     // The harness list API reports attachment state, not the durable lifecycle
     // state used by the TUI picker. Read the same bounded session records so a
     // crashed or errored session does not get flattened to a generic idle row.
-    for session in &mut sessions {
+    sessions.retain_mut(|session| {
+        if archived.contains(&session.session_id) {
+            return false;
+        }
         if remote::is_remote(&session.session_id) {
-            continue;
+            return true;
+        }
+        let hidden = visibility.get(&session.session_id).copied();
+        if hidden == Some(true) {
+            return false;
         }
         let path = home
             .join("sessions")
             .join(format!("{}.json", session.session_id));
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
+            if hidden.is_none() && record.is_private_side_question() {
+                return false;
+            }
             session.status = record.lifecycle_status();
             if session.context.is_none() {
                 session.context = record.catalog_context();
@@ -2870,10 +2913,16 @@ pub fn merge_persisted_sessions(
                 session.parent_session_id = record.swarm_parent();
             }
         }
+        if hidden == Some(false) {
+            session.parent_session_id = None;
+            session.agent_label = None;
+            session.swarm_status = None;
+        }
         if session.parent_session_id.is_some() && session.agent_label.is_none() {
             session.agent_label = persisted_todo_title(home, &session.session_id);
         }
-    }
+        true
+    });
 
     // A full limited API page is authoritative. Modern bridges source it from
     // the compact metadata index, so rescanning a 100k-file transcript directory
@@ -2908,7 +2957,7 @@ pub fn merge_persisted_sessions(
             let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            if archived.contains(id) {
+            if archived.contains(id) || visibility.get(id) == Some(&true) {
                 continue;
             }
             // A transcript is rewritten whenever the session receives new
@@ -2944,6 +2993,9 @@ pub fn merge_persisted_sessions(
         else {
             continue;
         };
+        if !visibility.contains_key(&id) && record.is_private_side_question() {
+            continue;
+        }
         let status = record.lifecycle_status();
         let parent_session_id = record.swarm_parent();
         let todo_title = persisted_todo_title(home, &id);
@@ -5542,6 +5594,39 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_keeps_side_topics_private_until_promotion() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        let visibility = home.path().join("state/side-question-visibility");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&visibility).unwrap();
+        let child = r#"{"parent_id":"root","hidden":true,"status":"Closed"}"#;
+        for id in ["private-api", "private-disk", "legacy", "promoted"] {
+            std::fs::write(sessions.join(format!("{id}.json")), child).unwrap();
+        }
+        for (id, value) in [
+            ("private-api", "true"),
+            ("private-disk", "true"),
+            ("promoted", "false"),
+        ] {
+            std::fs::write(visibility.join(format!("{id}.json")), value).unwrap();
+        }
+        let mut promoted = session_info("promoted");
+        promoted.parent_session_id = Some("root".to_string());
+        promoted.swarm_status = Some("ready".to_string());
+        let rows = merge_persisted_sessions(
+            vec![session_info("root"), session_info("private-api"), promoted],
+            Some(home.path()),
+        );
+        let mut ids: Vec<_> = rows.iter().map(|row| row.session_id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["promoted", "root"]);
+        let promoted = rows.iter().find(|row| row.session_id == "promoted").unwrap();
+        assert_eq!(promoted.parent_session_id, None);
+        assert_eq!(promoted.swarm_status, None);
+    }
+
+    #[test]
     fn large_worker_transcripts_still_report_their_coordinator() {
         let path =
             std::env::temp_dir().join(format!("jcode-worker-large-{}.json", std::process::id()));
@@ -5639,6 +5724,7 @@ mod tests {
             last_pid,
             parent_id: None,
             is_debug: false,
+            hidden: false,
         };
         // A pid beyond the kernel's pid_max can never be alive.
         assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");

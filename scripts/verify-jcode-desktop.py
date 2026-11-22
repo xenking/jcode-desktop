@@ -832,6 +832,9 @@ class Instance:
         assert after["panel"]["composer"] == draft
         assert transcript_text(after["panel"]["loaded_transcript_items"]) == transcript_text(baseline["loaded_transcript_items"])
         assert [p["session"] for row in after["navigation"]["rows"] for p in row["panels"]] == [parent]
+        child_ids = {child_a, topic_b["session_id"]}
+        assert child_ids.isdisjoint(after["fixture_sidebar_sessions"]), "private topics leaked into the sidebar"
+        assert child_ids.isdisjoint(worker["session_id"] for worker in after["panel"]["workers"]), "side topics masqueraded as swarm workers"
         proof = {"passed": True, "parent": parent, "topics": topics, "continued": reopened,
                  "history": history_frame, "answer": self.screenshot("side-question-history-after.png")}
         click("side-question-promote")
@@ -847,6 +850,15 @@ class Instance:
         self.runtime_wait(lambda: visibility.read_text() == "false", "daemon persisted native promotion")
         navigation = self.drive("list")["navigation"]
         assert [p["session"] for row in navigation["rows"] for p in row["panels"]].count(promoted) == 1
+
+        def sidebar_after_promotion():
+            current = self.drive("state")
+            return current if promoted in current["fixture_sidebar_sessions"] else None
+
+        promoted_state = self.runtime_wait(sidebar_after_promotion, "promoted chat appeared in the sidebar")
+        assert promoted_state["fixture_sidebar_sessions"].count(promoted) == 1
+        assert topic_b["session_id"] not in promoted_state["fixture_sidebar_sessions"]
+        assert child_ids.isdisjoint(worker["session_id"] for worker in promoted_state["panel"]["workers"])
         assert panel()["composer"] == draft
         assert len(requests()) == 5, "history or promotion started a request"
         self.target["session_id"] = promoted
