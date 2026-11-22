@@ -8542,7 +8542,6 @@ impl Workspace {
             cx.notify();
         }));
         settings
-            .child(clean_chat_setting)
             .child(self.render_account_settings(cx))
             .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
@@ -8568,6 +8567,7 @@ impl Workspace {
                         .child("Machines and default new-panel location →"),
                 )
             })
+            .child(clean_chat_setting)
             .when(!self.single_panel, |el| {
                 el.child(
                     div()
