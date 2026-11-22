@@ -8,6 +8,14 @@
 use super::*;
 use jcode_sdk::todo::{FollowUpPolicy, TodoSnapshot};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AssistantTail {
+    #[default]
+    Empty,
+    Streaming,
+    Complete,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct AutoPoke {
     /// Created lazily from `features.auto_poke` so a snapshot restore or a
@@ -18,8 +26,9 @@ pub(super) struct AutoPoke {
     start_index: Option<usize>,
     /// A turn finished and the follow-up decision has not been taken yet.
     ready: bool,
-    /// A todo-state request is in flight for this turn boundary.
-    awaiting_state: bool,
+    assistant_tail: AssistantTail,
+    /// While todo state is in flight, keep the completed turn's evidence.
+    awaiting_state: Option<bool>,
 }
 
 pub(in crate::panel) enum PokeCommand {
@@ -50,7 +59,8 @@ impl AutoPoke {
     pub(super) fn start(&mut self, index: usize) {
         self.start_index = Some(index);
         self.ready = false;
-        self.awaiting_state = false;
+        self.assistant_tail = AssistantTail::Empty;
+        self.awaiting_state = None;
     }
 
     pub(super) fn observe(&mut self, event: &ApiEvent) {
@@ -62,6 +72,31 @@ impl AutoPoke {
             {
                 self.stop();
             }
+            ApiEvent::TextDelta { text, .. } if !text.trim().is_empty() => {
+                self.assistant_tail = AssistantTail::Streaming;
+            }
+            ApiEvent::TextDone { .. } if self.assistant_tail == AssistantTail::Streaming => {
+                self.assistant_tail = AssistantTail::Complete;
+            }
+            ApiEvent::TextReplace { text, .. } if text.trim().is_empty() => {
+                self.assistant_tail = AssistantTail::Empty;
+            }
+            ApiEvent::TextReplace { .. } if self.assistant_tail == AssistantTail::Empty => {
+                self.assistant_tail = AssistantTail::Streaming;
+            }
+            // Commentary before a tool or before a new input is not a final answer.
+            ApiEvent::ToolStart { .. }
+            | ApiEvent::ToolExec { .. }
+            | ApiEvent::ToolDone { .. }
+            | ApiEvent::ToolCall { .. }
+            | ApiEvent::MessageAccepted { .. }
+            | ApiEvent::PeerUserMessage { .. }
+            | ApiEvent::SoftInterruptInjected {
+                display_role: None, ..
+            }
+            | ApiEvent::ProviderGuardrailRetry { .. } => {
+                self.assistant_tail = AssistantTail::Empty;
+            }
             _ => {}
         }
     }
@@ -70,7 +105,8 @@ impl AutoPoke {
     pub(super) fn stop(&mut self) {
         self.start_index = None;
         self.ready = false;
-        self.awaiting_state = false;
+        self.assistant_tail = AssistantTail::Empty;
+        self.awaiting_state = None;
         if let Some(policy) = &mut self.policy {
             policy.reset_cycle();
         }
@@ -132,13 +168,20 @@ impl Panel {
     /// Turn boundary: ask the harness for the session's todo state.
     pub(super) fn send_auto_poke(&mut self, _cx: &mut Context<Self>) {
         let poke = &mut self.prompt_queue.auto_poke;
-        if !std::mem::take(&mut poke.ready) || poke.start_index.is_none() || poke.awaiting_state {
+        if !std::mem::take(&mut poke.ready)
+            || poke.start_index.is_none()
+            || poke.awaiting_state.is_some()
+        {
             return;
         }
         if self.auto_poke_blocked() || !self.prompt_queue.auto_poke.policy().is_enabled() {
             return;
         }
-        self.prompt_queue.auto_poke.awaiting_state = true;
+        let tail = std::mem::take(&mut self.prompt_queue.auto_poke.assistant_tail);
+        self.prompt_queue.auto_poke.awaiting_state = Some(
+            tail == AssistantTail::Complete
+                && self.turn_outcome == Some(session_status::TurnOutcome::Done),
+        );
         self.bridge.send(Command::TodoState {
             session_id: self.session_id.clone(),
         });
@@ -151,9 +194,9 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         let poke = &mut self.prompt_queue.auto_poke;
-        if !std::mem::take(&mut poke.awaiting_state) {
+        let Some(final_response_delivered) = poke.awaiting_state.take() else {
             return;
-        }
+        };
         let Some(start) = poke.start_index else {
             return;
         };
@@ -183,7 +226,11 @@ impl Panel {
                     .unwrap_or_default(),
             )
         });
-        let decision = self.prompt_queue.auto_poke.policy().decide(&snapshot);
+        let decision = self
+            .prompt_queue
+            .auto_poke
+            .policy()
+            .decide_after_turn(&snapshot, final_response_delivered);
         if !decision.effects.is_empty() {
             self.bridge.send(Command::AckTodoFollowUp {
                 session_id: self.session_id.clone(),

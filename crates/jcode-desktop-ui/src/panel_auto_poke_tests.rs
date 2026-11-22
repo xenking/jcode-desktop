@@ -132,6 +132,98 @@ fn completed_work_runs_quality_gates_then_final_response_once(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
+fn completed_public_answer_does_not_send_another_final_request(cx: &mut gpui::TestAppContext) {
+    let (panel, commands) = panel(cx);
+    panel.update(cx, |p, cx| {
+        p.submit_or_queue("do work".into(), vec![], false, cx);
+        for event in [
+            ApiEvent::ToolStart {
+                session_id: p.session_id.clone(),
+                call_id: "todo-1".into(),
+                name: "todo".into(),
+            },
+            ApiEvent::ToolDone {
+                session_id: p.session_id.clone(),
+                call_id: "todo-1".into(),
+                name: "todo".into(),
+                output: String::new(),
+                error: None,
+            },
+            ApiEvent::TextDelta {
+                session_id: p.session_id.clone(),
+                text: "Done. I verified the result locally.".into(),
+                message_id: Some("answer".into()),
+            },
+            ApiEvent::TextDone {
+                session_id: p.session_id.clone(),
+                message_id: Some("answer".into()),
+            },
+        ] {
+            p.apply(&event, cx);
+        }
+        turn_done(p, cx);
+    });
+    cx.run_until_parked();
+    let first = drain(&commands);
+    assert_eq!(sent(&first), ["do work"]);
+    assert!(asked_for_state(&first));
+
+    panel.update(cx, |p, cx| {
+        assert!(
+            p.items
+                .iter()
+                .any(|item| matches!(item, Item::Assistant(text) if text.starts_with("Done.")))
+        );
+        p.todo_state_received(snapshot(vec![item("work", "completed")]), cx);
+    });
+    assert!(sent(&drain(&commands)).is_empty());
+}
+
+#[gpui::test]
+fn tool_commentary_is_not_a_delivered_final_answer(cx: &mut gpui::TestAppContext) {
+    let (panel, commands) = panel(cx);
+    panel.update(cx, |p, cx| {
+        p.submit_or_queue("do work".into(), vec![], false, cx);
+        for event in [
+            ApiEvent::TextDelta {
+                session_id: p.session_id.clone(),
+                text: "I'll verify it now.".into(),
+                message_id: Some("commentary".into()),
+            },
+            ApiEvent::TextDone {
+                session_id: p.session_id.clone(),
+                message_id: Some("commentary".into()),
+            },
+            ApiEvent::ToolStart {
+                session_id: p.session_id.clone(),
+                call_id: "todo-1".into(),
+                name: "todo".into(),
+            },
+            ApiEvent::ToolDone {
+                session_id: p.session_id.clone(),
+                call_id: "todo-1".into(),
+                name: "todo".into(),
+                output: String::new(),
+                error: None,
+            },
+        ] {
+            p.apply(&event, cx);
+        }
+        turn_done(p, cx);
+    });
+    cx.run_until_parked();
+    drain(&commands);
+
+    panel.update(cx, |p, cx| {
+        p.todo_state_received(snapshot(vec![item("work", "completed")]), cx);
+    });
+    assert_eq!(
+        sent(&drain(&commands)),
+        [jcode_sdk::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE]
+    );
+}
+
+#[gpui::test]
 fn gate_digest_effects_are_acknowledged_to_the_runtime(cx: &mut gpui::TestAppContext) {
     let (panel, commands) = panel(cx);
     panel.update(cx, |p, cx| {
