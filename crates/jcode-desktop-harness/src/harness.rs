@@ -1449,7 +1449,7 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
-fn start_local_runtime(updates: UpdateSender) {
+fn start_local_runtime(updates: UpdateSender) -> Option<JcodeClient> {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
     // while it comes back instead of turning a transient failure into a dead
@@ -1459,7 +1459,7 @@ fn start_local_runtime(updates: UpdateSender) {
             .send(Update::Status("starting jcode runtime...".into()))
             .is_err()
         {
-            return;
+            return None;
         }
         if controlled_runtime_socket().is_some() {
             if connect("control-runtime").is_ok() {
@@ -1498,21 +1498,31 @@ fn start_local_runtime(updates: UpdateSender) {
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
     let _ = updates.send(Update::Connected);
-    if let Ok((current, routes)) =
-        connect("draft-models").and_then(|client| client.list_draft_models())
-    {
+    let client = connect("draft-models").ok()?;
+    if let Ok((current, routes)) = client.list_draft_models() {
         let _ = updates.send(Update::DraftModels { current, routes });
     }
+    Some(client)
 }
 
 fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {
     // Local startup must not gate SSH work. In particular a broken/missing
     // local runtime cannot strand restored remote panels or remote creates.
+    let (local_lifetime, local_stopped) = channel::<()>();
     std::thread::Builder::new()
         .name("jcode-bridge-local-startup".into())
         .spawn({
             let updates = updates.clone();
-            move || start_local_runtime(updates)
+            move || {
+                if let Some(_client) = start_local_runtime(updates)
+                    && cfg!(target_os = "macos")
+                {
+                    // The rollout daemon checks for a live Desktop peer for up
+                    // to 60 seconds after launch. Release the startup client
+                    // afterward so the bridge can still shut down when idle.
+                    let _ = local_stopped.recv_timeout(Duration::from_secs(60));
+                }
+            }
         })
         .expect("spawn local startup thread");
     // One pool per bridge run, never a process-global/dylib-lifetime singleton.
@@ -1522,6 +1532,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
         internal,
         transport::RemoteTransports::default(),
     );
+    drop(local_lifetime);
 }
 
 fn run_with_transports(
