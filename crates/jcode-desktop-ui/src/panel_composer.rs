@@ -322,33 +322,45 @@ impl Panel {
     ) -> gpui::Div {
         const MODEL_MIN: f32 = 56.;
         const EFFORT_MIN: f32 = BAR_ICON + 12.;
+        const MODEL: &str = "panel-model";
+        const EFFORT: &str = "panel-model-effort";
+        let joined = effort.is_some();
+        let name = div()
+            .debug_selector(|| "panel-model-name".into())
+            .min_w_0()
+            .truncate()
+            .child(model_label);
         div()
             .debug_selector(|| "panel-model-control".into())
             .flex()
             .items_center()
             .flex_shrink_1()
-            .min_w(px(MODEL_MIN + if effort.is_some() { EFFORT_MIN } else { 0. }))
+            .min_w(px(MODEL_MIN + if joined { EFFORT_MIN } else { 0. }))
             .rounded_full()
             .bg(Theme::global().chip_background())
             .child(
-                crate::keyboard::popover_trigger(composer_button("panel-model"), &self.picker_triggers[PickerKind::Model as usize])
-                    .relative()
-                    .children(crate::fixture_control_targets::marker(|| "panel-model".into(), || Some(self.session_id.clone())))
-                    .flex_shrink_1()
-                    .min_w(px(MODEL_MIN))
-                    .when(effort.is_some(), |el| el.pl_4().pr_1())
-                    .child(
-                        div()
-                            .debug_selector(|| "panel-model-name".into())
-                            .min_w_0()
-                            .truncate()
-                            .child(model_label),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_model_picker(window, cx);
-                        this.remember_picker_trigger(PickerKind::Model);
-                        cx.stop_propagation();
-                    })),
+                crate::keyboard::popover_trigger(
+                    composer_button(MODEL, joined),
+                    &self.picker_triggers[PickerKind::Model as usize],
+                )
+                .relative()
+                .children(crate::fixture_control_targets::marker(
+                    || MODEL.into(),
+                    || Some(self.session_id.clone()),
+                ))
+                .flex_shrink_1()
+                .min_w(px(MODEL_MIN))
+                .when(joined, |el| el.pl_4().pr_1())
+                .child(if joined {
+                    composer_hover_content(MODEL, 3.).child(name)
+                } else {
+                    name
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_model_picker(window, cx);
+                    this.remember_picker_trigger(PickerKind::Model);
+                    cx.stop_propagation();
+                })),
             )
             .children(effort.map(|effort| {
                 let hover = crate::effort::tooltip(&effort);
@@ -360,22 +372,31 @@ impl Panel {
                         crate::effort::label(&effort).to_string()
                     })
                 });
-                crate::keyboard::popover_trigger(composer_button("panel-model-effort"), &self.picker_triggers[PickerKind::Effort as usize])
-                    .relative()
-                    .children(crate::fixture_control_targets::marker(|| "panel-model-effort".into(), || Some(self.session_id.clone())))
-                    .flex_shrink(3.)
-                    .min_w(px(EFFORT_MIN))
-                    .gap_1()
-                    .pl_0p5()
-                    .pr_2p5()
-                    .children(mark)
-                    .children(word)
-                    .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_effort_picker(window, cx);
-                        this.remember_picker_trigger(PickerKind::Effort);
-                        cx.stop_propagation();
-                    }))
+                crate::keyboard::popover_trigger(
+                    composer_button(EFFORT, true),
+                    &self.picker_triggers[PickerKind::Effort as usize],
+                )
+                .relative()
+                .children(crate::fixture_control_targets::marker(
+                    || EFFORT.into(),
+                    || Some(self.session_id.clone()),
+                ))
+                .flex_shrink(3.)
+                .min_w(px(EFFORT_MIN))
+                .gap_1()
+                .pl_0p5()
+                .pr_2p5()
+                .child(
+                    composer_hover_content(EFFORT, 2.)
+                        .children(mark)
+                        .children(word),
+                )
+                .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_effort_picker(window, cx);
+                    this.remember_picker_trigger(PickerKind::Effort);
+                    cx.stop_propagation();
+                }))
             }))
     }
 
@@ -668,12 +689,13 @@ impl Panel {
 }
 
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
-    composer_button(id).bg(Theme::global().chip_background())
+    composer_button(id, false).bg(Theme::global().chip_background())
 }
 
-fn composer_button(id: &'static str) -> gpui::Stateful<gpui::Div> {
+fn composer_button(id: &'static str, compact_hover: bool) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
-    div().id(id)
+    div()
+        .id(id)
         .debug_selector(move || id.into())
         .h(px(TAB_HEIGHT))
         .px_2p5()
@@ -686,7 +708,33 @@ fn composer_button(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .text_color(theme.composer_secondary())
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|el| el.text_color(theme.TEXT).bg(theme.chip_active_background()))
+        .when(compact_hover, |el| el.group(id))
+        .hover(|el| {
+            let el = el.text_color(theme.TEXT);
+            if compact_hover {
+                el
+            } else {
+                el.bg(theme.chip_active_background())
+            }
+        })
+}
+
+// The segment owns hover, click and focus. Its absolute fill follows the
+// content width without growing the layout or taking any event handlers.
+fn composer_hover_content(group: &'static str, pad: f32) -> gpui::Div {
+    const HEIGHT: f32 = BAR_ICON + 4.;
+    div().relative().min_w_0().flex().child(
+        div()
+            .id("hover-fill")
+            .absolute()
+            .left(px(-pad))
+            .right(px(-pad))
+            .top(gpui::relative(0.5))
+            .mt(px(-HEIGHT / 2.))
+            .h(px(HEIGHT))
+            .rounded_full()
+            .group_hover(group, |el| el.bg(Theme::global().chip_active_background())),
+    )
 }
 
 /// `claude-opus-4-8` reads `Opus 4.8`. The provider already appears in the
@@ -811,6 +859,59 @@ mod tests {
             assert_eq!(model.size.height, px(TAB_HEIGHT));
             assert_eq!(effort.size.height, px(TAB_HEIGHT));
             assert!(icon.left() - name.right() <= px(8.), "width {width}");
+        }
+    }
+
+    #[gpui::test]
+    fn joined_picker_padding_and_keys_open_the_correct_picker(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx
+            .add_window_view(|_, cx| Panel::new("composer-pickers".into(), None, None, bridge, cx));
+        vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-opus-5-5".into());
+            panel.provider = Some("anthropic".into());
+            panel.reasoning_effort = Some("high".into());
+            panel.available_models = vec!["anthropic:claude-opus-5-5".into()];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        for (selector, kind, key) in [
+            ("panel-model", PickerKind::Model, "enter"),
+            ("panel-model-effort", PickerKind::Effort, "space"),
+        ] {
+            let segment = vcx.debug_bounds(selector).unwrap();
+            let x = if kind == PickerKind::Model {
+                segment.left() + px(7.)
+            } else {
+                segment.right() - px(5.)
+            };
+            vcx.simulate_click(point(x, segment.center().y), gpui::Modifiers::default());
+            for opening in ["mouse", "keyboard"] {
+                if opening == "keyboard" {
+                    vcx.simulate_keystrokes(key);
+                    vcx.simulate_event(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    });
+                }
+                vcx.run_until_parked();
+                vcx.update(|window, cx| {
+                    let Some((opened, search)) = panel.read(cx).picker_search.as_ref() else {
+                        panic!("{opening} did not open {selector}");
+                    };
+                    assert!(*opened == kind, "{selector} opened the other picker");
+                    assert!(search.read(cx).focus_handle.is_focused(window));
+                });
+                vcx.simulate_keystrokes("escape");
+                vcx.run_until_parked();
+                vcx.update(|window, cx| {
+                    let panel = panel.read(cx);
+                    assert!(panel.picker_search.is_none());
+                    assert!(panel.picker_triggers[kind as usize].is_focused(window));
+                });
+            }
         }
     }
 
