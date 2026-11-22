@@ -42,21 +42,30 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
     panel.update(vcx, |_, cx| cx.notify());
     vcx.run_until_parked();
     assert!(
-        vcx.debug_bounds("applet-progress-0 / 0 completed")
+        vcx.debug_bounds("task-count-0/0")
             .is_some()
     );
+    vcx.update(|_, cx| cx.set_global(crate::applet_view::CatalogTasks {
+        rows: [("session-a".into(), vec![("Saved task".into(), "completed".into())])].into(),
+        progress: [("session-a".into(), (1,1))].into(),
+    }));
+    panel.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("task-count-1/1").is_some());
+    assert!(vcx.debug_bounds("applet-table-row-Saved task|completed").is_some());
+    vcx.update(|_, cx| cx.set_global(crate::applet_view::CatalogTasks::default()));
     for (call, output, row, progress) in [
         (
             "one",
             r#"[{"content":"Alpha","status":"pending"}]"#,
             "applet-table-row-Alpha|pending",
-            "applet-progress-0 / 1 completed",
+            "task-count-0/1",
         ),
         (
             "two",
             r#"[{"content":"Beta","status":"completed"},{"content":"Gamma","status":"pending"}]"#,
             "applet-table-row-Beta|completed",
-            "applet-progress-1 / 2 completed",
+            "task-count-1/2",
         ),
     ] {
         panel.update(vcx, |panel, cx| {

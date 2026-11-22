@@ -54,7 +54,7 @@ pub(crate) fn render_document(
     compact: bool,
     selection: &Entity<TextSelection>,
     emit: applet_view::Emit,
-    session_tasks: Option<(&str, &dyn Fn() -> applet_view::SessionTasks)>,
+    session_tasks: Option<(&str, &dyn Fn(&App) -> applet_view::SessionTasks)>,
     window: &mut Window,
     app: &mut App,
 ) -> Option<AnyElement> {
@@ -100,7 +100,7 @@ pub(crate) fn card_with_tasks(
     instance: &str,
     chrome: bool,
     selection: &Entity<TextSelection>,
-    session_tasks: Option<(&str, &dyn Fn() -> applet_view::SessionTasks)>,
+    session_tasks: Option<(&str, &dyn Fn(&App) -> applet_view::SessionTasks)>,
     window: &mut Window,
     app: &mut App,
 ) -> Option<AnyElement> {

@@ -2491,6 +2491,8 @@ impl Workspace {
             }
             Update::CatalogTodos(todos) => {
                 let progress_changed = self.sidebar_todo_progress != todos.progress;
+                cx.set_global(crate::applet_view::CatalogTasks { rows: todos.rows, progress: todos.progress.clone() });
+                for slot in &self.slots { slot.panel.update(cx, |_, cx| cx.notify()); }
                 self.sidebar_todo_progress = todos.progress;
                 if self.unfinished_sessions == todos.unfinished {
                     return progress_changed;

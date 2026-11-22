@@ -47,8 +47,15 @@ pub(crate) struct RenderCx<'a> {
     /// Capabilities the applet declared AND the user granted. Nodes that
     /// need an ungranted capability render a placeholder instead.
     pub granted: &'a [jcode_applet_types::Capability],
-    pub session_tasks: Option<&'a dyn Fn() -> SessionTasks>,
+    pub session_tasks: Option<&'a dyn Fn(&App) -> SessionTasks>,
 }
+
+#[derive(Default)]
+pub(crate) struct CatalogTasks {
+    pub rows: std::collections::HashMap<String, Vec<(String, String)>>,
+    pub progress: std::collections::HashMap<String, (usize, usize)>,
+}
+impl Global for CatalogTasks {}
 
 pub(crate) struct SessionTasks {
     pub rows: Vec<Vec<String>>,
@@ -443,16 +450,12 @@ fn node(
                     .child("Session tasks are unavailable in this placement.")
                     .into_any_element();
             };
-            let tasks = source();
+            let tasks = source(app);
             let shown = tasks.rows.len();
-            let progress = Node::new(NodeKind::Progress {
-                value: Some(if tasks.total == 0 {
-                    0.0
-                } else {
-                    tasks.completed as f32 / tasks.total as f32
-                }),
-                label: Some(format!("{} / {} completed", tasks.completed, tasks.total)),
-            });
+            let count = format!("{}/{}", tasks.completed, tasks.total);
+            let badge = div().flex().items_center().gap(px(2.)).text_size(px(11.)).text_color(if tasks.total > 0 && tasks.completed == tasks.total { theme.OK } else { theme.TEXT_DIM })
+                .child(svg().data(include_bytes!("../../../assets/icons/todo-check.svg").as_slice()).size(px(9.)))
+                .child(count.clone()).debug_selector(move || format!("task-count-{count}"));
             let table = Node::new(NodeKind::Table {
                 columns: vec!["Task".into(), "Status".into()],
                 rows: tasks.rows,
@@ -462,13 +465,7 @@ fn node(
                 .flex_col()
                 .gap_2()
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title.clone()))
-                .child(node(
-                    cx,
-                    &progress,
-                    &format!("{path}.progress"),
-                    window,
-                    app,
-                ))
+                .child(badge)
                 .when(tasks.total == 0, |el| {
                     el.child(div().text_color(theme.TEXT_DIM).child("No tasks yet."))
                 })

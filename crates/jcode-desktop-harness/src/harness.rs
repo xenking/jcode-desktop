@@ -2778,6 +2778,8 @@ pub struct UnfinishedSession {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogTodos {
+    /// Compact display rows from the same read that produced sidebar progress.
+    pub rows: HashMap<String, Vec<(String, String)>>,
     pub progress: HashMap<String, (usize, usize)>,
     pub unfinished: Vec<UnfinishedSession>,
 }
@@ -2793,6 +2795,7 @@ fn catalog_todos_in(home: &Path, sessions: &[SessionInfo]) -> CatalogTodos {
         let Some(todos) = read_todo_items(&todos_dir, &session.session_id) else {
             continue;
         };
+        out.rows.insert(session.session_id.clone(), todos.iter().take(100).map(|t| (t.content.clone(), t.status.clone())).collect());
         if todos.is_empty() {
             continue;
         }

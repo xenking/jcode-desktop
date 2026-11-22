@@ -3522,7 +3522,14 @@ impl Panel {
         })
     }
 
-    fn applet_session_tasks(&self) -> crate::applet_view::SessionTasks {
+    fn applet_session_tasks(&self, app: &App) -> crate::applet_view::SessionTasks {
+        if let Some(catalog) = app.try_global::<crate::applet_view::CatalogTasks>()
+            && let Some(rows) = catalog.rows.get(&self.session_id)
+            && self.latest_todo_card().is_none()
+        {
+            let (completed, total) = catalog.progress.get(&self.session_id).copied().unwrap_or_default();
+            return crate::applet_view::SessionTasks { rows: rows.iter().map(|(name,status)| vec![name.clone(),status.clone()]).collect(), completed, total };
+        }
         let fallback;
         let payload = if let Some(derived) = self.transcript_derived.as_ref()
             && derived.key.items_revision == self.items.revision()
@@ -5949,7 +5956,7 @@ impl Panel {
                 let selection = self.applet_selection.clone();
                 crate::applet_surface::card_with_tasks(
                     instance, true, &selection,
-                    Some((&self.session_id, &|| self.applet_session_tasks())), window, cx,
+                    Some((&self.session_id, &|app| self.applet_session_tasks(app))), window, cx,
                 )
                     .unwrap_or_else(|| div().into_any_element())
             }
@@ -6518,7 +6525,7 @@ impl Panel {
                                 &instance,
                                 true,
                                 &self.applet_selection,
-                                Some((&self.session_id, &|| self.applet_session_tasks())),
+                                Some((&self.session_id, &|app| self.applet_session_tasks(app))),
                                 window,
                                 cx,
                             )
