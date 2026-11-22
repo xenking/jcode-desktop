@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import re
 import secrets
 import socket
 import sys
@@ -14,10 +15,11 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("verify_desktop", HERE / "verify-jcode-desktop.py")
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
-PARENT_MODEL = "fake-model"
+PARENT_MODEL = "gpt-5-btw-parent"
 CHILD_MODEL = "gpt-5-btw-child"
 CHILD_EFFORT = "high"
 QUESTION = "Why was retry removed?"
+SENT_QUESTION = re.compile(r"(?:\[[^\]\n]+\] )?" + re.escape(QUESTION))
 
 
 class Fixture(VERIFY.Instance):
@@ -52,6 +54,15 @@ class Fixture(VERIFY.Instance):
         ])
         self.runtime_wait(self.api_socket.exists, "private API bridge")
 
+    def reconnect_bridge(self):
+        self.runtime_stop(self.api_bridge)
+        self.api_socket.unlink(missing_ok=True)
+        self.runtime_wait(lambda: self.drive("state")["panel"]["status"].startswith("lost:"),
+                          "Desktop detects bridge disconnect")
+        self.start_bridge()
+        self.runtime_wait(lambda: not self.drive("state")["panel"]["status"].startswith("lost:"),
+                          "Desktop reconnects to the replacement bridge")
+
     def rpc(self, commands):
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(10)
@@ -73,33 +84,35 @@ class Fixture(VERIFY.Instance):
                 request("hello", min_version=1, max_version=1, client="btw-acceptance")
                 return [request(req, **fields) for req, fields in commands]
 
-    def catalog(self):
-        return self.rpc([("list_sessions", {"include_archived": True})])[0]["sessions"]
+    def forks(self, parent):
+        return {session["id"] for file in (self.profile / "jcode/sessions").glob("session_*.json")
+                if (session := json.loads(file.read_text())).get("parent_id") == parent}
 
     def answer_count(self):
         path = self.run / "provider.jsonl"
         if not path.exists():
             return 0
-        return sum(any(m.get("role") == "user" and QUESTION in str(m.get("content"))
+        return sum(any(m.get("role") == "user" and SENT_QUESTION.fullmatch(str(m.get("content")))
                        for m in request["messages"]) for request in map(json.loads, path.read_text().splitlines()))
 
     def exercise(self):
         parent = self.target["session_id"]
         self.runtime_wait(lambda: self.drive("state")["panel"]["model"] == PARENT_MODEL, "parent model")
+        before = self.drive("state")["panel"]
+        assert not self.forks(parent), "the private parent already has a fork"
         self.drive("set_composer", {"text": f"/btw {QUESTION}"})
         self.drive("press_key", {"key": "fixture:enter"})
         self.runtime_wait(lambda: self.answer_count() == 1, "one fake provider request from the side question")
-        child = self.runtime_wait(lambda: next((s["session_id"] for s in self.catalog()
-                                                if s["session_id"] != parent and s.get("archived")), None),
-                                  "archived side question child")
+        child = self.runtime_wait(lambda: next(iter(self.forks(parent)), None), "persisted side question child")
         _, _, _, child_info = self.rpc([
             ("attach_session", {"session_id": child}),
-            ("set_model", {"session_id": child, "model": CHILD_MODEL}),
             ("set_reasoning_effort", {"session_id": child, "effort": CHILD_EFFORT}),
+            ("set_model", {"session_id": child, "model": CHILD_MODEL}),
             ("get_runtime_info", {"session_id": child}),
         ])
         expected = identity(child_info)
         assert expected == (CHILD_MODEL, CHILD_EFFORT), child_info
+        self.reconnect_bridge()
         self.screenshot("side-question.png")
         self.drive("click", {"selector": "side-question-promote"})
         self.target["session_id"] = child
@@ -107,15 +120,8 @@ class Fixture(VERIFY.Instance):
         VERIFY.save(self.run / "promoted.json", promoted)
         self.screenshot("promoted.png")
         assert identity(promoted) == expected, f"promotion lost child identity: {identity(promoted)!r} != {expected!r}"
-        assert identity(self.drive("state", session=parent)["panel"]) == (PARENT_MODEL, None)
-        self.runtime_wait(lambda: {s["session_id"] for s in self.catalog() if not s.get("archived")} == {parent, child},
-                          "the same child restored without a second fork")
-
-        self.runtime_stop(self.api_bridge)
-        self.api_socket.unlink(missing_ok=True)
-        self.runtime_wait(lambda: self.drive("state")["panel"]["status"].startswith("lost:"),
-                          "Desktop detects bridge disconnect")
-        self.start_bridge()
+        assert identity(self.drive("state", session=parent)["panel"]) == identity(before)
+        self.reconnect_bridge()
 
         def reconnected_panel():
             panel = self.drive("state")["panel"]
@@ -124,7 +130,7 @@ class Fixture(VERIFY.Instance):
         reconnected = self.runtime_wait(reconnected_panel, "child identity after reconnect")
         VERIFY.save(self.run / "reconnected.json", reconnected)
         assert self.answer_count() == 1, "promotion or reconnect sent another provider request"
-        assert {s["session_id"] for s in self.catalog()} == {parent, child}, "promotion or reconnect forked again"
+        assert self.forks(parent) == {child}, "promotion or reconnect forked again"
         return {"parent": parent, "child": child, "model": expected[0], "effort": expected[1], "requests": 1}
 
 

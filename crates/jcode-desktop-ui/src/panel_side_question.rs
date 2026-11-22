@@ -26,6 +26,7 @@ pub(crate) struct SideQuestionCard {
     pub status: SideQuestionStatus,
     /// Kept so the answer can be promoted without another session list read.
     pub session: SessionInfo,
+    pub identity: Option<ApiEvent>,
 }
 
 impl SideQuestionCard {
@@ -37,6 +38,7 @@ impl SideQuestionCard {
             reasoning: String::new(),
             status: SideQuestionStatus::Working,
             session,
+            identity: None,
         }
     }
 
@@ -87,6 +89,10 @@ impl Panel {
         };
         let mut changed = false;
         match event {
+            ApiEvent::ModelInfo { model: Some(_), .. }
+            | ApiEvent::RuntimeInfo { model: Some(_), .. } => {
+                card.identity = Some(event.clone());
+            }
             ApiEvent::TextDelta { text, .. }
                 if card.is_working() => {
                     card.answer.push_str(text);

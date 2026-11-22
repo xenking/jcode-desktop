@@ -275,11 +275,16 @@ impl Workspace {
             return;
         };
         let source = self.slots[source_index].panel.clone();
-        // The panel owns the card; promoting hands it over and clears it.
-        source.update(cx, |panel, cx| {
-            let _ = panel.take_side_question(cx);
-        });
-        let session = action.session.clone();
+        let Some(card) = source.update(cx, |panel, cx| {
+            if panel.side_question_child() == Some(action.session.session_id.as_str()) {
+                panel.take_side_question(cx)
+            } else {
+                None
+            }
+        }) else {
+            return;
+        };
+        let session = card.session;
         let session_id = session.session_id.clone();
         if !self
             .sessions
@@ -298,9 +303,14 @@ impl Workspace {
             self.open_fork_window(&session_id);
             return;
         }
-        let inserted = self.open_session(session, cx);
-        self.set_active(inserted, cx);
-        self.focus_active(window, cx);
+        self.activate_session(session, window, cx);
+        // Watch reuses the hidden fork's worker, so its identity bootstrap has
+        // already been delivered to the card rather than the chat panel.
+        if let Some(identity) = card.identity {
+            self.slots[self.active]
+                .panel
+                .update(cx, |panel, cx| panel.apply(&identity, cx));
+        }
         source.update(cx, |panel, cx| {
             panel.workspace_command_notice(
                 "Opened the side question as a chat. The original conversation is unchanged.",
