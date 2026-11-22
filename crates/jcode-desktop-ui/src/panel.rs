@@ -981,7 +981,7 @@ pub struct Panel {
     composer_overlay_room: std::cell::Cell<gpui::Pixels>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
-    picker_triggers: [FocusHandle; 3],
+    picker_triggers: [FocusHandle; 4],
     composer_popover_watch: Option<(FocusHandle, gpui::Subscription, gpui::Subscription)>,
     composer_popover_trigger: Option<FocusHandle>,
     focus_pending: bool,
@@ -1049,6 +1049,7 @@ pub(super) enum PickerKind {
     Model,
     Effort,
     Mode,
+    Context,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1598,7 +1599,7 @@ impl Panel {
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
-            PromptInput::new(
+            let mut input = PromptInput::new(
                 cx,
                 "Type something…",
                 move |content, images, _window, _app| {
@@ -1610,7 +1611,9 @@ impl Panel {
                     });
                 },
             )
-            .with_example_prompts()
+            .with_example_prompts();
+            input.enable_context_picker();
+            input
         });
         // Local echo is appended by the workspace when submit fires; simplest
         // is to observe our own input entity... but the closure above has no
@@ -2914,7 +2917,7 @@ impl Panel {
                     "Type something…",
                     move |kind, content, images, files, queued, _window, app| {
                         let Some(panel) = weak.upgrade() else { return };
-                        if kind == crate::input::SubmissionKind::Message {
+                        if kind != crate::input::SubmissionKind::Command {
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
                                     return;
@@ -2924,9 +2927,16 @@ impl Panel {
                                     || !files.is_empty()
                                     || (!queued && this.has_visible_queued_prompts())
                                 {
+                                    let restore = match kind {
+                                        crate::input::SubmissionKind::Skill(name) => Some(this.active_skill.replace(name)),
+                                        _ => None,
+                                    };
                                     this.submit_or_queue_with_files(
                                         content, images, files, queued, cx,
                                     );
+                                    if let Some(previous) = restore {
+                                        this.active_skill = previous;
+                                    }
                                 }
                             });
                             return;
@@ -2993,6 +3003,7 @@ impl Panel {
                 });
                 input.set_session_image_base(session_image_base, cx);
                 input.set_speed_picker(this.speed_picker(), cx);
+                input.enable_context_picker();
                 input
             });
             Self::observe_draft_images(&this.input, cx);
@@ -3582,16 +3593,18 @@ impl Panel {
         let cancel = cx.weak_entity();
         let outside = cx.weak_entity();
         let speed = cx.weak_entity();
+        let draft = self.input.downgrade();
         let search = cx.new(|cx| {
             let placeholder = match kind {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
                 PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
+                PickerKind::Context => "Search files, skills and context…",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {
                     panel.update(app, |panel, cx| {
-                        if kind == PickerKind::Mode {
+                        if matches!(kind, PickerKind::Mode | PickerKind::Context) {
                             if content.starts_with("/mode toggle ") || content == "/mode off" {
                                 if panel.session_deferred() {
                                     panel.handle_slash_command(&content, cx);
@@ -3640,16 +3653,26 @@ impl Panel {
                 match kind {
                     PickerKind::Model => "/model",
                     PickerKind::Effort => "/effort",
-                    PickerKind::Mode => "/mode",
+                    PickerKind::Mode | PickerKind::Context => "/mode",
                 },
                 models,
                 cx,
             );
+            if kind == PickerKind::Context {
+                input.start_context_picker(self.composer_context_root(), draft, cx);
+            }
             input
         });
         self.picker_search = Some((kind, search));
         self.focus_pending = true;
         cx.notify();
+    }
+
+    fn composer_context_root(&self) -> Option<&std::path::Path> {
+        if crate::harness::is_remote_session(&self.session_id) {
+            return None;
+        }
+        self.working_dir.as_deref().map(std::path::Path::new).filter(|path| path.is_absolute())
     }
 
     fn composer_popover_focus(&self, cx: &App) -> Option<FocusHandle> {
@@ -7479,6 +7502,10 @@ impl Render for Panel {
             self.input.update(cx, |input, _| {
                 input.set_working_dir(working_dir.as_deref());
             });
+        }
+        let context_root = self.composer_context_root();
+        if self.input.read(cx).context_root() != context_root {
+            self.input.update(cx, |input, cx| input.set_context_root(context_root, cx));
         }
         let row_count_changed = row_count != self.transcript_row_count;
         if row_count_changed {

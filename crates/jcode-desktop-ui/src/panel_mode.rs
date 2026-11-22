@@ -106,15 +106,14 @@ impl Panel {
         });
     }
 
-    /// Toggle the `/mode` menu from the mode pill.
-    pub(super) fn toggle_mode_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn toggle_context_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_side_document() {
             return;
         }
         if self
             .picker_search
             .as_ref()
-            .is_some_and(|(kind, _)| *kind == PickerKind::Mode)
+            .is_some_and(|(kind, _)| *kind == PickerKind::Context)
         {
             self.picker_search = None;
         } else {
@@ -123,7 +122,7 @@ impl Panel {
             }
             self.login = None;
             self.recovery_picker_open = false;
-            self.open_picker_search(PickerKind::Mode, cx);
+            self.open_picker_search(PickerKind::Context, cx);
         }
         self.focus_input(window, cx);
         cx.notify();
@@ -142,6 +141,38 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn context_plus_opens_multi_file_attach_and_can_pin_a_skill(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("context-picker".into(), None, None, bridge, cx));
+        panel.update(vcx, |panel, cx| panel.seed_mode_picker_fixture(cx));
+        vcx.run_until_parked();
+        let open = |vcx: &mut gpui::VisualTestContext| {
+            let plus = vcx.debug_bounds("composer-context-plus").unwrap();
+            vcx.simulate_click(plus.center(), Default::default());
+            vcx.run_until_parked();
+        };
+        open(vcx);
+        vcx.simulate_input("attach");
+        vcx.simulate_keystrokes("enter");
+        assert!(vcx.did_prompt_for_paths());
+        let directory = tempfile::tempdir().unwrap();
+        let photo = directory.path().join("screenshot.png");
+        std::fs::write(&photo, include_bytes!("../../../assets/previews/image-preview.png")).unwrap();
+        vcx.simulate_path_prompt_response(|options| {
+            assert!(options.files && options.multiple);
+            Some(vec![photo])
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-image-chip").is_some());
+        assert!(panel.read_with(vcx, |panel, _| panel.picker_search.is_none()));
+        open(vcx);
+        vcx.simulate_input("verify-jcode");
+        vcx.simulate_keystrokes("alt-enter");
+        assert!(matches!(commands.try_recv(), Ok(Command::RuntimeCommand { command: jcode_sdk::api::RuntimeCommand::Mode, args, .. }) if args == ["toggle", "verify-jcode"]));
+    }
 
     #[gpui::test]
     fn mode_menu_click_and_tab_toggle_until_enter_or_escape(cx: &mut gpui::TestAppContext) {
@@ -168,8 +199,7 @@ mod tests {
         };
         panel.update(vcx, install);
         vcx.run_until_parked();
-        let pill = vcx.debug_bounds("panel-mode").unwrap();
-        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        panel.update(vcx, |panel, cx| panel.open_picker_search(PickerKind::Mode, cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("mode-picker-active-0").is_some());
         let swarm = vcx.debug_bounds("slash-command-row-2").unwrap();
@@ -194,8 +224,7 @@ mod tests {
         );
         vcx.simulate_keystrokes("enter");
         assert!(panel.read_with(vcx, |panel, _| panel.picker_search.is_none()));
-        let pill = vcx.debug_bounds("panel-mode").unwrap();
-        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        panel.update(vcx, |panel, cx| panel.open_picker_search(PickerKind::Mode, cx));
         vcx.run_until_parked();
         vcx.simulate_keystrokes("escape");
         assert!(panel.read_with(vcx, |panel, _| panel.picker_search.is_none()));
@@ -203,7 +232,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn mode_pill_names_the_pinned_skill_and_opens_the_mode_menu(cx: &mut gpui::TestAppContext) {
+    fn plus_keeps_the_pinned_skill_icon_and_opens_the_context_picker(cx: &mut gpui::TestAppContext) {
         cx.update(crate::input::bind_keys);
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         vcx.run_until_parked();
@@ -237,21 +266,21 @@ mod tests {
         vcx.simulate_click(pill.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let poteto = vcx
-            .debug_bounds("mode-picker-icon-crown-0")
+            .debug_bounds("mode-picker-icon-crown-1")
             .expect("poteto has a rendered crown icon, not the frontmatter text");
-        for selector in ["mode-picker-icon-selfdev-1", "mode-picker-icon-trash-2"] {
+        for selector in ["mode-picker-icon-selfdev-2", "mode-picker-icon-trash-3"] {
             let icon = vcx.debug_bounds(selector).expect("rendered row icon");
             assert_eq!(icon.origin.x, poteto.origin.x);
             assert_eq!(icon.size, poteto.size);
         }
         panel.read_with(vcx, |panel, cx| {
             let (kind, search) = panel.picker_search.as_ref().expect("menu open");
-            assert_eq!(*kind, PickerKind::Mode);
+            assert_eq!(*kind, PickerKind::Context);
             let rows = search.read(cx).command_suggestion_values();
-            assert_eq!(rows, ["/mode poteto-mode", "/mode selfdev", "/mode off"]);
+            assert_eq!(rows, ["Attach…", "/mode poteto-mode", "/mode selfdev", "/mode off"]);
             assert_eq!(
                 search.read(cx).selected_command_value().as_deref(),
-                Some("/mode poteto-mode")
+                Some("Attach…")
             );
         });
         panel.update(vcx, |panel, cx| {
@@ -264,7 +293,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-mode-icon-crown-0").is_none());
         let trigger = panel.read_with(vcx, |panel, _| {
-            panel.picker_triggers[PickerKind::Mode as usize].clone()
+            panel.picker_triggers[PickerKind::Context as usize].clone()
         });
         assert!(vcx.update(|window, _| trigger.is_focused(window)));
         let keystroke = gpui::Keystroke::parse("space").unwrap();

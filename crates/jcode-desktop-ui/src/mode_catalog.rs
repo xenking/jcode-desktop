@@ -54,6 +54,7 @@ mode_icons! {
     Pencil => "pencil", "pencil.svg";
     Cloud => "cloud", "cloud.svg";
     Search => "search", "tools/session_search.svg";
+    Document => "document", "tools/read.svg";
     Book => "book", "tools/jcode_docs.svg";
     Terminal => "terminal", "tools/bash.svg";
     Monitor => "monitor", "computer.svg";

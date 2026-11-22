@@ -34,6 +34,10 @@ use layout::PromptLayout;
 
 #[path = "input_file_drop.rs"]
 pub(crate) mod file_drop;
+#[path = "input_context_picker.rs"]
+mod context_picker;
+#[path = "input_image_paths.rs"]
+mod image_paths;
 #[path = "input_model_menu.rs"]
 pub(crate) mod model_menu;
 #[path = "input_model_picker.rs"]
@@ -93,12 +97,14 @@ actions!(
         InsertNewline,
         ShiftSpace,
         AcceptCompletion,
+        AlternateContext,
     ]
 );
 
 pub fn bind_keys(cx: &mut App) {
     crate::text_selection::bind_keys(cx);
     cx.bind_keys([
+        KeyBinding::new("alt-enter", AlternateContext, Some("PromptInput && ContextPicker")),
         KeyBinding::new("backspace", Backspace, Some("PromptInput")),
         // GPUI matches modifiers exactly, so Shift+Backspace needs its own
         // binding or it falls through to the platform and is dropped.
@@ -263,6 +269,7 @@ pub struct PromptInput {
     on_picker_outside: Option<popup::Dismiss>,
     command_models: Vec<String>,
     command_skills: Vec<(String, String)>,
+    context_picker: Option<context_picker::Picker>,
     /// A standalone picker owns plain query text rather than a slash command.
     picker_prefix: Option<&'static str>,
     command_completion: bool,
@@ -397,6 +404,7 @@ struct CommandSuggestion {
     /// What Enter or a click does inside the model picker, in place of
     /// submitting `value`.
     action: Option<model_stage::StageStep>,
+    context_action: Option<context_picker::Action>,
 }
 
 #[allow(dead_code)]
@@ -437,6 +445,7 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                context_action: None,
                 action: None,
             })
             .collect();
@@ -463,6 +472,7 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                context_action: None,
                 action: None,
             })
             .collect();
@@ -488,6 +498,7 @@ fn command_suggestions_with_efforts(
             detail: None,
             header: None,
             toggle: None,
+            context_action: None,
             action: None,
         })
         .collect()
@@ -518,6 +529,7 @@ fn mode_suggestions(
             detail: None,
             header,
             toggle: None,
+            context_action: None,
             action: None,
         });
     };
@@ -554,10 +566,11 @@ fn accepted_command_submission(
     (suggestion.toggle.is_none() && suggestion.action.is_none()).then(|| suggestion.value.clone())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SubmissionKind {
     Message,
     Command,
+    Skill(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -588,6 +601,7 @@ enum AttachmentPayload {
         preview: Arc<gpui::Image>,
     },
     Text(Arc<str>),
+    Context(context_picker::DraftContext),
     Queued {
         source: QueuedAttachment,
         preview: Option<FileImage>,
@@ -647,6 +661,7 @@ const FILE_MEDIA_TYPE: &str = "application/x-jcode-file-reference";
 const QUEUED_MEDIA_TYPE: &str = "application/x-jcode-queued-attachment";
 
 const SNIPPET_MEDIA_TYPE: &str = "application/x-jcode-pasted-text";
+const CONTEXT_MEDIA_TYPE: &str = "application/x-jcode-context";
 
 impl Attachment {
     fn snapshot(&self) -> AttachmentSnapshot {
@@ -669,6 +684,11 @@ impl Attachment {
             AttachmentPayload::Text(text) => (
                 SNIPPET_MEDIA_TYPE.to_string(),
                 base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+            ),
+            AttachmentPayload::Context(context) => (
+                CONTEXT_MEDIA_TYPE.into(),
+                base64::engine::general_purpose::STANDARD
+                    .encode(serde_json::to_vec(context).expect("context snapshot")),
             ),
             AttachmentPayload::File { path, image, file } => {
                 let saved = SavedFile {
@@ -769,6 +789,8 @@ fn restore_attachments(attachments: Vec<AttachmentSnapshot>) -> Vec<Attachment> 
                 .ok()?;
             let payload = if attachment.media_type == SNIPPET_MEDIA_TYPE {
                 AttachmentPayload::Text(String::from_utf8(bytes).ok()?.into())
+            } else if attachment.media_type == CONTEXT_MEDIA_TYPE {
+                AttachmentPayload::Context(serde_json::from_slice(&bytes).ok()?)
             } else if attachment.media_type == QUEUED_MEDIA_TYPE {
                 let (source, replacement): (QueuedAttachment, String) =
                     serde_json::from_slice(&bytes).ok()?;
@@ -1257,6 +1279,7 @@ impl PromptInput {
             on_picker_outside: None,
             command_models: Vec::new(),
             command_skills: Vec::new(),
+            context_picker: None,
             picker_prefix: None,
             command_completion: true,
             standalone_btw: false,
@@ -1419,6 +1442,7 @@ impl PromptInput {
                     None
                 }
                 AttachmentPayload::Text(text) => Some(text.to_string()),
+                AttachmentPayload::Context(context) => Some(context.prompt_text().unwrap_or_default()),
                 AttachmentPayload::File { path, file, .. } => {
                     files.push(jcode_sdk::api::Attachment::File {
                         name: file.name.clone(),
@@ -1522,6 +1546,10 @@ impl PromptInput {
 
     /// The draft changed: drop stale work and schedule a debounced request.
     fn ghost_on_edit(&mut self, cx: &mut Context<Self>) {
+        if self.standalone_context() || self.mention_token().is_some() {
+            self.dismiss_ghost();
+            return;
+        }
         let at_end = self.cursor_at_end();
         let draft = self.content.to_string();
         let working_dir = self.working_dir.clone();
@@ -1628,6 +1656,9 @@ impl PromptInput {
             && let Some(name) = self.selected_mode_name()
         {
             self.toggle_mode_row(&name, window, cx);
+            return;
+        }
+        if self.accept_context_row(false, window, cx) {
             return;
         }
         if self.complete_slash_command(cx) {
@@ -2040,6 +2071,9 @@ impl PromptInput {
         if !self.command_completion {
             return Vec::new();
         }
+        if let Some(rows) = self.context_rows() {
+            return rows;
+        }
         let command_content = self.embedded_command_token().map_or_else(
             || self.command_content(),
             |(range, cursor)| self.content[range.start..cursor].to_owned(),
@@ -2061,6 +2095,7 @@ impl PromptInput {
                         detail: Some(detail.clone()),
                         header: None,
                         toggle: None,
+                        context_action: None,
                         action: None,
                     })
                 })
@@ -2113,6 +2148,7 @@ impl PromptInput {
                     detail: None,
                     header: None,
                     toggle: None,
+                    context_action: None,
                     action: None,
                 },
             );
@@ -2134,6 +2170,7 @@ impl PromptInput {
                         detail: Some("Skill".into()),
                         header: None,
                         toggle: None,
+                        context_action: None,
                         action: None,
                     });
                 }
@@ -2194,6 +2231,9 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accept_context_row(false, window, cx) {
+            return;
+        }
         if self.picker_prefix == Some("/mode") {
             if let Some(close) = &self.on_overlay_cancel {
                 close(cx);
@@ -2234,6 +2274,9 @@ impl PromptInput {
     }
 
     fn queue(&mut self, _: &Queue, window: &mut Window, cx: &mut Context<Self>) {
+        if self.standalone_context() {
+            return;
+        }
         self.submit_prompt(true, window, cx);
     }
 
@@ -2413,7 +2456,7 @@ impl PromptInput {
     /// Clear the composer and hand `content` to the host.
     fn dispatch_submission(
         &mut self,
-        kind: SubmissionKind,
+        mut kind: SubmissionKind,
         content: String,
         queued: bool,
         window: &mut Window,
@@ -2468,17 +2511,31 @@ impl PromptInput {
                         replacements.push((range, Some(text.to_string()), text.to_string()));
                     }
                 }
-                AttachmentPayload::File { path, image, file } => {
-                    let path = file_drop::path_text(&[path]);
-                    let mut reference = path.clone();
-                    if self.file_attachments_enabled {
-                        files.push(file);
-                    } else if let Some(image) = image {
-                        images.push((image.media_type, image.encoded.to_string()));
-                        reference.push_str(&format!(" [#image {}]", images.len()));
-                    }
+                AttachmentPayload::Context(context) => {
                     if let Some(range) = range {
-                        replacements.push((range, Some(reference), path));
+                        let history = match &context {
+                            context_picker::DraftContext::File { path, .. } => file_drop::path_text(std::slice::from_ref(path)),
+                            context_picker::DraftContext::Skill(name) => {
+                                kind = SubmissionKind::Skill(name.clone());
+                                String::new()
+                            }
+                        };
+                        replacements.push((range, Some(context.prompt_text().unwrap_or_default()), history));
+                    }
+                }
+                AttachmentPayload::File { path, image, file } => {
+                    let (reference, history) = if let Some(image) = image {
+                        images.push((image.media_type, image.encoded.to_string()));
+                        (format!("[#image {}]", images.len()), String::new())
+                    } else {
+                        if self.file_attachments_enabled {
+                            files.push(file);
+                        }
+                        let path = file_drop::path_text(&[path]);
+                        (path.clone(), path)
+                    };
+                    if let Some(range) = range {
+                        replacements.push((range, Some(reference), history));
                     }
                 }
             }
@@ -2666,7 +2723,15 @@ impl PromptInput {
             }
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.insert_pasted_text(&text, window, cx);
+            self.paste_text_or_image_paths(&text, window, cx);
+        }
+    }
+
+    fn paste_text_or_image_paths(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(paths) = image_paths::pasted_image_paths(text) {
+            self.drop_files(&paths, window, cx);
+        } else {
+            self.insert_pasted_text(text, window, cx);
         }
     }
 
@@ -3056,8 +3121,10 @@ impl PromptInput {
         if self.picker_prefix.is_none()
             && self.current_command_menu_close() != Some(CommandMenuClose::Literal)
             && (in_model_menu
+                || self.mention_token().is_some()
                 || self.current_command_menu_close() == Some(CommandMenuClose::Completed)
                 || !self.command_suggestions().is_empty())
+            && !self.standalone_context()
         {
             self.close_command_menu(CommandMenuClose::Literal);
             cx.notify();
@@ -3672,6 +3739,10 @@ impl PromptInput {
             AttachmentPayload::Image { .. } | AttachmentPayload::File { image: Some(_), .. } => {
                 self.attachment_preview = Some(paste_preview::Preview::new(index));
                 window.focus(&self.preview_close_focus, cx);
+            }
+            AttachmentPayload::Context(context_picker::DraftContext::File { path, .. }) => {
+                let action = crate::ui_actions::OpenDocumentFile { path: path.clone(), fragment: None };
+                window.dispatch_action(Box::new(action), cx);
             }
             _ => return,
         }
@@ -4705,6 +4776,7 @@ impl Render for PromptInput {
         let editor_height = self.editor_height(window);
         let show_resize = self.can_resize_editor(window);
         let spacious = self.spacious && window.viewport_size().height >= px(400.);
+        self.update_context_index(cx);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
@@ -4714,6 +4786,8 @@ impl Render for PromptInput {
             && self.current_command_menu_close().is_none()
             && (!suggestions.is_empty()
                 || self.picker_prefix.is_some()
+                || self.standalone_context()
+                || self.mention_token().is_some()
                 || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
@@ -4750,6 +4824,8 @@ impl Render for PromptInput {
             .flex_col()
             .key_context(if self.queue_editor {
                 "PromptInput QueueEditor"
+            } else if self.standalone_context() || self.mention_token().is_some() {
+                "PromptInput ContextPicker"
             } else if self.on_model_speed.is_some()
                 && self.model_stage == model_stage::ModelStage::Models
                 && self.command_content().split_whitespace().next() == Some("/model")
@@ -4834,6 +4910,7 @@ impl Render for PromptInput {
                                                                     .composer_secondary(),
                                                             )
                                                             .child(match self.picker_prefix {
+                                                                _ if self.standalone_context() || self.mention_token().is_some() => self.context_empty_label(),
                                                                 Some("/effort") => {
                                                                     "No effort levels match"
                                                                 }
@@ -4938,6 +5015,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::stash))
             .on_action(cx.listener(Self::accept_completion))
+            .on_action(cx.listener(Self::alternate_context))
             .when(!self.host_handles_submission, |el| {
                 el.on_action(cx.listener(Self::submit))
                     .on_action(cx.listener(Self::queue))
@@ -5045,7 +5123,7 @@ impl Render for PromptInput {
                                                     AttachmentPayload::Image {
                                                         preview, ..
                                                     } => Some(preview.clone()),
-                                                    AttachmentPayload::Text(_) => None,
+                                                    AttachmentPayload::Text(_) | AttachmentPayload::Context(_) => None,
                                                     AttachmentPayload::File { image, .. }
                                                     | AttachmentPayload::Queued {
                                                         preview: image,
@@ -5075,6 +5153,7 @@ impl Render for PromptInput {
                                                         ..
                                                     }
                                                     | AttachmentPayload::Text(_)
+                                                    | AttachmentPayload::Context(context_picker::DraftContext::File { .. })
                                             ) {
                                                 crate::keyboard::button(
                                                     chip.id(("composer-attachment", index)),
@@ -5181,7 +5260,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn pasted_file_chip_keeps_path_and_image_file_bytes(cx: &mut TestAppContext) {
+    fn pasted_file_chip_sends_only_image_and_no_local_path(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("real picture.png");
         let bytes = include_bytes!("../../../assets/previews/image-preview.png");
@@ -5212,7 +5291,7 @@ mod tests {
         });
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
-        assert!(text.contains(path.to_str().unwrap()));
+        assert_eq!(text.trim(), "[#image 1]");
         assert_eq!(images.len(), 1);
         assert_eq!(
             base64::engine::general_purpose::STANDARD

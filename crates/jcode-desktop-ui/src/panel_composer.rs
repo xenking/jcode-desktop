@@ -151,17 +151,12 @@ impl Panel {
                     .items_center()
                     .gap_1()
                     .overflow_hidden()
-                    .children((!self.mode_names().is_empty() || !self.skills.is_empty() || self.session_deferred()).then(|| {
+                    .children((self.preview_state.is_none() || !self.mode_names().is_empty() || !self.skills.is_empty() || self.session_deferred()).then(|| {
                         let names = self.mode_names();
                         let hover = if names.is_empty() {
-                            "Choose session modes".to_owned()
+                            "Add context".to_owned()
                         } else {
                             format!("Active modes: {}", names.join(", "))
-                        };
-                        let label = match names {
-                            [] => Some("Mode".to_owned()),
-                            [name] => Some(name.strip_suffix("-mode").unwrap_or(name).to_owned()),
-                            _ => None,
                         };
                         let icons = names.iter().enumerate().map(|(index, name)| {
                             let icon = crate::mode_catalog::icon(name, self.mode_catalog.get(name));
@@ -171,19 +166,19 @@ impl Panel {
                                 .flex()
                                 .child(icon.render(BAR_ICON, theme.composer_secondary()))
                         });
-                        crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Mode as usize])
+                        crate::keyboard::popover_trigger(composer_pill("panel-mode"), &self.picker_triggers[PickerKind::Context as usize])
                             .relative()
                             .children(crate::fixture_control_targets::marker(|| "panel-mode".into(), || Some(self.session_id.clone())))
                             .flex_shrink(3.)
-                            .min_w(px(46.))
+                            .min_w(px(TAB_HEIGHT))
                             .max_w(relative(0.4))
                             .overflow_hidden()
+                            .child(div().debug_selector(|| "composer-context-plus".into()).text_size(px(17.)).child("+"))
                             .children(icons)
-                            .children(label.map(|mode| div().min_w_0().truncate().child(mode)))
                             .tooltip(move |_, cx| cx.new(|_| EffortTooltip(hover.clone())).into())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_mode_picker(window, cx);
-                                this.remember_picker_trigger(PickerKind::Mode);
+                                this.toggle_context_picker(window, cx);
+                                this.remember_picker_trigger(PickerKind::Context);
                                 cx.stop_propagation();
                             }))
                     }))

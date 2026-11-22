@@ -71,6 +71,7 @@ impl PromptInput {
                 header: row.header,
                 toggle: row.toggle,
                 action,
+                context_action: None,
             }
         })
         .collect();
@@ -85,6 +86,7 @@ impl PromptInput {
                 detail: None,
                 header: None,
                 toggle: None,
+                context_action: None,
                 action: Some(model_stage::StageStep::Goto(
                     model_stage::ModelStage::Manage,
                 )),
@@ -235,6 +237,7 @@ impl PromptInput {
                 header: (index == 0)
                     .then(|| model_stage::effort_header(model, &self.model_details)),
                 toggle: None,
+                context_action: None,
                 action: self.model_stage.pick_effort(effort),
             })
             .collect()
@@ -270,6 +273,7 @@ impl PromptInput {
                 detail: None,
                 header: row.header,
                 toggle: None,
+                context_action: None,
             })
         })
         .collect()
@@ -429,7 +433,18 @@ impl PromptInput {
         }).flatten();
         let active_mode =
             mode.is_some_and(|name| self.current_modes.iter().any(|active| active == name));
-        let mode_icon = mode.map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)));
+        let mode_icon = mode.map(|name| crate::mode_catalog::icon(name, self.mode_catalog.get(name)))
+            .or_else(|| match suggestion.context_action.as_ref()? {
+                context_picker::Action::File(_) => Some(crate::mode_catalog::ModeIcon::Document),
+                context_picker::Action::Browse => Some(crate::mode_catalog::ModeIcon::Search),
+                context_picker::Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
+                context_picker::Action::Skill(_) => None,
+            });
+        let alternate_hint = match &suggestion.context_action {
+            Some(context_picker::Action::File(_)) => Some("⌥↵ Include contents"),
+            Some(context_picker::Action::Skill(name)) if name != "off" => Some("⌥↵ Toggle mode"),
+            _ => None,
+        };
         let mode_target = mode.map(str::to_owned);
         let logo_svg = |provider: &str, fallback: &str, size: f32, color: gpui::Rgba| {
             match crate::accounts::logo(provider) {
@@ -565,7 +580,8 @@ impl PromptInput {
                     .when(compact && model.is_some(), |row| row.gap_1().px_2())
                     .when(!compact || model.is_none(), |row| row.gap_3().px_3())
                     .py_1p5()
-                    .rounded_md()
+                    .when(suggestion.context_action.is_some(), |row| row.rounded_full())
+                    .when(suggestion.context_action.is_none(), |row| row.rounded_md())
                     .when(model.is_some() || speed.is_some() || suggestion.value.starts_with("/effort "), |row| {
                         row.border_1().border_color(match (active_choice, selected) {
                             (true, true) => Theme::global().BG.into(),
@@ -668,6 +684,9 @@ impl PromptInput {
                             })
                             .child(suggestion.help)
                     }))
+                    .children(alternate_hint.filter(|_| selected && !compact).map(|hint| {
+                        div().flex_none().text_size(px(10.)).child(hint)
+                    }))
                     .children(
                         model
                             .filter(|_| self.model_stage == model_stage::ModelStage::Models)
@@ -702,9 +721,14 @@ impl PromptInput {
                     )
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             window.focus(&this.focus_handle, cx);
+                            if let Some(action) = suggestion.context_action.clone() {
+                                this.command_selection = index;
+                                this.apply_context_action(action, event.modifiers.alt, window, cx);
+                                return;
+                            }
                             if this.embedded_command_token().is_some() {
                                 this.command_selection = index;
                                 this.command_selection_explicit = Some(suggestion.value.clone());

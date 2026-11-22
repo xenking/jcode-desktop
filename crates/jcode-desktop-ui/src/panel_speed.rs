@@ -35,6 +35,11 @@ impl Panel {
         let kind = match std::env::var("JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER").as_deref() {
             Ok("model") => PickerKind::Model,
             Ok("effort") => PickerKind::Effort,
+            Ok("context") => {
+                self.seed_mode_picker_fixture(cx);
+                self.open_picker_search(PickerKind::Context, cx);
+                return;
+            }
             _ => return,
         };
         let mut event = crate::harness::composer_picker_fixture_runtime(&self.session_id, None);

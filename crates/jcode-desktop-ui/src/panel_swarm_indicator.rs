@@ -949,7 +949,7 @@ mod tests {
         vcx.run_until_parked();
         for (selector, kind) in [
             ("panel-model-effort", PickerKind::Effort),
-            ("panel-mode", PickerKind::Mode),
+            ("panel-mode", PickerKind::Context),
         ] {
             let is_open = |panel: &Panel, _app: &App| {
                 panel
