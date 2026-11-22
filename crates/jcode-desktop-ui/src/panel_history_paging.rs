@@ -356,10 +356,8 @@ impl Panel {
             .into_iter()
             .map(|(i, at)| (i + prefix_len, at))
             .collect();
-        self.expanded_prompts = std::mem::take(&mut self.expanded_prompts)
-            .into_iter()
-            .map(|i| i + prefix_len)
-            .collect();
+        self.offscreen_prompt = self.offscreen_prompt.map(|i| i + prefix_len);
+        self.expanded_pinned_prompt = self.expanded_pinned_prompt.map(|i| i + prefix_len);
         if let Some(index) = &mut self.image_pane_selected {
             *index += prefix_len;
         }
@@ -433,6 +431,55 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("prompt-number-0-145").is_some());
         assert!(vcx.debug_bounds("prompt-number-1-146").is_some());
+    }
+
+    #[gpui::test]
+    fn restored_and_paged_prompts_render_in_full_in_clean_chat(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "full-history-prompts".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let window = vcx.window_handle();
+        vcx.simulate_window_resize(window, gpui::size(px(600.), px(700.)));
+        let text = "A restored line\n".repeat(17);
+        let page = |before: Option<&str>| crate::harness::BoundedHistoryPage {
+            messages: rows(&[("user", &text)]),
+            images: vec![],
+            before: before.map(str::to_owned),
+            prompt_offset: Some(usize::from(before.is_some())),
+        };
+        panel.update(vcx, |panel, cx| {
+            panel.set_clean_chat(Some(true), cx);
+            panel.load_bounded_history(page(Some("earlier")), cx);
+        });
+        vcx.run_until_parked();
+        let restored = vcx.debug_bounds("prompt-content-0").unwrap();
+        assert!(restored.size.height > px(300.));
+        assert!(vcx.debug_bounds("prompt-expand-0").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.load_bounded_history_page(Ok(page(None)), cx)
+        });
+        vcx.run_until_parked();
+        let position = vcx.debug_bounds("transcript").unwrap().center();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(1000.))),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        super::super::scroll_momentum_tests::settle(vcx);
+        assert_eq!(
+            vcx.debug_bounds("prompt-content-0").unwrap().size,
+            restored.size
+        );
+        assert!(vcx.debug_bounds("prompt-expand-0").is_none());
+        assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
     }
 
     #[gpui::test]

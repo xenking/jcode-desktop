@@ -433,12 +433,7 @@ fn document_text(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> St
         let rows = panel.transcript_render_rows();
         let mut cache = text_document::TranscriptTextDocument::default();
         cache
-            .sync(
-                &panel.items,
-                &rows,
-                &panel.expanded_prompts,
-                &panel.expanded_regions,
-            )
+            .sync(&panel.items, &rows, &panel.expanded_regions)
             .unwrap_or_default()
             .into_iter()
             .map(|(_, text)| text.to_string())
@@ -448,7 +443,9 @@ fn document_text(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> St
 }
 
 #[gpui::test]
-fn long_prompt_expands_to_full_height_and_collapses_in_short_window(cx: &mut gpui::TestAppContext) {
+fn long_inline_prompt_fills_the_transcript_without_its_own_scrollbar(
+    cx: &mut gpui::TestAppContext,
+) {
     let prompt: String = (0..100)
         .map(|n| format!("Prompt line {n}: enough text to wrap.\n\n"))
         .collect();
@@ -456,22 +453,14 @@ fn long_prompt_expands_to_full_height_and_collapses_in_short_window(cx: &mut gpu
     let window = vcx.window_handle();
     vcx.simulate_window_resize(window, gpui::size(px(600.), px(400.)));
     vcx.run_until_parked();
-    let compact = vcx.debug_bounds("user-prompt-0").unwrap();
-    click(vcx, "prompt-expand-0");
     let viewport = panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
     let full = vcx.debug_bounds("user-prompt-0").unwrap();
-    let control = vcx.debug_bounds("prompt-expand-0").unwrap();
     assert!(
         full.size.height > viewport.size.height * 4.,
         "{full:?} vs {viewport:?}"
     );
     assert!(vcx.debug_bounds("prompt-scrollbar").is_none());
-    assert!(control.top() >= viewport.top() && control.bottom() <= viewport.bottom());
-    click(vcx, "prompt-expand-0");
-    assert_eq!(
-        vcx.debug_bounds("user-prompt-0").unwrap().size.height,
-        compact.size.height
-    );
+    assert!(vcx.debug_bounds("prompt-expand-0").is_none());
 }
 
 #[gpui::test]
@@ -599,7 +588,9 @@ fn a_tool_without_scroll_range_passes_wheel_to_the_transcript(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
-fn sticky_prompt_disclosure_reveals_full_transcript_row(cx: &mut gpui::TestAppContext) {
+fn sticky_prompt_disclosure_keeps_the_original_transcript_row_offscreen(
+    cx: &mut gpui::TestAppContext,
+) {
     let mut items = vec![Item::User("A long prompt paragraph.\n\n".repeat(100))];
     items.extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
     let (panel, vcx) = panel_with(cx, items);
@@ -609,13 +600,18 @@ fn sticky_prompt_disclosure_reveals_full_transcript_row(cx: &mut gpui::TestAppCo
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
+    let compact = vcx.debug_bounds("pinned-latest-prompt").unwrap();
     click(vcx, "prompt-expand-0");
-    let viewport = panel.read_with(&*vcx, |panel, _| panel.transcript_list.viewport_bounds());
-    assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
-    assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > 2. * viewport.size.height);
+    assert!(
+        vcx.debug_bounds("pinned-latest-prompt")
+            .unwrap()
+            .size
+            .height
+            > compact.size.height
+    );
+    assert!(vcx.debug_bounds("transcript-row-0").is_none());
     click(vcx, "prompt-expand-0");
-    assert!(!panel.read_with(&*vcx, |panel, _| panel.expanded_prompts.contains(&0)));
+    assert_eq!(vcx.debug_bounds("pinned-latest-prompt").unwrap(), compact);
 }
 
 #[gpui::test]

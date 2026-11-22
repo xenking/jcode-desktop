@@ -1589,7 +1589,17 @@ fn styled_line_layout(
     cx: &gpui::App,
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
-    let mut inline = inline_spans(source);
+    styled_inline_layout(inline_spans(source), selection, key, window, cx, avatar)
+}
+
+fn styled_inline_layout(
+    mut inline: Inline,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    avatar: bool,
+) -> (gpui::AnyElement, gpui::TextLayout) {
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
     let markers = images.as_ref().map_or_else(Vec::new, |images| {
         crate::input::image_marker_ranges(&inline.plain)
@@ -1729,6 +1739,116 @@ fn styled_line_layout(
         selectable
     };
     (element, layout)
+}
+
+pub(crate) const PINNED_PROMPT_FONT_SIZE: f32 = 13.5;
+const PINNED_PROMPT_LINES: usize = 3;
+
+pub(crate) struct PinnedPromptPreview(String);
+
+impl PinnedPromptPreview {
+    pub(crate) fn new(source: &str) -> Self {
+        // A fourth hard line is already enough to prove overflow. Still use
+        // GPUI to find earlier soft wrapping, including the widths of chips.
+        let source = source.trim_end();
+        let end = source
+            .match_indices('\n')
+            .nth(PINNED_PROMPT_LINES)
+            .map_or(source.len(), |(i, _)| i);
+        Self(inline_spans(&source[..end]).plain)
+    }
+
+    pub(crate) fn visible_prefix(&self, width: gpui::Pixels, window: &gpui::Window) -> &str {
+        let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
+        let markers = images.as_ref().map_or_else(Vec::new, |images| {
+            crate::input::image_marker_ranges(&self.0)
+                .into_iter()
+                .filter_map(|range| {
+                    let image = images.attachments.get(&self.0[range.clone()])?;
+                    Some((range, image))
+                })
+                .collect()
+        });
+        let font = gpui::font(Theme::global().FONT_UI);
+        let size = px(PINNED_PROMPT_FONT_SIZE);
+        let (display, offsets, chips) =
+            project_prompt_images(&self.0, "", &markers, font.clone(), size, window);
+        let runs = [gpui::TextRun {
+            len: display.len(),
+            font,
+            ..Default::default()
+        }];
+        let Ok(layouts) =
+            window
+                .text_system()
+                .shape_text(display.into(), size, &runs, Some(width), None)
+        else {
+            return "";
+        };
+        let mut remaining = PINNED_PROMPT_LINES;
+        let mut start = 0;
+        for line in layouts {
+            if remaining == 0 {
+                return self.prefix_at(start - 1, &offsets, &chips);
+            }
+            if let Some(boundary) = line.wrap_boundaries().get(remaining - 1) {
+                let glyph = &line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix];
+                return self.prefix_at(start + glyph.index, &offsets, &chips);
+            }
+            remaining -= line.wrap_boundaries().len() + 1;
+            start += line.len() + 1;
+        }
+        &self.0
+    }
+
+    fn prefix_at(
+        &self,
+        mut end: usize,
+        offsets: &text_selection::LayoutOffsets,
+        chips: &[ImageChip],
+    ) -> &str {
+        if let Some((range, _, _)) = chips
+            .iter()
+            .find(|(range, _, _)| range.start < end && end < range.end)
+        {
+            end = range.start;
+        }
+        self.0[..offsets.source_index(end, self.0.len())].trim_end()
+    }
+
+    pub(crate) fn overflows(&self, prefix: &str) -> bool {
+        prefix.len() < self.0.len()
+    }
+
+    pub(crate) fn render(
+        prefix: &str,
+        selection: &gpui::Entity<TextSelection>,
+        key: SharedString,
+        window: &gpui::Window,
+        cx: &gpui::App,
+        background: gpui::Rgba,
+    ) -> gpui::AnyElement {
+        let (child, layout) = styled_inline_layout(
+            Inline {
+                plain: prefix.to_owned(),
+                code_ranges: Vec::new(),
+                highlights: Vec::new(),
+                links: Vec::new(),
+            },
+            selection,
+            key,
+            window,
+            cx,
+            false,
+        );
+        div()
+            .font_family(Theme::global().FONT_UI)
+            .font_weight(FontWeight::NORMAL)
+            .text_size(px(PINNED_PROMPT_FONT_SIZE))
+            .line_height(relative(1.55))
+            .child(crate::prompt_background::wrap(child, layout, background))
+            .into_any_element()
+    }
 }
 
 fn hash(text: &str) -> u64 {

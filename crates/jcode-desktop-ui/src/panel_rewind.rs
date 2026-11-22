@@ -268,7 +268,7 @@ impl Panel {
         for index in &mut self.pending_users {
             *index -= retained_from;
         }
-        self.expanded_prompts.clear();
+        self.clear_pinned_prompt();
         self.accepted_users.clear();
         self.response_stats = response_stats::Tracker::default();
         self.stick_to_bottom = true;

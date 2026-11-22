@@ -230,6 +230,8 @@ impl Panel {
                 "offset_y": f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y),
                 "tool": tool,
                 "prompt_height": self.transcript_list.bounds_for_item(1).map(|b| f32::from(b.size.height)),
+                "pinned_prompt": self.offscreen_prompt,
+                "pinned_prompt_expanded": self.expanded_pinned_prompt,
                 "viewport_y": f32::from(viewport.origin.y),
                 "viewport_height": f32::from(viewport.size.height),
             })

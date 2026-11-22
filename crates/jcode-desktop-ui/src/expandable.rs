@@ -2,7 +2,7 @@
 //!
 //! A truncated line stays a single compact row while collapsed. Its toggle
 //! reveals the complete text in place, so nothing in a card is final: tool
-//! titles, tool errors, tool output, prompts, notices, background tasks and
+//! titles, tool errors, tool output, notices, background tasks and
 //! swarm lines all expand with the same control and the same state.
 //!
 //! Keep the pure decisions (`preview`, `Open::for_row`, `expanded_body`) free
@@ -72,8 +72,6 @@ pub(crate) fn expanded_body(text: &str) -> (String, usize) {
 /// Which disclosure controls a transcript row currently has open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Open {
-    /// The prompt bubble shows its complete markdown.
-    pub(crate) prompt: bool,
     /// A tool card shows its complete title, error and output.
     pub(crate) card: bool,
     /// A stop, cache-miss or connection notice shows its complete detail.
@@ -85,16 +83,10 @@ pub(crate) struct Open {
 
 impl Open {
     /// The disclosure state a row paints from the region keys the panel holds.
-    pub(crate) fn for_row(
-        regions: &HashSet<String>,
-        item: &Item,
-        index: usize,
-        prompt: bool,
-    ) -> Self {
+    pub(crate) fn for_row(regions: &HashSet<String>, item: &Item, index: usize) -> Self {
         let details = regions.contains(&key::details(index))
             || matches!(item, Item::BackgroundTask { task_id, .. } if regions.contains(&key::task(task_id)));
         Self {
-            prompt,
             card: match item {
                 Item::Tool { call_id, name, .. } => {
                     regions.contains(call_id) ^ {
@@ -111,13 +103,10 @@ impl Open {
     /// Packed into the low bits of a text-document fingerprint, so a settled
     /// row still notices when only its disclosure changed.
     pub(crate) fn bits(self) -> u64 {
-        u64::from(self.prompt)
-            | u64::from(self.card) << 1
-            | u64::from(self.notice) << 2
-            | u64::from(self.details) << 3
+        u64::from(self.card) | u64::from(self.notice) << 1 | u64::from(self.details) << 2
     }
 
-    pub(crate) const MASK: u64 = 0b1111;
+    pub(crate) const MASK: u64 = 0b111;
 }
 
 /// Region keys. A tool card is keyed by its call id, everything else by its
@@ -185,7 +174,7 @@ pub(crate) fn flip(regions: &mut HashSet<String>, key: &str) -> bool {
 }
 
 /// The disclosure control. Every truncated surface uses it, so one gesture and
-/// one set of words expands a prompt, a tool card and a notice.
+/// one set of words expands a tool card and a notice.
 pub(crate) fn toggle(
     id: SharedString,
     expanded: bool,
@@ -366,21 +355,18 @@ mod tests {
         };
         let mut regions = HashSet::new();
         assert_eq!(
-            Open::for_row(&regions, &tool, 4, true),
-            Open {
-                prompt: true,
-                ..Open::default()
-            }
+            Open::for_row(&regions, &tool, 4),
+            Open { ..Open::default() }
         );
         regions.insert("call".into());
-        let open = Open::for_row(&regions, &tool, 4, false);
+        let open = Open::for_row(&regions, &tool, 4);
         assert!(open.card);
         assert_ne!(open.bits(), Open::default().bits());
         assert_eq!(open.bits() & !Open::MASK, 0);
         regions.insert(key::notice(4));
-        assert!(Open::for_row(&regions, &tool, 4, false).notice);
+        assert!(Open::for_row(&regions, &tool, 4).notice);
         regions.insert(key::details(4));
-        assert!(Open::for_row(&regions, &tool, 4, false).details);
-        assert!(!Open::for_row(&regions, &tool, 5, false).notice);
+        assert!(Open::for_row(&regions, &tool, 4).details);
+        assert!(!Open::for_row(&regions, &tool, 5).notice);
     }
 }

@@ -1,7 +1,6 @@
 use super::*;
 
 const CARD: expandable::Open = expandable::Open {
-    prompt: false,
     card: true,
     notice: false,
     details: false,

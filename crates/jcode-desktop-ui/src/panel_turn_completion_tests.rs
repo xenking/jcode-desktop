@@ -100,7 +100,7 @@ fn interleaved_notifications_do_not_split_or_merge_assistant_markdown(
         panel.clean_chat_override = Some(true);
         let rows = panel.transcript_render_rows();
         let mut doc = text_document::TranscriptTextDocument::default();
-        let segments = doc.sync(&panel.items, &rows, &HashSet::new(), &HashSet::new()).unwrap();
+        let segments = doc.sync(&panel.items, &rows, &HashSet::new()).unwrap();
         let first_plain = segments.iter().filter(|(key, _)| key.starts_with("0-")).map(|(_, text)| text.as_ref()).collect::<String>();
         let second_plain = segments.iter().filter(|(key, _)| key.starts_with("3-")).map(|(_, text)| text.as_ref()).collect::<String>();
         assert_eq!(first_plain, "Список вкладок в окне.");

@@ -857,7 +857,7 @@ pub struct Panel {
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     offscreen_prompt_clip: Option<gpui::Pixels>,
-    expanded_prompts: HashSet<usize>,
+    expanded_pinned_prompt: Option<usize>,
     swarm_scrolls: std::cell::RefCell<std::collections::HashMap<String, ScrollHandle>>,
     /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
     publish_tracker: bool,
@@ -1846,7 +1846,7 @@ impl Panel {
             startup_layout: None,
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
-            expanded_prompts: HashSet::new(),
+            expanded_pinned_prompt: None,
             swarm_scrolls: Default::default(),
             publish_tracker: false,
             transcript_selection,
@@ -4124,7 +4124,7 @@ impl Panel {
             .into_iter()
             .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
             .collect();
-        self.expanded_prompts.clear();
+        self.clear_pinned_prompt();
         self.swarm_scrolls.borrow_mut().clear();
         false
     }
@@ -4220,6 +4220,7 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.image_pane_selected = None;
+        self.clear_pinned_prompt();
         *self.items = items;
         self.schedule_ask_recovery(cx);
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
@@ -5188,10 +5189,9 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
-        self.expanded_prompts = std::mem::take(&mut self.expanded_prompts)
-            .into_iter()
-            .map(|index| index + usize::from(index >= insertion))
-            .collect();
+        let shift = |index| index + usize::from(index >= insertion);
+        self.offscreen_prompt = self.offscreen_prompt.map(shift);
+        self.expanded_pinned_prompt = self.expanded_pinned_prompt.map(shift);
         if let Some(selected) = &mut self.image_pane_selected
             && *selected >= insertion
         {
@@ -5466,19 +5466,14 @@ impl Panel {
             state.finish()
         };
         let expansions = {
-            // Order-independent: both sets are small and unordered.
+            // Order-independent: the set is small and unordered.
             let mut sum = 0u64;
-            for entry in &self.expanded_prompts {
-                let mut state = std::collections::hash_map::DefaultHasher::new();
-                entry.hash(&mut state);
-                sum = sum.wrapping_add(state.finish());
-            }
             for entry in &self.expanded_regions {
                 let mut state = std::collections::hash_map::DefaultHasher::new();
                 entry.hash(&mut state);
                 sum = sum.wrapping_add(state.finish().rotate_left(17));
             }
-            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_regions.len() as u64
+            sum ^ self.expanded_regions.len() as u64
         };
         let key = TranscriptDerivedKey {
             items_revision: self.items.revision(),
@@ -5502,7 +5497,6 @@ impl Panel {
             if let Some(document) = self.transcript_text_document.sync(
                 &self.items,
                 &rows,
-                &self.expanded_prompts,
                 &self.expanded_regions,
             ) {
                 self.transcript_selection
@@ -5983,7 +5977,7 @@ impl Panel {
             Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
                 self.render_auto_poke_notice(index, text, window, cx)
             }
-            Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
+            Item::User(text) => self.render_user_prompt(index, text, None, window, cx),
             Item::Image(image) => {
                 if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
                     return self.render_user_image_chip(index, image, cx);
@@ -7321,6 +7315,12 @@ impl Render for Panel {
                     .w(px(4.))
                 }),
             )
+            .children(crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+                crate::fixture_control_targets::marker(
+                    || "scroll:pin-prompt".into(),
+                    || Some(self.session_id.clone()),
+                ).unwrap().right_auto().w(px(4.))
+            }))
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -8025,7 +8025,7 @@ impl Render for Panel {
                     .when(!has_pinned_todo, |body| body.mt_2())
                     .child(wheel_root)
                     .child(transcript)
-                    .children(self.render_pinned_prompt(window, cx))
+                    .children(self.render_pinned_prompt(cx))
                     // Pace both wheel and touchpad movement on display frames.
                     // Precise deltas use a much shorter smoothing window so
                     // native gesture control stays responsive.
@@ -12281,7 +12281,7 @@ mod tests {
         assert!(vcx.debug_bounds("agent-message-body").is_some());
         panel.update(vcx, |panel, _| {
             let item = panel.items.last().unwrap();
-            let open = expandable::Open::for_row(&panel.expanded_regions, item, 0, false);
+            let open = expandable::Open::for_row(&panel.expanded_regions, item, 0);
             let text: Vec<_> =
                 text_document::segments_with_display(item, 0, open, &crate::config::display())
                     .into_iter()

@@ -76,6 +76,7 @@ impl Panel {
         if let Some(paging) = &mut self.history_paging {
             paging.in_flight = false;
         }
+        self.clear_pinned_prompt();
         *self.items = snapshot.items;
         for item in &mut self.items {
             if let Item::Image(image) = item {
@@ -168,6 +169,8 @@ impl Panel {
             }
         }
         let offset = prefix.len();
+        self.offscreen_prompt = self.offscreen_prompt.map(|index| index + offset);
+        self.expanded_pinned_prompt = self.expanded_pinned_prompt.map(|index| index + offset);
         prefix.append(&mut self.items);
         *self.items = prefix;
         for index in &mut self.pending_users {

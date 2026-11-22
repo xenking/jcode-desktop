@@ -99,7 +99,8 @@ impl LayoutOffsets {
         display_end + index - source_end
     }
 
-    fn source_index(&self, index: usize, text_len: usize) -> usize {
+    /// Map a shaped display byte offset back through inline replacements.
+    pub fn source_index(&self, index: usize, text_len: usize) -> usize {
         let (mut source_end, mut display_end) = (0, self.prefix_len);
         for (source, display) in self.replacements.as_deref().unwrap_or_default() {
             if index <= display.start {

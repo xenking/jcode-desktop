@@ -45,12 +45,6 @@ fn startup_tall_prompt_scrolls_in_transcript_and_preserves_position(cx: &mut gpu
             &format!("FIRST LINE\n\n{}LAST LINE", "middle line\n\n".repeat(100)),
         );
         vcx.simulate_keystrokes("enter");
-        // Long prompts collapse by default. This covers an expanded tall one.
-        panel.update(vcx, |panel, cx| {
-            panel.expanded_prompts.insert(0);
-            panel.stick_to_bottom = false;
-            cx.notify();
-        });
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, 0);
@@ -60,6 +54,8 @@ fn startup_tall_prompt_scrolls_in_transcript_and_preserves_position(cx: &mut gpu
             );
         });
         let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        assert!(vcx.debug_bounds("prompt-content-0").unwrap().size.height > viewport.size.height);
+        assert!(vcx.debug_bounds("prompt-expand-0").is_none());
         let transcript_offset = |cx: &gpui::VisualTestContext| {
             panel.read_with(cx, |panel, _| {
                 let offset = panel.transcript_list.logical_scroll_top();

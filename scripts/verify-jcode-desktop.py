@@ -1054,11 +1054,9 @@ class Instance:
 
         self.drive("set_composer", {"text": "Verification fixture draft"})
         first = self.screenshot("transcript-scroll-before.png")
-        compact = state()
-        full, expanded = click("prompt:toggle", lambda s: (s["prompt_height"] or 0) > 2 * s["viewport_height"],
-                     "expanded prompt did not grow past the transcript viewport", "transcript-scroll-expanded.png")
-        click("prompt:toggle", lambda s: s["prompt_height"] == compact["prompt_height"],
-              "collapsing did not restore the compact prompt height", "transcript-scroll-collapsed.png")
+        inline = state()
+        if (inline["prompt_height"] or 0) <= 2 * inline["viewport_height"] or inline["pinned_prompt"] is not None:
+            raise RuntimeError(f"initial prompt is not fully expanded in the transcript: {inline}")
         opened, _ = click("tool:scroll-fixture", lambda s: s["tool"] and s["tool"][1] > 0,
                        "expanded tool has no scroll range")
         at_edge, _ = click("scroll:tool", lambda s: s["tool"][0] == -s["tool"][1],
@@ -1072,8 +1070,17 @@ class Instance:
             raise RuntimeError("momentum at the tool edge changed scroll positions")
         outside, _ = click("scroll:transcript", lambda s: s["transcript"] != at_edge["transcript"],
                         "a new gesture outside the tool did not scroll the transcript")
-        proof = {"passed": True, "before": first, "expanded": expanded, "after": last,
-                 "compact": compact, "full": full, "at_edge": at_edge, "outside": outside}
+        compact, pinned = click("scroll:pin-prompt", lambda s: s["pinned_prompt"] == 1,
+                                "scrolling did not pin the prompt", "transcript-scroll-pinned.png")
+        full, expanded = click("prompt:toggle", lambda s: s["pinned_prompt_expanded"] == 1,
+                               "pinned prompt did not expand", "transcript-scroll-expanded.png")
+        closed, _ = click("prompt:toggle", lambda s: s["pinned_prompt_expanded"] is None,
+                          "pinned prompt did not collapse", "transcript-scroll-collapsed.png")
+        for measured in (full, closed):
+            if any(measured[key] != compact[key] for key in ("transcript", "viewport_y", "viewport_height", "prompt_height")):
+                raise RuntimeError(f"pinned disclosure changed the transcript anchor or layout: {measured}")
+        proof = {"passed": True, "before": first, "pinned": pinned, "expanded": expanded, "after": last,
+                 "inline": inline, "compact": compact, "full": full, "at_edge": at_edge, "outside": outside}
         save(self.run / "transcript-scroll-proof.json", proof)
         return proof
 

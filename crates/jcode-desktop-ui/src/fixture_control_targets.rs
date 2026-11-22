@@ -210,6 +210,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                     | "scroll:tool"
                     | "scroll:momentum"
                     | "scroll:transcript"
+                    | "scroll:pin-prompt"
                     | "composer:images"
                     | "composer:resize-drag"
                     | "composer:resize-reset"
@@ -322,6 +323,7 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "scroll:tool" => Some((-12_000., gpui::TouchPhase::Started)),
         "scroll:momentum" => Some((-120., gpui::TouchPhase::Moved)),
         "scroll:transcript" => Some((-120., gpui::TouchPhase::Started)),
+        "scroll:pin-prompt" => Some((-12_000., gpui::TouchPhase::Started)),
         _ => None,
     };
     if let Some((dy, touch_phase)) = wheel {

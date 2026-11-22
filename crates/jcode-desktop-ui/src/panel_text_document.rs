@@ -25,7 +25,6 @@ impl TranscriptTextDocument {
         &mut self,
         items: &Transcript,
         rows: &[TranscriptRenderRow],
-        expanded_prompts: &HashSet<usize>,
         expanded_regions: &HashSet<String>,
     ) -> Option<Segments> {
         let display = crate::config::display();
@@ -43,12 +42,7 @@ impl TranscriptTextDocument {
                 TranscriptRowSource::Settled(index) => &items[*index],
                 TranscriptRowSource::Owned(item) => item,
             };
-            let open = Open::for_row(
-                expanded_regions,
-                item,
-                row.index,
-                expanded_prompts.contains(&row.index),
-            );
+            let open = Open::for_row(expanded_regions, item, row.index);
             let flags = open.bits();
             let json_candidate = matches!(item, Item::Tool { name, output, .. } if open.card && !matches!(name.as_str(), "bash" | "bg" | "read" | "edit" | "apply_patch" | "diff") && matches!(output.trim_start().chars().next(), Some('{' | '[')));
             let json_state = if let Item::Tool { call_id, .. } = item
@@ -218,12 +212,7 @@ fn segments_with_regions(
         }
         Item::User(text) => {
             let (text, _) = super::voice::tag::strip(text);
-            let visible = if open.prompt {
-                &*text
-            } else {
-                prompt::compact_prompt(&text).unwrap_or(&text)
-            };
-            return markdown::selection_segments(visible, index, false, true);
+            return markdown::selection_segments(&text, index, false, true);
         }
         Item::Assistant(text) | Item::AssistantOutput { text, .. } => return markdown::selection_segments(text, index, false, false),
         Item::AgentMessage { message, .. } if open.details => {
@@ -495,24 +484,23 @@ mod tests {
         ]
         .into();
         let rows = rows(&items);
-        let prompts = HashSet::new();
         let mut tools = HashSet::new();
-        let doc = cache.sync(&items, &rows, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &rows, &tools).unwrap();
         assert_eq!(doc.first().unwrap().0.as_ref(), "0-0");
         assert_eq!(doc.last().unwrap().0.as_ref(), "2-0");
         assert!(doc.iter().any(|(key, _)| key.as_ref() == "tool-summary-1"));
         assert!(!doc.iter().any(|(_, text)| text.contains("hidden output")));
-        assert!(cache.sync(&items, &rows, &prompts, &tools).is_none());
+        assert!(cache.sync(&items, &rows, &tools).is_none());
         tools.insert("call".into());
-        let expanded = cache.sync(&items, &rows, &prompts, &tools).unwrap();
+        let expanded = cache.sync(&items, &rows, &tools).unwrap();
         assert!(
             expanded
                 .iter()
                 .any(|(key, text)| key.as_ref() == "tool-bash-output-1"
                     && text.contains("hidden output"))
         );
-        assert!(cache.sync(&items, &rows, &prompts, &tools).is_none());
-        let trimmed = cache.sync(&items, &rows[..1], &prompts, &tools).unwrap();
+        assert!(cache.sync(&items, &rows, &tools).is_none());
+        let trimmed = cache.sync(&items, &rows[..1], &tools).unwrap();
         assert_eq!(trimmed.len(), 1);
         assert_eq!(cache.rows.len(), 1);
     }
@@ -522,17 +510,16 @@ mod tests {
         let mut cache = TranscriptTextDocument::default();
         let mut items: Transcript =
             vec![Item::User("Prompt".into()), Item::Assistant("first".into())].into();
-        let prompts = HashSet::new();
         let tools = HashSet::new();
         let rows_now = rows(&items);
-        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_some());
+        assert!(cache.sync(&items, &rows_now, &tools).is_some());
         // Same transcript: nothing to replace.
-        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_none());
+        assert!(cache.sync(&items, &rows_now, &tools).is_none());
         // An in-place edit bumps the revision, so the changed row is seen.
         if let Some(Item::Assistant(text)) = items.get_mut(1) {
             *text = "second".into();
         }
-        let doc = cache.sync(&items, &rows(&items), &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &rows(&items), &tools).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("second")));
         assert!(!doc.iter().any(|(_, text)| text.contains("first")));
         // Live text is an owned row and is always compared.
@@ -543,28 +530,19 @@ mod tests {
             role: None,
             show_label: false,
         });
-        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &live, &tools).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("partial")));
         live[2].source =
             TranscriptRowSource::Owned(Box::new(Item::Assistant("partial more".into())));
-        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &live, &tools).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("partial more")));
     }
 
     #[test]
-    fn prompt_document_matches_collapsed_preview_and_expansion() {
+    fn prompt_document_includes_the_full_transcript_prompt() {
         let text = format!("{}\nTAIL", "first line\n".repeat(8));
-        let collapsed = segments(&Item::User(text.clone()), 0, Open::default());
-        assert!(!collapsed.iter().any(|(_, text)| text.contains("TAIL")));
-        let expanded = segments(
-            &Item::User(text),
-            0,
-            Open {
-                prompt: true,
-                ..Open::default()
-            },
-        );
-        assert!(expanded.iter().any(|(_, text)| text.contains("TAIL")));
+        let full = segments(&Item::User(text), 0, Open::default());
+        assert!(full.iter().any(|(_, text)| text.contains("TAIL")));
     }
 
     #[test]

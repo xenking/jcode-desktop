@@ -4,41 +4,8 @@ use std::{cell::Cell, rc::Rc};
 // The card sits below the row's inter-message gap. The sticky boundary is
 // the card top, not the row top and not the disappearance of its bottom.
 pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
-const COLLAPSED_PROMPT_LINES: usize = 6;
-const COLLAPSED_PROMPT_MAX_HEIGHT: f32 = 140.;
-
-/// Bound both long pasted paragraphs and newline-heavy snippets. Return a
-/// source prefix, never alter the actual prompt sent to the harness or stored.
-pub(super) fn compact_prompt(text: &str) -> Option<&str> {
-    let mut lines = 1;
-    let mut characters = 0;
-    let mut markers = crate::input::image_marker_ranges(text)
-        .into_iter()
-        .peekable();
-    let mut skip_until = 0;
-    for (byte, ch) in text.char_indices() {
-        if byte < skip_until {
-            continue;
-        }
-        if markers.peek().is_some_and(|range| range.start == byte) {
-            let range = markers.next().unwrap();
-            skip_until = range.end;
-            characters += crate::image_chip::prompt_label(&text[range], None).len();
-            if characters > 600 {
-                return Some(&text[..byte]);
-            }
-            continue;
-        }
-        if characters == 600 || (ch == '\n' && lines == 6) {
-            return Some(&text[..byte]);
-        }
-        characters += 1;
-        if ch == '\n' {
-            lines += 1;
-        }
-    }
-    None
-}
+const PIN_DISCLOSURE_WIDTH: f32 = 22.;
+const PIN_DISCLOSURE_GAP: f32 = 6.;
 
 pub(super) fn fixture_items() -> Vec<Item> {
     vec![
@@ -181,6 +148,12 @@ pub(super) fn is_user_turn(item: &Item) -> bool {
 }
 
 impl Panel {
+    pub(super) fn clear_pinned_prompt(&mut self) {
+        self.offscreen_prompt = None;
+        self.offscreen_prompt_clip = None;
+        self.expanded_pinned_prompt = None;
+    }
+
     pub(super) fn absolute_prompt_number(&self, index: usize) -> Option<usize> {
         let offset = match &self.history_paging {
             Some(paging) => paging.prompt_offset(),
@@ -189,16 +162,16 @@ impl Panel {
         prompt_number(&self.items, index).map(|number| number + offset)
     }
 
-    /// Inline and sticky cards use exactly the same content, colors, width,
-    /// padding, selection, and acknowledgement animation. Only placement differs.
+    /// The transcript always renders the complete prompt. Only the pinned copy has disclosure.
     pub(super) fn render_user_prompt(
         &self,
         index: usize,
         text: &str,
-        pinned: bool,
+        pinned_width: Option<gpui::Pixels>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let pinned = pinned_width.is_some();
         let now = Instant::now();
         // Animate position only. Fading the whole card exposes transcript text
         // underneath a sticky prompt during pending/accept acknowledgement.
@@ -227,9 +200,7 @@ impl Panel {
         // The model receives `<transcription>` tags. People see a pill instead.
         let (visible, transcribed) = super::voice::tag::strip(text);
         let text = visible.as_ref();
-        let preview = compact_prompt(text);
-        let expanded = !pinned && self.expanded_prompts.contains(&index);
-        let collapsed = preview.is_some() && !expanded;
+        let clock = (!clean_chat).then(|| self.user_clock(index)).flatten();
         let mut unresolved = Vec::new();
         let attachments: HashMap<_, _> = crate::input::image_marker_ranges(text)
             .into_iter()
@@ -292,15 +263,99 @@ impl Panel {
                 });
             }),
         };
-        let fixture_toggle = || {
-            (index == 1 && !pinned && crate::fixture_control_targets::transcript_scroll_fixture())
-                .then(|| {
-                    crate::fixture_control_targets::marker(
-                        || "prompt:toggle".into(),
-                        || Some(self.session_id.clone()),
-                    )
-                    .unwrap()
-                })
+        let (body, toggle) = markdown::with_prompt_images(prompt_images, || {
+            let preview = pinned_width.map(|width| {
+                let time_width = clock.as_ref().map_or(px(0.), |clock| {
+                    window
+                        .text_system()
+                        .shape_line(
+                            clock.clone().into(),
+                            px(10.),
+                            &[gpui::TextRun {
+                                len: clock.len(),
+                                font: gpui::font(Theme::global().FONT_MONO),
+                                ..Default::default()
+                            }],
+                            None,
+                        )
+                        .width
+                        .ceil()
+                        + px(6.)
+                });
+                let badge_width = if number.is_some() {
+                    number_width + 6.
+                } else {
+                    0.
+                };
+                let width = (width - px(16. + badge_width) - time_width).max(px(1.));
+                let preview = markdown::PinnedPromptPreview::new(text);
+                let long = preview.overflows(preview.visible_prefix(width, window));
+                let width = if long {
+                    (width - px(PIN_DISCLOSURE_WIDTH + PIN_DISCLOSURE_GAP)).max(px(1.))
+                } else {
+                    width
+                };
+                (preview, long, width)
+            });
+            let expanded = self.expanded_pinned_prompt == Some(index);
+            let long = preview.as_ref().is_some_and(|(_, long, _)| *long);
+            let body = if let Some((preview, _, width)) = preview.filter(|_| !expanded || !long) {
+                div()
+                    .max_w(width)
+                    .child(markdown::PinnedPromptPreview::render(
+                        preview.visible_prefix(width, window),
+                        &self.transcript_selection,
+                        format!("pinned-preview-{index}").into(),
+                        window,
+                        cx,
+                        background,
+                    ))
+                    .into_any_element()
+            } else {
+                markdown::render_prompt_with_prefix(
+                    text,
+                    index,
+                    &if pinned {
+                        format!("pinned-{index}")
+                    } else {
+                        index.to_string()
+                    },
+                    &self.transcript_selection,
+                    window,
+                    cx,
+                    self.media_preview_handler(cx),
+                    background,
+                )
+            };
+            (body, long.then_some(expanded))
+        });
+        let body = div()
+            .relative()
+            .min_w_0()
+            .debug_selector(move || format!("prompt-content-{index}"))
+            .child(body);
+        let body = if toggle == Some(true) {
+            let height = self.transcript_list.viewport_bounds().size.height;
+            crate::transcript_scroll::vertical(
+                div()
+                    .id(SharedString::from(format!("pinned-body-{index}")))
+                    .max_h(height * 0.65)
+                    .child(body),
+            )
+            .into_any_element()
+        } else {
+            body.into_any_element()
+        };
+        let body = if let Some(expanded) = toggle {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(PIN_DISCLOSURE_GAP))
+                .child(div().min_w_0().flex_shrink_1().child(body))
+                .child(self.pinned_prompt_disclosure(index, expanded, cx))
+                .into_any_element()
+        } else {
+            body
         };
         let card = div()
             .relative()
@@ -310,66 +365,11 @@ impl Panel {
             .flex_shrink_1()
             .flex()
             .flex_col()
-            .px_2()
+            .px(px(8.))
             .py_1()
             .text_color(Theme::global().TEXT_USER)
-            .when(preview.is_some() && expanded, |card| {
-                card.child(super::expandable::toggle(
-                    format!("prompt-expand-{index}").into(),
-                    true,
-                    "▸ Expand prompt",
-                    "▾ Collapse prompt",
-                    cx.listener(move |panel, _, _, cx| {
-                        cx.stop_propagation();
-                        panel.expanded_prompts.remove(&index);
-                        panel.transcript_measurements.dirty = true;
-                        cx.notify();
-                    }),
-                ).relative().children(fixture_toggle()))
-            })
-            .child(
-                div()
-                    .relative()
-                    .min_w_0()
-                    .debug_selector(move || format!("prompt-content-{index}"))
-                            // Also bound rendered markdown (headings, tables, images)
-                            // and wrapping in narrow chat panes, not just source length.
-                            // Clamp wrapped text to whole visual lines with an
-                            // ellipsis, so the stepped background is shaped from the
-                            // truncated layout instead of being sliced mid-line.
-                            .when(collapsed, |content| {
-                                // The fill extends 8px/4px past the text. Grow the
-                                // clip box by the same amount with padding and cancel
-                                // it with negative margins, so layout is unchanged but
-                                // the rounded bottom edge is not sliced off.
-                                content
-                                    .line_clamp(COLLAPSED_PROMPT_LINES)
-                                    .text_ellipsis()
-                                    .px(px(8.))
-                                    .mx(px(-8.))
-                                    .py(px(4.))
-                                    .my(px(-4.))
-                                    .max_h(px(COLLAPSED_PROMPT_MAX_HEIGHT + 8.))
-                                    .overflow_hidden()
-                            })
-                            .child(markdown::with_prompt_images(prompt_images, || {
-                                markdown::render_prompt_with_prefix(
-                                    if collapsed { preview.unwrap() } else { text },
-                                    index,
-                                    &if pinned {
-                                        format!("pinned-{index}")
-                                    } else {
-                                        index.to_string()
-                                    },
-                                    &self.transcript_selection,
-                                    window,
-                                    cx,
-                                    self.media_preview_handler(cx),
-                                    background,
-                                )
-                            })),
-            )
-            .when(transcribed && !clean_chat, |card| {
+            .child(body)
+            .when(transcribed && !clean_chat && !pinned, |card| {
                 let theme = Theme::global();
                 card.child(
                     div()
@@ -395,43 +395,6 @@ impl Panel {
                         .child("Transcribed"),
                 )
             })
-            .when(preview.is_some() && !expanded, |card| {
-                card.child(
-                    // The same control every other truncated surface uses, so
-                    // a cut prompt is expanded the same way as a cut tool row.
-                    div().mt_1().child(super::expandable::toggle(
-                        format!("prompt-expand-{index}").into(),
-                        expanded,
-                        "▸ Expand prompt",
-                        "▾ Collapse prompt",
-                        cx.listener(move |panel, _, _, cx| {
-                            cx.stop_propagation();
-                            panel.expanded_prompts.insert(index);
-                            let position = panel.transcript_render_rows().iter().position(|row| {
-                                matches!(&row.source, TranscriptRowSource::Settled(item_index) if *item_index == index)
-                            });
-                            if let Some(position) = position {
-                                panel.stick_to_bottom = false;
-                                panel.cancel_transcript_momentum();
-                                if pinned {
-                                    // A sticky reminder cannot grow to the full prompt height.
-                                    // Open the real transcript row instead of scrolling the overlay.
-                                    panel.offscreen_prompt = None;
-                                    panel.offscreen_prompt_clip = None;
-                                    panel.transcript_list.scroll_to(gpui::ListOffset {
-                                        item_ix: position,
-                                        offset_in_item: px(0.),
-                                    });
-                                } else {
-                                    panel.transcript_list.scroll_to_reveal_item(position);
-                                }
-                            }
-                            panel.transcript_measurements.dirty = true;
-                            cx.notify();
-                        }),
-                    ).relative().children(fixture_toggle())),
-                )
-            })
             .into_any_element();
         // Animate and hide the complete row so inline and sticky badges always
         // travel with their cards. Shrink only the card when markdown wraps.
@@ -443,10 +406,6 @@ impl Panel {
             .items_start()
             .relative()
             .left(px(offset))
-            .when(
-                !pinned && !expanded && self.offscreen_prompt == Some(index),
-                |row| row.invisible(),
-            )
             .when_some(number, |row, number| {
                 row.gap(px(6.)).child(
                     div()
@@ -466,49 +425,141 @@ impl Panel {
                 )
             })
             .child(card)
-            .when_some(
-                (!clean_chat).then(|| self.user_clock(index)).flatten(),
-                |row, clock| {
-                    // A quiet arrival time beside the card, from the message record.
-                    row.child(
-                        div()
-                            .debug_selector(move || format!("prompt-time-{index}"))
-                            .flex_none()
-                            .ml(px(6.))
-                            .mt(px(7.))
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_size(px(10.))
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .child(clock),
-                    )
-                },
-            )
+            .when_some(clock, |row, clock| {
+                // A quiet arrival time beside the card, from the message record.
+                row.child(
+                    div()
+                        .debug_selector(move || format!("prompt-time-{index}"))
+                        .flex_none()
+                        .ml(px(6.))
+                        .mt(px(7.))
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_size(px(10.))
+                        .text_color(Theme::global().TEXT_FAINT)
+                        .child(clock),
+                )
+            })
             .into_any_element()
     }
 
-    /// Keep the reminder out of flex layout. Inserting it above the list moves
-    /// every visible row by its height at the pin boundary, and also changes
-    /// the viewport used to decide whether the original prompt is visible.
-    pub(super) fn render_pinned_prompt(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
+    fn pinned_prompt_disclosure(
+        &self,
+        index: usize,
+        expanded: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let id: SharedString = format!("prompt-expand-{index}").into();
+        let label = if expanded {
+            "Collapse pinned prompt"
+        } else {
+            "Expand pinned prompt"
+        };
+        let theme = Theme::global();
+        crate::keyboard::button(
+            div()
+                .id(id.clone())
+                .debug_selector(move || id.to_string())
+                .relative()
+                .flex_none()
+                .w(px(PIN_DISCLOSURE_WIDTH))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(theme.INLINE_CODE_BG)
+                .text_color(theme.TEXT_DIM)
+                .hover(|el| el.text_color(theme.TEXT))
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .aria_expanded(expanded)
+                .child(if expanded { "▴" } else { "▾" })
+                .children(
+                    (index == 1 && crate::fixture_control_targets::transcript_scroll_fixture())
+                        .then(|| {
+                            crate::fixture_control_targets::marker(
+                                || "prompt:toggle".into(),
+                                || Some(self.session_id.clone()),
+                            )
+                            .unwrap()
+                        }),
+                )
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    cx.stop_propagation();
+                    if panel.offscreen_prompt == Some(index) {
+                        panel.expanded_pinned_prompt = (!expanded).then_some(index);
+                        cx.notify();
+                    }
+                })),
+        )
+    }
+
+    /// The out-of-flow anchor provides the actual pane width, even during a
+    /// resize. The overlay never becomes a transcript row or consumes space.
+    pub(super) fn render_pinned_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.rewind_selection.is_some() {
             return None;
         }
         let index = self.offscreen_prompt?;
-        let item = self.items.get(index)?.clone();
-        if !is_pinnable_prompt(&item) {
+        let panel = cx.entity().downgrade();
+        Some(
+            gpui::canvas(
+                move |bounds, window, cx| {
+                    let mut overlay = panel
+                        .update(cx, |panel, cx| {
+                            panel.render_pinned_prompt_at_width(
+                                index,
+                                bounds.size.width,
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok()??;
+                    overlay.prepaint_as_root(
+                        bounds.origin,
+                        gpui::size(
+                            gpui::AvailableSpace::Definite(bounds.size.width),
+                            gpui::AvailableSpace::MaxContent,
+                        ),
+                        window,
+                        cx,
+                    );
+                    Some(overlay)
+                },
+                |_, overlay, window, cx| {
+                    if let Some(mut overlay) = overlay {
+                        overlay.paint(window, cx);
+                    }
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .h(px(0.))
+            .into_any_element(),
+        )
+    }
+
+    fn render_pinned_prompt_at_width(
+        &self,
+        index: usize,
+        width: gpui::Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let item = self.items.get(index)?;
+        if !is_pinnable_prompt(item) {
             return None;
         }
-        let Item::User(text) = &item else {
+        let Item::User(text) = item else {
             return None;
         };
         let background = Theme::global().panel_background(self.surface_focused);
         Some(
             div()
-                .id("pinned-latest-prompt")
+                .id(SharedString::from(format!("pinned-latest-prompt-{index}")))
                 .debug_selector(|| "pinned-latest-prompt".into())
                 .relative()
                 .w_full()
@@ -530,9 +581,9 @@ impl Panel {
                     overlay.flex().flex_col().justify_end().overflow_hidden()
                 })
                 .block_mouse_except_scroll()
-                .px_3()
-                .text_size(px(13.5))
-                .child(self.render_user_prompt(index, text, true, window, cx))
+                .px(px(12.))
+                .text_size(px(markdown::PINNED_PROMPT_FONT_SIZE))
+                .child(self.render_user_prompt(index, text, Some(width - px(24.)), window, cx))
                 .map(|prompt| {
                     let transparent = gpui::Rgba {
                         a: 0.,
@@ -543,15 +594,8 @@ impl Panel {
                     } else {
                         18.
                     };
-                    let prompt = if self.offscreen_prompt_clip.is_some() {
-                        prompt.into_any_element()
-                    } else {
-                        crate::transcript_scroll::vertical(prompt).into_any_element()
-                    };
                     div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
+                        .relative()
                         .w_full()
                         .child(prompt)
                         // Outside the prompt's scroll clip so the soft edge
@@ -593,12 +637,7 @@ impl Panel {
                 let at_live_end =
                     following_tail || visible.is_some_and(|rows| rows.last + 1 == row_count);
                 let offscreen = prompt_for_viewport(&prompt_rows, visible, at_live_end);
-                let first_prompt = visible.and_then(|rows| {
-                    let ix = prompt_rows
-                        .binary_search_by_key(&rows.first, |(row, _)| *row)
-                        .ok()?;
-                    Some(prompt_rows[ix].1)
-                });
+
                 // The next card pushes the old reminder above the viewport.
                 // Constrain only the overlay, never either card's layout.
                 let clip = offscreen.and_then(|_| visible?.next_prompt_top.map(|(_, top)| top));
@@ -608,17 +647,16 @@ impl Panel {
                         return;
                     };
                     let current = entity.read(cx);
-                    // Do not cover a partially visible expanded prompt with its own reminder.
-                    let offscreen = offscreen.filter(|index| {
-                        first_prompt != Some(*index) || !current.expanded_prompts.contains(index)
-                    });
-                    let clip = offscreen.and(clip);
+
                     if current.offscreen_prompt == offscreen
                         && current.offscreen_prompt_clip == clip
                     {
                         return;
                     }
                     entity.update(cx, |panel, cx| {
+                        if panel.offscreen_prompt != offscreen {
+                            panel.expanded_pinned_prompt = None;
+                        }
                         panel.offscreen_prompt = offscreen;
                         panel.offscreen_prompt_clip = clip;
                         cx.notify();
@@ -636,131 +674,220 @@ impl Panel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn compact_prompt_bounds_lines_and_unicode_without_changing_short_prompts() {
-        for text in ["", "Short prompt", "1\n2\n3\n4\n5\n6"] {
-            assert_eq!(compact_prompt(text), None);
-        }
-        assert_eq!(compact_prompt(&"x".repeat(600)), None);
-        assert_eq!(
-            compact_prompt(&"x".repeat(601)),
-            Some("x".repeat(600).as_str())
-        );
-        let unicode = "🦀日本語".repeat(200);
-        let preview = compact_prompt(&unicode).unwrap();
-        assert_eq!(preview.chars().count(), 600);
-        assert!(unicode.starts_with(preview));
-        assert_eq!(
-            compact_prompt("1\n2\n3\n4\n5\n6\n7"),
-            Some("1\n2\n3\n4\n5\n6")
-        );
+    fn wheel_transcript(vcx: &mut gpui::VisualTestContext, delta: f32) {
+        let viewport = vcx.debug_bounds("transcript").unwrap();
+        let position = gpui::point(viewport.left() + px(2.), viewport.center().y);
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(delta))),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        scroll_momentum_tests::settle(vcx);
     }
 
     #[gpui::test]
-    fn long_prompts_expand_inline_and_from_sticky_reminder(cx: &mut gpui::TestAppContext) {
-        let (panel, vcx) = cx.add_window_view(|_, cx| {
-            Panel::new(
-                "long-prompts".into(),
-                None,
-                None,
-                crate::harness::spawn_inert(),
-                cx,
-            )
-        });
-        let handle = vcx.update(|window, _| window.window_handle());
-        let text = (1..=10)
-            .map(|n| format!("Pasted line {n}"))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        for width in [600., 320.] {
-            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+    fn pinned_only_dictation_disclosure_keeps_the_real_transcript_anchor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        for (width, clean_chat) in [(320., false), (900., true)] {
+            let (panel, vcx) = cx.add_window_view(|_, cx| {
+                Panel::new(
+                    "pinned-only".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            });
+            let handle = vcx.update(|window, _| window.window_handle());
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.)));
+            let text = format!(
+                "[#image 7] {}Unabridged dictation tail.",
+                "Keep the dictation fully visible when it wraps at the edge. ".repeat(24)
+            );
             panel.update(vcx, |panel, cx| {
-                *panel.items = vec![Item::User(text.clone())];
-                panel.expanded_prompts.clear();
+                panel.set_clean_chat(Some(clean_chat), cx);
+                panel
+                    .items
+                    .push(Item::User(super::super::voice::tag::wrap(text.trim())));
+                panel
+                    .items
+                    .extend((0..75).map(|n| Item::Assistant(format!("Answer {n}"))));
                 panel.stick_to_bottom = false;
-                panel.transcript_list.scroll_to(gpui::ListOffset::default());
                 cx.notify();
             });
             vcx.run_until_parked();
-            let compact = vcx.debug_bounds("user-prompt-0").unwrap();
-            assert!(compact.size.height < px(180.));
+            let inline = vcx.debug_bounds("prompt-content-0").unwrap();
+            assert!(
+                inline.size.height > px(160.),
+                "all inline dictation lines are laid out at {width}px"
+            );
+            assert!(vcx.debug_bounds("prompt-expand-0").is_none());
+            assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+
+            for _ in 0..10 {
+                wheel_transcript(vcx, -180.);
+                if vcx.debug_bounds("transcript-row-0").is_none() {
+                    break;
+                }
+            }
+            let pinned = vcx
+                .debug_bounds("pinned-latest-prompt")
+                .expect("wheel pins the offscreen prompt");
+            let compact = vcx.debug_bounds("prompt-content-0").unwrap();
+            assert!(compact.size.height <= px(64.));
+            assert!(
+                crate::image_chip::take_transcript_chips()
+                    .iter()
+                    .any(|(label, bounds)| label == "[Image #7]" && compact.contains(&bounds.center()))
+            );
             let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
-            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            assert!(toggle.size.width < pinned.size.width / 2.);
+            assert!(
+                toggle.top() < compact.bottom(),
+                "disclosure sits beside the preview"
+            );
+
+            let anchor = |vcx: &gpui::VisualTestContext| {
+                panel.read_with(vcx, |panel, _| {
+                    let top = panel.transcript_list.logical_scroll_top();
+                    (
+                        top.item_ix,
+                        top.offset_in_item,
+                        panel.transcript_list.viewport_bounds(),
+                    )
+                })
+            };
+            let before = anchor(vcx);
+            vcx.simulate_click(toggle.center(), Default::default());
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
-            panel.read_with(vcx, |panel, _| {
-                assert!(panel.expanded_prompts.contains(&0));
-                assert!(matches!(&panel.items[0], Item::User(original) if original == &text));
+            assert!(
+                vcx.debug_bounds("prompt-content-0").unwrap().size.height > compact.size.height
+            );
+            assert_eq!(
+                anchor(vcx),
+                before,
+                "opening the sticky copy must not jump to the row"
+            );
+            vcx.simulate_keystrokes("space");
+            vcx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("space").unwrap(),
             });
-            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
-            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(
-                vcx.debug_bounds("user-prompt-0").unwrap().size,
-                compact.size
+                vcx.debug_bounds("prompt-content-0").unwrap().size.height,
+                compact.size.height
             );
+            assert_eq!(
+                anchor(vcx),
+                before,
+                "closing the sticky copy must not move the list"
+            );
+            vcx.simulate_keystrokes("enter");
+            vcx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            });
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("prompt-content-0").unwrap().size.height > compact.size.height
+            );
+
+            for _ in 0..10 {
+                wheel_transcript(vcx, 300.);
+                if vcx.debug_bounds("pinned-latest-prompt").is_none() {
+                    break;
+                }
+            }
+            assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+            assert_eq!(
+                vcx.debug_bounds("prompt-content-0").unwrap().size.height,
+                inline.size.height
+            );
+            assert!(vcx.debug_bounds("prompt-expand-0").is_none());
+            let leaf = vcx.debug_bounds("selectable-text-0-0").unwrap();
+            let position = gpui::point(leaf.left() + px(100.), leaf.top() + px(10.));
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                click_count: 4,
+                ..Default::default()
+            });
+            vcx.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                click_count: 4,
+                ..Default::default()
+            });
+            vcx.simulate_keystrokes("ctrl-c");
+            assert!(
+                vcx.update(|_, cx| cx.read_from_clipboard())
+                    .and_then(|item| item.text())
+                    .is_some_and(|text| text.contains("Unabridged dictation tail."))
+            );
+            for _ in 0..10 {
+                wheel_transcript(vcx, -180.);
+                if vcx.debug_bounds("transcript-row-0").is_none() {
+                    break;
+                }
+            }
+            assert_eq!(
+                vcx.debug_bounds("prompt-content-0").unwrap().size.height,
+                compact.size.height
+            );
+            println!(
+                "ACCEPTANCE: {width}px clean={clean_chat} inline={inline:?} preview={compact:?}, wheel pin/unpin/repin, click/Space/Enter, transcript anchor unchanged"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn pinned_only_disclosure_starts_at_four_real_lines(cx: &mut gpui::TestAppContext) {
+        for (width, text, overflows) in [
+            (600., "First line\nSecond line\nThird line", false),
+            (
+                600.,
+                "First line\nSecond line\nThird line\nFourth line",
+                true,
+            ),
+            (
+                900.,
+                "First line\nSecond line\nThe last line is just long enough to wrap in a narrow pane.",
+                false,
+            ),
+            (
+                320.,
+                "First line\nSecond line\nThe last line is just long enough to wrap in a narrow pane.",
+                true,
+            ),
+        ] {
+            let (panel, vcx) = cx.add_window_view(|_, cx| {
+                Panel::new(
+                    "pinned-lines".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            });
+            let handle = vcx.update(|window, _| window.window_handle());
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(550.)));
             panel.update(vcx, |panel, cx| {
-                panel.expanded_prompts.insert(0);
+                panel.items.push(Item::User(text.into()));
                 panel
                     .items
-                    .extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
-                panel.stick_to_bottom = true;
+                    .extend((0..30).map(|n| Item::Assistant(format!("Answer {n}"))));
                 cx.notify();
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
             assert_eq!(
-                vcx.debug_bounds("user-prompt-0").unwrap().size,
-                compact.size
+                vcx.debug_bounds("prompt-expand-0").is_some(),
+                overflows,
+                "{width}px: {text}"
             );
-            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
-            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
-            panel.read_with(vcx, |panel, _| assert!(panel.expanded_prompts.contains(&0)));
-            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
-            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert_eq!(
-                vcx.debug_bounds("user-prompt-0").unwrap().size,
-                compact.size
-            );
-        }
-    }
-
-    #[gpui::test]
-    fn collapsed_wrapped_prompt_clamps_to_whole_lines(cx: &mut gpui::TestAppContext) {
-        let (panel, vcx) = cx.add_window_view(|_, cx| {
-            Panel::new(
-                "clamped-prompt".into(),
-                None,
-                None,
-                crate::harness::spawn_inert(),
-                cx,
-            )
-        });
-        let handle = vcx.update(|window, _| window.window_handle());
-        let text = "Wrapped words fill many visual lines here. ".repeat(40);
-        for width in [900., 600., 320.] {
-            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
-            panel.update(vcx, |panel, cx| {
-                *panel.items = vec![Item::User(text.clone())];
-                panel.expanded_prompts.clear();
-                cx.notify();
-            });
-            vcx.run_until_parked();
-            // The clip box adds 4px of fill padding above and below the text.
-            let content = vcx.debug_bounds("prompt-content-0").unwrap();
-            let line_height = 13.5 * 1.55;
-            let lines = (f32::from(content.size.height) - 8.) / line_height;
-            assert!(
-                (lines - lines.round()).abs() < 0.05,
-                "collapsed prompt at {width}px shows a partial line: {lines}"
-            );
-            assert!(lines.round() as usize <= COLLAPSED_PROMPT_LINES);
-            // The clip box is cancelled by margins, so the card still hugs text.
-            let card = vcx.debug_bounds("user-prompt-0").unwrap();
-            assert!(card.left() <= content.left() + px(0.5));
         }
     }
 
@@ -813,7 +940,13 @@ mod tests {
         );
         assert_eq!(
             card.size.width,
-            content.size.width + px(16.),
+            content.size.width
+                + px(16.)
+                + vcx
+                    .debug_bounds("prompt-expand-0")
+                    .map_or(px(0.), |toggle| {
+                        toggle.size.width + px(PIN_DISCLOSURE_GAP)
+                    }),
             "number does not change card padding"
         );
     }
@@ -1049,10 +1182,14 @@ mod tests {
                         .debug_bounds("user-prompt-0")
                         .expect("card never disappears");
                     assert_number_geometry(vcx, card);
-                    assert_eq!(
-                        card.size, original.size,
-                        "sticky markdown has identical size at width {width}, offset {offset}"
-                    );
+                    if vcx.debug_bounds("prompt-expand-0").is_some() {
+                        assert!(card.size.height < original.size.height);
+                    } else {
+                        assert_eq!(
+                            card.size, original.size,
+                            "short card stays the same size at {width}px, offset {offset}"
+                        );
+                    }
                     assert_eq!(card.left(), original.left(), "no horizontal jump");
                     assert_eq!(
                         card.top(),
@@ -1205,7 +1342,7 @@ mod tests {
             *panel.items = vec![
                 Item::User("Old prompt line\n\n".repeat(5)),
                 Item::Assistant("Short answer".into()),
-                Item::User("Newer prompt line\n\n".repeat(3)),
+                Item::User("Newer prompt line".into()),
             ];
             for n in 0..40 {
                 panel.items.push(Item::Assistant(format!("Response {n}")));
@@ -1219,7 +1356,7 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let old_size = vcx.debug_bounds("user-prompt-0").unwrap().size;
+        let mut old_pinned_size = None;
         let new_size = vcx.debug_bounds("user-prompt-2").unwrap().size;
         let mut pushed_off = false;
         let mut switched = false;
@@ -1243,7 +1380,11 @@ mod tests {
             if pinned_index == Some(0) {
                 let old = vcx.debug_bounds("user-prompt-0").unwrap();
                 let newer = vcx.debug_bounds("user-prompt-2").unwrap();
-                assert_eq!(old.size, old_size, "clipping never resizes old content");
+                assert_eq!(
+                    old.size,
+                    *old_pinned_size.get_or_insert(old.size),
+                    "clipping never resizes the pinned content"
+                );
                 assert_eq!(newer.size, new_size);
                 assert!(old.bottom() <= newer.top(), "prompt cards never overlap");
                 if old.top() < viewport.top() {
@@ -1289,7 +1430,7 @@ mod tests {
             if panel.read_with(vcx, |panel, _| panel.offscreen_prompt) == Some(0) {
                 let old = vcx.debug_bounds("user-prompt-0").unwrap();
                 let newer = vcx.debug_bounds("user-prompt-2").unwrap();
-                assert_eq!(old.size, old_size);
+                assert_eq!(Some(old.size), old_pinned_size);
                 assert_eq!(newer.size, new_size);
                 assert!(newer.top() > viewport.top());
                 assert!(old.top() < viewport.top());

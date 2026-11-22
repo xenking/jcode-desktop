@@ -29,9 +29,10 @@ least one visible tool and no earlier `tools-*` artifacts.
   output, not just changed hashes.
 - **Prompt disclosure and scroll containment:** launch a fresh run with
   `--fixture transcript-scroll`, then drive `--journey transcript-scroll`.
-  The native window dispatches GPUI pointer and wheel events. Require the prompt
-  to grow beyond the viewport, restore its compact height, and keep the outer
-  offset unchanged through tool scrolling and edge momentum. A new wheel gesture
+  The native window dispatches GPUI pointer and wheel events. The inline prompt
+  already exceeds the viewport. The wheel pins it and only the pinned copy
+  expands and collapses, without moving the transcript anchor. Tool scrolling
+  and edge momentum leave the transcript offset unchanged. A new wheel gesture
   outside the tool must move the transcript. Inspect the captured PNGs.
 - **Identity:** `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state`.
   Compare exact session and tool IDs with `tools-before.json`. Other transcript
