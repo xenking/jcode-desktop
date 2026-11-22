@@ -1643,7 +1643,12 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-todo-card").is_none());
         let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
-        assert_eq!(prompt.top(), px(8.), "no-todo prompt keeps a top gap");
+        let clean_chat = vcx.debug_bounds("clean-chat-toggle").unwrap();
+        assert_eq!(
+            prompt.top() - clean_chat.bottom(),
+            px(8.),
+            "no-todo prompt keeps a gap below the chat toggle"
+        );
         assert_eq!(prompt.top(), vcx.debug_bounds("transcript").unwrap().top());
     }
 }
