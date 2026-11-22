@@ -208,6 +208,9 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
     assert_eq!(clipboard(vcx).as_deref(), Some(saved_answer.as_str()));
     vcx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("Again".into())));
     vcx.simulate_keystrokes("space");
+    vcx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+    });
     assert_eq!(clipboard(vcx).as_deref(), Some(saved_answer.as_str()));
     assert!(commands.try_recv().is_err());
     workspace.read_with(vcx, |workspace, cx| {
