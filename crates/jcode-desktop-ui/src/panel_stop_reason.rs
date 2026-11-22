@@ -198,6 +198,8 @@ impl Panel {
 
     pub(super) fn record_stop(&mut self, notice: StopNotice) {
         if !notice.provisional {
+            self.flush_reasoning();
+            self.settle_assistant_output(AssistantOutputPhase::Update);
             // Confirmed rejection/cancellation settles unacknowledged prompts.
             // A transport loss alone is ambiguous and must preserve them for
             // reconnect reconciliation rather than claiming delivery.

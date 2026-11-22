@@ -4802,6 +4802,8 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
     match event {
         ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id.as_str()),
         ApiEvent::TextDelta { session_id, .. }
+        | ApiEvent::TextDone { session_id, .. }
+        | ApiEvent::TextReplace { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
         | ApiEvent::ToolStart { session_id, .. }
@@ -4876,6 +4878,8 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
             *from_session = address.ui_id(from_session);
         }
         ApiEvent::TextDelta { session_id, .. }
+        | ApiEvent::TextDone { session_id, .. }
+        | ApiEvent::TextReplace { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
         | ApiEvent::ToolStart { session_id, .. }

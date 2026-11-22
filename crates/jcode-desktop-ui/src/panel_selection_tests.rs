@@ -494,6 +494,8 @@ fn clean_chat_filters_mixed_transcript_and_clipboard(cx: &mut gpui::TestAppConte
     vcx.simulate_click(toggle.center(), Default::default());
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("restored-reasoning").is_none());
+    assert!(vcx.debug_bounds("clean-chat-update").is_some());
+    assert!(vcx.debug_bounds("clean-chat-final").is_some());
     let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
     let last = vcx.debug_bounds("selectable-text-5-0").unwrap();
     begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);

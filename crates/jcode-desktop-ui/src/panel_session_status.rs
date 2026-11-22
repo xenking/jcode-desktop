@@ -60,7 +60,8 @@ impl Panel {
             .items
             .iter()
             .rev()
-            .take_while(|item| !matches!(item, Item::User(_) | Item::Assistant(_)))
+            .take_while(|item| !matches!(item, Item::User(_))
+                && !item.assistant_text().is_some_and(|text| !text.trim().is_empty()))
             .any(|item| {
                 matches!(item, Item::Tool { error: Some(error), .. }
                 if error == "cancelled by the user")

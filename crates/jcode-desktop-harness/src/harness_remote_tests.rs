@@ -411,7 +411,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         images: vec![],
     });
     server.event(ApiEvent::TextDelta {
-        message_id: None,
+        message_id: Some("response-id".into()),
         session_id: "same-id".into(),
         text: "answer".into(),
     });
@@ -425,6 +425,21 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         ));
         matches!(u, Update::Event { session_id, event: ApiEvent::TextDelta { session_id: inner, .. } } if session_id == &ui_id && inner == &ui_id)
     });
+    server.event(ApiEvent::TextReplace {
+        session_id: "same-id".into(),
+        text: "corrected".into(),
+        message_id: Some("response-id".into()),
+    });
+    wait_update(&updates, |u| matches!(u, Update::Event {
+        session_id, event: ApiEvent::TextReplace { session_id: inner, text, message_id: Some(id) }
+    } if session_id == &ui_id && inner == &ui_id && id == "response-id" && text == "corrected"));
+    server.event(ApiEvent::TextDone {
+        session_id: "same-id".into(),
+        message_id: Some("response-id".into()),
+    });
+    wait_update(&updates, |u| matches!(u, Update::Event {
+        session_id, event: ApiEvent::TextDone { session_id: inner, message_id: Some(id) }
+    } if session_id == &ui_id && inner == &ui_id && id == "response-id"));
     server.event(ApiEvent::TurnDone {
         session_id: "same-id".into(),
         pending_soft_interrupts: None,

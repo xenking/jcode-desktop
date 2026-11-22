@@ -70,7 +70,7 @@ impl Panel {
             for item in self.items.iter() {
                 match item {
                     Item::User(text) => content.push_str(&format!("## You\n\n{text}\n\n")),
-                    Item::Assistant(text) => {
+                    Item::Assistant(text) | Item::AssistantOutput { text, .. } => {
                         content.push_str(&format!("## Assistant\n\n{text}\n\n"))
                     }
                     Item::Reasoning(text) => {

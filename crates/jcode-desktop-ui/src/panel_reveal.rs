@@ -43,6 +43,7 @@ impl Panel {
                         .filter_map(|(index, item)| match item {
                             Item::User(message)
                             | Item::Assistant(message)
+                            | Item::AssistantOutput { text: message, .. }
                             | Item::Reasoning(message)
                             | Item::AgentMessage { message, .. }
                                 if message.contains(&text) =>
@@ -64,9 +65,7 @@ impl Panel {
                 "index range must be within loaded_transcript_items",
             ));
         }
-        let position = self.transcript_derived(cx).rows.iter().position(|row| {
-            matches!(row.source, TranscriptRowSource::Settled(index) if range.contains(&index))
-        }).ok_or(not_found)?;
+        let position = self.transcript_derived(cx).rows.iter().position(|row| range.contains(&row.index)).ok_or(not_found)?;
         if !self.scroll_to_revealed_row(position) {
             return Err((
                 "transcript_not_ready",
@@ -104,6 +103,7 @@ impl Panel {
             self.items.iter().position(|item| match item {
                 Item::User(text)
                 | Item::Assistant(text)
+                | Item::AssistantOutput { text, .. }
                 | Item::AgentMessage { message: text, .. } => matches(text),
                 _ => false,
             })
@@ -124,9 +124,7 @@ impl Panel {
             return true;
         };
         let derived = self.transcript_derived(cx);
-        let Some(position) = derived.rows.iter().position(|row| {
-            matches!(&row.source, TranscriptRowSource::Settled(index) if *index == item_index)
-        }) else {
+        let Some(position) = derived.rows.iter().position(|row| row.index == item_index) else {
             return true;
         };
         if !self.scroll_to_revealed_row(position) {

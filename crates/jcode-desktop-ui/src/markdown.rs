@@ -2478,6 +2478,18 @@ fn table(
 mod tests {
     use super::*;
 
+    #[test]
+    fn clean_chat_keeps_public_markdown_and_literal_reasoning_markup() {
+        let literal = jcode_render_core::reasoning_line_markup("## Private marker in a code sample");
+        let private = jcode_render_core::reasoning_line_markup("## 私的な推論");
+        assert!(public_transcript(&private).trim().is_empty());
+        let source = format!("## Public heading\n\n```md\n{literal}```\n\n{private}Visible answer");
+        assert_eq!(
+            public_transcript(&source),
+            format!("## Public heading\n\n```md\n{literal}```\n\nVisible answer")
+        );
+    }
+
     #[gpui::test]
     fn pinned_prompt_selection_namespace_is_independent(cx: &mut gpui::TestAppContext) {
         struct PromptCopies {

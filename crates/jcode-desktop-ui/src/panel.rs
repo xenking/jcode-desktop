@@ -44,6 +44,9 @@ mod desktop_commands;
 
 #[path = "panel_clean_chat.rs"]
 mod clean_chat;
+#[path = "panel_assistant_output.rs"]
+mod assistant_output;
+pub use assistant_output::AssistantOutputPhase;
 
 #[cfg(test)]
 #[path = "panel_command_workflow_tests.rs"]
@@ -289,9 +292,8 @@ fn completion_turns(items: &[Item]) -> Vec<crate::prompt_completion::Turn> {
         .iter()
         .rev()
         .filter_map(|item| match item {
-            Item::User(text) => Some(("user", text)),
-            Item::Assistant(text) => Some(("assistant", text)),
-            _ => None,
+            Item::User(text) => Some(("user", text.as_str())),
+            _ => item.assistant_text().map(|text| ("assistant", text)),
         })
         .filter(|(_, text)| !text.trim().is_empty())
         .take(6)
@@ -386,6 +388,12 @@ pub enum Item {
     User(String),
     Image(TranscriptImage),
     Assistant(String),
+    AssistantOutput {
+        text: String,
+        phase: AssistantOutputPhase,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stream_id: Option<String>,
+    },
     AgentMessage {
         from_session: String,
         from_name: Option<String>,
@@ -746,6 +754,7 @@ pub struct Panel {
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
+    live_assistant_output: Option<assistant_output::LiveAssistantOutput>,
     streaming_reasoning: String,
     /// Paced, fading reveal of the live rows above. Presentation only.
     text_reveal: stream_reveal::StreamReveal,
@@ -1677,6 +1686,7 @@ impl Panel {
             response_stats: response_stats::Tracker::default(),
             cache_telemetry: cache_card::CacheTelemetry::default(),
             items,
+            live_assistant_output: None,
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
             } else {
@@ -3006,6 +3016,7 @@ impl Panel {
                     self.user_times.clear();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
+                    self.live_assistant_output = None;
                     self.streaming_reasoning.clear();
                 }
                 "/clear" => self.run_session_operation(
@@ -3527,6 +3538,7 @@ impl Panel {
         }
         let mut items = Vec::with_capacity(messages.len() + trailing_images.len());
         let mut user_ordinal = 0;
+        let mut assistant_before_tool = None;
         let message_count = messages.len();
         for (index, message) in messages.into_iter().enumerate() {
             if let Some(images) = images_by_message.remove(&index) {
@@ -3538,6 +3550,7 @@ impl Panel {
             }
             match message.role.as_str() {
                 "user" => {
+                    assistant_before_tool = None;
                     let prompt = agent_message::history_user_item(
                         message.content,
                         !message.attachments.is_empty()
@@ -3563,8 +3576,15 @@ impl Panel {
                     user_ordinal += 1;
                 }
                 "assistant" => {
+                    assistant_before_tool = None;
                     if !message.content.trim().is_empty() {
-                        items.push(Item::Assistant(message.content));
+                        if message.response_stats.is_none() {
+                            assistant_before_tool = Some(items.len());
+                        }
+                        items.push(Item::history_assistant(
+                            message.content,
+                            message.response_stats.is_some(),
+                        ));
                     }
                     if let Some(stats) = message.response_stats {
                         let mut stats: response_stats::ResponseStats = stats.into();
@@ -3575,6 +3595,15 @@ impl Panel {
                     }
                 }
                 "tool" => {
+                    if let Some(index) = assistant_before_tool.take()
+                        && let Item::Assistant(text) = &mut items[index]
+                    {
+                        items[index] = Item::AssistantOutput {
+                            text: std::mem::take(text),
+                            phase: AssistantOutputPhase::Update,
+                            stream_id: None,
+                        };
+                    }
                     if let Some(tool) = message.tool {
                         if tool.name == "ask"
                             && let Some(at) = message.timestamp_ms
@@ -3894,7 +3923,7 @@ impl Panel {
             .rev()
             .take_while(|item| !matches!(item, Item::User(_)))
             .find_map(|item| match item {
-                Item::Assistant(text) => Some(text),
+                Item::Assistant(text) | Item::AssistantOutput { text, .. } => Some(text),
                 _ => None,
             })
         {
@@ -4132,7 +4161,7 @@ impl Panel {
             }
             ApiEvent::PeerUserMessage { content, .. } => {
                 self.flush_reasoning();
-                self.flush_streaming();
+                self.settle_assistant_output(AssistantOutputPhase::Update);
                 self.stamp_user(self.items.len());
                 self.items.push(Item::User(content.clone()));
                 self.stick_to_bottom = true;
@@ -4159,15 +4188,21 @@ impl Panel {
                     Instant::now(),
                 );
             }
-            ApiEvent::TextDelta { text, .. } => {
-                self.flush_reasoning();
-                self.streaming_text.push_str(text);
+            ApiEvent::TextDelta { text, message_id, .. } => {
+                self.append_assistant_delta(text, message_id.as_deref());
+            }
+            ApiEvent::TextDone { message_id, .. } => {
+                self.close_assistant_output(message_id.as_deref());
+            }
+            ApiEvent::TextReplace { text, message_id, .. } => {
+                self.replace_assistant_output(message_id.as_deref(), text);
             }
             ApiEvent::ReasoningDelta { text, .. } => {
                 // Thinking that resumes after answer text is a new phase. Settle
                 // the text first so the thought paints below it instead of
                 // merging into the earlier thinking block above the text.
                 self.flush_streaming();
+                self.continue_after_closed_output();
                 self.streaming_reasoning.push_str(text);
             }
             ApiEvent::ReasoningDone { .. } => {
@@ -4175,7 +4210,7 @@ impl Panel {
             }
             ApiEvent::ToolStart { call_id, name, .. } => {
                 self.flush_reasoning();
-                self.flush_streaming();
+                self.settle_assistant_output(AssistantOutputPhase::Update);
                 self.arriving_tools.insert(call_id.clone(), Instant::now());
                 self.tool_started.insert(call_id.clone(), Instant::now());
                 self.tool_wall_times
@@ -4422,8 +4457,16 @@ impl Panel {
             ApiEvent::TurnDone { .. } => {
                 self.refresh_context_usage(cx);
                 self.reconcile_reconnect_response();
+                self.flush_reasoning();
+                self.flush_streaming();
+                let outcome = self.finished_turn_outcome();
+                self.settle_assistant_output(if outcome == session_status::TurnOutcome::Done {
+                    AssistantOutputPhase::Final
+                } else {
+                    AssistantOutputPhase::Update
+                });
                 self.finish_response();
-                self.turn_outcome = Some(self.finished_turn_outcome());
+                self.turn_outcome = Some(outcome);
             }
             ApiEvent::ProviderGuardrailRetry {
                 turn_id,
@@ -4432,7 +4475,7 @@ impl Panel {
                 ..
             } => {
                 self.flush_reasoning();
-                self.flush_streaming();
+                self.settle_assistant_output(AssistantOutputPhase::Update);
                 let text = format!(
                     "Provider stopped the response. Jcode retried the request (attempt {attempt} of {max_attempts})."
                 );
@@ -4619,6 +4662,8 @@ impl Panel {
                 self.title = display_title.clone().into();
             }
             ApiEvent::Error { code, message } => {
+                self.flush_reasoning();
+                self.settle_assistant_output(AssistantOutputPhase::Update);
                 self.finish_response();
                 self.turn_outcome = Some(session_status::TurnOutcome::Error);
                 if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
@@ -4628,6 +4673,9 @@ impl Panel {
                         message: message.clone(),
                     });
                 }
+            }
+            ApiEvent::SoftInterruptInjected { .. } => {
+                self.settle_assistant_output(AssistantOutputPhase::Update);
             }
             _ => {}
         }
@@ -4654,8 +4702,9 @@ impl Panel {
     fn flush_streaming(&mut self) {
         if !self.streaming_text.trim().is_empty() {
             self.transcript_measurements.dirty = true;
-            self.items
-                .push(Item::Assistant(std::mem::take(&mut self.streaming_text)));
+            let text = std::mem::take(&mut self.streaming_text);
+            let item = self.assistant_output_item(text);
+            self.items.push(item);
         } else {
             self.streaming_text.clear();
         }
@@ -5255,13 +5304,21 @@ impl Panel {
                 if !clean_chat::conversation_item(item) {
                     continue;
                 }
-                if let Item::Assistant(text) = item {
+                if let Some(text) = item.assistant_text() {
                     let public = markdown::public_transcript(text);
                     if public.trim().is_empty() {
                         continue;
                     }
                     if let std::borrow::Cow::Owned(text) = public {
-                        source = TranscriptRowSource::Owned(Box::new(Item::Assistant(text)));
+                        let public = match item {
+                            Item::AssistantOutput { phase, stream_id, .. } => Item::AssistantOutput {
+                                text,
+                                phase: *phase,
+                                stream_id: stream_id.clone(),
+                            },
+                            _ => Item::Assistant(text),
+                        };
+                        source = TranscriptRowSource::Owned(Box::new(public));
                     }
                 }
             }
@@ -5278,6 +5335,9 @@ impl Panel {
                     .collect();
             }
             if inline_images.contains(&index) {
+                continue;
+            }
+            if matches!(item, Item::AssistantOutput { text, .. } if text.trim().is_empty()) {
                 continue;
             }
             // A cached transcript from before the history merge fix can still
@@ -5382,7 +5442,7 @@ impl Panel {
             (!self.streaming_text.is_empty()).then(|| {
                 (
                     usize::MAX,
-                    Item::Assistant({
+                    self.assistant_output_item({
                         let text = self.text_reveal.visible(&self.streaming_text);
                         if clean_chat {
                             markdown::public_transcript(text).into_owned()
@@ -5630,7 +5690,7 @@ impl Panel {
                     })
                     .into_any_element()
             }
-            Item::Assistant(text) => div()
+            Item::Assistant(text) | Item::AssistantOutput { text, .. } => div()
                 .debug_selector(|| "assistant-response".into())
                 .font_family(Theme::global().FONT_AI)
                 .px_1()
@@ -6903,6 +6963,7 @@ impl Render for Panel {
                 )
             });
         if projection_changed {
+            self.transcript_measurements.dirty = true;
             self.cancel_transcript_momentum();
             self.tail_glide.reset();
         }
@@ -7184,6 +7245,13 @@ impl Render for Panel {
                                         cx,
                                     )
                                 });
+                                let heading = clean_chat.then(|| {
+                                    let previous = row_index.checked_sub(1).map(|index| match &list_rows[index].source {
+                                        TranscriptRowSource::Settled(index) => &panel.items[*index],
+                                        TranscriptRowSource::Owned(item) => item,
+                                    });
+                                    clean_chat::message_heading(item, previous)
+                                }).flatten();
                                 let padded = div()
                                     .debug_selector(move || format!("transcript-row-{row_index}"))
                                     .relative()
@@ -7203,6 +7271,7 @@ impl Render for Panel {
                                     .when(display.debug_visual, |el| {
                                         el.border_1().border_color(Theme::global().TOOL_BORDER)
                                     })
+                                    .children(heading)
                                     .child(element)
                                     .when(
                                         display.tool_call_details && !display.screenshot_mode,
@@ -7852,7 +7921,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         Item::Tool {
             name, done: true, ..
         } if name == "ask" => Some("you"),
-        Item::Assistant(_) => Some("jcode"),
+        Item::Assistant(_) | Item::AssistantOutput { .. } => Some("jcode"),
         Item::AgentMessage { .. }
         | Item::Image(_)
         | Item::ResponseStats(_)
@@ -12578,6 +12647,9 @@ fn demo_tool_times(fixture: Option<&str>) -> DemoToolTimes {
 /// real session through each case.
 fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     let fixture = fixture.map(str::to_owned);
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("clean-chat") {
+        return clean_chat::screenshot_fixture();
+    }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("decision") {
         return vec![Item::Tool {
             call_id: "decision-fixture".into(),

@@ -111,7 +111,7 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
     std::mem::discriminant(item).hash(&mut state);
     open.bits().hash(&mut state);
     match item {
-        Item::User(text) | Item::Assistant(text) | Item::Reasoning(text) | Item::Error(text) => {
+        Item::User(text) | Item::Assistant(text) | Item::AssistantOutput { text, .. } | Item::Reasoning(text) | Item::Error(text) => {
             text.hash(&mut state)
         }
         Item::RuntimeError { message, .. } | Item::AgentMessage { message, .. } => {
@@ -225,7 +225,7 @@ fn segments_with_regions(
             };
             return markdown::selection_segments(visible, index, false, true);
         }
-        Item::Assistant(text) => return markdown::selection_segments(text, index, false, false),
+        Item::Assistant(text) | Item::AssistantOutput { text, .. } => return markdown::selection_segments(text, index, false, false),
         Item::AgentMessage { message, .. } if open.details => {
             return markdown::selection_segments(
                 agent_message::dm_body(message),

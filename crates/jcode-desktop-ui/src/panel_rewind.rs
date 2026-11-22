@@ -20,7 +20,7 @@ enum Target {
 impl Target {
     fn matches(self, item: &Item) -> bool {
         prompt::is_pinnable_prompt(item)
-            || matches!((self, item), (Self::Message, Item::Assistant(text)) if !text.trim().is_empty())
+            || matches!(self, Self::Message) && item.assistant_text().is_some_and(|text| !text.trim().is_empty())
     }
 }
 
@@ -226,8 +226,7 @@ impl Panel {
         fn key(item: &Item) -> Option<RewindMessageKey> {
             match item {
                 Item::User(text) => RewindMessageKey::new("user", text),
-                Item::Assistant(text) => RewindMessageKey::new("assistant", text),
-                _ => None,
+                _ => item.assistant_text().and_then(|text| RewindMessageKey::new("assistant", text)),
             }
         }
         let Some(target) = self.items.get(selected).and_then(key) else {

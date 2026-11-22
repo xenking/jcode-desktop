@@ -5,6 +5,8 @@ use super::*;
 pub struct TranscriptSnapshot {
     items: Vec<Item>,
     streaming_text: String,
+    #[serde(default)]
+    live_assistant_output: Option<assistant_output::LiveAssistantOutput>,
     streaming_reasoning: String,
     history_loaded: bool,
     status: String,
@@ -41,6 +43,7 @@ impl Panel {
         TranscriptSnapshot {
             items: self.items.to_vec(),
             streaming_text: self.streaming_text.clone(),
+            live_assistant_output: self.live_assistant_output.clone(),
             streaming_reasoning: self.streaming_reasoning.clone(),
             history_loaded: self.history_loaded,
             status: self.status.clone(),
@@ -82,6 +85,7 @@ impl Panel {
             }
         }
         self.streaming_text = snapshot.streaming_text;
+        self.live_assistant_output = snapshot.live_assistant_output;
         self.streaming_reasoning = snapshot.streaming_reasoning;
         // Restored text was already read. Do not replay its reveal.
         self.text_reveal.snap(self.streaming_text.len());
@@ -154,7 +158,7 @@ impl Panel {
                     prefix.push(item);
                 }
                 "assistant" if !message.content.trim().is_empty() => {
-                    prefix.push(Item::Assistant(message.content.clone()))
+                    prefix.push(Item::history_assistant(message.content.clone(), message.response_stats.is_some()))
                 }
                 _ => {}
             }
@@ -219,7 +223,7 @@ impl Panel {
                 .take_while(|m| m.role != "user")
                 .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
             {
-                self.recover_response(&response.content);
+                self.recover_history_assistant(response);
             }
             self.flush_reasoning();
             self.flush_streaming();
@@ -239,7 +243,7 @@ impl Panel {
                         self.items.push(item);
                     }
                     "assistant" if !message.content.trim().is_empty() => {
-                        self.items.push(Item::Assistant(message.content.clone()))
+                        self.items.push(Item::history_assistant(message.content.clone(), message.response_stats.is_some()))
                     }
                     _ => {}
                 }
@@ -259,7 +263,7 @@ impl Panel {
             // segment after it. Only equal/extended text can reconcile a stream.
             if self.streaming_text.is_empty() || response.content.starts_with(&self.streaming_text)
             {
-                self.recover_response(&response.content);
+                self.recover_history_assistant(&response);
                 if let Some(stats) = response.response_stats {
                     self.finish_response();
                     let mut restored: response_stats::ResponseStats = stats.into();

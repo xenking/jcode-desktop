@@ -3,9 +3,7 @@ use super::*;
 pub(super) fn conversation_item(item: &Item) -> bool {
     match item {
         Item::User(_) => prompt::is_pinnable_prompt(item),
-        // History marks some final rows with response stats. Live text and
-        // older history have no final marker, and progress is public too.
-        Item::Assistant(text) => !text.trim().is_empty(),
+        Item::Assistant(text) | Item::AssistantOutput { text, .. } => !text.trim().is_empty(),
         Item::Image(image) => match &image.source {
             jcode_sdk::RenderedImageSource::UserInput => true,
             jcode_sdk::RenderedImageSource::Other { role } => role == "assistant",
@@ -35,11 +33,83 @@ pub(super) fn active_error(items: &[Item]) -> Option<usize> {
             Item::Stopped(notice) => {
                 return (notice.shows_error() || notice.provisional).then_some(index);
             }
-            Item::User(_) | Item::Assistant(_) if conversation_item(item) => break,
+            Item::User(_) if conversation_item(item) => break,
+            item if item
+                .assistant_text()
+                .is_some_and(|text| !markdown::public_transcript(text).trim().is_empty()) =>
+            {
+                break;
+            }
             _ => {}
         }
     }
     None
+}
+
+pub(super) fn message_heading(item: &Item, previous: Option<&Item>) -> Option<gpui::AnyElement> {
+    let (label, selector, separator, emphasized) = match item {
+        Item::User(_) => ("You", "clean-chat-user", previous.is_some(), true),
+        Item::AssistantOutput {
+            phase, stream_id, ..
+        } => {
+            if let Some(Item::AssistantOutput {
+                phase: before,
+                stream_id: Some(prior),
+                ..
+            }) = previous
+                && before == phase
+                && stream_id.as_ref() == Some(prior)
+            {
+                return None;
+            }
+            match phase {
+                AssistantOutputPhase::Final => ("Final", "clean-chat-final", true, true),
+                AssistantOutputPhase::Update => ("Update", "clean-chat-update", false, false),
+                AssistantOutputPhase::Pending => {
+                    ("Responding", "clean-chat-responding", false, false)
+                }
+            }
+        }
+        _ => return None,
+    };
+    let theme = Theme::global();
+    Some(
+        div()
+            .debug_selector(move || selector.into())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pb_1()
+            .when(separator, |el| {
+                el.child(div().w_full().h(px(1.)).bg(theme.PANEL_BORDER))
+            })
+            .child(
+                div()
+                    .px_1()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if emphasized {
+                        theme.TEXT
+                    } else {
+                        theme.TEXT_DIM
+                    })
+                    .child(label),
+            )
+            .into_any_element(),
+    )
+}
+
+pub(super) fn screenshot_fixture() -> Vec<Item> {
+    let reasoning = jcode_render_core::reasoning_line_markup("## Respecting the todo lane");
+    let history = serde_json::from_value(serde_json::json!([
+        {"role": "user", "content": "What did the earlier check cover?"},
+        {"role": "assistant", "content": "Archived note. The previous check covered the original baseline only."},
+        {"role": "user", "content": "Check the import again and give me the results."},
+        {"role": "assistant", "content": format!("{reasoning}The import is running. I will compare the row counts before and after the retry, then check that the output is consistent.")},
+        {"role": "tool", "content": "Internal tool output", "tool": {"id": "audit", "name": "read", "input": {}}},
+        {"role": "assistant", "response_stats": {"output_tokens": 64}, "content": "The import passed. Every source record appears once, and the second run produced the same output.\n\nNo records were dropped. The exported report matches the source totals."}
+    ])).expect("valid clean chat history fixture");
+    Panel::history_items(history, vec![]).0
 }
 
 pub(super) fn remap_anchor(
@@ -220,6 +290,138 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text(id: &str, text: &str) -> ApiEvent {
+        ApiEvent::TextDelta {
+            session_id: "clean-phases".into(),
+            text: text.into(),
+            message_id: Some(id.into()),
+        }
+    }
+
+    fn text_done(id: &str) -> ApiEvent {
+        ApiEvent::TextDone {
+            session_id: "clean-phases".into(),
+            message_id: Some(id.into()),
+        }
+    }
+
+    fn turn_done() -> ApiEvent {
+        ApiEvent::TurnDone {
+            session_id: "clean-phases".into(),
+            pending_soft_interrupts: None,
+        }
+    }
+
+    #[gpui::test]
+    fn clean_chat_final_requires_a_completed_turn_even_across_reload(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "clean-phases".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.set_clean_chat(Some(true), cx);
+            panel
+                .items
+                .push(Item::User("Compare chronological results".into()));
+            for event in [
+                text("commentary", "Final is a word, not a phase."),
+                text_done("commentary"),
+                ApiEvent::ReasoningDelta {
+                    session_id: "clean-phases".into(),
+                    text: "## Respecting the todo lane\nPrivate reasoning".into(),
+                },
+                text("report", "Uncorrected report"),
+            ] {
+                panel.apply(&event, cx);
+            }
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("clean-chat-user").is_some());
+        assert!(vcx.debug_bounds("clean-chat-update").is_some());
+        assert!(vcx.debug_bounds("clean-chat-responding").is_some());
+        assert!(vcx.debug_bounds("clean-chat-final").is_none());
+        assert!(vcx.debug_bounds("reasoning-inline").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextReplace {
+                    session_id: "clean-phases".into(),
+                    text: "Corrected report.".into(),
+                    message_id: Some("report".into()),
+                },
+                cx,
+            );
+            panel.apply(&text_done("report"), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("clean-chat-final").is_none());
+
+        let snapshot = panel.read_with(vcx, |panel, cx| {
+            serde_json::to_vec(&panel.snapshot_for_reload(cx)).unwrap()
+        });
+        let (restored, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "clean-phases".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.restore_snapshot(serde_json::from_slice(&snapshot).unwrap(), cx);
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("clean-chat-final").is_none());
+        restored.update(vcx, |panel, cx| panel.apply(&turn_done(), cx));
+        vcx.run_until_parked();
+        let update = vcx.debug_bounds("clean-chat-update").unwrap();
+        let final_report = vcx.debug_bounds("clean-chat-final").unwrap();
+        assert!(update.bottom() < final_report.top());
+        assert!(vcx.debug_bounds("reasoning-inline").is_none());
+        restored.read_with(vcx, |panel, _| {
+            assert!(panel.items.iter().any(|item| matches!(item, Item::AssistantOutput { text, phase: AssistantOutputPhase::Final, .. } if text == "Corrected report.")));
+        });
+    }
+
+    #[gpui::test]
+    fn clean_chat_does_not_promote_tool_prefaces_retracted_or_stopped_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new("clean-phases".into(), None, None, crate::harness::spawn_inert(), cx);
+            panel.set_clean_chat(Some(true), cx);
+            panel.items.push(Item::User("Check tool output".into()));
+            for value in [
+                serde_json::json!({"ev":"text_delta", "message_id":"tool-preface", "text":"Started checking."}),
+                serde_json::json!({"ev":"text_done", "message_id":"tool-preface"}),
+                serde_json::json!({"ev":"tool_start", "call_id":"check", "name":"read"}),
+                serde_json::json!({"ev":"tool_done", "call_id":"check", "name":"read", "output":"private"}),
+                serde_json::json!({"ev":"text_delta", "message_id":"retracted", "text":"Retracted answer"}),
+                serde_json::json!({"ev":"text_done", "message_id":"retracted"}),
+                serde_json::json!({"ev":"text_replace", "message_id":"retracted", "text":""}),
+                serde_json::json!({"ev":"turn_done"}),
+                serde_json::json!({"ev":"text_delta", "message_id":"stopped", "text":"Partial answer"}),
+                serde_json::json!({"ev":"text_done", "message_id":"stopped"}),
+                serde_json::json!({"ev":"session_status", "status":"cancelled"}),
+                serde_json::json!({"ev":"turn_done"}),
+            ] {
+                let mut value = value;
+                value["session_id"] = "clean-phases".into();
+                panel.apply(&serde_json::from_value(value).unwrap(), cx);
+            }
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("clean-chat-update").is_some());
+        assert!(vcx.debug_bounds("clean-chat-final").is_none());
+        assert!(vcx.debug_bounds("tool-header").is_none());
+    }
 
     #[gpui::test]
     fn clean_chat_keeps_anchor_draft_and_live_text_through_reload(cx: &mut gpui::TestAppContext) {
