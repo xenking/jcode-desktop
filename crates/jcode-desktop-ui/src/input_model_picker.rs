@@ -790,7 +790,7 @@ impl PromptInput {
                         .child(speed_icon::render(
                             mode,
                             12.,
-                            if on { ink } else { ink.opacity(0.75).into() },
+                            if on { ink } else { ink.opacity(0.75) },
                         ))
                         .tooltip(move |_, cx| {
                             cx.new(|_| speed_icon::SpeedTooltip(tooltip.clone())).into()
