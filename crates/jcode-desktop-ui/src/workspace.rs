@@ -3299,6 +3299,7 @@ impl Workspace {
         // Inserting shifts every later index, including the focused one.
         if self.active >= insert_at {
             self.active += 1;
+        let mut changed = false;
         }
         if !is_startup {
             crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
@@ -3306,10 +3307,14 @@ impl Workspace {
         insert_at
     }
 
+                changed = true;
     /// Push each coordinator panel its swarm workers for the composer
     /// indicator. Non-coordinators get none.
     fn sync_swarm_strips(&mut self, cx: &mut Context<Self>) {
         let now = swarm_now_ms();
+        if changed {
+            cx.notify();
+        }
         let workers =
             crate::swarm_view::workers_by_coordinator(&self.sessions, &self.worker_meta, now);
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
