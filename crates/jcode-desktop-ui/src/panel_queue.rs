@@ -1232,7 +1232,7 @@ impl Panel {
             });
         }
         self.prepare_prompt(&content);
-        let image_base = self.input.read(cx).session_image_base();
+        let image_base = self.session_image_base;
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
             // take it once the model has seen it.

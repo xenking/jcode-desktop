@@ -1098,6 +1098,7 @@ impl PromptInput {
         numbers
     }
 
+    #[cfg(test)]
     pub(super) fn session_image_base(&self) -> usize {
         self.session_image_base
     }

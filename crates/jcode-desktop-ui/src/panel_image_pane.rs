@@ -56,7 +56,8 @@ impl Gallery {
 
 impl Panel {
     pub(super) fn note_session_image_ordinal(&mut self, ordinal: Option<usize>, cx: &mut Context<Self>) {
-        if let Some(ordinal) = ordinal {
+        if let Some(ordinal) = ordinal.filter(|&ordinal| ordinal > self.session_image_base) {
+            self.session_image_base = ordinal;
             self.input.update(cx, |input, cx| input.set_session_image_base(ordinal, cx));
         }
     }

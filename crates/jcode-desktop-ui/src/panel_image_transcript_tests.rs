@@ -16,6 +16,38 @@ fn live_user_image_marker_is_replaced_by_server_session_id(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
+fn wired_composer_echo_uses_the_next_session_image_number(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("composer-image-ordinal".into(), None, None, bridge, cx)
+    });
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.load_history(vec![], vec![], cx);
+        panel.note_session_image_ordinal(Some(7), cx);
+        panel.input.update(cx, |input, cx| {
+            let mut draft = input.snapshot();
+            draft.content = "look [#image 2]".into();
+            draft.attachments.push(crate::input::AttachmentSnapshot {
+                media_type: "image/png".into(),
+                encoded: image_preview::fixture_image().data,
+                label: "[#image 2]".into(),
+            });
+            input.restore(draft, cx);
+        });
+    });
+    vcx.update(|window, cx| panel.read(cx).focus_input(window, cx));
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(commands.try_iter().any(|command| matches!(command, Command::Send { content, images, .. }
+        if content == "look [#image 1]" && images.len() == 1)));
+    panel.read_with(vcx, |panel, _| {
+        assert!(matches!(panel.items.last(), Some(Item::Image(image)) if image.image_ordinal() == Some(8)));
+    });
+}
+
+#[gpui::test]
 fn session_gallery_appears_only_after_older_images_are_known(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("gallery-old-image".into(), None, None, bridge, cx));

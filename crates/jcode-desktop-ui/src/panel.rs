@@ -776,6 +776,7 @@ pub struct Panel {
     voice: voice::VoiceState,
     image_pane_open: bool,
     session_image_gallery: image_pane::Gallery,
+    session_image_base: usize,
     draft_has_images: bool,
     image_pane_selected: Option<usize>,
     image_pane_scroll: ScrollHandle,
@@ -1693,6 +1694,7 @@ impl Panel {
             voice: voice::VoiceState::default(),
             image_pane_open: false,
             session_image_gallery: Default::default(),
+            session_image_base: 0,
             draft_has_images: false,
             image_pane_selected: None,
             image_pane_scroll: ScrollHandle::new(),
@@ -2596,8 +2598,9 @@ impl Panel {
         panel.update(cx, |this, cx| {
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
+            let session_image_base = this.session_image_base;
             this.input = cx.new(|cx| {
-                PromptInput::new_with_queue_files(
+                let mut input = PromptInput::new_with_queue_files(
                     cx,
                     "Type something…",
                     move |kind, content, images, files, queued, _window, app| {
@@ -2673,7 +2676,9 @@ impl Panel {
                         });
                     }
                     handled
-                })
+                });
+                input.set_session_image_base(session_image_base, cx);
+                input
             });
             Self::observe_draft_images(&this.input, cx);
             if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
