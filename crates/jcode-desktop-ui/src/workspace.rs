@@ -820,6 +820,7 @@ pub struct Workspace {
     tutorial_page: usize,
     onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
+    file_tree: std::cell::RefCell<FileTree>,
     /// Truncated workspace text the user opened: a worker label, a coach
     /// hint. Runtime-only UI state, never part of the saved layout.
     expanded_lines: HashSet<String>,
@@ -934,6 +935,7 @@ pub struct Workspace {
     folder_picker_source: Option<gpui::EntityId>,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
+    folder_candidates: std::cell::RefCell<FolderCandidates>,
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
     voice_settings: voice_settings::VoiceSettings,
@@ -1199,6 +1201,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            file_tree: Default::default(),
             expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1272,6 +1275,7 @@ impl Workspace {
             folder_picker_sets_default: false,
             folder_picker_source: None,
             folder_picker_dir: None,
+            folder_candidates: Default::default(),
             folder_picker_error: None,
             folder_search: None,
             voice_settings: Default::default(),
@@ -1760,6 +1764,7 @@ impl Workspace {
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
+            file_tree: Default::default(),
             expanded_lines: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1833,6 +1838,7 @@ impl Workspace {
             folder_picker_sets_default: false,
             folder_picker_source: None,
             folder_picker_dir: None,
+            folder_candidates: Default::default(),
             folder_picker_error: None,
             folder_search: None,
             voice_settings: Default::default(),
@@ -6147,9 +6153,50 @@ impl Workspace {
                     .as_deref()
                     .map(PathBuf::from)
             })
-            .filter(|path| path.is_dir())
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("/"))
+            .unwrap_or_else(|| self.file_tree.borrow().fallback.clone())
+    }
+
+    fn file_entries(&self, directory: &Path, cx: &mut Context<Self>) -> std::sync::Arc<[FileRow]> {
+        let mut tree = self.file_tree.borrow_mut();
+        let cached = tree.rows.get(directory);
+        let rows = cached.map(|(_, rows)| rows.clone()).unwrap_or_default();
+        if cached.is_some_and(|(loaded, _)| loaded.elapsed() < Duration::from_secs(2)) {
+            return rows;
+        }
+        if let Some(reading) = &tree.reading {
+            tree.needs_frame |= cached.is_none() && reading != directory;
+            return rows;
+        }
+        let root = tree.root.clone();
+        let directory = directory.to_path_buf();
+        tree.reading = Some(directory.clone());
+        drop(tree);
+        let read = cx.background_spawn({
+            let directory = directory.clone();
+            async move { read_file_rows(&directory) }
+        });
+        cx.spawn(async move |workspace, cx| {
+            let rows = read.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                let mut tree = workspace.file_tree.borrow_mut();
+                tree.reading = None;
+                let mut redraw = std::mem::take(&mut tree.needs_frame);
+                if tree.root == root
+                    && (root.as_ref() == Some(&directory)
+                        || workspace.expanded_directories.contains(&directory))
+                {
+                    redraw |= tree.rows.get(&directory).is_none_or(|(_, old)| old != &rows);
+                    tree.rows.insert(directory, (Instant::now(), rows));
+                } else {
+                    redraw = true;
+                }
+                if redraw {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        rows
     }
 
     fn render_file_entries(
@@ -6158,32 +6205,20 @@ impl Workspace {
         depth: usize,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
-        let Ok(read_dir) = std::fs::read_dir(directory) else {
-            return Vec::new();
-        };
-        let mut entries = read_dir
-            .filter_map(Result::ok)
-            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| {
-            let is_file = entry.file_type().map_or(true, |kind| !kind.is_dir());
-            (is_file, entry.file_name().to_ascii_lowercase())
-        });
-
+        let entries = self.file_entries(directory, cx);
         let mut rows = Vec::new();
-        for entry in entries.into_iter().take(500) {
-            let path = entry.path();
-            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-            let expanded = is_dir && self.expanded_directories.contains(&path);
+        for FileRow { path, label, is_dir } in entries.iter() {
+            let is_dir = *is_dir;
+            let expanded = is_dir && self.expanded_directories.contains(path);
             let row_path = path.clone();
-            let label = entry.file_name().to_string_lossy().into_owned();
+            let selector = label.clone();
             rows.push(
                 div()
                     .id(gpui::SharedString::from(format!(
                         "file-tree-row:{}",
                         path.display()
                     )))
-                    .debug_selector(move || format!("file-tree-{label}"))
+                    .debug_selector(move || format!("file-tree-{selector}"))
                     .pl(px(10.0 + depth as f32 * 14.0))
                     .pr_2()
                     .py_1()
@@ -6199,6 +6234,11 @@ impl Workspace {
                             if is_dir {
                                 if !this.expanded_directories.remove(&row_path) {
                                     this.expanded_directories.insert(row_path.clone());
+                                } else {
+                                    this.file_tree
+                                        .borrow_mut()
+                                        .rows
+                                        .retain(|path, _| !path.starts_with(&row_path));
                                 }
                                 cx.notify();
                             } else {
@@ -6222,12 +6262,12 @@ impl Workspace {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .child(entry.file_name().to_string_lossy().into_owned()),
+                            .child(label.clone()),
                     )
                     .into_any_element(),
             );
             if expanded {
-                rows.extend(self.render_file_entries(&path, depth + 1, cx));
+                rows.extend(self.render_file_entries(path, depth + 1, cx));
             }
         }
         rows
@@ -6325,6 +6365,13 @@ impl Workspace {
                 .into_any_element();
         }
         let root = self.file_browser_root(cx);
+        {
+            let mut tree = self.file_tree.borrow_mut();
+            if tree.root.as_ref() != Some(&root) {
+                tree.rows.clear();
+                tree.root = Some(root.clone());
+            }
+        }
         div()
             .id("sidebar-file-list")
             .debug_selector(|| "sidebar-file-list".into())
@@ -7544,6 +7591,7 @@ impl Workspace {
                                                     gpui::MouseButton::Left,
                                                     cx.listener(|this, _, _, cx| {
                                                         this.sidebar_view = SidebarView::Files;
+                                                        this.file_tree.borrow_mut().rows.clear();
                                                         cx.notify();
                                                     }),
                                                 )
@@ -9194,8 +9242,50 @@ impl Workspace {
 }
 
 impl Workspace {
-    fn ranked_folder_matches(&self, base: &Path, query: &str) -> Vec<(PathBuf, String)> {
-        ranked_folder_matches_for_sessions(&self.sessions, base, query)
+    fn folder_candidates(
+        &self,
+        directory: &Path,
+        query: String,
+        cx: &mut Context<Self>,
+    ) -> FolderMatches {
+        let mut state = self.folder_candidates.borrow_mut();
+        let key = FolderSearchKey {
+            directory: directory.to_owned(),
+            query,
+            sets_default: self.folder_picker_sets_default,
+        };
+        if let Some((previous, candidates)) = &state.result
+            && previous == &key
+        {
+            return candidates.clone();
+        }
+        if state.running {
+            return Default::default();
+        }
+        state.running = true;
+        drop(state);
+        let sessions = self.sessions.clone();
+        let load = cx.background_spawn(async move {
+            let candidates = if key.sets_default {
+                default_directory::ranked_directories(&sessions, &key.directory, &key.query)
+            } else {
+                ranked_folder_matches_for_sessions(&sessions, &key.directory, &key.query)
+            };
+            (key, candidates.into())
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = load.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                let mut state = workspace.folder_candidates.borrow_mut();
+                state.result = Some(result);
+                state.running = false;
+                if workspace.folder_picker_dir.is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        Default::default()
     }
 
     fn render_folder_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -9207,11 +9297,8 @@ impl Workspace {
             .as_ref()
             .map(|search| search.read(cx).content.trim().to_lowercase())
             .unwrap_or_default();
-        let entries = if self.folder_picker_sets_default {
-            default_directory::ranked_directories(&self.sessions, &directory, &query)
-        } else {
-            self.ranked_folder_matches(&directory, &query)
-        };
+        let entries = self.folder_candidates(&directory, query, cx);
+        let home = crate::platform_dirs::home_string();
         let mut list = div()
             .id("folder-picker-list")
             .debug_selector(|| "folder-picker-list".into())
@@ -9244,12 +9331,9 @@ impl Workspace {
                     .child("↰  .."),
             );
         }
-        for (index, (path, reason)) in entries.into_iter().enumerate() {
+        for (index, (path, reason)) in entries.iter().cloned().enumerate() {
             let label = if self.folder_picker_sets_default {
-                default_directory::compact_path_in(
-                    &path.to_string_lossy(),
-                    self.default_working_dir(),
-                )
+                default_directory::compact_path_in(&path.to_string_lossy(), home.clone())
             } else {
                 path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
@@ -10240,6 +10324,75 @@ fn most_used_working_dir(sessions: &[jcode_sdk::SessionInfo]) -> Option<String> 
 
 fn filesystem_root() -> PathBuf {
     PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+}
+
+struct FileTree {
+    fallback: PathBuf,
+    root: Option<PathBuf>,
+    rows: HashMap<PathBuf, (Instant, std::sync::Arc<[FileRow]>)>,
+    reading: Option<PathBuf>,
+    needs_frame: bool,
+}
+
+#[derive(PartialEq, Eq)]
+struct FolderSearchKey {
+    directory: PathBuf,
+    query: String,
+    sets_default: bool,
+}
+
+type FolderMatches = std::sync::Arc<[(PathBuf, String)]>;
+
+#[derive(Default)]
+struct FolderCandidates {
+    result: Option<(FolderSearchKey, FolderMatches)>,
+    running: bool,
+}
+
+impl Default for FileTree {
+    fn default() -> Self {
+        Self {
+            fallback: std::env::current_dir().unwrap_or_else(|_| filesystem_root()),
+            root: None,
+            rows: HashMap::new(),
+            reading: None,
+            needs_frame: false,
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct FileRow {
+    path: PathBuf,
+    label: gpui::SharedString,
+    is_dir: bool,
+}
+
+fn read_file_rows(directory: &Path) -> std::sync::Arc<[FileRow]> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Default::default();
+    };
+    let mut rows = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let label = name.to_string_lossy();
+            if label.starts_with('.') {
+                return None;
+            }
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            Some((
+                (!is_dir, name.to_ascii_lowercase()),
+                FileRow {
+                    path: entry.path(),
+                    label: label.into_owned().into(),
+                    is_dir,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable_by(|(key, _), (other, _)| key.cmp(other));
+    rows.into_iter().take(500).map(|(_, row)| row).collect()
 }
 
 fn contains_dot_directory(path: &Path, base: &Path) -> bool {
@@ -12656,7 +12809,11 @@ mod tests {
         for index in 0..80 {
             std::fs::write(project.path().join(format!("z-file-{index}.rs")), "").unwrap();
         }
-        workspace.update(vcx, |_, cx| cx.notify());
+        workspace.update(vcx, |workspace, cx| {
+            let mut tree = workspace.file_tree.borrow_mut();
+            tree.rows.get_mut(project.path()).unwrap().0 -= Duration::from_secs(2);
+            cx.notify();
+        });
         vcx.run_until_parked();
         // The overlay reads the scroll bounds from the preceding layout pass.
         workspace.update(vcx, |_, cx| cx.notify());
