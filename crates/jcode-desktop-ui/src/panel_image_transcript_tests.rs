@@ -37,7 +37,7 @@ fn wired_composer_echo_uses_the_next_session_image_number(cx: &mut gpui::TestApp
             input.restore(draft, cx);
         });
     });
-    vcx.update(|window, cx| panel.read(cx).focus_input(window, cx));
+    vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.focus_input(window, cx)));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert!(commands.try_iter().any(|command| matches!(command, Command::Send { content, images, .. }
