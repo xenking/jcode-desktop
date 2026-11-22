@@ -220,6 +220,25 @@ impl Render for PanelWindow {
                 this.close(false, window, cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(
+                |this, action: &crate::ui_actions::OpenDocumentFile, window, cx| {
+                    let path = action
+                        .path
+                        .canonicalize()
+                        .unwrap_or_else(|_| action.path.clone());
+                    let bridge = this.panel.read(cx).bridge_for_file();
+                    let panel = cx.new(|cx| Panel::new_code_file(path, bridge, cx));
+                    match open_panel_window(panel, None, window, cx) {
+                        Ok(panel) => {
+                            if let Some(fragment) = &action.fragment {
+                                panel.update(cx, |panel, cx| panel.show_file_heading(fragment, cx));
+                            }
+                        }
+                        Err(error) => eprintln!("Could not open panel window: {error:#}"),
+                    }
+                    cx.stop_propagation();
+                },
+            ))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     this.close(false, window, cx);

@@ -368,6 +368,7 @@ fn code_file_selection_copies_multiple_lines_without_gutter(cx: &mut gpui::TestA
         panel.code_file = Some(CodeFile {
             path: "/workspace/example.rs".into(),
             contents: Ok("first βeta\n\nlast line".into()),
+            markdown: None,
         });
         panel
     });

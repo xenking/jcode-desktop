@@ -129,6 +129,8 @@ def main():
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--markdown-file", type=Path,
+                        help="capture a local file in the native Markdown viewer")
     parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
                         help="capture live loopback GETs or the offline inspector/confirmation in OpenRig")
     parser.add_argument("--openrig-live-base", default="http://127.0.0.1:7433",
@@ -458,7 +460,9 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    native_capture = (sys.platform == "darwin" and (args.composer_picker or args.rig_hud or args.transcript in (
+    if args.markdown_file and not args.markdown_file.is_file():
+        parser.error("--markdown-file must be a readable file")
+    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                      ))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
@@ -557,6 +561,8 @@ def main():
             env["JCODE_DESKTOP_SELF_DEV"] = "1"
         if args.mermaid_source is not None:
             env["JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE"] = args.mermaid_source.read_text()
+        if args.markdown_file:
+            env["JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE"] = str(args.markdown_file.resolve())
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)

@@ -11,6 +11,13 @@
 
 use std::sync::Arc;
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenDocumentFile {
+    pub path: std::path::PathBuf,
+    pub fragment: Option<String>,
+}
+
 /// Route Desktop-local slash commands to the workspace containing the source.
 /// Raw input is retained so validation never silently drops command arguments.
 #[derive(Clone, PartialEq, gpui::Action)]

@@ -17,14 +17,25 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
 
+pub(crate) type FileLinkHandler = Rc<dyn Fn(&str, &mut gpui::Window, &mut gpui::App)>;
+pub(crate) type FileImageResolver = Rc<dyn Fn(&str) -> Option<std::path::PathBuf>>;
+
 pub(crate) struct FileRenderOptions {
     pub scroll: gpui::ScrollHandle,
-    pub on_link: Rc<dyn Fn(&str, &mut gpui::Window, &mut gpui::App)>,
-    pub resolve_image: Rc<dyn Fn(&str) -> Option<std::path::PathBuf>>,
+    pub on_link: FileLinkHandler,
+    pub resolve_image: FileImageResolver,
 }
 
 thread_local! {
     static FILE_OPTIONS: std::cell::RefCell<Option<Rc<FileRenderOptions>>> = const { std::cell::RefCell::new(None) };
+    static FILE_LINK_HANDLER: std::cell::RefCell<Option<FileLinkHandler>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_file_link_handler<R>(handler: FileLinkHandler, render: impl FnOnce() -> R) -> R {
+    let previous = FILE_LINK_HANDLER.with(|slot| slot.replace(Some(handler)));
+    let result = render();
+    FILE_LINK_HANDLER.with(|slot| slot.replace(previous));
+    result
 }
 
 pub(crate) fn render_file(
@@ -554,21 +565,20 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         // Inline math delimiters \( ... \) come before the generic escape
         // rule, which would otherwise eat the opening parenthesis.
         if source[i..].starts_with("\\(")
-            && let Some(end) = source[i + 2..].find("\\)")
-        {
-            let content = latex_to_text(&source[i + 2..i + 2 + end]);
-            let start = plain.len();
-            plain.push_str(&content);
-            highlights.push((
-                start..plain.len(),
-                HighlightStyle {
-                    color: Some(to_hsla(Theme::global().CODE_TEXT)),
-                    ..Default::default()
-                },
-            ));
-            i += end + 4;
-            continue;
-        }
+            && let Some(end) = source[i + 2..].find("\\)") {
+                let content = latex_to_text(&source[i + 2..i + 2 + end]);
+                let start = plain.len();
+                plain.push_str(&content);
+                highlights.push((
+                    start..plain.len(),
+                    HighlightStyle {
+                        color: Some(to_hsla(Theme::global().CODE_TEXT)),
+                        ..Default::default()
+                    },
+                ));
+                i += end + 4;
+                continue;
+            }
         // Escapes: \* keeps the literal character.
         if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_punctuation() {
             plain.push(bytes[i + 1] as char);
@@ -588,23 +598,21 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                 continue;
             }
         }
-        if bytes[i] == b'$'
-            && !bytes[i..].starts_with(b"$$")
-            && let Some(end) = source[i + 1..].find('$')
-        {
-            let content = latex_to_text(&source[i + 1..i + 1 + end]);
-            let start = plain.len();
-            plain.push_str(&content);
-            highlights.push((
-                start..plain.len(),
-                HighlightStyle {
-                    color: Some(to_hsla(Theme::global().CODE_TEXT)),
-                    ..Default::default()
-                },
-            ));
-            i += end + 2;
-            continue;
-        }
+        if bytes[i] == b'$' && !bytes[i..].starts_with(b"$$")
+            && let Some(end) = source[i + 1..].find('$') {
+                let content = latex_to_text(&source[i + 1..i + 1 + end]);
+                let start = plain.len();
+                plain.push_str(&content);
+                highlights.push((
+                    start..plain.len(),
+                    HighlightStyle {
+                        color: Some(to_hsla(Theme::global().CODE_TEXT)),
+                        ..Default::default()
+                    },
+                ));
+                i += end + 2;
+                continue;
+            }
         // An attachment marker is literal text, never a markdown link label,
         // even when prose in parentheses follows it directly: `[#image 1](see
         // above)` made the marker a link to "see above", hid its chip and sent
@@ -620,45 +628,43 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         }
         // Links: [label](url) and bare <url>.
         if bytes[i] == b'['
-            && let Some(close) = source[i..].find("](")
-        {
-            let label_end = i + close;
-            if let Some(paren) = source[label_end + 2..].find(')') {
-                let label = &source[i + 1..label_end];
-                let url = source[label_end + 2..label_end + 2 + paren].trim();
-                let nested = inline_spans_impl::<BULK_TEXT>(label);
-                let start = plain.len();
-                plain.push_str(&nested.plain);
-                code_ranges.extend(
-                    nested
-                        .code_ranges
-                        .into_iter()
-                        .map(|range| start + range.start..start + range.end),
-                );
-                for (range, style) in nested.highlights {
-                    highlights.push((start + range.start..start + range.end, style));
+            && let Some(close) = source[i..].find("](") {
+                let label_end = i + close;
+                if let Some(paren) = source[label_end + 2..].find(')') {
+                    let label = &source[i + 1..label_end];
+                    let url = source[label_end + 2..label_end + 2 + paren].trim();
+                    let nested = inline_spans_impl::<BULK_TEXT>(label);
+                    let start = plain.len();
+                    plain.push_str(&nested.plain);
+                    code_ranges.extend(
+                        nested
+                            .code_ranges
+                            .into_iter()
+                            .map(|range| start + range.start..start + range.end),
+                    );
+                    for (range, style) in nested.highlights {
+                        highlights.push((start + range.start..start + range.end, style));
+                    }
+                    let range = start..plain.len();
+                    highlights.push((range.clone(), link_style()));
+                    links.push((range, url.to_string()));
+                    i = label_end + 3 + paren;
+                    continue;
                 }
-                let range = start..plain.len();
-                highlights.push((range.clone(), link_style()));
-                links.push((range, url.to_string()));
-                i = label_end + 3 + paren;
-                continue;
             }
-        }
         if bytes[i] == b'<'
-            && let Some(close) = source[i..].find('>')
-        {
-            let inner = &source[i + 1..i + close];
-            if inner.starts_with("http://") || inner.starts_with("https://") {
-                let start = plain.len();
-                plain.push_str(inner);
-                let range = start..plain.len();
-                highlights.push((range.clone(), link_style()));
-                links.push((range, inner.to_string()));
-                i += close + 1;
-                continue;
+            && let Some(close) = source[i..].find('>') {
+                let inner = &source[i + 1..i + close];
+                if inner.starts_with("http://") || inner.starts_with("https://") {
+                    let start = plain.len();
+                    plain.push_str(inner);
+                    let range = start..plain.len();
+                    highlights.push((range.clone(), link_style()));
+                    links.push((range, inner.to_string()));
+                    i += close + 1;
+                    continue;
+                }
             }
-        }
         if source[i..].starts_with("http://") || source[i..].starts_with("https://") {
             let end = source[i..]
                 .find(|c: char| c.is_whitespace())
@@ -673,37 +679,36 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
             continue;
         }
         if bytes[i..].starts_with(b"~~")
-            && let Some(end) = source[i + 2..].find("~~")
-        {
-            let nested = inline_spans_impl::<BULK_TEXT>(&source[i + 2..i + 2 + end]);
-            let start = plain.len();
-            plain.push_str(&nested.plain);
-            code_ranges.extend(
-                nested
-                    .code_ranges
-                    .into_iter()
-                    .map(|range| start + range.start..start + range.end),
-            );
-            for (range, style) in nested.highlights {
-                highlights.push((start + range.start..start + range.end, style));
-            }
-            for (range, url) in nested.links {
-                links.push((start + range.start..start + range.end, url));
-            }
-            highlights.push((
-                start..plain.len(),
-                HighlightStyle {
-                    strikethrough: Some(StrikethroughStyle {
-                        thickness: px(1.0),
+            && let Some(end) = source[i + 2..].find("~~") {
+                let nested = inline_spans_impl::<BULK_TEXT>(&source[i + 2..i + 2 + end]);
+                let start = plain.len();
+                plain.push_str(&nested.plain);
+                code_ranges.extend(
+                    nested
+                        .code_ranges
+                        .into_iter()
+                        .map(|range| start + range.start..start + range.end),
+                );
+                for (range, style) in nested.highlights {
+                    highlights.push((start + range.start..start + range.end, style));
+                }
+                for (range, url) in nested.links {
+                    links.push((start + range.start..start + range.end, url));
+                }
+                highlights.push((
+                    start..plain.len(),
+                    HighlightStyle {
+                        strikethrough: Some(StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(to_hsla(Theme::global().TEXT_DIM)),
+                        }),
                         color: Some(to_hsla(Theme::global().TEXT_DIM)),
-                    }),
-                    color: Some(to_hsla(Theme::global().TEXT_DIM)),
-                    ..Default::default()
-                },
-            ));
-            i += end + 4;
-            continue;
-        }
+                        ..Default::default()
+                    },
+                ));
+                i += end + 4;
+                continue;
+            }
         let strong_markers: [(&str, HighlightStyle); 3] = [
             (
                 "***",
@@ -773,35 +778,36 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_alphanumeric());
-            if boundary_ok && let Some(end) = source[i + 1..].find(marker) {
-                let inner = &source[i + 1..i + 1 + end];
-                if !inner.is_empty() && !inner.starts_with(' ') {
-                    let nested = inline_spans_impl::<BULK_TEXT>(inner);
-                    let start = plain.len();
-                    plain.push_str(&nested.plain);
-                    code_ranges.extend(
-                        nested
-                            .code_ranges
-                            .into_iter()
-                            .map(|range| start + range.start..start + range.end),
-                    );
-                    for (range, style) in nested.highlights {
-                        highlights.push((start + range.start..start + range.end, style));
+            if boundary_ok
+                && let Some(end) = source[i + 1..].find(marker) {
+                    let inner = &source[i + 1..i + 1 + end];
+                    if !inner.is_empty() && !inner.starts_with(' ') {
+                        let nested = inline_spans_impl::<BULK_TEXT>(inner);
+                        let start = plain.len();
+                        plain.push_str(&nested.plain);
+                        code_ranges.extend(
+                            nested
+                                .code_ranges
+                                .into_iter()
+                                .map(|range| start + range.start..start + range.end),
+                        );
+                        for (range, style) in nested.highlights {
+                            highlights.push((start + range.start..start + range.end, style));
+                        }
+                        for (range, url) in nested.links {
+                            links.push((start + range.start..start + range.end, url));
+                        }
+                        highlights.push((
+                            start..plain.len(),
+                            HighlightStyle {
+                                font_style: Some(gpui::FontStyle::Italic),
+                                ..Default::default()
+                            },
+                        ));
+                        i += end + 2;
+                        continue;
                     }
-                    for (range, url) in nested.links {
-                        links.push((start + range.start..start + range.end, url));
-                    }
-                    highlights.push((
-                        start..plain.len(),
-                        HighlightStyle {
-                            font_style: Some(gpui::FontStyle::Italic),
-                            ..Default::default()
-                        },
-                    ));
-                    i += end + 2;
-                    continue;
                 }
-            }
         }
         // Advance one full UTF-8 character.
         let ch_len = source[i..].chars().next().map_or(1, char::len_utf8);
@@ -1193,21 +1199,44 @@ fn styled_line_with_avatar(
                         .map(|(index, (prose, image))| {
                             let part_key: SharedString = format!("{key}-image-{index}").into();
                             if let Some((alt, target)) = image {
-                                let external = target.starts_with("https://")
-                                    || target.starts_with("http://")
-                                    || target.starts_with("//");
-                                let path =
-                                    (!external).then(|| (file.resolve_image)(target)).flatten();
-                                if let Some(path) = path.filter(|p| p.is_file()) {
-                                    gpui::img(gpui::ImageSource::from(path))
-                                        .w_full()
-                                        .h(px(360.0))
-                                        .object_fit(gpui::ObjectFit::Contain)
+                                let target = target
+                                    .strip_prefix('<')
+                                    .and_then(|s| s.strip_suffix('>'))
+                                    .unwrap_or(target);
+                                let scheme = target.split_once(':').map(|(scheme, _)| scheme);
+                                let external = scheme.is_some_and(|s| {
+                                    s.eq_ignore_ascii_case("http")
+                                        || s.eq_ignore_ascii_case("https")
+                                });
+                                if let Some(path) = (file.resolve_image)(target) {
+                                    use gpui::StyledImage as _;
+                                    let label = if alt.is_empty() {
+                                        "Image unavailable"
+                                    } else {
+                                        alt
+                                    }
+                                    .to_owned();
+                                    div()
+                                        .debug_selector(|| "markdown-file-image".into())
+                                        .child(
+                                            gpui::img(path)
+                                                .id(part_key)
+                                                .max_w_full()
+                                                .max_h(px(540.0))
+                                                .object_fit(gpui::ObjectFit::Contain)
+                                                .with_fallback(move || {
+                                                    div().child(label.clone()).into_any_element()
+                                                }),
+                                        )
                                         .into_any_element()
-                                } else if external {
+                                } else if external || target.starts_with("//") {
                                     let label =
                                         if alt.is_empty() { "Image" } else { alt }.to_owned();
-                                    let target = target.to_owned();
+                                    let target = if target.starts_with("//") {
+                                        format!("https:{target}")
+                                    } else {
+                                        target.to_owned()
+                                    };
                                     let on_link = file.on_link.clone();
                                     div()
                                         .id(part_key)
@@ -1489,8 +1518,7 @@ fn styled_line_layout(
         crate::input::image_marker_ranges(&inline.plain)
             .into_iter()
             .filter_map(|range| {
-                if inline
-                    .links
+                if inline.links
                     .iter()
                     .any(|(link, _)| link.start < range.end && range.start < link.end)
                 {
@@ -1562,18 +1590,34 @@ fn styled_line_layout(
             .drain(..)
             .map(|(range, url)| (shift(range), url))
             .unzip();
-        let file = FILE_OPTIONS.with(|slot| slot.borrow().clone());
-        InteractiveText::new(id, text)
-            .on_click(ranges, move |index, window, cx| {
+        let handler = FILE_OPTIONS
+            .with(|slot| slot.borrow().as_ref().map(|file| file.on_link.clone()))
+            .or_else(|| FILE_LINK_HANDLER.with(|slot| slot.borrow().clone()));
+        #[cfg(any(test, debug_assertions))]
+        let selector = handler
+            .as_ref()
+            .and_then(|_| urls.first())
+            .map(|url| format!("markdown-link:{url}"));
+        let interactive =
+            InteractiveText::new(id, text).on_click(ranges, move |index, window, cx| {
                 if let Some(url) = urls.get(index) {
-                    if let Some(file) = &file {
-                        (file.on_link)(url, window, cx);
+                    if let Some(handler) = &handler {
+                        handler(url, window, cx);
                     } else if let Some(url) = openable_url(url) {
                         cx.open_url(url);
                     }
                 }
-            })
-            .into_any_element()
+            });
+        #[cfg(any(test, debug_assertions))]
+        let interactive = if let Some(selector) = selector {
+            div()
+                .debug_selector(move || selector)
+                .child(interactive)
+                .into_any_element()
+        } else {
+            interactive.into_any_element()
+        };
+        interactive.into_any_element()
     };
     let child = crate::markdown_inline_code::wrap(
         child,
@@ -1581,17 +1625,8 @@ fn styled_line_layout(
         inline.code_ranges.iter().cloned().map(shift).collect(),
     );
     let image_overlay = images.as_ref().filter(|_| !chips.is_empty()).map(|images| {
-        let keys = markers
-            .iter()
-            .map(|(range, _)| inline.plain[range.clone()].to_owned())
-            .collect();
-        crate::image_chip::PositionedChips::new(
-            layout.clone(),
-            chips,
-            key.clone(),
-            keys,
-            images.on_click.clone(),
-        )
+        let keys = markers.iter().map(|(range, _)| inline.plain[range.clone()].to_owned()).collect();
+        crate::image_chip::PositionedChips::new(layout.clone(), chips, key.clone(), keys, images.on_click.clone())
     });
     let selectable = text_selection::selectable_with_offsets(
         selection.clone(),
@@ -1611,9 +1646,7 @@ fn styled_line_layout(
             .relative()
             .child(selectable)
             .children(image_overlay)
-            .when(avatar, |el| {
-                el.child(div().absolute().top_0().left_0().child(assistant_avatar()))
-            })
+            .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
             .into_any_element()
     } else {
         selectable
@@ -1799,21 +1832,10 @@ fn code_block_with_selection(
     let layout = styled.layout().clone();
     let has_markers = !markers.is_empty();
     let overlay = images.as_ref().filter(|_| has_markers).map(|images| {
-        let keys = markers
-            .iter()
-            .map(|(range, _)| plain[range.clone()].to_owned())
-            .collect();
-        let leaf = selection
-            .as_ref()
-            .map(|(_, key, _)| key.clone())
+        let keys = markers.iter().map(|(range, _)| plain[range.clone()].to_owned()).collect();
+        let leaf = selection.as_ref().map(|(_, key, _)| key.clone())
             .unwrap_or_else(|| format!("code-image-{:x}", hash(&plain)).into());
-        crate::image_chip::PositionedChips::new(
-            layout.clone(),
-            positioned,
-            leaf,
-            keys,
-            images.on_click.clone(),
-        )
+        crate::image_chip::PositionedChips::new(layout.clone(), positioned, leaf, keys, images.on_click.clone())
     });
     let code = if let Some((model, key, cx)) = selection {
         text_selection::selectable_with_offsets(
@@ -1829,11 +1851,7 @@ fn code_block_with_selection(
         styled.into_any_element()
     };
     let code = if let Some(overlay) = overlay {
-        div()
-            .relative()
-            .child(code)
-            .child(overlay)
-            .into_any_element()
+        div().relative().child(code).child(overlay).into_any_element()
     } else {
         code
     };
@@ -1926,9 +1944,7 @@ fn code_block_with_selection(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .when(has_markers, |el| {
-                            el.debug_selector(|| "prompt-image-code".into())
-                        })
+                        .when(has_markers, |el| el.debug_selector(|| "prompt-image-code".into()))
                         .line_height(relative(1.5))
                         .child(code),
                 ),
@@ -2291,10 +2307,7 @@ pub(crate) fn render_prompt(
 
 /// Render a duplicate prompt in its own selection namespace. Pinned overlays
 /// must not reuse the transcript's logical row keys or replace its text leaves.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "render signature carries the row's data"
-)]
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_prompt_with_prefix(
     source: &str,
     row: usize,
@@ -2334,10 +2347,7 @@ pub(crate) fn render_interactive(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "render signature carries the row's data"
-)]
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 pub(crate) fn render_interactive_with_avatar(
     source: &str,
     row: usize,
@@ -2383,10 +2393,7 @@ fn render_with_style(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "render signature carries the row's data"
-)]
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document(
     source: &str,
     row: usize,
@@ -2403,10 +2410,7 @@ fn render_document(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "render signature carries the row's data"
-)]
+#[allow(clippy::too_many_arguments, reason = "render signature carries the row's data")]
 fn render_document_with_prompt_background(
     source: &str,
     row: usize,
@@ -2703,9 +2707,11 @@ fn render_document_with_prompt_background(
     let root = div().flex().flex_col().children(children);
     if let Some(file) = file {
         root.id("file-markdown-scroll")
+            .debug_selector(|| "markdown-file-preview".into())
             .w_full()
             .flex_1()
             .min_h_0()
+            .p_4()
             .overflow_y_scroll()
             .track_scroll(&file.scroll)
             .into_any_element()
@@ -2838,8 +2844,7 @@ mod tests {
 
     #[test]
     fn clean_chat_keeps_public_markdown_and_literal_reasoning_markup() {
-        let literal =
-            jcode_render_core::reasoning_line_markup("## Private marker in a code sample");
+        let literal = jcode_render_core::reasoning_line_markup("## Private marker in a code sample");
         let private = jcode_render_core::reasoning_line_markup("## 私的な推論");
         assert!(public_transcript(&private).trim().is_empty());
         let source = format!("## Public heading\n\n```md\n{literal}```\n\n{private}Visible answer");
@@ -3623,10 +3628,7 @@ mod tests {
         assert!(vcx.debug_bounds("restored-reasoning").is_some());
         let heading = vcx.debug_bounds("selectable-text-0-0-0").unwrap();
         let body = vcx.debug_bounds("selectable-text-0-0-1").unwrap();
-        assert_eq!(
-            heading.size.height, body.size.height,
-            "reasoning titles must use body-sized text"
-        );
+        assert_eq!(heading.size.height, body.size.height, "reasoning titles must use body-sized text");
         let answer = vcx.debug_bounds("selectable-text-0-1").unwrap();
         assert!(answer.top() >= heading.bottom());
         for (bounds, expected) in [(heading, "Checking top live tabs"), (answer, "The answer.")] {
@@ -4053,10 +4055,7 @@ mod tests {
 
     #[test]
     fn only_urls_with_a_scheme_are_opened() {
-        assert_eq!(
-            openable_url("https://example.com"),
-            Some("https://example.com")
-        );
+        assert_eq!(openable_url("https://example.com"), Some("https://example.com"));
         assert_eq!(openable_url("mailto:a@b.c"), Some("mailto:a@b.c"));
         assert_eq!(openable_url("сессия транскрипция и TLDR видео"), None);
         assert_eq!(openable_url("crates/foo.rs"), None);

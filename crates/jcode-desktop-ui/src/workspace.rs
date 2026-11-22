@@ -1533,6 +1533,12 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TAB_STATUSES").as_deref() == Ok("1") {
                 workspace.seed_tab_status_fixture(cx);
             }
+            if let Some(path) = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE") {
+                let panel = cx.new(|cx| {
+                    Panel::new_code_file(PathBuf::from(path), workspace.bridge.clone(), cx)
+                });
+                workspace.slots[workspace.active].panel = panel;
+            }
             workspace.focus_pending = true;
             if workspace_stream_fixture::enabled() {
                 workspace._stream_fixture = Some(workspace_stream_fixture::spawn(
@@ -4324,12 +4330,38 @@ impl Workspace {
     }
 
     fn open_code_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_document_file(
+            &crate::ui_actions::OpenDocumentFile {
+                path,
+                fragment: None,
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn open_document_file(
+        &mut self,
+        action: &crate::ui_actions::OpenDocumentFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = action
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| action.path.clone());
+        let show_heading = |panel: &Entity<Panel>, cx: &mut App| {
+            if let Some(fragment) = &action.fragment {
+                panel.update(cx, |panel, cx| panel.show_file_heading(fragment, cx));
+            }
+        };
         let session_id = format!("file://{}", path.display());
         if let Some(index) = self
             .slots
             .iter()
             .position(|slot| slot.panel.read(cx).session_id == session_id)
         {
+            show_heading(&self.slots[index].panel, cx);
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
@@ -4338,11 +4370,13 @@ impl Workspace {
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx));
         if self.single_panel {
-            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
-                eprintln!("Could not open panel window: {error:#}");
+            match panel_window::open_panel_window(panel, None, window, cx) {
+                Ok(panel) => show_heading(&panel, cx),
+                Err(error) => eprintln!("Could not open panel window: {error:#}"),
             }
             return;
         }
+        show_heading(&panel, cx);
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -9846,6 +9880,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::open_document_file))
             .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::promote_side_question))
             .on_action(cx.listener(Self::move_panel_left))
@@ -17084,6 +17119,85 @@ mod accounts_panel_tests {
             assert_eq!(format(&format!("{home}/project")), "~/project");
             assert_eq!(format(&format!("{home}-other")), format!("{home}-other"));
         }
+    }
+
+    #[gpui::test]
+    fn markdown_file_preview_opens_chat_report_and_follows_relative_links(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use base64::Engine as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().canonicalize().unwrap();
+        let report = base.join("report.md");
+        let details = base.join("details here.md");
+        std::fs::write(
+            &report,
+            "# Report\n\n![chart](chart.png)\n\n[See details](details%20here.md#results)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &details,
+            format!(
+                "# Details\n\n{}\n## Results\n\nDone",
+                "Paragraph.\n\n".repeat(70)
+            ),
+        )
+        .unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNd0AAAAASUVORK5CYII=")
+            .unwrap();
+        std::fs::write(base.join("chart.png"), png).unwrap();
+
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("source", cx);
+            workspace
+        });
+        vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        source.update(vcx, |panel, cx| {
+            panel.working_dir = Some(base.display().to_string());
+            panel.items.push(crate::panel::Item::Assistant(
+                "[Open report](report.md)".into(),
+            ));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let click_link = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(
+                gpui::point(bounds.left() + px(28.), bounds.center().y),
+                gpui::Modifiers::default(),
+            );
+            vcx.run_until_parked();
+        };
+        click_link(vcx, "markdown-link:report.md");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                format!("file://{}", report.display())
+            );
+        });
+        assert!(vcx.debug_bounds("markdown-file-preview").is_some());
+        assert!(vcx.debug_bounds("markdown-file-image").is_some());
+
+        for selector in ["code-file-contents", "markdown-file-preview"] {
+            let toggle = vcx.debug_bounds("toggle-file-preview").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+        }
+
+        click_link(vcx, "markdown-link:details%20here.md#results");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 3);
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                format!("file://{}", details.display())
+            );
+        });
     }
 
     #[gpui::test]

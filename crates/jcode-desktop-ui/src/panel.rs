@@ -1,6 +1,8 @@
 //! Panel: one Jcode session as a spatial card with a live transcript.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +13,7 @@ use gpui::{
     relative,
 };
 use jcode_desktop_api::HostHandle;
+use jcode_desktop_model::markdown_file::{self, LinkTarget};
 use jcode_sdk::ApiEvent;
 use serde::{Deserialize, Serialize};
 
@@ -1110,8 +1113,14 @@ pub(crate) enum MinimapSessionState {
 }
 
 struct CodeFile {
-    path: std::path::PathBuf,
+    path: PathBuf,
     contents: Result<String, String>,
+    markdown: Option<MarkdownFilePreview>,
+}
+
+struct MarkdownFilePreview {
+    visible: bool,
+    scroll: ScrollHandle,
 }
 
 #[derive(Debug)]
@@ -2042,7 +2051,9 @@ impl Panel {
         let contents = std::fs::metadata(&path)
             .map_err(|error| error.to_string())
             .and_then(|metadata| {
-                if metadata.len() > MAX_FILE_BYTES {
+                if !metadata.is_file() {
+                    Err("not a regular file".into())
+                } else if metadata.len() > MAX_FILE_BYTES {
                     Err(format!(
                         "file is too large to preview ({} bytes)",
                         metadata.len()
@@ -2066,8 +2077,151 @@ impl Panel {
             cx,
         );
         panel.items.clear();
-        panel.code_file = Some(CodeFile { path, contents });
+        let is_markdown = markdown_file::is_markdown(&path);
+        let is_text = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"));
+        let markdown =
+            (contents.is_ok() && (is_markdown || is_text)).then(|| MarkdownFilePreview {
+                visible: is_markdown,
+                scroll: ScrollHandle::new(),
+            });
+        panel.code_file = Some(CodeFile {
+            path,
+            contents,
+            markdown,
+        });
         panel
+    }
+
+    pub(crate) fn bridge_for_file(&self) -> Bridge {
+        self.bridge.clone()
+    }
+
+    pub(crate) fn show_file_heading(&mut self, fragment: &str, cx: &mut Context<Self>) {
+        let Some(CodeFile {
+            contents: Ok(contents),
+            markdown: Some(preview),
+            ..
+        }) = &mut self.code_file
+        else {
+            return;
+        };
+        let Some(index) = markdown::file_heading_index(contents, fragment) else {
+            return;
+        };
+        preview.visible = true;
+        preview.scroll.scroll_to_top_of_item(index);
+        cx.notify();
+    }
+
+    fn file_link_handler(
+        base: PathBuf,
+        document: Option<(PathBuf, gpui::WeakEntity<Self>)>,
+    ) -> markdown::FileLinkHandler {
+        Rc::new(
+            move |destination, window, cx| match markdown_file::resolve(&base, destination) {
+                Some(LinkTarget::External(url)) => cx.open_url(&url),
+                Some(LinkTarget::Local { path, fragment }) => {
+                    if let Some((current, panel)) = &document
+                        && (current == &path
+                            || path.canonicalize().is_ok_and(|target| target == *current))
+                    {
+                        if let Some(fragment) = fragment {
+                            let _ = panel
+                                .update(cx, |panel, cx| panel.show_file_heading(&fragment, cx));
+                        }
+                    } else {
+                        window.dispatch_action(
+                            Box::new(crate::ui_actions::OpenDocumentFile { path, fragment }),
+                            cx,
+                        );
+                    }
+                }
+                Some(LinkTarget::Anchor(fragment)) => {
+                    if let Some((_, panel)) = &document {
+                        let _ =
+                            panel.update(cx, |panel, cx| panel.show_file_heading(&fragment, cx));
+                    }
+                }
+                None => {}
+            },
+        )
+    }
+
+    fn render_markdown_file(
+        &self,
+        file: &CodeFile,
+        preview: &MarkdownFilePreview,
+        contents: &str,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::AnyElement {
+        let base = file.path.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let selection = self.transcript_selection.clone();
+        let focus = selection.read(cx).focus_handle();
+        let on_link = Self::file_link_handler(
+            base.clone(),
+            Some((file.path.clone(), cx.entity().downgrade())),
+        );
+        let resolve_image = Rc::new(move |destination: &str| {
+            let LinkTarget::Local { path, .. } = markdown_file::resolve(&base, destination)? else {
+                return None;
+            };
+            let metadata = std::fs::metadata(&path).ok()?;
+            (metadata.is_file() && metadata.len() <= 32 * 1024 * 1024).then_some(path)
+        });
+        div()
+            .id("markdown-file")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .key_context(TextSelection::key_context())
+            .track_focus(&focus)
+            .on_action({
+                let selection = selection.clone();
+                move |_: &text_selection::Copy, _, cx| {
+                    selection.update(cx, |selection, cx| selection.copy(cx));
+                }
+            })
+            .on_mouse_up(gpui::MouseButton::Left, {
+                let selection = selection.clone();
+                move |_, _, cx| {
+                    selection.update(cx, |selection, cx| {
+                        selection.finish();
+                        cx.notify();
+                    })
+                }
+            })
+            .child(markdown::render_file(
+                contents,
+                &selection,
+                window,
+                cx,
+                markdown::FileRenderOptions {
+                    scroll: preview.scroll.clone(),
+                    on_link,
+                    resolve_image,
+                },
+            ))
+            .child(crate::scrollbar::vertical(
+                &preview.scroll,
+                "markdown-file-scrollbar",
+            ))
+            .into_any_element()
+    }
+
+    fn toggle_file_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(preview) = self
+            .code_file
+            .as_mut()
+            .and_then(|file| file.markdown.as_mut())
+        {
+            preview.visible = !preview.visible;
+            cx.notify();
+        }
     }
 
     pub(crate) fn new_accounts(
@@ -6805,6 +6959,7 @@ impl Render for Panel {
         }
         if let Some(file) = &self.code_file {
             let path = file.path.display().to_string();
+            let preview = file.markdown.as_ref().filter(|preview| preview.visible);
             let mut body = div()
                 .id("code-file-contents")
                 .debug_selector(|| "code-file-contents".into())
@@ -6814,62 +6969,67 @@ impl Render for Panel {
                 .font_family(Theme::global().FONT_MONO)
                 .text_size(px(12.0))
                 .py_2();
-            match &file.contents {
-                Ok(contents) => {
-                    if !contents.is_empty() {
-                        // One shaped leaf lets a drag span lines without copying
-                        // the separate, nonselectable line-number gutter.
-                        body = body.child(
-                            div()
-                                .flex()
-                                .min_w_full()
-                                .child(
-                                    div()
-                                        .w(px(52.0))
-                                        .flex_none()
-                                        .pr_3()
-                                        .text_align(gpui::TextAlign::Right)
-                                        .text_color(Theme::global().CODE_GUTTER)
-                                        .children(contents.lines().enumerate().map(
-                                            |(index, _)| div().child((index + 1).to_string()),
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .pr_4()
-                                        .whitespace_nowrap()
-                                        .text_color(Theme::global().CODE_TEXT)
-                                        .child(text_selection::plain(
-                                            self.transcript_selection.clone(),
-                                            "code-file-text",
-                                            contents.clone(),
-                                            window,
-                                            cx,
-                                        )),
-                                ),
-                        );
+            let body = if let (Some(preview), Ok(contents)) = (preview, &file.contents) {
+                self.render_markdown_file(file, preview, contents, window, cx)
+            } else {
+                match &file.contents {
+                    Ok(contents) => {
+                        if !contents.is_empty() {
+                            // One shaped leaf lets a drag span lines without copying
+                            // the separate, nonselectable line-number gutter.
+                            body = body.child(
+                                div()
+                                    .flex()
+                                    .min_w_full()
+                                    .child(
+                                        div()
+                                            .w(px(52.0))
+                                            .flex_none()
+                                            .pr_3()
+                                            .text_align(gpui::TextAlign::Right)
+                                            .text_color(Theme::global().CODE_GUTTER)
+                                            .children(contents.lines().enumerate().map(
+                                                |(index, _)| div().child((index + 1).to_string()),
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .pr_4()
+                                            .whitespace_nowrap()
+                                            .text_color(Theme::global().CODE_TEXT)
+                                            .child(text_selection::plain(
+                                                self.transcript_selection.clone(),
+                                                "code-file-text",
+                                                contents.clone(),
+                                                window,
+                                                cx,
+                                            )),
+                                    ),
+                            );
+                        }
+                        if contents.is_empty() {
+                            body = body.child(
+                                div()
+                                    .px_4()
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child("empty file"),
+                            );
+                        }
                     }
-                    if contents.is_empty() {
-                        body = body.child(
-                            div()
-                                .px_4()
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child("empty file"),
-                        );
+                    Err(error) => {
+                        body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
+                            text_selection::plain(
+                                self.transcript_selection.clone(),
+                                "code-file-error",
+                                error.clone(),
+                                window,
+                                cx,
+                            ),
+                        ));
                     }
                 }
-                Err(error) => {
-                    body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
-                        text_selection::plain(
-                            self.transcript_selection.clone(),
-                            "code-file-error",
-                            error.clone(),
-                            window,
-                            cx,
-                        ),
-                    ));
-                }
-            }
+                body.into_any_element()
+            };
             return div()
                 .size_full()
                 .flex()
@@ -6879,6 +7039,9 @@ impl Render for Panel {
                 .child(
                     div()
                         .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .px_3()
                         .py_2()
                         .border_b_1()
@@ -6888,15 +7051,43 @@ impl Render for Panel {
                         .text_size(px(11.0))
                         .text_color(Theme::global().TEXT_DIM)
                         .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(text_selection::plain(
-                            self.transcript_selection.clone(),
-                            "code-file-path",
-                            path,
-                            window,
-                            cx,
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    "code-file-path",
+                                    path,
+                                    window,
+                                    cx,
+                                )),
+                        )
+                        .when(file.markdown.is_some(), |header| {
+                            header.child(
+                                div()
+                                    .id("toggle-file-preview")
+                                    .debug_selector(|| "toggle-file-preview".into())
+                                    .flex_none()
+                                    .rounded_full()
+                                    .px_3()
+                                    .py_1()
+                                    .font_family(Theme::global().FONT_UI)
+                                    .text_color(Theme::global().TEXT)
+                                    .bg(Theme::global().CODE_BG)
+                                    .hover(|style| style.bg(Theme::global().ACCENT.opacity(0.15)))
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_file_preview(cx)),
+                                    )
+                                    .child(if preview.is_some() {
+                                        "Source"
+                                    } else {
+                                        "Preview"
+                                    }),
+                            )
+                        }),
                 )
                 .child(body)
                 .into_any_element();
@@ -7305,6 +7496,11 @@ impl Render for Panel {
             let response_viewport_height = (self.transcript_list.viewport_bounds().size.height
                 - px(dock_pad + prompt::PROMPT_TOP_PADDING))
             .max(px(1.));
+            let file_links = self
+                .working_dir
+                .as_deref()
+                .filter(|_| !crate::harness::is_remote_session(&self.session_id))
+                .map(|base| Self::file_link_handler(PathBuf::from(base), None));
             transcript_shell
                 .child(
                     list(
@@ -7367,7 +7563,7 @@ impl Render for Panel {
                                 if highlighted && let Some(text) = panel.control_highlight().and_then(|reveal| reveal.text.as_ref()) {
                                     terms.push(text.clone());
                                 }
-                                let element = markdown::with_search_terms(&terms, || {
+                                let mut render_item = || markdown::with_search_terms(&terms, || {
                                     panel.render_item(
                                         row.index,
                                         item,
@@ -7377,6 +7573,10 @@ impl Render for Panel {
                                         cx,
                                     )
                                 });
+                                let element = match &file_links {
+                                    Some(handler) => markdown::with_file_link_handler(handler.clone(), render_item),
+                                    _ => render_item(),
+                                };
                                 let heading = clean_chat.then(|| {
                                     let previous = row_index.checked_sub(1).map(|index| match &list_rows[index].source {
                                         TranscriptRowSource::Settled(index) => &panel.items[*index],
