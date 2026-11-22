@@ -76,27 +76,59 @@ pub(crate) fn file_heading_index(source: &str, fragment: &str) -> Option<usize> 
 
 fn file_image_parts(text: &str) -> Vec<(&str, Option<(&str, &str)>)> {
     let mut result = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("![") {
-        let Some(label_end) = rest[start + 2..].find("](") else {
-            break;
-        };
-        let label_end = start + 2 + label_end;
-        let Some(end) = rest[label_end + 2..].find(')') else {
-            break;
-        };
-        let end = label_end + 2 + end;
-        if start > 0 {
-            result.push((&rest[..start], None));
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
         }
-        result.push((
-            "",
-            Some((&rest[start + 2..label_end], rest[label_end + 2..end].trim())),
-        ));
-        rest = &rest[end + 1..];
+        if bytes[i] == b'`' {
+            let ticks = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+            let fence = "`".repeat(ticks);
+            if let Some(end) = text[i + ticks..].find(&fence) {
+                i += ticks + end + ticks;
+                continue;
+            }
+            i += ticks;
+            continue;
+        }
+        if bytes[i..].starts_with(b"![") {
+            if let Some(label_end) = text[i + 2..].find("](").map(|n| i + 2 + n) {
+                let mut end = label_end + 2;
+                let mut depth = 0usize;
+                while end < bytes.len() {
+                    match bytes[end] {
+                        b'\\' if end + 1 < bytes.len() => {
+                            end += 2;
+                            continue;
+                        }
+                        b'(' => depth += 1,
+                        b')' if depth == 0 => break,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    end += 1;
+                }
+                if end < bytes.len() {
+                    if start < i {
+                        result.push((&text[start..i], None));
+                    }
+                    result.push((
+                        "",
+                        Some((&text[i + 2..label_end], text[label_end + 2..end].trim())),
+                    ));
+                    i = end + 1;
+                    start = i;
+                    continue;
+                }
+            }
+        }
+        i += 1;
     }
-    if !rest.is_empty() {
-        result.push((rest, None));
+    if start < text.len() {
+        result.push((&text[start..], None));
     }
     result
 }
@@ -121,6 +153,13 @@ fn file_images_keep_surrounding_prose() {
             ("", Some(("alt", "image.png"))),
             (" after ", None),
             ("", Some(("", "https://example.com/a.png"))),
+        ]
+    );
+    assert_eq!(
+        file_image_parts("`![no](x)` \\![no](x) ![yes](a(b).png)"),
+        vec![
+            ("`![no](x)` \\![no](x) ", None),
+            ("", Some(("yes", "a(b).png")))
         ]
     );
 }
@@ -1138,6 +1177,73 @@ fn styled_line_with_avatar(
     cx: &gpui::App,
     avatar: bool,
 ) -> gpui::AnyElement {
+    if let Some(file) = FILE_OPTIONS
+        .with(|slot| slot.borrow().clone())
+        .filter(|_| source.contains("!["))
+    {
+        let parts = file_image_parts(source);
+        if parts.iter().any(|(_, image)| image.is_some()) {
+            return div()
+                .flex()
+                .flex_col()
+                .children(
+                    parts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (prose, image))| {
+                            let part_key: SharedString = format!("{key}-image-{index}").into();
+                            if let Some((alt, target)) = image {
+                                let external = target.starts_with("https://")
+                                    || target.starts_with("http://")
+                                    || target.starts_with("//");
+                                let path =
+                                    (!external).then(|| (file.resolve_image)(target)).flatten();
+                                if let Some(path) = path.filter(|p| p.is_file()) {
+                                    gpui::img(gpui::ImageSource::from(path))
+                                        .w_full()
+                                        .h(px(360.0))
+                                        .object_fit(gpui::ObjectFit::Contain)
+                                        .into_any_element()
+                                } else if external {
+                                    let label =
+                                        if alt.is_empty() { "Image" } else { alt }.to_owned();
+                                    let target = target.to_owned();
+                                    let on_link = file.on_link.clone();
+                                    div()
+                                        .id(part_key)
+                                        .cursor_pointer()
+                                        .text_color(Theme::global().ACCENT_MUTED)
+                                        .on_click(move |_, window, cx| on_link(&target, window, cx))
+                                        .child(label)
+                                        .into_any_element()
+                                } else {
+                                    let label = if alt.is_empty() { "Image" } else { alt };
+                                    styled_line_layout(
+                                        &format!("{label} ({target})"),
+                                        selection,
+                                        part_key,
+                                        _window,
+                                        cx,
+                                        false,
+                                    )
+                                    .0
+                                }
+                            } else {
+                                styled_line_layout(
+                                    prose,
+                                    selection,
+                                    part_key,
+                                    _window,
+                                    cx,
+                                    avatar && index == 0,
+                                )
+                                .0
+                            }
+                        }),
+                )
+                .into_any_element();
+        }
+    }
     styled_line_layout(source, selection, key, _window, cx, avatar).0
 }
 
@@ -2418,41 +2524,17 @@ fn render_document_with_prompt_background(
                 ))
                 .into_any_element(),
             Block::Paragraph(text) => {
-                let file = FILE_OPTIONS.with(|slot| slot.borrow().clone());
-                if let Some(file) = file.filter(|_| text.contains("![")) {
-                    let parts = file_image_parts(&text);
+                if FILE_OPTIONS.with(|slot| slot.borrow().is_some()) && text.contains("![") {
                     div()
-                        .flex()
-                        .flex_col()
                         .line_height(relative(1.55))
-                        .children(parts.into_iter().enumerate().map(|(part, (prose, image))| {
-                            let key: SharedString =
-                                format!("{key_prefix}-{block_index}-image-{part}").into();
-                            if let Some((alt, target)) = image {
-                                let external = target.starts_with("https://")
-                                    || target.starts_with("http://")
-                                    || target.starts_with("//");
-                                let path =
-                                    (!external).then(|| (file.resolve_image)(target)).flatten();
-                                if let Some(path) = path.filter(|p| p.is_file()) {
-                                    gpui::img(gpui::ImageSource::from(path))
-                                        .w_full()
-                                        .h(px(360.0))
-                                        .object_fit(gpui::ObjectFit::Contain)
-                                        .into_any_element()
-                                } else {
-                                    let label = if alt.is_empty() { "Image" } else { alt };
-                                    let text = if external {
-                                        format!("[{label}]({target})")
-                                    } else {
-                                        format!("{label} ({target})")
-                                    };
-                                    styled_line(&text, selection, key, window, cx)
-                                }
-                            } else {
-                                styled_line(prose, selection, key, window, cx)
-                            }
-                        }))
+                        .child(styled_line_with_avatar(
+                            &text,
+                            selection,
+                            text_key(),
+                            window,
+                            cx,
+                            first_line_avatar,
+                        ))
                         .into_any_element()
                 } else {
                     div()
