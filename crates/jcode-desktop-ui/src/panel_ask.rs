@@ -1722,6 +1722,69 @@ mod tests {
     }
 
     #[gpui::test]
+    fn selecting_an_option_preserves_option_text_geometry(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.simulate_resize(gpui::size(px(900.), px(700.)));
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        let second = AskQuestion {
+            question: "Какие идеи Hax стоит добавить в бэклог?".into(),
+            header: Some("Из Hax".into()),
+            ..question(true)
+        };
+        let event = serde_json::from_value(serde_json::json!({
+            "ev": "ask_request", "session_id": "session-a", "request_id": "ask-1",
+            "tool_call_id": "toolu_1", "questions": [{
+                "allow_other": true, "header": "Из Codex", "multi_select": true,
+                "question": "Что забираем из Codex в первую очередь?",
+                "options": [
+                    {"label": "CLI для CI (Recommended)", "description": "stdin, отдельный файл ответа, запуск без сохранения сессии. JSON/NDJSON не ломаем."},
+                    {"label": "Ревью по Git", "description": "Ревью по base, commit или uncommitted с файлами, строками и серьёзностью. Нынешний /review остаётся."},
+                    {"label": "Worktree и Git diff", "description": "Новая сессия в отдельном worktree одной командой; из TUI видно staged, unstaged и untracked diff."},
+                    {"label": "AGENTS.md и хуки", "description": "Инструкции от корня до cwd с override и показом источников; хуки до отправки и после ответа."},
+                    {"label": "Пока ничего", "description": "Оставить Codex-аудит как бэклог без выбора сейчас."}
+                ]
+            }, second]
+        }))
+        .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&event, cx);
+        });
+        vcx.run_until_parked();
+
+        let rows = [
+            ("ask-label-0-0", "ask-description-0-0"),
+            ("ask-label-0-1", "ask-description-0-1"),
+            ("ask-label-0-2", "ask-description-0-2"),
+            ("ask-label-0-3", "ask-description-0-3"),
+            ("ask-label-0-4", "ask-description-0-4"),
+        ];
+        let before = rows.map(|(label, _)| vcx.debug_bounds(label).unwrap().size);
+        let first = vcx.debug_bounds("ask-label-0-0").unwrap().center();
+        vcx.simulate_click(first, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], [0]);
+        });
+
+        for ((selector, description), before) in rows.into_iter().zip(before) {
+            let label = vcx.debug_bounds(selector).unwrap();
+            let description = vcx.debug_bounds(description).unwrap();
+            assert!(
+                label.size == before && label.bottom() <= description.top(),
+                "{selector}: label was {before:?}, now {label:?}; description {description:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
     fn question_name_is_in_the_tab_strip(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
