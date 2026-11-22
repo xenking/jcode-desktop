@@ -40,7 +40,13 @@ pub(super) struct Picker {
     index: Option<FileIndex>,
     indexing: Option<gpui::Task<()>>,
     open: bool,
-    target: Option<gpui::WeakEntity<PromptInput>>,
+    target: Option<Target>,
+}
+
+#[derive(Clone)]
+struct Target {
+    draft: gpui::WeakEntity<PromptInput>,
+    accept: std::rc::Rc<dyn Fn(&mut App)>,
 }
 
 fn mention(content: &str, cursor: usize) -> Option<(Range<usize>, &str)> {
@@ -96,12 +102,16 @@ impl PromptInput {
     pub(crate) fn start_context_picker(
         &mut self,
         root: Option<&Path>,
-        target: gpui::WeakEntity<Self>,
+        draft: gpui::WeakEntity<Self>,
+        accept: impl Fn(&mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
         self.enable_context_picker();
         self.set_context_root(root, cx);
-        self.context_picker.as_mut().expect("enabled").target = Some(target);
+        self.context_picker.as_mut().expect("enabled").target = Some(Target {
+            draft,
+            accept: std::rc::Rc::new(accept),
+        });
     }
 
     pub(super) fn standalone_context(&self) -> bool {
@@ -176,7 +186,7 @@ impl PromptInput {
         let mut rows = Vec::new();
         if !files_only {
             let query = query.trim_start_matches('/').trim().to_lowercase();
-            if "attach files images".contains(&query) {
+            if "attach images".contains(&query) {
                 rows.push(row(
                     "Attach…".into(),
                     "Choose files or images".into(),
@@ -288,10 +298,8 @@ impl PromptInput {
             .as_ref()
             .and_then(|picker| picker.target.clone())
         {
-            if let Some(close) = &self.on_overlay_cancel {
-                close(cx);
-            }
-            let _ = target.update(cx, |input, cx| {
+            (target.accept)(cx);
+            let _ = target.draft.update(cx, |input, cx| {
                 window.focus(&input.focus_handle, cx);
                 input.apply_to_draft(action, alternate, false, window, cx);
             });
@@ -522,7 +530,7 @@ mod tests {
         vcx.simulate_keystrokes("enter");
         let sent = sent.borrow();
         let (text, images) = sent.as_ref().unwrap();
-        assert_eq!(text.trim(), "[#image 1] [#image 2]");
+        assert_eq!(text.trim(), "[#image 1][#image 2]");
         assert_eq!(images.len(), 2);
     }
 }

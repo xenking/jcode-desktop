@@ -1034,7 +1034,8 @@ fn draft_pickers_show_the_selected_fable_low_and_mode_before_the_first_prompt(
     });
     vcx.run_until_parked();
     click_draft_control(vcx, "panel-mode");
-    click_draft_control(vcx, "slash-command-row-0");
+    vcx.simulate_input("quiet");
+    vcx.simulate_keystrokes("alt-enter");
     assert!(vcx.debug_bounds("panel-mode-icon-moon-0").is_some());
     assert!(commands.try_recv().is_err());
 

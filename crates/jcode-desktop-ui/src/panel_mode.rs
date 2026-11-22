@@ -143,6 +143,55 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn context_picker_does_not_scan_local_paths_for_remote_sessions(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        for id in ["ssh://host/session", "cloud://account/session"] {
+            let panel = cx.new(|cx| Panel::new(
+                id.into(), None, Some(directory.path().display().to_string()),
+                crate::harness::spawn_inert(), cx,
+            ));
+            panel.update(cx, |panel, cx| {
+                assert!(panel.composer_context_root().is_none());
+                panel.open_picker_search(PickerKind::Context, cx);
+                let (_, search) = panel.picker_search.as_ref().unwrap();
+                assert!(search.read(cx).context_root().is_none());
+                assert_eq!(search.read(cx).command_suggestion_values(), ["Attach…"]);
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn context_plus_uses_a_skill_for_one_submission(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("skill-picker".into(), None, None, bridge, cx));
+        vcx.update(|_, app| Panel::connect_input(&panel, app));
+        panel.update(vcx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel.seed_mode_picker_fixture(cx);
+        });
+        vcx.run_until_parked();
+        while commands.try_recv().is_ok() {}
+        let plus = vcx.debug_bounds("composer-context-plus").unwrap();
+        vcx.simulate_click(plus.center(), Default::default());
+        vcx.run_until_parked();
+        vcx.simulate_input("verify-jcode");
+        vcx.simulate_keystrokes("enter");
+        assert!(vcx.debug_bounds("composer-image-chip").is_some());
+        vcx.simulate_input("Check the preview");
+        vcx.simulate_keystrokes("enter");
+        let sent = std::iter::from_fn(|| commands.try_recv().ok()).find_map(|command| {
+            if let Command::SendSkill { skill, content, .. } = command {
+                Some((skill, content.trim().to_owned()))
+            } else {
+                None
+            }
+        });
+        assert_eq!(sent, Some(("verify-jcode".into(), "Check the preview".into())));
+        assert!(panel.read_with(vcx, |panel, _| panel.active_skill.is_none()));
+    }
+
+    #[gpui::test]
     fn context_plus_opens_multi_file_attach_and_can_pin_a_skill(cx: &mut gpui::TestAppContext) {
         cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();

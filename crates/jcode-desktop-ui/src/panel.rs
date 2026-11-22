@@ -3593,6 +3593,7 @@ impl Panel {
         let cancel = cx.weak_entity();
         let outside = cx.weak_entity();
         let speed = cx.weak_entity();
+        let accepted = cx.weak_entity();
         let draft = self.input.downgrade();
         let search = cx.new(|cx| {
             let placeholder = match kind {
@@ -3659,7 +3660,16 @@ impl Panel {
                 cx,
             );
             if kind == PickerKind::Context {
-                input.start_context_picker(self.composer_context_root(), draft, cx);
+                input.set_skills(self.skills.clone(), cx);
+                input.set_current_modes(self.mode_names().to_vec(), self.mode_catalog.clone(), cx);
+                input.start_context_picker(self.composer_context_root(), draft, move |app| {
+                    let _ = accepted.update(app, |panel, cx| {
+                        panel.picker_search = None;
+                        panel.composer_popover_trigger = None;
+                        panel.focus_pending = true;
+                        cx.notify();
+                    });
+                }, cx);
             }
             input
         });
@@ -7506,6 +7516,11 @@ impl Render for Panel {
         let context_root = self.composer_context_root();
         if self.input.read(cx).context_root() != context_root {
             self.input.update(cx, |input, cx| input.set_context_root(context_root, cx));
+        }
+        if let Some((PickerKind::Context, search)) = &self.picker_search
+            && search.read(cx).context_root() != context_root
+        {
+            search.update(cx, |input, cx| input.set_context_root(context_root, cx));
         }
         let row_count_changed = row_count != self.transcript_row_count;
         if row_count_changed {

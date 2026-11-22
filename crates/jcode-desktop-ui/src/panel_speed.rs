@@ -36,6 +36,9 @@ impl Panel {
             Ok("model") => PickerKind::Model,
             Ok("effort") => PickerKind::Effort,
             Ok("context") => {
+                if self.working_dir.is_none() {
+                    self.working_dir = std::env::current_dir().ok().map(|path| path.display().to_string());
+                }
                 self.seed_mode_picker_fixture(cx);
                 self.open_picker_search(PickerKind::Context, cx);
                 return;

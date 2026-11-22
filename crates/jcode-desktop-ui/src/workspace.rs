@@ -17495,6 +17495,47 @@ mod accounts_panel_tests {
     }
 
     #[gpui::test]
+    fn context_file_chip_opens_the_markdown_preview(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let report = directory.path().canonicalize().unwrap().join("file-report.md");
+        std::fs::write(&report, "# Opened through the composer\n").unwrap();
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("source", cx);
+            workspace
+        });
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        source.update_in(vcx, |panel, window, cx| {
+            panel.working_dir = Some(report.parent().unwrap().display().to_string());
+            panel.focus_input(window, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.simulate_input("Read @file-report");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
+        let chip = vcx.debug_bounds("composer-image-chip").expect("file reference in prompt");
+        vcx.simulate_click(chip.center(), Default::default());
+        vcx.run_until_parked();
+        workspace.update(vcx, |w, cx| {
+            let row = w.active_row;
+            w.camera_x[row] = w.camera_target[row];
+            w.camera_started[row] = None;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 2);
+            let id = format!("file://{}", report.display());
+            assert!(w.slots.iter().any(|slot| slot.panel.read(cx).session_id == id));
+        });
+        assert!(vcx.debug_bounds("markdown-file-preview").is_some());
+    }
+
+    #[gpui::test]
     fn markdown_file_preview_opens_chat_report_and_follows_relative_links(
         cx: &mut gpui::TestAppContext,
     ) {

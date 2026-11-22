@@ -4777,6 +4777,7 @@ impl Render for PromptInput {
         let show_resize = self.can_resize_editor(window);
         let spacious = self.spacious && window.viewport_size().height >= px(400.);
         self.update_context_index(cx);
+        let context_menu = self.standalone_context() || self.mention_token().is_some();
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
@@ -4786,12 +4787,11 @@ impl Render for PromptInput {
             && self.current_command_menu_close().is_none()
             && (!suggestions.is_empty()
                 || self.picker_prefix.is_some()
-                || self.standalone_context()
-                || self.mention_token().is_some()
+                || context_menu
                 || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
-            crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
+            context_menu || crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
         )
         .duration;
         let menu_progress =
@@ -4824,7 +4824,7 @@ impl Render for PromptInput {
             .flex_col()
             .key_context(if self.queue_editor {
                 "PromptInput QueueEditor"
-            } else if self.standalone_context() || self.mention_token().is_some() {
+            } else if context_menu {
                 "PromptInput ContextPicker"
             } else if self.on_model_speed.is_some()
                 && self.model_stage == model_stage::ModelStage::Models
@@ -4863,7 +4863,7 @@ impl Render for PromptInput {
                                 .debug_selector(|| "slash-command-overlay".into())
                                 .w_full()
                                 .max_h_full()
-                                .opacity(0.65 + 0.35 * menu_progress)
+                                .opacity(if context_menu { 1.0 } else { 0.65 + 0.35 * menu_progress })
                                 .flex()
                                 .flex_col()
                                 .rounded_lg()
@@ -4888,7 +4888,7 @@ impl Render for PromptInput {
                                                 .flex_col()
                                                 .max_h(popup::scroll_height(
                                                     window.viewport_size().height,
-                                                    self.picker_prefix == Some("/model")
+                                                    context_menu || self.picker_prefix == Some("/model")
                                                         || self
                                                             .content
                                                             .trim_start()
@@ -4910,7 +4910,7 @@ impl Render for PromptInput {
                                                                     .composer_secondary(),
                                                             )
                                                             .child(match self.picker_prefix {
-                                                                _ if self.standalone_context() || self.mention_token().is_some() => self.context_empty_label(),
+                                                                _ if context_menu => self.context_empty_label(),
                                                                 Some("/effort") => {
                                                                     "No effort levels match"
                                                                 }
