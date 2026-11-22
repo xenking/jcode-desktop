@@ -315,21 +315,24 @@ unsafe extern "C-unwind" fn activate(
     let activation_window = unsafe { &*window.cast::<Window>() };
     let activation_app = unsafe { &*app.cast::<App>() };
     let recovery = workspace::recovery::Recovery::for_window(activation_window, activation_app);
-    let (snapshot, crash_owner) = if snapshot_len == 0 {
+    let (snapshot, crash_owner, handoff) = if snapshot_len == 0 {
         let recovered = recovery
             .as_ref()
             .and_then(workspace::recovery::Recovery::load);
         let restart = workspace::restart::take_restore_state(activation_window, activation_app);
         match recovered {
             Some(restored) if restored.crash_owner.is_some() || restart.is_none() => {
-                (Some(restored.snapshot), restored.crash_owner)
+                (Some(restored.snapshot), restored.crash_owner, false)
             }
-            _ => (restart, None),
+            _ => {
+                let handoff = restart.is_some();
+                (restart, None, handoff)
+            }
         }
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
-            Ok(snapshot) => (Some(snapshot), None),
+            Ok(snapshot) => (Some(snapshot), None, false),
             Err(error) => {
                 eprintln!("refusing invalid workspace snapshot: {error:#}");
                 return ACTIVATE_FAILED;
@@ -487,6 +490,8 @@ unsafe extern "C-unwind" fn activate(
                 Claim::Reload
             } else if let Some(owner) = crash_owner.as_deref() {
                 Claim::Restored(owner)
+            } else if handoff {
+                Claim::Handoff
             } else {
                 Claim::Fresh
             };

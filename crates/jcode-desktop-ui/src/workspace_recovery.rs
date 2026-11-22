@@ -65,6 +65,10 @@ pub(crate) enum Claim<'a> {
     Fresh,
     Restored(&'a str),
     Reload,
+    /// Launched from a restart/rollout restore manifest. The manifest is the
+    /// replaced process's final state, so its unclean checkpoint is
+    /// superseded once that process has exited.
+    Handoff,
 }
 
 impl Recovery {
@@ -270,6 +274,9 @@ impl Writer {
             Claim::Reload => {
                 previous.is_none_or(|previous| previous.clean || previous.pid == std::process::id())
             }
+            Claim::Handoff => {
+                previous.is_none_or(|previous| previous.clean || !process_alive(previous.pid))
+            }
         };
         anyhow::ensure!(
             can_claim,
@@ -334,7 +341,7 @@ impl Recovery {
         let enabled = self.normally_enabled
             || match claim {
                 Claim::Fresh => false,
-                Claim::Restored(_) => true,
+                Claim::Restored(_) | Claim::Handoff => true,
                 Claim::Reload => read_owner(&self.path)
                     .is_some_and(|owner| !owner.clean && owner.pid == std::process::id()),
             };
@@ -372,6 +379,40 @@ fn settle_motion(snapshot: &mut WorkspaceSnapshot) {
     }
 }
 
+/// How long a restore-manifest successor waits for the replaced process to
+/// exit before giving up on crash recovery for this run.
+const HANDOFF_WAIT: Duration = Duration::from_secs(120);
+
+/// The replaced process still holds an unclean checkpoint.
+fn handoff_pending(path: &Path) -> bool {
+    read_owner(path).is_some_and(|owner| !owner.clean && process_alive(owner.pid))
+}
+
+/// Rollout and `/restart-all` start the successor before the replaced process
+/// has exited, and SIGTERM leaves its checkpoint unclean. Claim it as soon as
+/// that process is gone, so the new window is not left without crash recovery.
+fn defer_handoff(workspace: &Entity<Workspace>, window: &Window, app: &mut App, path: PathBuf) {
+    let workspace = workspace.downgrade();
+    let window = window.window_handle();
+    app.spawn(async move |cx| {
+        let executor = cx.background_executor().clone();
+        let deadline = executor.now() + HANDOFF_WAIT;
+        while handoff_pending(&path) {
+            if executor.now() >= deadline {
+                eprintln!("desktop crash checkpoint unavailable: replaced process never exited");
+                return;
+            }
+            executor.timer(Duration::from_secs(1)).await;
+        }
+        let _ = window.update(cx, |_, window, app| {
+            if let Some(workspace) = workspace.upgrade() {
+                install_at_path(&workspace, window, app, path, Claim::Handoff);
+            }
+        });
+    })
+    .detach();
+}
+
 fn install_at_path(
     workspace: &Entity<Workspace>,
     window: &Window,
@@ -381,11 +422,15 @@ fn install_at_path(
 ) {
     let writer = crash_snapshot(workspace.read(app), window, app).and_then(|snapshot| {
         let key = serde_json::to_value(&snapshot)?;
-        Ok((Writer::begin(path, snapshot, claim)?, key))
+        Ok((Writer::begin(path.clone(), snapshot, claim)?, key))
     });
     let (writer, initial_key) = match writer {
         Ok(writer_and_key) => writer_and_key,
         Err(error) => {
+            if matches!(claim, Claim::Handoff) && handoff_pending(&path) {
+                defer_handoff(workspace, window, app, path);
+                return;
+            }
             eprintln!("desktop crash checkpoint unavailable: {error:#}");
             return;
         }
@@ -807,6 +852,61 @@ mod tests {
             .is_err()
         );
         assert!(Writer::begin(recovery.path, snapshot(), Claim::Fresh).is_err());
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn restore_state_handoff_takes_over_once_the_replaced_process_exits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        // The process being replaced still holds an unclean checkpoint when
+        // its successor starts, then exits without a clean quit (SIGTERM).
+        let mut replaced = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        write(
+            &path,
+            &Checkpoint {
+                owner: "replaced".into(),
+                pid: replaced.id(),
+                updated_at_ms: now_ms(),
+                clean: false,
+                snapshot: snapshot(),
+            },
+        )
+        .unwrap();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, app| {
+            install_at_path(&workspace, window, app, path.clone(), Claim::Handoff)
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            read_owner(&path).unwrap().pid,
+            replaced.id(),
+            "a live predecessor keeps its checkpoint"
+        );
+        replaced.kill().unwrap();
+        replaced.wait().unwrap();
+        for _ in 0..3 {
+            vcx.executor().advance_clock(Duration::from_secs(1));
+            vcx.run_until_parked();
+        }
+        let owner = read_owner(&path).unwrap();
+        assert_eq!(
+            owner.pid,
+            std::process::id(),
+            "the successor owns crash recovery"
+        );
+        assert!(!owner.clean);
+        assert_eq!(read(&path).unwrap().snapshot.slots.len(), 1);
     }
 
     #[cfg(unix)]
