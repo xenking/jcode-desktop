@@ -23,6 +23,11 @@ pub(crate) fn context_overlay_fixture() -> bool {
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_CONTEXT_OVERLAY_PROOF").as_deref() == Ok("1")
 }
 
+fn gallery_preload() -> bool {
+    enabled()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gallery-preload")
+}
+
 pub(crate) fn draft_session() -> bool {
     enabled()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
@@ -161,6 +166,9 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                 || selector == "resume-preview:wheel"))
         || matches!(selector, "compaction-divider" | "history:scroll-up")
         || (context_overlay_fixture() && selector == "scroll:transcript")
+        || (gallery_preload()
+            && (matches!(selector, "composer:images" | "gallery:wheel")
+                || selector.starts_with("gallery:thumb:")))
         || (transcript_scroll_fixture()
             && matches!(
                 selector,
@@ -209,12 +217,26 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "panel-context-meter"
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
+    } else if selector == "gallery:wheel" {
+        "gallery:filmstrip"
     } else {
         selector
     };
     let Some(position) = locate(marker, session, window, cx) else {
         return false;
     };
+    if selector == "gallery:wheel" {
+        window.dispatch_event(
+            PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(point(px(-3_900.), px(0.))),
+                touch_phase: gpui::TouchPhase::Moved,
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        return true;
+    }
     if selector.starts_with("hover:") {
         window.dispatch_event(
             PlatformInput::MouseMove(gpui::MouseMoveEvent {

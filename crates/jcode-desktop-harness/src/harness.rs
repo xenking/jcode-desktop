@@ -938,6 +938,12 @@ pub fn spawn() -> Bridge {
 #[path = "screenshot_history.rs"]
 mod screenshot_history;
 
+pub const GALLERY_FIXTURE_IMAGES: usize = 96;
+
+pub fn gallery_fixture_image_id(index: usize) -> String {
+    format!("img_{index:032x}")
+}
+
 /// A bridge that answers from fixtures, so the screenshot harness can
 /// render the results screen without a daemon, an index, or a network.
 fn spawn_screenshot() -> Bridge {
@@ -947,6 +953,9 @@ fn spawn_screenshot() -> Bridge {
         .name("jcode-bridge-screenshot".into())
         .spawn(move || {
             let history = screenshot_history::enabled().then(screenshot_history::session);
+            let gallery = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
+                    == Ok("gallery-preload");
             let draft = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
                     == Ok("draft-session");
@@ -968,6 +977,10 @@ fn spawn_screenshot() -> Bridge {
                 });
             }
             while let Ok(command) = command_rx.recv() {
+                if gallery && let Some(update) = gallery_fixture_reply(&command) {
+                    let _ = update_tx.send(update);
+                    continue;
+                }
                 if draft
                     && let Command::CreateSession {
                         working_dir,
@@ -1068,6 +1081,42 @@ fn spawn_screenshot() -> Bridge {
         commands: command_tx,
         updates: update_rx,
     }
+}
+
+fn gallery_fixture_reply(command: &Command) -> Option<Update> {
+    use base64::Engine as _;
+
+    let (session_id, key, result) = match command {
+        Command::ListSessionImages { session_id } => {
+            let metadata: Vec<_> = (0..GALLERY_FIXTURE_IMAGES)
+                .map(|index| serde_json::json!({
+                    "image_id": gallery_fixture_image_id(index),
+                    "message_index": index,
+                    "media_type": "image/png"
+                }))
+                .collect();
+            (session_id, SESSION_IMAGE_LIST_KEY.into(), Ok(serde_json::to_string(&metadata).unwrap()))
+        }
+        Command::GetHistoryImage { session_id, key } => {
+            let index = key.strip_prefix("img_").and_then(|id| usize::from_str_radix(id, 16).ok());
+            let index = index.filter(|&index| index < GALLERY_FIXTURE_IMAGES)?;
+            eprintln!("desktop-gallery-fixture read index={index}");
+            let result = if index == 47 {
+                Err("fixture image unavailable".into())
+            } else {
+                Ok(base64::engine::general_purpose::STANDARD.encode(include_bytes!(
+                    "../../../assets/previews/image-preview.png"
+                )))
+            };
+            (session_id, key.clone(), result)
+        }
+        Command::Send { .. } => {
+            eprintln!("desktop-gallery-fixture unexpected prompt submitted");
+            return None;
+        }
+        _ => return None,
+    };
+    Some(Update::HistoryImage { session_id: session_id.clone(), key, result })
 }
 
 /// Hit rows for the screenshot: several sessions, a user prompt whose raw

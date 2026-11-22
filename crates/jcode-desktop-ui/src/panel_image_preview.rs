@@ -2,6 +2,21 @@
 //! closing the preview preserves the user's scroll position and draft.
 use super::*;
 
+pub(super) enum HistoryImageLoad {
+    Loading,
+    Unavailable,
+    Stored(TranscriptImage),
+}
+
+const GALLERY_LOAD_LIMIT: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryImageDemand {
+    Inline,
+    Gallery,
+    Explicit,
+}
+
 pub(super) fn fixture_image() -> TranscriptImage {
     TranscriptImage::new(
         "image/png".into(),
@@ -13,21 +28,99 @@ pub(super) fn fixture_image() -> TranscriptImage {
 
 impl Panel {
     pub(super) fn request_history_thumbnail(&self, image: &TranscriptImage, retry: bool) {
-        let Some(key) = image.data.strip_prefix("jcode-lazy:") else {
+        let Some(key) = image.lazy_key() else {
             return;
         };
-        let mut requests = self.history_image_requests.borrow_mut();
-        if requests
-            .get(key)
-            .is_some_and(|in_flight| *in_flight || !retry)
+        self.request_history_image(
+            key,
+            if retry {
+                HistoryImageDemand::Explicit
+            } else {
+                HistoryImageDemand::Inline
+            },
+        );
+    }
+
+    fn request_history_image(&self, key: &str, demand: HistoryImageDemand) {
+        if self.is_pending_session()
+            || (demand == HistoryImageDemand::Inline && self.image_pane_open)
         {
             return;
         }
-        requests.insert(key.to_owned(), true);
+        let mut requests = self.history_image_requests.borrow_mut();
+        if requests.get(key).is_some_and(|state| {
+            demand != HistoryImageDemand::Explicit || !matches!(state, HistoryImageLoad::Unavailable)
+        }) || (demand == HistoryImageDemand::Gallery
+            && requests
+                .values()
+                .filter(|state| matches!(state, HistoryImageLoad::Loading))
+                .take(GALLERY_LOAD_LIMIT)
+                .count()
+                == GALLERY_LOAD_LIMIT)
+        {
+            return;
+        }
+        requests.insert(key.to_owned(), HistoryImageLoad::Loading);
         self.bridge.send(Command::GetHistoryImage {
             session_id: self.session_id.clone(),
             key: key.to_owned(),
         });
+    }
+
+    pub(super) fn gallery_image_asset(&self, image: &TranscriptImage) -> Option<Arc<gpui::Image>> {
+        image.preview.clone().or_else(|| {
+            match self.history_image_requests.borrow().get(image.lazy_key()?)? {
+                HistoryImageLoad::Stored(image) => image.preview.clone(),
+                _ => None,
+            }
+        })
+    }
+
+    pub(super) fn gallery_image_unavailable(&self, image: &TranscriptImage) -> bool {
+        image.preview.is_none()
+            && image.lazy_key().is_none_or(|key| {
+                matches!(
+                    self.history_image_requests.borrow().get(key),
+                    Some(HistoryImageLoad::Unavailable)
+                )
+            })
+    }
+
+    pub(super) fn gallery_image_preloader(
+        &self,
+        image: &TranscriptImage,
+        cx: &Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let key = image.lazy_key()?;
+        if image.preview.is_some() || self.history_image_requests.borrow().contains_key(key) {
+            return None;
+        }
+        let key = key.to_owned();
+        let session_id = self.session_id.clone();
+        let panel = cx.entity().downgrade();
+        Some(
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, window, cx| {
+                    let visible = bounds.intersect(&window.content_mask().bounds);
+                    if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
+                        return;
+                    }
+                    cx.defer(move |cx| {
+                        let _ = panel.update(cx, |panel, _| {
+                            if panel.image_pane_open && panel.session_id == session_id {
+                                panel.request_history_image(&key, HistoryImageDemand::Gallery);
+                            }
+                        });
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .into_any_element(),
+        )
     }
 
     pub(super) fn media_preview_handler(
@@ -65,8 +158,15 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let image = image
+            .lazy_key()
+            .and_then(|key| match self.history_image_requests.borrow().get(key) {
+                Some(HistoryImageLoad::Stored(image)) => Some(image.clone()),
+                _ => None,
+            })
+            .unwrap_or(image);
         if image.preview.is_none() {
-            if let Some(key) = image.data.strip_prefix("jcode-lazy:") {
+            if let Some(key) = image.lazy_key() {
                 self.pending_history_image = Some(key.to_string());
                 self.request_history_thumbnail(&image, true);
             }
@@ -93,7 +193,10 @@ impl Panel {
             cx.notify();
             return;
         }
-        if self.history_image_requests.borrow().get(&key) != Some(&true) {
+        if !matches!(
+            self.history_image_requests.borrow().get(&key),
+            Some(HistoryImageLoad::Loading)
+        ) {
             return;
         }
         let open = self.pending_history_image.as_deref() == Some(key.as_str());
@@ -103,19 +206,29 @@ impl Panel {
         let data = match result {
             Ok(data) => data,
             Err(error) => {
-                self.history_image_requests.borrow_mut().insert(key, false);
+                self.history_image_requests
+                    .borrow_mut()
+                    .insert(key, HistoryImageLoad::Unavailable);
                 eprintln!("jcode desktop: image load failed: {error}");
+                cx.notify();
                 return;
             }
         };
-        self.history_image_requests.borrow_mut().remove(&key);
-        let marker = format!("jcode-lazy:{key}");
+        let stored = self.session_image_gallery.loaded_image(&key, &data);
+        let stored_invalid = stored.as_ref().is_some_and(|image| image.preview.is_none());
+        let mut invalid = false;
         let mut selected = None;
         for item in self.items.iter_mut() {
             if let Item::Image(image) = item
-                && image.data == marker
+                && image.lazy_key() == Some(key.as_str())
             {
-                image.data = data.clone();
+                let preview = stored.as_ref().and_then(|stored| stored.preview.clone()).or_else(|| {
+                    TranscriptImage::new(image.media_type.clone(), data.clone(), None).preview
+                });
+                let Some(preview) = preview else {
+                    invalid = true;
+                    continue;
+                };
                 if key.starts_with("img_") {
                     let id_marker = format!("[#{key}]");
                     let label = image.label.get_or_insert_with(String::new);
@@ -126,25 +239,28 @@ impl Panel {
                         label.push_str(&id_marker);
                     }
                 }
-                image.preview = TranscriptImage::new(
-                    image.media_type.clone(),
-                    data.clone(),
-                    image.label.clone(),
-                )
-                .preview;
-                if selected.is_none() {
+                image.data.clone_from(&data);
+                image.preview = Some(preview);
+                if open && selected.is_none() {
                     selected = Some(image.clone());
                 }
             }
         }
-        let selected = selected
-            .or_else(|| self.session_image_gallery.loaded_image(&key, &data));
-        if let Some(image) = selected.filter(|image| open && image.preview.is_some()) {
+        let stored = stored.filter(|image| image.preview.is_some());
+        if open && let Some(image) = selected.or_else(|| stored.clone()) {
             self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
             self.image_preview = Some(image);
             self.image_preview_zoom = 1.0;
             self.image_preview_scroll = gpui::ScrollHandle::new();
             self.image_preview_drag = None;
+        }
+        let mut requests = self.history_image_requests.borrow_mut();
+        if let Some(image) = stored {
+            requests.insert(key, HistoryImageLoad::Stored(image));
+        } else if stored_invalid || invalid {
+            requests.insert(key, HistoryImageLoad::Unavailable);
+        } else {
+            requests.remove(&key);
         }
         cx.notify();
     }

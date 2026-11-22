@@ -6,6 +6,8 @@ read by the model and images attached to your messages, including loaded history
 
 - The pane initially follows the latest image. Click a thumbnail or an image link
   in the transcript to inspect an earlier image, then **Follow latest** to resume.
+- The pane loads the selected preview and the thumbnails in view. Scroll the
+  filmstrip to load more. Browsing does not send the images to a model.
 - Click the main image to use the existing full-window zoom and pan viewer.
   Escape returns to the pane without changing your draft.
 - Click **Inline ×** or **Images** again to return to inline previews.

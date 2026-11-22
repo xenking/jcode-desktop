@@ -3,6 +3,125 @@ use super::*;
 
 const DRAFT: &str = "Keep my unfinished image question";
 
+#[gpui::test]
+fn image_pane_preloads_the_selection_and_scrolled_thumbnails(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new("image-preload".into(), None, None, bridge, cx)
+    });
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(1000.), px(700.)));
+    panel.update(vcx, |panel, cx| {
+        let markers: String = (1..=96).map(|number| format!(" [#image {number}]")).collect();
+        *panel.items = std::iter::once(Item::User(format!("Inspect these images{markers}")))
+            .chain((0..96).map(|number| {
+                Item::Image(TranscriptImage::new(
+                    "image/png".into(),
+                    format!("jcode-lazy:preload-{number}"),
+                    None,
+                ))
+            }))
+            .collect();
+        panel.set_image_pane_open(true, cx);
+    });
+    vcx.run_until_parked();
+
+    let read_requests = || {
+        commands
+            .try_iter()
+            .filter_map(|command| match command {
+                Command::GetHistoryImage { session_id, key } => {
+                    assert_eq!(session_id, "image-preload");
+                    Some(key)
+                }
+                Command::Send { .. } => panic!("gallery must not send a prompt"),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let initial = read_requests();
+    assert!(initial.iter().any(|key| key == "preload-95"), "{initial:?}");
+    assert!(initial.iter().any(|key| key != "preload-95"), "{initial:?}");
+    assert!(initial.len() <= 12, "{initial:?}");
+    assert!(!initial.iter().any(|key| key == "preload-45"), "{initial:?}");
+
+    let png = image_preview::fixture_image().data;
+    panel.update(vcx, |panel, cx| {
+        for key in initial {
+            panel.load_history_image(key, Ok(png.clone()), cx);
+        }
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("session-image-preview-ready").is_some());
+    assert!(vcx.debug_bounds("image-preview").is_none());
+
+    panel.update(vcx, |panel, cx| {
+        panel.image_pane_scroll.scroll_to_item(45);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let scrolled = read_requests();
+    assert!(scrolled.iter().any(|key| key == "preload-45"), "{scrolled:?}");
+    assert!(scrolled.len() <= 12, "{scrolled:?}");
+    assert!(vcx.debug_bounds("image-preview").is_none());
+}
+
+#[gpui::test]
+fn image_pane_late_reply_cannot_replace_the_other_sessions_preview(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace =
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("gallery-source", cx);
+        workspace.push_test_panel("gallery-other", cx);
+        workspace
+    });
+    let (source, other) = workspace.read_with(vcx, |workspace, _| {
+        (workspace.test_panel(0).unwrap(), workspace.test_panel(1).unwrap())
+    });
+    let key = "img_0123456789abcdef0123456789abcdef";
+    let lazy = TranscriptImage::new("image/png".into(), format!("jcode-lazy:{key}"), None);
+    for panel in [&source, &other] {
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![Item::Image(lazy.clone())];
+            panel.request_history_thumbnail(&lazy, false);
+            panel.set_image_pane_open(true, cx);
+        });
+    }
+    vcx.update(|window, cx| {
+        source.update(cx, |panel, cx| {
+            panel.open_image_preview(lazy.clone(), window, cx);
+            panel.set_image_pane_open(false, cx);
+        });
+    });
+
+    let deliver = |id: &str, result, vcx: &mut gpui::VisualTestContext| {
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                crate::harness::Update::HistoryImage {
+                    session_id: id.into(),
+                    key: key.into(),
+                    result,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+    };
+    deliver("gallery-source", Ok(image_preview::fixture_image().data), vcx);
+    source.read_with(vcx, |panel, _| {
+        assert!(matches!(&panel.items[0], Item::Image(image) if image.preview.is_some()));
+        assert!(panel.image_preview.is_none());
+    });
+    other.read_with(vcx, |panel, _| {
+        assert!(matches!(&panel.items[0], Item::Image(image) if image.preview.is_none()));
+    });
+
+    deliver("gallery-other", Err("file no longer available".into()), vcx);
+    assert!(other.read_with(vcx, |panel, _| panel.gallery_image_unavailable(&lazy)));
+    assert!(vcx.debug_bounds("session-image-unavailable").is_some());
+    assert!(vcx.debug_bounds("image-preview").is_none());
+}
+
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
     cx.update(crate::input::bind_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {

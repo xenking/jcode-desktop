@@ -590,6 +590,10 @@ pub struct TranscriptImage {
 }
 
 impl TranscriptImage {
+    fn lazy_key(&self) -> Option<&str> {
+        self.data.strip_prefix("jcode-lazy:")
+    }
+
     fn new(media_type: String, data: String, label: Option<String>) -> Self {
         let preview = base64::engine::general_purpose::STANDARD
             .decode(&data)
@@ -756,8 +760,7 @@ pub struct Panel {
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
     pending_history_image: Option<String>,
-    // true while in flight, false after failure (do not retry every frame).
-    history_image_requests: std::cell::RefCell<HashMap<String, bool>>,
+    history_image_requests: std::cell::RefCell<HashMap<String, image_preview::HistoryImageLoad>>,
     image_preview_dimensions: Option<(u32, u32)>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
@@ -12743,6 +12746,23 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 "The chart compares three bars. Click the image above to see it larger.".into(),
             ),
         ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("gallery-preload") {
+        return std::iter::once(Item::User("Browse images without submitting this draft.".into()))
+            .chain((0..crate::harness::GALLERY_FIXTURE_IMAGES).map(|index| {
+                let id = crate::harness::gallery_fixture_image_id(index);
+                let label = Some(format!("[#{id}]"));
+                let mut image = if index == 0 {
+                    let mut image = image_preview::fixture_image();
+                    image.label = label;
+                    image
+                } else {
+                    TranscriptImage::new("image/png".into(), format!("jcode-lazy:{id}"), label)
+                };
+                image.source = jcode_sdk::RenderedImageSource::ToolResult { tool_name: "read".into() };
+                Item::Image(image)
+            }))
+            .collect();
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image-prompt") {
         // Two pasted screenshots, the first followed directly by a

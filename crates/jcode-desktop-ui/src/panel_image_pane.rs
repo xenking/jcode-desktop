@@ -195,6 +195,8 @@ impl Panel {
         self.image_pane_open = open;
         if open {
             self.request_session_image_gallery();
+        } else {
+            self.pending_history_image = None;
         }
         self.cancel_transcript_momentum();
         self.transcript_measurements.dirty = true;
@@ -424,6 +426,7 @@ impl Panel {
             })
             .when_some(image, |el, image| {
                 let preview_image = image.clone();
+                let asset = self.gallery_image_asset(image);
                 el.child(
                     div()
                         .id("session-image-main")
@@ -435,47 +438,24 @@ impl Panel {
                         .rounded_md()
                         .overflow_hidden()
                         .bg(theme.USER_BG)
-                        .when_some(image.preview.clone(), |el, preview| {
+                        .children(self.gallery_image_preloader(image, cx))
+                        .when_some(asset.clone(), |el, preview| {
                             el.cursor_pointer()
                                 .child(
                                     img(crate::image_cache::source(preview))
+                                        .debug_selector(|| "session-image-preview-ready".into())
                                         .absolute()
                                         .size_full()
-                                        .object_fit(gpui::ObjectFit::Contain),
+                                        .object_fit(gpui::ObjectFit::Contain)
+                                        .with_fallback(|| image_pane_placeholder(true)),
                                 )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_image_preview(preview_image.clone(), window, cx);
                                     cx.stop_propagation();
                                 }))
                         })
-                        .when(image.preview.is_none(), |el| {
-                            let lazy = image.data.starts_with("jcode-lazy:");
-                            let lazy_image = image.clone();
-                            el.flex().items_center().justify_center().child(
-                                div()
-                                    .id("session-image-placeholder")
-                                    .debug_selector(|| "session-image-placeholder".into())
-                                    .p_3()
-                                    .text_size(px(12.))
-                                    .text_color(theme.TEXT_DIM)
-                                    .when(lazy, |el| {
-                                        el.cursor_pointer().on_click(cx.listener(
-                                            move |this, _, window, cx| {
-                                                this.open_image_preview(
-                                                    lazy_image.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            },
-                                        ))
-                                    })
-                                    .child(if lazy {
-                                        "Click to load image".to_string()
-                                    } else {
-                                        format!("Could not display {}", image.media_type)
-                                    }),
-                            )
+                        .when(asset.is_none(), |el| {
+                            el.child(image_pane_placeholder(self.gallery_image_unavailable(image)))
                         }),
                 )
                 .child(
@@ -546,8 +526,7 @@ impl Panel {
                 )
             })
             .when(!indices.is_empty(), |el| {
-                el.child(
-                    div()
+                let strip = div()
                         .id("session-image-thumbnails")
                         .debug_selector(|| "session-image-thumbnails".into())
                         .flex_none()
@@ -561,9 +540,15 @@ impl Panel {
                             let Item::Image(image) = &self.items[index] else {
                                 unreachable!()
                             };
+                            let asset = self.gallery_image_asset(image);
                             div()
                                 .id(("session-image-thumb", index))
                                 .debug_selector(move || format!("session-image-thumb-{index}"))
+                                .relative()
+                                .children(crate::fixture_control_targets::marker(
+                                    || format!("gallery:thumb:{number}"),
+                                    || Some(self.session_id.clone()),
+                                ))
                                 .flex_none()
                                 .w(px(80.))
                                 .h(px(64.))
@@ -578,27 +563,43 @@ impl Panel {
                                 .bg(theme.USER_BG)
                                 .cursor_pointer()
                                 .hover(|el| el.bg(theme.QUOTE_BG))
-                                .when_some(image.preview.clone(), |el, preview| {
+                                .children(self.gallery_image_preloader(image, cx))
+                                .when_some(asset.clone(), |el, preview| {
                                     el.child(
                                         img(crate::image_cache::source(preview))
+                                            .debug_selector(move || format!("session-image-thumb-ready-{index}"))
                                             .size_full()
-                                            .object_fit(gpui::ObjectFit::Contain),
+                                            .object_fit(gpui::ObjectFit::Contain)
+                                            .with_fallback(|| image_pane_placeholder(true)),
                                     )
                                 })
-                                .when(image.preview.is_none(), |el| {
+                                .when(asset.is_none(), |el| {
                                     el.flex()
                                         .items_center()
                                         .justify_center()
                                         .text_size(px(11.))
                                         .text_color(theme.TEXT_DIM)
-                                        .child(format!("Image {}", number + 1))
+                                        .child(if self.gallery_image_unavailable(image) {
+                                            "Unavailable".to_string()
+                                        } else {
+                                            format!("Image {}", number + 1)
+                                        })
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.image_pane_selected = Some(index);
                                     cx.notify();
                                     cx.stop_propagation();
                                 }))
-                        })),
+                        }));
+                el.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .children(crate::fixture_control_targets::marker(
+                            || "gallery:filmstrip".into(),
+                            || Some(self.session_id.clone()),
+                        ))
+                        .child(strip),
                 )
             });
         Some(pane.into_any_element())
@@ -628,4 +629,24 @@ impl Panel {
         .absolute()
         .size_full()
     }
+}
+
+fn image_pane_placeholder(unavailable: bool) -> gpui::AnyElement {
+    div()
+        .id("session-image-placeholder")
+        .debug_selector(move || {
+            if unavailable {
+                "session-image-unavailable".into()
+            } else {
+                "session-image-placeholder".into()
+            }
+        })
+        .flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .text_color(Theme::global().TEXT_DIM)
+        .child(if unavailable { "Unavailable" } else { "Loading image…" })
+        .into_any_element()
 }
