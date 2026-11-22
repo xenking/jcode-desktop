@@ -18,6 +18,25 @@ ZIP="$OUT/Jcode-macOS-universal.zip"
 DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
+read -r -a TARGETS <<< "${PACKAGE_TARGETS:-aarch64-apple-darwin}"
+
+if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_ENVIRONMENT:-}" != github-hosted ]]; then
+  admission=(python3 "$JCODE_REPO/scripts/build-admission.py")
+  if [[ ! -r "${admission[1]}" && -n "${JCODE_BUILD_LEASE_FD:-}" && -n "${JCODE_BUILD_ADMISSION_PYTHON:-}" ]]; then
+    admission=(python3 -c "$JCODE_BUILD_ADMISSION_PYTHON")
+  elif [[ ! -r "${admission[1]}" ]]; then
+    echo "build admission blocked: owner=desktop-package paths=$OUT,$JCODE_REPO policy=desktop: missing ${admission[1]}; update the Jcode source checkout" >&2
+    exit 75
+  fi
+  admission+=(--owner desktop-package --kind desktop --units "${#TARGETS[@]}"
+    --path "$OUT" --path "$SPARKLE_ROOT" --workspace "$ROOT/Cargo.toml" --workspace "$JCODE_REPO/Cargo.toml")
+  if [[ -z "${JCODE_BUILD_LEASE_FD:-}" ]]; then
+    exec "${admission[@]}" -- "$0" "$@"
+  fi
+  "${admission[@]}" --check-inherited
+  unset JCODE_BUILD_ADMISSION_PYTHON
+fi
+
 # Local builds pick up the Sparkle keypair from the 0600 env file so the app
 # embeds SUPublicEDKey and the appcast is signed. CI passes secrets directly.
 SPARKLE_ENV="${SPARKLE_ENV:-$HOME/Library/Application Support/jcode/sparkle.env}"
@@ -27,7 +46,6 @@ if [[ -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
 fi
 RELEASES_BASE="${RELEASES_BASE:-https://github.com/xenking/jcode-desktop/releases/download}"
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/xenking/jcode-desktop/releases/download/desktop-latest/appcast.xml}"
-read -r -a TARGETS <<< "${PACKAGE_TARGETS:-aarch64-apple-darwin}"
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
 notarize() {
