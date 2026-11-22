@@ -92,6 +92,46 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
 }
 
 #[gpui::test]
+fn clean_chat_paints_applet_and_answer_without_tool_log(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "session-a".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.set_clean_chat(Some(true), cx);
+        panel.items.push(Item::User("Choose".into()));
+        panel.items.push(Item::Tool {
+            call_id: "decision".into(),
+            name: "ask".into(),
+            input:
+                r#"{"questions":[{"question":"Choose?","options":[{"label":"A"},{"label":"B"}]}]}"#
+                    .into(),
+            output: "Selected: B".into(),
+            done: true,
+            error: None,
+        });
+        panel
+    });
+    vcx.update(|_, cx| {
+        assert!(crate::applet_runtime::get(cx).sync_agent("session-a", &snapshot(1, "")))
+    });
+    panel.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("applet-action").is_some(),
+        "missing native applet"
+    );
+    assert!(
+        vcx.debug_bounds("decision-card").is_some(),
+        "missing ask answer"
+    );
+    assert!(vcx.debug_bounds("tool-header").is_none());
+}
+
+#[gpui::test]
 fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {

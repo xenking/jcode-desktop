@@ -917,7 +917,7 @@ pub struct Panel {
     /// Selection scope for transcript applet cards.
     applet_selection: Entity<TextSelection>,
     /// Applet runtime generation last reflected in transcript measurements.
-    applet_generation: (u64, usize),
+    applet_generation: (u64, usize, bool),
     /// Unanchored transcript applets as `(item position, instance)`, in order.
     applet_rows: Vec<(usize, String)>,
     /// Advances whenever `applet_rows` is replaced.
@@ -1842,7 +1842,7 @@ impl Panel {
             arriving_tools: HashMap::new(),
             applet_positions: HashMap::new(),
             applet_selection: cx.new(TextSelection::new),
-            applet_generation: (u64::MAX, 0),
+            applet_generation: (u64::MAX, 0, false),
             applet_rows: Vec::new(),
             applet_rows_version: 0,
             transcript_derived: None,
@@ -5119,7 +5119,8 @@ impl Panel {
         use jcode_applet_types::{Placement, placement::Anchor};
         let runtime = crate::applet_runtime::get(cx);
         let generation = runtime.generation.get();
-        let key = (generation, self.items.len());
+        let clean = self.clean_chat_enabled();
+        let key = (generation, self.items.len(), clean);
         if key == self.applet_generation {
             return;
         }
@@ -5133,11 +5134,14 @@ impl Panel {
                 anchor: Anchor::ToolCall { call_id },
                 ..
             } = &mounted.instance.placement
-                && self
+                && let Some(index) = self
                     .items
                     .iter()
-                    .any(|item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id))
+                    .position(|item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id))
             {
+                if clean {
+                    rows.push((index, id));
+                }
                 continue;
             }
             let position = *self
@@ -5301,11 +5305,6 @@ impl Panel {
         } else {
             self.items.as_slice()
         };
-        let detail_applets = if clean_chat {
-            &[]
-        } else {
-            self.applet_rows.as_slice()
-        };
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
         let mut inline_images = HashSet::new();
@@ -5365,7 +5364,7 @@ impl Panel {
                 Some((task, status, preview))
             })
             .collect();
-        let mut applets = detail_applets.iter().enumerate().peekable();
+        let mut applets = self.applet_rows.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
             // live streaming sentinels at the top of the range.

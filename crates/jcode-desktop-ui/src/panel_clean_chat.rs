@@ -9,9 +9,10 @@ pub(super) fn conversation_item(item: &Item) -> bool {
             jcode_sdk::RenderedImageSource::Other { role } => role == "assistant",
             jcode_sdk::RenderedImageSource::ToolResult { .. } => false,
         },
+        Item::Applet(_) => true,
+        Item::Tool { name, done, .. } => name == "ask" && *done,
         Item::AgentMessage { .. }
         | Item::Reasoning(_)
-        | Item::Tool { .. }
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::ResponseStats(_)
@@ -21,8 +22,7 @@ pub(super) fn conversation_item(item: &Item) -> bool {
         | Item::ProviderGuardrailRetry { .. }
         | Item::Compaction(_)
         | Item::Memory(_)
-        | Item::CacheMiss(_)
-        | Item::Applet(_) => false,
+        | Item::CacheMiss(_) => false,
     }
 }
 
