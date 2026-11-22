@@ -4697,6 +4697,9 @@ impl Panel {
             } => {
                 self.context_usage.compacting = *running;
                 if *running {
+                    if matches!(trigger.as_deref(), None | Some("manual")) {
+                        self.manual_compaction_started();
+                    }
                     self.show_compaction_running(content.clone());
                 } else {
                     self.finish_compaction_divider(content.clone());

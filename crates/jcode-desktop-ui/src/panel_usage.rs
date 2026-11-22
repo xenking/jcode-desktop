@@ -1343,6 +1343,29 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage-result").is_none());
+        assert!(
+            vcx.debug_bounds("context-usage-compact-Compact queued…")
+                .is_some()
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::CompactionDivider {
+                    session_id: "usage-session".into(),
+                    content: "compacting".into(),
+                    running: true,
+                    method: None,
+                    trigger: Some("manual".into()),
+                    pre_tokens: None,
+                    post_tokens: None,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("context-usage-compact-Compacting…")
+                .is_some()
+        );
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::CompactionDivider {
@@ -1366,6 +1389,8 @@ mod tests {
             breakdown: Some(jcode_sdk::api::ContextBreakdown {
                 meter: Some(jcode_sdk::api::ContextMeter {
                     occupied_tokens: Some(tokens),
+                    state: jcode_sdk::api::ContextMeterState::Live,
+                    source: jcode_sdk::api::ContextOccupancySource::ProviderReported,
                     compaction_threshold_tokens: Some(65_000),
                     ..Default::default()
                 }),

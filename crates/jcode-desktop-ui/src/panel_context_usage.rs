@@ -124,6 +124,7 @@ enum ActionState {
     Idle,
     WaitingForBreakdown(Action),
     PreviewingShake,
+    QueuedCompact,
     Running(Action),
     ConfirmShake(ShakePreview),
     Finished {
@@ -135,6 +136,7 @@ enum ActionState {
 impl ActionState {
     fn running_action(&self) -> Option<Action> {
         match self {
+            Self::QueuedCompact => Some(Action::Compact),
             Self::PreviewingShake => Some(Action::Shake),
             Self::Running(action) => Some(*action),
             _ => None,
@@ -330,6 +332,12 @@ mod action_forecast_tests {
 }
 
 impl Panel {
+    pub(super) fn manual_compaction_started(&mut self) {
+        if matches!(self.context_usage.action, ActionState::QueuedCompact) {
+            self.context_usage.action = ActionState::Running(Action::Compact);
+        }
+    }
+
     pub(super) fn finish_manual_context_compaction(
         &mut self,
         triggered_manually: bool,
@@ -382,7 +390,10 @@ impl Panel {
             self.context_usage.action = ActionState::Idle;
         } else if matches!(
             self.context_usage.action,
-            ActionState::PreviewingShake | ActionState::Running(_) | ActionState::ConfirmShake(_)
+            ActionState::QueuedCompact
+                | ActionState::PreviewingShake
+                | ActionState::Running(_)
+                | ActionState::ConfirmShake(_)
         ) {
             self.context_usage.action = ActionState::Finished {
                 label: "Connection lost. Action outcome unknown.".into(),
@@ -397,6 +408,7 @@ impl Panel {
                 self.context_usage.action,
                 ActionState::WaitingForBreakdown(_)
                     | ActionState::PreviewingShake
+                    | ActionState::QueuedCompact
                     | ActionState::Running(_)
                     | ActionState::ConfirmShake(_)
             )
@@ -425,7 +437,7 @@ impl Panel {
                         forecast.current_tokens.is_some() || forecast.compact_measurement.is_some()
                     });
                 self.discard_context_preview();
-                self.context_usage.action = ActionState::Running(action);
+                self.context_usage.action = ActionState::QueuedCompact;
                 self.run_session_operation(SessionOperation::Compact, action.label());
                 cx.notify();
             }
@@ -1031,6 +1043,15 @@ impl Panel {
         let forecast = (!waiting && !running)
             .then(|| self.context_action_forecast(action))
             .flatten();
+        let label = if waiting {
+            "Waiting for estimate…"
+        } else if running && matches!(self.context_usage.action, ActionState::QueuedCompact) {
+            "Compact queued…"
+        } else if running {
+            action.busy_label()
+        } else {
+            action.label()
+        };
         let selector = action.selector();
         let session_id = self.session_id.clone();
         let compact_measurement = (action == Action::Compact)
@@ -1092,13 +1113,7 @@ impl Panel {
                         cx.stop_propagation();
                     }))
             })
-            .child(if waiting {
-                "Waiting for estimate…"
-            } else if running {
-                action.busy_label()
-            } else {
-                action.label()
-            })
+            .child(div().debug_selector(move || format!("{selector}-{label}")).child(label))
             .children(forecast.map(|forecast| {
                 div()
                     .id("context-usage-action-savings")
