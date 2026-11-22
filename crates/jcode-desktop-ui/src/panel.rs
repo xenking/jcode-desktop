@@ -926,6 +926,8 @@ pub struct Panel {
     ask_focus_return: Option<FocusHandle>,
     ask_recovery: Option<gpui::Task<()>>,
     answered_asks: HashSet<String>,
+    unavailable_asks: HashMap<String, u64>,
+    ask_attachment_id: u64,
     /// Scroll state of the queue card's rows, so an inline queue editor can
     /// bring its row into view when it opens.
     queue_items_scroll: gpui::ScrollHandle,
@@ -1134,7 +1136,11 @@ impl Panel {
         // status as work, which would mark merely connected sessions.
         let state = match self.minimap_state() {
             MinimapSessionState::Error => MinimapSessionState::Error,
-            _ if self.ask_card.as_ref().is_some_and(|card| !card.submitting) => {
+            _ if self
+                .ask_card
+                .as_ref()
+                .is_some_and(|card| !card.submitting()) =>
+            {
                 return Some(TabRing::question());
             }
             _ if self.activity_active() && self.has_live_wait_tool() => {
@@ -1811,6 +1817,8 @@ impl Panel {
             ask_focus_return: None,
             ask_recovery: None,
             answered_asks: HashSet::new(),
+            unavailable_asks: HashMap::new(),
+            ask_attachment_id: 0,
             queue_items_scroll: queue_items_scroll.clone(),
             queue_edit_anchor: gpui::ScrollAnchor::for_handle(queue_items_scroll),
             pending_ask_draft: None,
@@ -3986,7 +3994,7 @@ impl Panel {
                 questions,
                 ..
             } => {
-                self.show_ask(request_id, tool_call_id, questions, cx);
+                self.show_live_ask(request_id, tool_call_id, questions, cx);
             }
             ApiEvent::PermissionRequest {
                 tool_name,

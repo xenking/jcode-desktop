@@ -103,7 +103,7 @@ impl Panel {
             );
         }
         if let Some(card) = &self.ask_card {
-            return if card.submitting {
+            return if card.submitting() {
                 FooterStatus::new("session-status-working", "Submitting answer", thinking)
             } else {
                 FooterStatus::new(

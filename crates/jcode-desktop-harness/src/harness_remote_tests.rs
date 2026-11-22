@@ -88,6 +88,7 @@ impl Server {
                     }
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
                         ApiEvent::Attached {
+                            pending_ask_ids: None,
                             session: info("same-id"),
                         }
                     }

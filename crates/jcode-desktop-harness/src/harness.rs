@@ -10,6 +10,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
@@ -238,11 +239,17 @@ pub enum Update {
     MessageSubmitted {
         session_id: String,
     },
-    /// The server accepted or rejected a response to an ask request.
+    AskAttachment {
+        session_id: String,
+        attachment_id: u64,
+        pending_ask_ids: Option<Vec<String>>,
+    },
+    /// The server accepted or rejected a specific attempt to answer an ask.
     AskResponseSettled {
         session_id: String,
         request_id: String,
-        error: Option<String>,
+        attempt_id: u64,
+        result: Result<(), AskResponseError>,
     },
     CommandFailed {
         session_id: String,
@@ -470,6 +477,8 @@ pub enum Command {
     AskResponse {
         session_id: String,
         request_id: String,
+        attachment_id: u64,
+        attempt_id: u64,
         response: jcode_sdk::AskResponse,
     },
     Fork {
@@ -666,6 +675,8 @@ enum SessionCommand {
     CancelBackgroundTask(String),
     AskResponse {
         request_id: String,
+        attachment_id: u64,
+        attempt_id: u64,
         response: jcode_sdk::AskResponse,
     },
     Fork,
@@ -1935,12 +1946,16 @@ fn run_with_transports(
             Command::AskResponse {
                 session_id,
                 request_id,
+                attachment_id,
+                attempt_id,
                 response,
             } => {
                 let sent = workers.get(&session_id).is_some_and(|worker| {
                     worker
                         .send(SessionCommand::AskResponse {
                             request_id: request_id.clone(),
+                            attachment_id,
+                            attempt_id,
                             response,
                         })
                         .is_ok()
@@ -1949,7 +1964,8 @@ fn run_with_transports(
                     let _ = updates.send(Update::AskResponseSettled {
                         session_id,
                         request_id,
-                        error: Some("Session is not connected. Your answer is retained; retry when it reconnects.".into()),
+                        attempt_id,
+                        result: Err(AskResponseError::ConnectionChanged),
                     });
                 }
             }
@@ -3395,6 +3411,15 @@ impl Drop for RemoteIdentityLease<'_> {
     }
 }
 
+static NEXT_ASK_ATTACHMENT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+pub enum AskResponseError {
+    Stale,
+    ConnectionChanged,
+    Failed(String),
+}
+
 fn session_worker_with_connector(
     session_id: String,
     commands: Receiver<SessionCommand>,
@@ -3485,7 +3510,12 @@ fn session_worker_with_connector(
             }
         };
         let events = client.events(None);
-        if !already_attached && let Err(error) = client.attach_session(real_id) {
+        let mut pending_ask_ids = None;
+        if !already_attached
+            && let Err(error) = client
+                .attach_session_with_pending_asks(real_id)
+                .map(|(_, ids)| pending_ask_ids = ids)
+        {
             if disconnect::report_protocol_failure(&error, &session_id, &updates) {
                 return;
             }
@@ -3511,7 +3541,8 @@ fn session_worker_with_connector(
                 ReconnectWait::Woken => reconnect_delay = base_reconnect_delay,
                 ReconnectWait::Elapsed => {
                     reconnect_delay = if runtime_owner_is_busy(&error) {
-                        next_reconnect_delay(reconnect_delay, &error).min(Duration::from_secs(2))
+                        next_reconnect_delay(reconnect_delay, &error)
+                            .min(Duration::from_secs(2))
                     } else {
                         next_reconnect_delay(reconnect_delay, &error)
                     };
@@ -3519,6 +3550,7 @@ fn session_worker_with_connector(
             }
             continue;
         }
+        let ask_attachment_id = NEXT_ASK_ATTACHMENT_ID.fetch_add(1, Ordering::Relaxed);
         reconnect_delay = base_reconnect_delay;
         failed_attempts = 0;
         let _detach = GracefulDetach {
@@ -3588,6 +3620,11 @@ fn session_worker_with_connector(
             || load_skill_catalog(&client, real_id, &session_id, &updates);
         let mut history = history::HistoryRecovery::default();
         history.load(&client, real_id, &session_id, &updates);
+        let _ = updates.send(Update::AskAttachment {
+            session_id: session_id.clone(),
+            attachment_id: ask_attachment_id,
+            pending_ask_ids,
+        });
         if client.supports("queued_prompts")
             && let Ok(prompts) = client.get_queued_prompts(real_id)
         {
@@ -4186,16 +4223,30 @@ fn session_worker_with_connector(
                     }
                     SessionCommand::AskResponse {
                         request_id,
+                        attachment_id,
+                        attempt_id,
                         response,
                     } => {
-                        let error = client
-                            .respond_to_ask(real_id, &request_id, response)
-                            .err()
-                            .map(|error| format!("Could not send your answer: {error}"));
+                        let result = if attachment_id != ask_attachment_id {
+                            Err(AskResponseError::ConnectionChanged)
+                        } else {
+                            client
+                                .respond_to_ask(real_id, &request_id, response)
+                                .map_err(|error| {
+                                    if error.kind == jcode_sdk::ErrorKind::AskNotPending {
+                                        AskResponseError::Stale
+                                    } else {
+                                        AskResponseError::Failed(format!(
+                                            "Could not send your answer: {error}"
+                                        ))
+                                    }
+                                })
+                        };
                         let _ = updates.send(Update::AskResponseSettled {
                             session_id: session_id.clone(),
                             request_id,
-                            error,
+                            attempt_id,
+                            result,
                         });
                     }
                     SessionCommand::BackgroundTool => {
@@ -4856,7 +4907,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         ApiEvent::RuntimeCommandResult { session_id, .. } => {
             *session_id = address.ui_id(session_id);
         }
-        ApiEvent::Attached { session } | ApiEvent::SessionForked { session } => {
+        ApiEvent::Attached { session, .. } | ApiEvent::SessionForked { session } => {
             session.session_id = address.ui_id(&session.session_id);
         }
         ApiEvent::Sessions { sessions, workers } => {

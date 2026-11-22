@@ -83,6 +83,7 @@ mod socket_tests {
         requests: Receiver<ApiRequest>,
         writer: Arc<Mutex<UnixStream>>,
         thread: Option<JoinHandle<()>>,
+        attachment_id: u64,
     }
 
     impl Worker {
@@ -141,9 +142,16 @@ mod socket_tests {
                             }
                             continue;
                         }
-                        ApiRequest::AskResponse { .. } => {
+                        ApiRequest::AskResponse { request_id, .. } => {
                             request_tx.send(frame.request.clone()).unwrap();
-                            ApiEvent::Ok
+                            if request_id == "ask-cold-wake-expired" {
+                                ApiEvent::Error {
+                                    code: jcode_sdk::api::ErrorCode::Internal,
+                                    message: "The input request is no longer pending on this connection; your answer was not accepted".into(),
+                                }
+                            } else {
+                                ApiEvent::Ok
+                            }
                         }
                         ApiRequest::SoftInterrupt { .. } => {
                             request_tx.send(frame.request.clone()).unwrap();
@@ -186,14 +194,22 @@ mod socket_tests {
             let thread = std::thread::spawn(move || {
                 session_worker("s1".into(), command_rx, update_tx, Some(client))
             });
-            let worker = Self {
+            let mut worker = Self {
                 commands,
                 updates,
                 requests,
                 writer,
                 thread: Some(thread),
+                attachment_id: 0,
             };
+            let attachment_id = Cell::new(0);
             worker.wait_for(|update| {
+                if let Update::AskAttachment {
+                    attachment_id: id, ..
+                } = update
+                {
+                    attachment_id.set(*id);
+                }
                 matches!(
                     update,
                     Update::Event {
@@ -202,6 +218,7 @@ mod socket_tests {
                     }
                 )
             });
+            worker.attachment_id = attachment_id.get();
             worker
         }
 
@@ -487,6 +504,8 @@ mod socket_tests {
             .commands
             .send(SessionCommand::AskResponse {
                 request_id: "ask-1".into(),
+                attachment_id: worker.attachment_id,
+                attempt_id: 1,
                 response,
             })
             .unwrap();
@@ -494,7 +513,69 @@ mod socket_tests {
             matches!(worker.request(), ApiRequest::AskResponse { session_id, request_id, response }
             if session_id == "s1" && request_id == "ask-1" && response.answers.as_ref().is_some_and(|answers| answers[0].comments.get("B").map(String::as_str) == Some("why") && answers[0].other.as_deref() == Some("own answer")))
         );
-        worker.wait_for(|update| matches!(update, Update::AskResponseSettled { request_id, error: None, .. } if request_id == "ask-1"));
+        worker.wait_for(|update| matches!(update, Update::AskResponseSettled { request_id, attempt_id: 1, result: Ok(()), .. } if request_id == "ask-1"));
+    }
+
+    #[test]
+    fn expired_ask_does_not_resend_on_another_attachment() {
+        let worker = Worker::new(|_| vec![]);
+        let send = |request_id: &str, attachment_id, attempt_id| {
+            worker
+                .commands
+                .send(SessionCommand::AskResponse {
+                    request_id: request_id.into(),
+                    attachment_id,
+                    attempt_id,
+                    response: jcode_sdk::AskResponse::default(),
+                })
+                .unwrap();
+        };
+        send("ask-cold-wake-expired", worker.attachment_id, 1);
+        assert!(
+            matches!(worker.request(), ApiRequest::AskResponse { request_id, .. }
+            if request_id == "ask-cold-wake-expired")
+        );
+        worker.wait_for(|update| {
+            matches!(
+                update,
+                Update::AskResponseSettled {
+                    attempt_id: 1,
+                    result: Err(AskResponseError::Stale),
+                    ..
+                }
+            )
+        });
+        send("ask-cold-wake-expired", worker.attachment_id - 1, 2);
+        worker.wait_for(|update| {
+            matches!(
+                update,
+                Update::AskResponseSettled {
+                    attempt_id: 2,
+                    result: Err(AskResponseError::ConnectionChanged),
+                    ..
+                }
+            )
+        });
+        assert!(
+            worker.requests.try_recv().is_err(),
+            "no stale answer may reach the socket"
+        );
+
+        send("ask-cold-wake-live", worker.attachment_id, 3);
+        assert!(
+            matches!(worker.request(), ApiRequest::AskResponse { request_id, response, .. }
+            if request_id == "ask-cold-wake-live" && response.answers.is_none())
+        );
+        worker.wait_for(|update| {
+            matches!(
+                update,
+                Update::AskResponseSettled {
+                    attempt_id: 3,
+                    result: Ok(()),
+                    ..
+                }
+            )
+        });
     }
 
     #[test]

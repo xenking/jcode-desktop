@@ -101,7 +101,7 @@ pub(crate) struct AskCard {
     option_focus: Vec<Vec<gpui::FocusHandle>>,
     confirming_decline: bool,
     pub voice_target: Option<(usize, Option<usize>)>,
-    pub submitting: bool,
+    attempt_id: Option<u64>,
     pub submit_error: Option<String>,
     scroll: gpui::ScrollHandle,
 }
@@ -132,7 +132,7 @@ impl AskCard {
             cursor_option: 0,
             confirming_decline: false,
             voice_target: (n > 0).then_some((0, None)),
-            submitting: false,
+            attempt_id: None,
             submit_error: None,
             scroll: gpui::ScrollHandle::new(),
         }
@@ -161,6 +161,10 @@ impl AskCard {
                 })
                 .collect(),
         }
+    }
+
+    pub(super) fn submitting(&self) -> bool {
+        self.attempt_id.is_some()
     }
 
     pub fn restore_draft(&mut self, draft: AskDraft, cx: &mut Context<Panel>) {
@@ -388,6 +392,9 @@ struct AskToolInput {
     questions: Vec<AskQuestion>,
 }
 
+const ASK_CONNECTION_CHANGED: &str =
+    "The connection changed. Your answer is retained here and was not resent.";
+
 fn ask_editor(input: &Entity<PromptInput>, selected: bool, window: &Window, cx: &App) -> gpui::Div {
     let theme = Theme::global();
     let focused = input.read(cx).focus_handle.is_focused(window);
@@ -412,6 +419,23 @@ fn ask_editor(input: &Entity<PromptInput>, selected: bool, window: &Window, cx: 
 }
 
 impl Panel {
+    pub(super) fn show_live_ask(
+        &mut self,
+        request_id: &str,
+        tool_call_id: &str,
+        questions: &[AskQuestion],
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .unavailable_asks
+            .get(request_id)
+            .is_some_and(|id| *id != self.ask_attachment_id)
+        {
+            self.unavailable_asks.remove(request_id);
+        }
+        self.show_ask(request_id, tool_call_id, questions, cx);
+    }
+
     pub(super) fn dismiss_stopped_asks(&mut self, cx: &mut Context<Self>) {
         self.ask_recovery = None;
         self.pending_ask_draft = None;
@@ -433,7 +457,8 @@ impl Panel {
         questions: &[AskQuestion],
         cx: &mut Context<Self>,
     ) {
-        if self.answered_asks.contains(request_id) {
+        if self.answered_asks.contains(request_id) || self.unavailable_asks.contains_key(request_id)
+        {
             return;
         }
         self.ask_recovery = None;
@@ -502,12 +527,11 @@ impl Panel {
             };
             // History and the event stream can both supply the same tool row.
             // Only the most recent state of that call can reopen a card.
-            if name != "ask"
-                || call_id.is_empty()
-                || !seen.insert(call_id.as_str())
-                || *done
-                || self.answered_asks.contains(&format!("ask-{call_id}"))
-            {
+            if name != "ask" || call_id.is_empty() || !seen.insert(call_id.as_str()) || *done {
+                return None;
+            }
+            let request_id = format!("ask-{call_id}");
+            if self.answered_asks.contains(&request_id) || self.unavailable_asks.contains_key(&request_id) {
                 return None;
             }
             let AskToolInput { questions } = serde_json::from_str(input).ok()?;
@@ -650,7 +674,7 @@ impl Panel {
         let Some(card) = self.ask_card.as_ref() else {
             return false;
         };
-        if event.keystroke.key == "tab" || card.submitting {
+        if event.keystroke.key == "tab" || card.submitting() {
             return false;
         }
         let q = card.cursor_question;
@@ -757,7 +781,7 @@ impl Panel {
     }
 
     fn advance_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(card) = self.ask_card.as_mut().filter(|card| !card.submitting) else {
+        let Some(card) = self.ask_card.as_mut().filter(|card| !card.submitting()) else {
             return;
         };
         if card.cursor_question + 1 < card.tab_count() {
@@ -834,14 +858,18 @@ impl Panel {
         let Some(card) = self.ask_card.as_mut() else {
             return;
         };
-        if card.submitting {
+        if card.submitting() {
             return;
         }
-        card.submitting = true;
+        static NEXT_ATTEMPT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let attempt_id = NEXT_ATTEMPT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        card.attempt_id = Some(attempt_id);
         card.submit_error = None;
         self.bridge.send(Command::AskResponse {
             session_id: self.session_id.clone(),
             request_id: card.request_id.clone(),
+            attachment_id: self.ask_attachment_id,
+            attempt_id,
             response,
         });
         cx.notify();
@@ -850,25 +878,104 @@ impl Panel {
     pub(crate) fn ask_response_settled(
         &mut self,
         request_id: &str,
-        error: Option<String>,
+        attempt_id: u64,
+        result: Result<(), crate::harness::AskResponseError>,
         cx: &mut Context<Self>,
     ) {
+        use crate::harness::AskResponseError;
         let Some(card) = self
             .ask_card
             .as_mut()
-            .filter(|card| card.request_id == request_id && card.submitting)
+            .filter(|card| card.request_id == request_id && card.attempt_id == Some(attempt_id))
         else {
             return;
         };
-        if let Some(error) = error {
-            card.submitting = false;
-            card.submit_error = Some(error);
-        } else {
-            self.answered_asks.insert(request_id.to_owned());
-            self.ask_focus_return = card.focus_scope.take();
-            self.ask_card = None;
-            self.pending_ask_draft = None;
-            self.show_next_queued_ask(cx);
+        match result {
+            Ok(()) => {
+                self.answered_asks.insert(request_id.to_owned());
+                self.close_ask_card(cx);
+            }
+            Err(AskResponseError::Stale) => {
+                self.unavailable_asks
+                    .insert(request_id.to_owned(), self.ask_attachment_id);
+                self.items.push(super::Item::Error(
+                    "This question is no longer pending. Your answer was not accepted.".into(),
+                ));
+                self.close_ask_card(cx);
+            }
+            Err(AskResponseError::ConnectionChanged) => {
+                card.attempt_id = None;
+                card.submit_error = Some(ASK_CONNECTION_CHANGED.into());
+            }
+            Err(AskResponseError::Failed(error)) => {
+                card.attempt_id = None;
+                card.submit_error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    fn close_ask_card(&mut self, cx: &mut Context<Self>) {
+        self.cancel_ask_voice(cx);
+        self.ask_focus_return = self.ask_card.take().and_then(|card| card.focus_scope);
+        self.pending_ask_draft = None;
+        self.show_next_queued_ask(cx);
+        self.schedule_ask_recovery(cx);
+    }
+
+    pub(crate) fn reconcile_asks(
+        &mut self,
+        attachment_id: u64,
+        pending: Option<&[String]>,
+        cx: &mut Context<Self>,
+    ) {
+        if attachment_id <= self.ask_attachment_id {
+            return;
+        }
+        let previous_attachment = std::mem::replace(&mut self.ask_attachment_id, attachment_id);
+        if let Some(card) = self.ask_card.as_mut()
+            && card.attempt_id.take().is_some()
+        {
+            card.submit_error = Some(ASK_CONNECTION_CHANGED.into());
+        }
+        if let Some(pending) = pending {
+            self.ask_recovery = None;
+            self.unavailable_asks.retain(|id, _| !pending.contains(id));
+            for item in &self.items {
+                if let super::Item::Tool {
+                    name, call_id, done: false, ..
+                } = item
+                    && name == "ask"
+                    && !call_id.is_empty()
+                {
+                    let request_id = format!("ask-{call_id}");
+                    if !pending.contains(&request_id) {
+                        self.unavailable_asks
+                            .entry(request_id)
+                            .or_insert(previous_attachment);
+                    }
+                }
+            }
+            self.queued_asks.retain(|ask| {
+                let still_pending = pending.contains(&ask.request_id);
+                if !still_pending {
+                    self.unavailable_asks
+                        .insert(ask.request_id.clone(), previous_attachment);
+                }
+                still_pending
+            });
+            if let Some(card) = self
+                .ask_card
+                .as_ref()
+                .filter(|card| !pending.contains(&card.request_id))
+            {
+                self.unavailable_asks
+                    .insert(card.request_id.clone(), previous_attachment);
+                self.items.push(super::Item::Error(
+                    "This question is no longer pending. No answer was sent on reconnect.".into(),
+                ));
+                self.close_ask_card(cx);
+            }
             self.schedule_ask_recovery(cx);
         }
         cx.notify();
@@ -1314,7 +1421,7 @@ impl Panel {
                     questions,
                     &card.scroll,
                 ))
-                .when(card.submitting, |el| {
+                .when(card.submitting(), |el| {
                     el.child(div().absolute().inset_0().occlude())
                 }),
         );
@@ -1354,7 +1461,7 @@ impl Panel {
                                     .text_color(theme.TEXT)
                             })
                             .when(!complete && last_tab, |el| el.text_color(theme.TEXT_FAINT))
-                            .child(if card.submitting {
+                            .child(if card.submitting() {
                                 "Sending…"
                             } else if !last_tab {
                                 "Next"
@@ -1374,7 +1481,18 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::AskResponseError;
     use jcode_sdk::AskOption;
+
+    fn settle_test_ask(
+        panel: &mut Panel,
+        request_id: &str,
+        result: Result<(), AskResponseError>,
+        cx: &mut Context<Panel>,
+    ) {
+        let attempt_id = panel.ask_card.as_ref().unwrap().attempt_id.unwrap();
+        panel.ask_response_settled(request_id, attempt_id, result, cx);
+    }
 
     fn question(multi: bool) -> AskQuestion {
         AskQuestion {
@@ -1508,7 +1626,7 @@ mod tests {
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert!(
-                panel.ask_card.as_ref().is_none_or(|card| card.submitting),
+                panel.ask_card.as_ref().is_none_or(|card| card.submitting()),
                 "Enter on the only question submits it"
             );
         });
@@ -2189,22 +2307,24 @@ mod tests {
                 vec![1]
             );
         });
-        let request_id = panel.read_with(vcx, |panel, _| {
-            panel.ask_card.as_ref().unwrap().request_id.clone()
+        let (request_id, first_attempt) = panel.read_with(vcx, |panel, _| {
+            let card = panel.ask_card.as_ref().unwrap();
+            (card.request_id.clone(), card.attempt_id.unwrap())
         });
         workspace.update(vcx, |workspace, cx| {
             workspace.apply(
                 crate::harness::Update::AskResponseSettled {
                     session_id: "session-a".into(),
                     request_id: request_id.clone(),
-                    error: Some("offline".into()),
+                    attempt_id: first_attempt,
+                    result: Err(AskResponseError::Failed("offline".into())),
                 },
                 cx,
             )
         });
         panel.read_with(vcx, |panel, _| {
             let card = panel.ask_card.as_ref().unwrap();
-            assert!(!card.submitting);
+            assert!(!card.submitting());
             assert_eq!(card.submit_error.as_deref(), Some("offline"));
             assert_eq!(card.chosen[0], vec![1]);
         });
@@ -2212,12 +2332,16 @@ mod tests {
             let response = panel.ask_card.as_ref().unwrap().response();
             panel.answer_ask(response, cx);
         });
+        let attempt_id = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().attempt_id.unwrap()
+        });
         workspace.update(vcx, |workspace, cx| {
             workspace.apply(
                 crate::harness::Update::AskResponseSettled {
                     session_id: "session-a".into(),
                     request_id,
-                    error: None,
+                    attempt_id,
+                    result: Ok(()),
                 },
                 cx,
             )
@@ -2526,11 +2650,16 @@ mod tests {
         assert_eq!(response["answers"][0]["other_images"][0][1], "AQ==");
         panel.update(vcx, |panel, cx| {
             let request_id = panel.ask_card.as_ref().unwrap().request_id.clone();
-            panel.ask_response_settled(&request_id, Some("network error".into()), cx);
+            settle_test_ask(
+                panel,
+                &request_id,
+                Err(AskResponseError::Failed("network error".into())),
+                cx,
+            );
         });
         panel.read_with(vcx, |panel, cx| {
             let card = panel.ask_card.as_ref().unwrap();
-            assert!(!card.submitting);
+            assert!(!card.submitting());
             assert_eq!(
                 card.other_inputs[0].read(cx).snapshot().attachments[0].encoded,
                 "AQ=="
@@ -2578,7 +2707,7 @@ mod tests {
                 "a bn1jk \n"
             );
             assert!(card.chosen[0].is_empty());
-            assert!(!card.submitting);
+            assert!(!card.submitting());
         });
         vcx.update(|window, cx| {
             let focus = panel.read(cx).focus_handle.clone();
@@ -2596,17 +2725,17 @@ mod tests {
                 card.comment_inputs[0][0].read(cx).snapshot().content,
                 "a bn1jk\n"
             );
-            assert!(!card.submitting);
+            assert!(!card.submitting());
         });
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
-            assert!(!panel.ask_card.as_ref().unwrap().submitting)
+            assert!(!panel.ask_card.as_ref().unwrap().submitting())
         });
         vcx.simulate_keystrokes("escape enter");
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
-            assert!(panel.ask_card.as_ref().unwrap().submitting)
+            assert!(panel.ask_card.as_ref().unwrap().submitting())
         });
     }
 
@@ -2673,7 +2802,7 @@ mod tests {
             assert_eq!(card.chosen[0], vec![1]);
             assert_eq!(card.comment_inputs[0][1], editor);
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled(request_id, None, cx);
+            settle_test_ask(panel, request_id, Ok(()), cx);
             panel.apply(&event, cx);
         });
         vcx.executor().advance_clock(Duration::from_secs(2));
@@ -2720,14 +2849,14 @@ mod tests {
                 "the first question stays on screen"
             );
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled("ask-team", None, cx);
+            settle_test_ask(panel, "ask-team", Ok(()), cx);
             assert_eq!(
                 panel.ask_card.as_ref().map(|card| card.request_id.as_str()),
                 Some("ask-computer-consent"),
                 "a second pending question must not be lost behind the first"
             );
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled("ask-computer-consent", None, cx);
+            settle_test_ask(panel, "ask-computer-consent", Ok(()), cx);
             assert!(panel.ask_card.is_none());
         });
         let answered: Vec<_> = commands
@@ -2754,7 +2883,7 @@ mod tests {
                 cx,
             );
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled("ask-one", None, cx);
+            settle_test_ask(panel, "ask-one", Ok(()), cx);
             assert!(
                 panel.ask_card.is_none(),
                 "a finished ask is not shown again"
@@ -2776,16 +2905,19 @@ mod tests {
             panel.apply(&serde_json::from_str(REAL_ASK_REQUEST).unwrap(), cx);
             let request = panel.ask_card.as_ref().unwrap().request_id.clone();
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled(
+            settle_test_ask(
+                panel,
                 &request,
-                Some("Could not send your answer: your answer was not accepted".into()),
+                Err(AskResponseError::Failed(
+                    "Could not send your answer: your answer was not accepted".into(),
+                )),
                 cx,
             );
             let card = panel
                 .ask_card
                 .as_ref()
                 .expect("a rejected answer keeps the card");
-            assert!(!card.submitting);
+            assert!(!card.submitting());
             assert!(
                 card.submit_error
                     .as_deref()
@@ -2810,6 +2942,9 @@ mod tests {
         let request = "ask-cold-wake-expired";
         panel.update(vcx, |panel, cx| {
             panel.test_settled_conversation(1, cx);
+            panel.input.update(cx, |input, cx| {
+                input.set_content("draft to keep".into(), cx)
+            });
             let mut event: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
             event["request_id"] = request.into();
             panel.apply(&serde_json::from_value(event).unwrap(), cx);
@@ -2821,12 +2956,14 @@ mod tests {
         });
         panel.update(vcx, |panel, cx| {
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled(
+            settle_test_ask(panel,
                 request,
-                Some("Could not send your answer: internal: The input request is no longer pending on this connection; your answer was not accepted".into()),
+                Err(AskResponseError::Stale),
                 cx,
             );
             assert!(panel.ask_card.is_none(), "a stale answer must not leave a blocking card");
+            assert!(panel.items.iter().any(|item| matches!(item, super::super::Item::Error(message) if message.contains("Your answer was not accepted"))));
+            assert_eq!(panel.input.read(cx).snapshot().content, "draft to keep");
         });
         vcx.run_until_parked();
         assert!(vcx.update(|window, cx| {
@@ -2846,6 +2983,53 @@ mod tests {
             1,
             "closing a stale card must not send another answer"
         );
+    }
+
+    #[gpui::test]
+    fn reconnect_retires_missing_asks_and_late_ack_cannot_close_the_current_attempt(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0)).unwrap();
+        panel.update(vcx, |panel, cx| {
+            let expired = "ask-cold-wake-old";
+            let live = "ask-cold-wake-live";
+            let live_pending = [live.into()];
+            panel.reconcile_asks(1, None, cx);
+            panel.show_live_ask(expired, expired, &[question(false)], cx);
+            panel.show_live_ask(live, live, &[question(true)], cx);
+            panel.answer_ask(AskResponse::declined(), cx);
+            let expired_attempt = panel.ask_card.as_ref().unwrap().attempt_id.unwrap();
+            panel.reconcile_asks(2, Some(&live_pending), cx);
+            assert_eq!(panel.ask_card.as_ref().unwrap().request_id, live);
+            panel.ask_card.as_mut().unwrap().toggle(0, 1);
+            panel.answer_ask(panel.ask_card.as_ref().unwrap().response(), cx);
+            let previous_attempt = panel.ask_card.as_ref().unwrap().attempt_id.unwrap();
+            panel.reconcile_asks(3, Some(&live_pending), cx);
+            assert_eq!(panel.ask_card.as_ref().unwrap().chosen[0], [1]);
+            assert!(!panel.ask_card.as_ref().unwrap().submitting());
+            panel.answer_ask(panel.ask_card.as_ref().unwrap().response(), cx);
+            panel.ask_response_settled(expired, expired_attempt, Ok(()), cx);
+            panel.ask_response_settled(live, previous_attempt, Ok(()), cx);
+            assert!(panel.ask_card.as_ref().unwrap().submitting());
+            settle_test_ask(panel, live, Ok(()), cx);
+            assert!(panel.ask_card.is_none());
+        });
+        let answer_attachments: Vec<_> = commands
+            .try_iter()
+            .filter_map(|command| match command {
+                Command::AskResponse { attachment_id, .. } => Some(attachment_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answer_attachments, [1, 2, 3]);
     }
 
     #[gpui::test]
@@ -2875,7 +3059,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             let request = panel.ask_card.as_ref().unwrap().request_id.clone();
             panel.answer_ask(AskResponse::declined(), cx);
-            panel.ask_response_settled(&request, None, cx);
+            settle_test_ask(panel, &request, Ok(()), cx);
         });
         vcx.run_until_parked();
         assert!(vcx.update(|window, cx| {
@@ -3041,8 +3225,7 @@ mod tests {
                 &serde_json::from_value(serde_json::json!({
                     "ev":"tool_start", "session_id": panel.session_id,
                     "call_id":tool_call_id, "name":"ask"
-                }))
-                .unwrap(),
+                })).unwrap(),
                 cx,
             );
             panel.apply(&event, cx);
@@ -3131,15 +3314,19 @@ mod tests {
             panel.ask_card.as_ref().unwrap().request_id.clone()
         });
         assert!(commands.try_iter().any(|command| matches!(command,
-            crate::harness::Command::AskResponse { session_id, request_id: id, response }
+            crate::harness::Command::AskResponse { session_id, request_id: id, response, .. }
             if session_id == "session-a" && id == request_id && response.answers.as_ref().is_some_and(|answers| answers[0].other.as_deref() == Some("my own answer"))
         )), "Submit must send the typed answer through the bridge");
+        let attempt_id = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().attempt_id.unwrap()
+        });
         workspace.update(vcx, |workspace, cx| {
             workspace.apply(
                 crate::harness::Update::AskResponseSettled {
                     session_id: "session-a".into(),
                     request_id,
-                    error: None,
+                    attempt_id,
+                    result: Ok(()),
                 },
                 cx,
             )
@@ -3160,8 +3347,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             let next_tool = serde_json::from_value(serde_json::json!({
                 "ev":"tool_start", "session_id":"session-a", "call_id":"next-tool", "name":"bash"
-            }))
-            .unwrap();
+            })).unwrap();
             panel.apply(&next_tool, cx);
         });
         vcx.run_until_parked();
@@ -3172,13 +3358,7 @@ mod tests {
     #[gpui::test]
     fn cancelled_turn_leaves_no_ask_even_if_the_request_replays(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
-            Panel::new(
-                "session-a".into(),
-                None,
-                None,
-                crate::harness::spawn_inert(),
-                cx,
-            )
+            Panel::new("session-a".into(), None, None, crate::harness::spawn_inert(), cx)
         });
         let ask = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
         panel.update(vcx, |panel, cx| panel.apply(&ask, cx));
@@ -3186,15 +3366,12 @@ mod tests {
         assert!(vcx.debug_bounds("session-status-ask").is_some());
 
         panel.update(vcx, |panel, cx| {
-            panel.apply(
-                &ApiEvent::TurnStopped {
-                    session_id: "session-a".into(),
-                    reason: jcode_sdk::api::TurnStopReason::Interrupted,
-                    message: "Cancelled".into(),
-                    provider_stop_reason: None,
-                },
-                cx,
-            );
+            panel.apply(&ApiEvent::TurnStopped {
+                session_id: "session-a".into(),
+                reason: jcode_sdk::api::TurnStopReason::Interrupted,
+                message: "Cancelled".into(),
+                provider_stop_reason: None,
+            }, cx);
             panel.apply(&ask, cx);
         });
         vcx.run_until_parked();

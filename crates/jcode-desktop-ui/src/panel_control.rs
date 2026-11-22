@@ -22,7 +22,7 @@ impl Panel {
             return false;
         };
         if card.request_id != request
-            || card.submitting
+            || card.submitting()
             || card.cursor_question != question
             || card
                 .questions
@@ -200,7 +200,7 @@ impl Panel {
                 "chosen": card.chosen,
                 "cursor_question": card.cursor_question,
                 "cursor_option": card.cursor_option,
-                "submitting": card.submitting,
+                "submitting": card.submitting(),
                 "error": card.submit_error,
                 "option_selectors": card.questions.get(card.cursor_question).map(|question| (0..question.options.len()).map(|option| format!("ask:{}:{}:{}", card.request_id, card.cursor_question, option)).collect::<Vec<_>>()).unwrap_or_default(),
             })

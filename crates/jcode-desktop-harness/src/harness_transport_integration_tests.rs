@@ -79,9 +79,11 @@ impl Fixture {
                         },
                         ApiRequest::Ping => ApiEvent::Pong,
                         ApiRequest::CreateSession { .. } => ApiEvent::Attached {
+                            pending_ask_ids: None,
                             session: session(&format!("created-{index}")),
                         },
                         ApiRequest::AttachSession { session_id } => ApiEvent::Attached {
+                            pending_ask_ids: None,
                             session: session(session_id),
                         },
                         ApiRequest::GetHistory { session_id } => ApiEvent::History {

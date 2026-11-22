@@ -2978,15 +2978,29 @@ impl Workspace {
                     }
                 }
             }
-            Update::AskResponseSettled {
+            Update::AskAttachment {
                 session_id,
-                request_id,
-                error,
+                attachment_id,
+                pending_ask_ids,
             } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
-                            panel.ask_response_settled(&request_id, error.clone(), cx);
+                            panel.reconcile_asks(attachment_id, pending_ask_ids.as_deref(), cx);
+                        });
+                    }
+                }
+            }
+            Update::AskResponseSettled {
+                session_id,
+                request_id,
+                attempt_id,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.ask_response_settled(&request_id, attempt_id, result.clone(), cx);
                         });
                     }
                 }

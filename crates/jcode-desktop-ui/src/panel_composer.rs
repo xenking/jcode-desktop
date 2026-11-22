@@ -417,7 +417,7 @@ impl Panel {
         let panel = cx.entity().downgrade();
         let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
             self.input.read(cx).focus_handle.is_focused(window)
-                || (card.submitting && self.ask_editor_focused(window, cx))
+                || (card.submitting() && self.ask_editor_focused(window, cx))
         });
         if should_focus_ask {
             let panel = panel.clone();
@@ -430,7 +430,7 @@ impl Panel {
                             .as_ref()
                             .is_some_and(|card| {
                                 panel.input.read(cx).focus_handle.is_focused(window)
-                                    || (card.submitting && panel.ask_editor_focused(window, cx))
+                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
                             })
                             .then(|| panel.focus_handle.clone())
                     };
