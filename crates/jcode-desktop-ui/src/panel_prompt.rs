@@ -216,7 +216,9 @@ impl Panel {
                 Item::Image(image) => image.image_ordinal(),
                 _ => None,
             }).or_else(|| self.gallery_image_ordinal(marker));
-            number.or_else(|| marker.starts_with("[#image ").then_some(slot + 1))
+            // Older daemons send the ID without ordinal metadata. Keep their
+            // local chip compact when we have its attachment on this row.
+            number.or_else(|| (index.is_some() || marker.starts_with("[#image ")).then_some(slot + 1))
         });
         let text = visible.as_ref();
         let preview = compact_prompt(text);
