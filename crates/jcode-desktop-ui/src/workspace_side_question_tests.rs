@@ -83,6 +83,8 @@ fn side_question_enter_paints_in_a_chat_started_from_the_welcome_composer(
 #[gpui::test]
 fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::TestAppContext) {
     use harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
+    let saved_question = "Why did we remove the retry loop? Explain what happens to failed writes, how the handler responds after a timeout, and which component decides whether another attempt is safe.";
+    let saved_answer = "**Saved answer A**\n\n".repeat(60);
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -154,21 +156,32 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
                 request_id,
                 result: Ok(SideQuestionThread {
                     session: super::super::tests::session_info("btw-a", None),
-                    turns: vec![SideQuestionTurn {
-                        question: "Topic A".into(),
-                        answer: "Saved answer A".into(),
-                    }],
+                    turns: vec![
+                        SideQuestionTurn {
+                            question: "Original question".into(),
+                            answer: "Do not copy this earlier answer.".into(),
+                        },
+                        SideQuestionTurn {
+                            question: saved_question.into(),
+                            answer: saved_answer.clone(),
+                        },
+                    ],
                 }),
             },
             cx,
         );
     });
     vcx.run_until_parked();
+    let turns = vcx.debug_bounds("side-question-turns").unwrap();
+    let question = vcx
+        .debug_bounds("side-question-current-prompt")
+        .expect("current question must be rendered when reopened");
+    assert!(turns.contains(&question.center()), "open at the question, not the end of a long answer");
     workspace.read_with(vcx, |workspace, cx| {
         let panel = workspace.slots[0].panel.read(cx);
         assert_eq!(
             panel.side_question_card_opt().unwrap().answer,
-            "Saved answer A"
+            saved_answer
         );
         assert_eq!(
             panel.input.read(cx).snapshot().content,

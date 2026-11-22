@@ -451,9 +451,9 @@ impl Panel {
                 .children(
                     card.previous
                         .iter()
-                        .map(|turn| side_turn(&turn.question, &turn.answer)),
+                        .map(|turn| side_turn(&turn.question, &turn.answer, false)),
                 )
-                .child(side_turn(&card.question, answer)),
+                .child(side_turn(&card.question, answer, true)),
         );
         body = body.child(
             div()
@@ -616,7 +616,7 @@ impl Panel {
     }
 }
 
-fn side_turn(question: &str, answer: &str) -> gpui::Div {
+fn side_turn(question: &str, answer: &str, current: bool) -> gpui::Div {
     div()
         .min_w_0()
         .flex()
@@ -624,6 +624,9 @@ fn side_turn(question: &str, answer: &str) -> gpui::Div {
         .gap_1()
         .child(
             div()
+                .when(current, |el| {
+                    el.debug_selector(|| "side-question-current-prompt".into())
+                })
                 .text_color(Theme::global().TEXT_DIM)
                 .child(question.to_string()),
         )
