@@ -18,6 +18,7 @@ SPEC.loader.exec_module(VERIFY)
 PARENT_MODEL = "gpt-5-btw-parent"
 CHILD_MODEL = "gpt-5-btw-child"
 CHILD_EFFORT = "high"
+RECONNECTED_EFFORT = "medium"
 QUESTION = "Why was retry removed?"
 SENT_QUESTION = re.compile(r"(?:\[[^\]\n]+\] )?" + re.escape(QUESTION))
 
@@ -115,23 +116,39 @@ class Fixture(VERIFY.Instance):
         self.reconnect_bridge()
         self.screenshot("side-question.png")
         self.drive("click", {"selector": "side-question-promote"})
+        try:
+            self.drive("click", {"selector": "side-question-promote"})
+        except RuntimeError as error:
+            if '"code": "selector_not_visible"' not in str(error):
+                raise
+        else:
+            raise AssertionError("the promoted card still accepts clicks")
+        navigation = self.drive("list")["navigation"]
+        assert sum(panel["session"] == child for row in navigation["rows"] for panel in row["panels"]) == 1
         self.target["session_id"] = child
         promoted = self.drive("state")["panel"]
         VERIFY.save(self.run / "promoted.json", promoted)
         self.screenshot("promoted.png")
         assert identity(promoted) == expected, f"promotion lost child identity: {identity(promoted)!r} != {expected!r}"
         assert identity(self.drive("state", session=parent)["panel"]) == identity(before)
+
+        self.rpc([
+            ("attach_session", {"session_id": child}),
+            ("set_reasoning_effort", {"session_id": child, "effort": RECONNECTED_EFFORT}),
+        ])
         self.reconnect_bridge()
 
         def reconnected_panel():
             panel = self.drive("state")["panel"]
-            return panel if identity(panel) == expected and not panel["status"].startswith("lost:") else None
+            if identity(panel) == (CHILD_MODEL, RECONNECTED_EFFORT) and not panel["status"].startswith("lost:"):
+                return panel
 
         reconnected = self.runtime_wait(reconnected_panel, "child identity after reconnect")
         VERIFY.save(self.run / "reconnected.json", reconnected)
         assert self.answer_count() == 1, "promotion or reconnect sent another provider request"
         assert self.forks(parent) == {child}, "promotion or reconnect forked again"
-        return {"parent": parent, "child": child, "model": expected[0], "effort": expected[1], "requests": 1}
+        return {"parent": parent, "child": child, "model": expected[0], "effort": expected[1],
+                "reconnected_effort": reconnected["reasoning_effort"], "requests": 1}
 
 
 def identity(panel):
