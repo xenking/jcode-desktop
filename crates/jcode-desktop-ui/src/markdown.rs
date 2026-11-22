@@ -1073,12 +1073,62 @@ pub(crate) fn take_rendered_prompt_text() -> Vec<String> {
 
 #[derive(Clone)]
 pub(crate) struct PromptImages {
-    pub labels: Vec<String>,
-    pub previews: Vec<Option<Arc<gpui::Image>>>,
-    pub on_click: PromptImageClick,
+    pub attachments: std::rc::Rc<std::collections::HashMap<String, PromptImage>>,
+    pub on_click: crate::image_chip::PromptImageClick,
 }
 
-type PromptImageClick = std::rc::Rc<dyn Fn(usize, &mut gpui::Window, &mut gpui::App)>;
+pub(crate) struct PromptImage {
+    pub slot: usize,
+    pub label: String,
+    pub preview: Option<Arc<gpui::Image>>,
+}
+
+type ImageChip = (std::ops::Range<usize>, String, Option<Arc<gpui::Image>>);
+
+fn project_prompt_images(
+    text: &str,
+    prefix: &str,
+    markers: &[(std::ops::Range<usize>, &PromptImage)],
+    font: gpui::Font,
+    font_size: gpui::Pixels,
+    window: &gpui::Window,
+) -> (String, text_selection::LayoutOffsets, Vec<ImageChip>) {
+    let mut display = prefix.to_owned();
+    let mut replacements = Vec::with_capacity(markers.len());
+    let mut chips = Vec::with_capacity(markers.len());
+    let mut offset = 0;
+    for (range, image) in markers {
+        display.push_str(&text[offset..range.start]);
+        let start = display.len();
+        if !display.is_empty() && !display.ends_with([' ', '\n']) {
+            display.push(' ');
+        }
+        let chip_start = display.len();
+        display.push_str(&crate::image_chip::transcript_spacer(
+            &image.label,
+            font.clone(),
+            font_size,
+            window,
+        ));
+        chips.push((
+            chip_start..display.len(),
+            image.label.clone(),
+            image.preview.clone(),
+        ));
+        let next = &text[range.end..];
+        if !next.is_empty() && !next.starts_with([' ', '\n']) {
+            display.push(' ');
+        }
+        replacements.push((range.clone(), start..display.len()));
+        offset = range.end;
+    }
+    display.push_str(&text[offset..]);
+    (
+        display,
+        text_selection::LayoutOffsets::new(prefix.len(), replacements),
+        chips,
+    )
+}
 
 #[cfg(test)]
 pub(crate) fn take_painted_prompt_thumbnails() -> Vec<gpui::Bounds<gpui::Pixels>> {
@@ -1209,44 +1259,51 @@ fn styled_line_layout(
     source: &str,
     selection: &gpui::Entity<TextSelection>,
     key: SharedString,
-    _window: &gpui::Window,
+    window: &gpui::Window,
     cx: &gpui::App,
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
     let mut inline = inline_spans(source);
-    enum Target {
-        Url(String),
-        Image(usize),
-    }
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
-    let mut chips = Vec::new();
-    let mut targets: Vec<_> = inline.links.drain(..)
-        .map(|(range, url)| (range, Target::Url(url)))
-        .collect();
-    if let Some(images) = &images {
-        for (index, label) in images.labels.iter().enumerate() {
-            for (start, _) in inline.plain.match_indices(label) {
-                let range = start..start + label.len();
-                if targets.iter().any(|(link, _)| link.start < range.end && range.start < link.end)
+    let markers = images.as_ref().map_or_else(Vec::new, |images| {
+        crate::input::image_marker_ranges(&inline.plain)
+            .into_iter()
+            .filter_map(|range| {
+                if inline.links
+                    .iter()
+                    .any(|(link, _)| link.start < range.end && range.start < link.end)
                 {
-                    continue;
+                    return None;
                 }
-                chips.push((range.clone(), label.clone(), images.previews.get(index).cloned().flatten()));
-                targets.push((range, Target::Image(index)));
-            }
-        }
-    }
+                Some((range.clone(), images.attachments.get(&inline.plain[range])?))
+            })
+            .collect()
+    });
     let mut highlights = std::mem::take(&mut inline.highlights);
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
     highlights.extend(search_highlights(&inline.plain));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
-    highlights.extend(chips.iter().map(|(range, _, _)| (range.clone(), crate::image_chip::hidden_marker())));
     let prefix = if avatar { AVATAR_PREFIX } else { "" };
-    let shift =
-        |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
-    let display = crate::image_chip::mask_transcript_markers(&format!("{prefix}{}", inline.plain), chips.iter().map(|(range, _, _)| shift(range.clone())));
+    let (display, offsets, chips) = project_prompt_images(
+        &inline.plain,
+        prefix,
+        &markers,
+        gpui::font(Theme::global().FONT_UI),
+        px(13.5),
+        window,
+    );
+    let shift = |range| offsets.layout_range(range);
+    let mut highlights: Vec<_> = highlights
+        .into_iter()
+        .map(|(range, style)| (shift(range), style))
+        .collect();
+    highlights.extend(
+        chips
+            .iter()
+            .map(|(range, _, _)| (range.clone(), crate::image_chip::hidden_marker())),
+    );
     #[cfg(test)]
     if images.is_some() {
         PAINTED_PROMPT_TEXT.with(|text| text.borrow_mut().push(display.clone()));
@@ -1261,11 +1318,9 @@ fn styled_line_layout(
     let prefix_font = avatar.then(|| (0..prefix.len(), Theme::global().FONT_MONO.into()));
     let text = StyledText::new(display)
         .with_highlights(
-            prefix_highlight.into_iter().chain(
-                flatten_highlights(&highlights)
-                    .into_iter()
-                    .map(|(range, style)| (shift(range), style)),
-            ),
+            prefix_highlight
+                .into_iter()
+                .chain(flatten_highlights(&highlights)),
         )
         .with_font_family_overrides(
             prefix_font.into_iter().chain(
@@ -1277,28 +1332,16 @@ fn styled_line_layout(
             ),
         );
     let layout = text.layout().clone();
-    let child = if targets.is_empty() {
+    let child = if inline.links.is_empty() {
         text.into_any_element()
     } else {
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
-        let (ranges, targets): (Vec<_>, Vec<_>) = targets
-            .into_iter()
-            .map(|(range, target)| (shift(range), target))
-            .unzip();
+        let (ranges, urls): (Vec<_>, Vec<_>) = inline.links.drain(..)
+            .map(|(range, url)| (shift(range), url)).unzip();
         InteractiveText::new(id, text)
-            .on_click(ranges, move |index, window, cx| {
-                match targets.get(index) {
-                    Some(Target::Url(url)) => {
-                        if let Some(url) = openable_url(url) {
-                            cx.open_url(url);
-                        }
-                    }
-                    Some(Target::Image(image)) => {
-                        if let Some(images) = &images {
-                            (images.on_click)(*image, window, cx);
-                        }
-                    }
-                    None => {}
+            .on_click(ranges, move |index, _, cx| {
+                if let Some(url) = urls.get(index).and_then(|url| openable_url(url)) {
+                    cx.open_url(url);
                 }
             })
             .into_any_element()
@@ -1308,30 +1351,29 @@ fn styled_line_layout(
         layout.clone(),
         inline.code_ranges.iter().cloned().map(shift).collect(),
     );
-    let selectable = text_selection::selectable_with_prefix(
+    let image_overlay = images.as_ref().filter(|_| !chips.is_empty()).map(|images| {
+        let keys = markers.iter().map(|(range, _)| inline.plain[range.clone()].to_owned()).collect();
+        crate::image_chip::PositionedChips::new(layout.clone(), chips, key.clone(), keys, images.on_click.clone())
+    });
+    let selectable = text_selection::selectable_with_offsets(
         selection.clone(),
         key,
         inline.plain,
         layout.clone(),
         child,
-        prefix.len(),
+        offsets,
         cx,
     );
     // The selectable leaf already establishes a relative containing block.
     // Only an avatar needs another one for its absolutely positioned overlay.
     // Ordinary paragraphs, list items and table cells avoid a redundant div's
     // style refinement, layout node, prepaint and paint on every frame.
-    let element = if !chips.is_empty() {
-        let chips = chips.into_iter().map(|(range, label, preview)| (shift(range), label, preview)).collect();
-        div().relative().child(selectable)
-            .child(crate::image_chip::PositionedChips::new(layout.clone(), chips))
-            .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
-            .into_any_element()
-    } else if avatar {
+    let element = if avatar || image_overlay.is_some() {
         div()
             .relative()
             .child(selectable)
-            .child(div().absolute().top_0().left_0().child(assistant_avatar()))
+            .children(image_overlay)
+            .when(avatar, |el| el.child(div().absolute().top_0().left_0().child(assistant_avatar())))
             .into_any_element()
     } else {
         selectable
@@ -1484,44 +1526,61 @@ fn code_block_with_selection(
     style.color = to_hsla(Theme::global().CODE_TEXT);
     let mut highlights = highlights;
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
-    let markers: Vec<_> = images.as_ref().into_iter().flat_map(|images| {
-        images.labels.iter().enumerate().flat_map(|(index, label)| {
-            plain.match_indices(label)
-                .map(move |(start, _)| (start..start + label.len(), index))
-        })
-    }).collect();
+    let markers = images.as_ref().map_or_else(Vec::new, |images| {
+        crate::input::image_marker_ranges(&plain)
+            .into_iter()
+            .filter_map(|range| Some((range.clone(), images.attachments.get(&plain[range])?)))
+            .collect()
+    });
     if let Some((model, key, cx)) = &selection
-        && let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
-            highlights.push(highlight);
-        }
-    highlights.extend(markers.iter().map(|(range, _)| (range.clone(), crate::image_chip::hidden_marker())));
-    let display = crate::image_chip::mask_markers(&plain, markers.iter().map(|(range, _)| range.clone()));
-    let positioned = images.as_ref().map(|images| markers.iter().map(|(range, index)| {
-        (range.clone(), plain[range.clone()].to_string(), images.previews.get(*index).cloned().flatten())
-    }).collect::<Vec<_>>()).unwrap_or_default();
-    let styled = StyledText::new(display)
-        .with_default_highlights(&style, flatten_highlights(&highlights));
+        && let Some(highlight) = model.read(cx).highlight(key, plain.len())
+    {
+        highlights.push(highlight);
+    }
+    let (display, offsets, positioned) = project_prompt_images(
+        &plain,
+        "",
+        &markers,
+        gpui::font(Theme::global().FONT_MONO),
+        px(12.5),
+        window,
+    );
+    let mut highlights: Vec<_> = highlights
+        .into_iter()
+        .map(|(range, style)| (offsets.layout_range(range), style))
+        .collect();
+    highlights.extend(
+        positioned
+            .iter()
+            .map(|(range, _, _)| (range.clone(), crate::image_chip::hidden_marker())),
+    );
+    let styled =
+        StyledText::new(display).with_default_highlights(&style, flatten_highlights(&highlights));
     let layout = styled.layout().clone();
     let has_markers = !markers.is_empty();
-    let child = if let Some(images) = images.filter(|_| has_markers) {
-        let (ranges, indices): (Vec<_>, Vec<_>) = markers.into_iter().unzip();
-        InteractiveText::new(format!("code-image-{:x}", hash(&plain)), styled)
-            .on_click(ranges, move |index, window, cx| {
-                if let Some(index) = indices.get(index) {
-                    (images.on_click)(*index, window, cx);
-                }
-            })
-            .into_any_element()
+    let overlay = images.as_ref().filter(|_| has_markers).map(|images| {
+        let keys = markers.iter().map(|(range, _)| plain[range.clone()].to_owned()).collect();
+        let leaf = selection.as_ref().map(|(_, key, _)| key.clone())
+            .unwrap_or_else(|| format!("code-image-{:x}", hash(&plain)).into());
+        crate::image_chip::PositionedChips::new(layout.clone(), positioned, leaf, keys, images.on_click.clone())
+    });
+    let code = if let Some((model, key, cx)) = selection {
+        text_selection::selectable_with_offsets(
+            model.clone(),
+            key,
+            plain,
+            layout.clone(),
+            styled,
+            offsets,
+            cx,
+        )
     } else {
         styled.into_any_element()
     };
-    let code = if let Some((model, key, cx)) = selection {
-        text_selection::selectable(model.clone(), key, plain, layout.clone(), child, cx)
+    let code = if let Some(overlay) = overlay {
+        div().relative().child(code).child(overlay).into_any_element()
     } else {
-        child
-    };
-    let code = if positioned.is_empty() { code } else {
-        div().relative().child(code).child(crate::image_chip::PositionedChips::new(layout, positioned)).into_any_element()
+        code
     };
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.

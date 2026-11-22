@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the real app offline on private Xvfb or an invisible macOS Fleet window."""
+"""Render the real app offline on private Xvfb or an invisible macOS window."""
 import argparse
 import json
 import os
@@ -127,7 +127,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "image-prompt", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--openrig-attention", choices=("live", "inspector", "confirm"),
                         help="capture live loopback GETs or the offline inspector/confirmation in OpenRig")
@@ -458,12 +458,14 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    native_fleet = (sys.platform == "darwin" and (args.composer_picker or args.rig_hud or args.transcript in ("openrig", "openrig-inspector"))
+    native_capture = (sys.platform == "darwin" and (args.composer_picker or args.rig_hud or args.transcript in (
+                        "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
+                     ))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
-    if args.openrig_attention and not (native_fleet and args.transcript == "openrig"):
+    if args.openrig_attention and not (native_capture and args.transcript == "openrig"):
         parser.error("--openrig-attention requires the isolated macOS --transcript openrig capture")
-    if not native_fleet:
+    if not native_capture:
         for tool in ("Xvfb", "import", "openbox", "xdotool"):
             if not shutil.which(tool):
                 parser.error(f"missing {tool}: install Xvfb, ImageMagick, Openbox, and xdotool")
@@ -517,6 +519,10 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "openrig" if args.transcript == "openrig-inspector" else args.transcript
+        if args.transcript in ("image-ordinals", "image-ordinals-resolved") and (
+            ids := os.environ.get("JCODE_DESKTOP_SCREENSHOT_ORDINAL_IDS")
+        ):
+            env["JCODE_DESKTOP_SCREENSHOT_ORDINAL_IDS"] = ids
         if args.transcript == "openrig-inspector":
             env["JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR"] = "1"
         if args.openrig_attention:
@@ -560,7 +566,7 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         for name in ("home", "runtime", "config", "cache", "data", "jcode"):
             (root / name).mkdir(mode=0o700)
-        if native_fleet:
+        if native_capture:
             capture = root / "capture.png"
             env.update(JCODE_DESKTOP_CONTROL_TEST="1", JCODE_DESKTOP_SCREENSHOT_PNG=str(capture),
                        JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1",
@@ -569,7 +575,7 @@ def main():
             result = subprocess.run([str(binary), "--no-hot-reload"], env=env, cwd=root,
                                     capture_output=True, text=True, timeout=45)
             if result.returncode or not capture.is_file():
-                raise RuntimeError("Native Fleet capture failed:\n" + result.stdout + result.stderr)
+                raise RuntimeError("Native Desktop capture failed:\n" + result.stdout + result.stderr)
             if args.rig_hud:
                 print(result.stderr)
                 diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"

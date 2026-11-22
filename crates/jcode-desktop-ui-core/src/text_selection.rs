@@ -59,7 +59,65 @@ struct Endpoint {
 struct LeafGeometry {
     bounds: Bounds<Pixels>,
     layout: TextLayout,
+    offsets: LayoutOffsets,
+}
+
+type LayoutReplacement = (Range<usize>, Range<usize>);
+
+/// Byte positions in a selectable leaf and its shaped text. Replacements such
+/// as inline images are atomic in the layout but retain their source bytes.
+#[derive(Clone, Default)]
+pub struct LayoutOffsets {
     prefix_len: usize,
+    replacements: Option<Rc<[LayoutReplacement]>>,
+}
+
+impl LayoutOffsets {
+    /// Replacements are ordered and non-overlapping. Display ranges include the prefix.
+    pub fn new(prefix_len: usize, replacements: Vec<LayoutReplacement>) -> Self {
+        Self {
+            prefix_len,
+            replacements: (!replacements.is_empty()).then(|| replacements.into()),
+        }
+    }
+
+    pub fn layout_range(&self, range: Range<usize>) -> Range<usize> {
+        self.layout_index(range.start, false)..self.layout_index(range.end, true)
+    }
+
+    fn layout_index(&self, index: usize, end: bool) -> usize {
+        let (mut source_end, mut display_end) = (0, self.prefix_len);
+        for (source, display) in self.replacements.as_deref().unwrap_or_default() {
+            if index <= source.start {
+                break;
+            }
+            if index < source.end {
+                return if end { display.end } else { display.start };
+            }
+            (source_end, display_end) = (source.end, display.end);
+        }
+        display_end + index - source_end
+    }
+
+    fn source_index(&self, index: usize, text_len: usize) -> usize {
+        let (mut source_end, mut display_end) = (0, self.prefix_len);
+        for (source, display) in self.replacements.as_deref().unwrap_or_default() {
+            if index <= display.start {
+                break;
+            }
+            if index < display.end {
+                return if index - display.start < display.end - index {
+                    source.start
+                } else {
+                    source.end
+                };
+            }
+            (source_end, display_end) = (source.end, display.end);
+        }
+        source_end
+            .saturating_add(index.saturating_sub(display_end))
+            .min(text_len)
+    }
 }
 
 /// Where the leaves were painted on the last frame. Paint records it here,
@@ -337,7 +395,7 @@ impl TextSelection {
         key: SharedString,
         bounds: Bounds<Pixels>,
         layout: TextLayout,
-        prefix_len: usize,
+        offsets: LayoutOffsets,
     ) {
         let mut painted = self.painted.borrow_mut();
         let bounds = painted
@@ -352,7 +410,7 @@ impl TextSelection {
                 LeafGeometry {
                     bounds,
                     layout,
-                    prefix_len,
+                    offsets,
                 },
             );
         }
@@ -391,11 +449,9 @@ impl TextSelection {
             })
             .map(|(key, geometry)| {
                 let text = &self.document[self.document_index[key]].1;
-                let offset = source_index(
-                    layout_index(&geometry.layout, position),
-                    geometry.prefix_len,
-                    text.len(),
-                );
+                let offset = geometry
+                    .offsets
+                    .source_index(layout_index(&geometry.layout, position), text.len());
                 (key.clone(), nearest_char_boundary(text, offset))
             });
         let Some((key, offset)) = target else {
@@ -597,6 +653,26 @@ pub fn selectable_with_prefix(
     prefix_len: usize,
     cx: &App,
 ) -> gpui::AnyElement {
+    selectable_with_offsets(
+        model,
+        key,
+        text,
+        layout,
+        child,
+        LayoutOffsets::new(prefix_len, vec![]),
+        cx,
+    )
+}
+
+pub fn selectable_with_offsets(
+    model: Entity<TextSelection>,
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    layout: TextLayout,
+    child: impl IntoElement,
+    offsets: LayoutOffsets,
+    cx: &App,
+) -> gpui::AnyElement {
     let key = key.into();
     let text = text.into();
     let focus_handle = model.read(cx).focus_handle();
@@ -630,12 +706,10 @@ pub fn selectable_with_prefix(
             let key = key.clone();
             let text = text.clone();
             let layout = layout.clone();
+            let offsets = offsets.clone();
             move |event, window, cx| {
-                let offset = source_index(
-                    layout_index(&layout, event.position),
-                    prefix_len,
-                    text.len(),
-                );
+                let offset =
+                    offsets.source_index(layout_index(&layout, event.position), text.len());
                 model.update(cx, |selection, cx| {
                     selection.begin(
                         key.clone(),
@@ -667,7 +741,7 @@ pub fn selectable_with_prefix(
                             .is_some_and(|(index, (_, _, last, _))| index < last);
                         let mut lines = selected_line_bounds(
                             &layout,
-                            range.start + prefix_len..range.end + prefix_len,
+                            offsets.layout_range(range),
                             window.text_style().text_align,
                         );
                         if continues && let Some((last, _, _)) = lines.last_mut() {
@@ -714,11 +788,12 @@ pub fn selectable_with_prefix(
                         key.clone(),
                         bounds.intersect(&window.content_mask().bounds),
                         layout.clone(),
-                        prefix_len,
+                        offsets.clone(),
                     );
                     let moved = model.clone();
                     let moved_key = key.clone();
                     let moved_layout = layout.clone();
+                    let moved_offsets = offsets.clone();
                     let text_len = text.len();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if !phase.capture() || !moved.read(cx).is_selecting(&moved_key) {
@@ -726,9 +801,8 @@ pub fn selectable_with_prefix(
                         }
                         moved.update(cx, |selection, cx| {
                             if event.pressed_button == Some(MouseButton::Left) {
-                                let offset = source_index(
+                                let offset = moved_offsets.source_index(
                                     layout_index(&moved_layout, event.position),
-                                    prefix_len,
                                     text_len,
                                 );
                                 selection.drag_to(&moved_key, offset);
@@ -1073,10 +1147,6 @@ pub fn plain(
     selectable(model, key, text, layout, styled, cx)
 }
 
-fn source_index(display_index: usize, prefix_len: usize, text_len: usize) -> usize {
-    display_index.saturating_sub(prefix_len).min(text_len)
-}
-
 fn layout_index(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
     match layout.index_for_position(position) {
         Ok(index) | Err(index) => index,
@@ -1129,16 +1199,32 @@ mod tests {
     fn layout_prefix_maps_back_to_source_without_copying_spacer() {
         let text = "βeta and code";
         let prefix = 8;
+        let map = LayoutOffsets::new(prefix, vec![]);
         for offset in 0..=prefix {
-            assert_eq!(source_index(offset, prefix, text.len()), 0);
+            assert_eq!(map.source_index(offset, text.len()), 0);
         }
         for (offset, _) in text.char_indices() {
-            assert_eq!(source_index(prefix + offset, prefix, text.len()), offset);
+            assert_eq!(map.source_index(prefix + offset, text.len()), offset);
         }
-        assert_eq!(source_index(usize::MAX, prefix, text.len()), text.len());
-        let start = source_index(prefix, prefix, text.len());
-        let end = source_index(prefix + "βeta".len(), prefix, text.len());
+        assert_eq!(map.source_index(usize::MAX, text.len()), text.len());
+        let start = map.source_index(prefix, text.len());
+        let end = map.source_index(prefix + "βeta".len(), text.len());
         assert_eq!(&text[start..end], "βeta");
+    }
+
+    #[test]
+    fn inline_replacements_keep_cyrillic_and_original_copy_ranges() {
+        let source = "до [#image 123456789] и [#image 2] после";
+        let first = source.find('[').unwrap()..source.find(']').unwrap() + 1;
+        let second = source.rfind('[').unwrap()..source.rfind(']').unwrap() + 1;
+        let map = LayoutOffsets::new(0, vec![(first.clone(), 5..13), (second.clone(), 17..29)]);
+        assert_eq!(map.layout_range(first.start + 1..first.end - 1), 5..13);
+        assert_eq!(map.layout_range(first.end..second.start), 13..17);
+        assert_eq!(map.source_index(6, source.len()), first.start);
+        assert_eq!(map.source_index(12, source.len()), first.end);
+        let start = map.source_index(30, source.len());
+        let end = map.source_index(40, source.len());
+        assert_eq!(&source[start..end], "после");
     }
 
     #[test]

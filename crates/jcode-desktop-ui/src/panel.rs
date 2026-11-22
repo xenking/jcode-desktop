@@ -655,13 +655,36 @@ impl TranscriptImage {
             || self.label.as_deref().is_some_and(|label| label.contains(&format!("[#{id}]")))
     }
 
+    fn remember_image_id(&mut self, id: &str) {
+        let marker = format!("[#{id}]");
+        let label = self.label.get_or_insert_with(String::new);
+        if !label.contains(&marker) {
+            if !label.is_empty() {
+                label.push(' ');
+            }
+            label.push_str(&marker);
+        }
+    }
+
     fn image_ordinal(&self) -> Option<usize> {
         self.session_image.as_ref().map(|image| image.ordinal).or(self.provisional_image_ordinal)
     }
 
     fn display_label(&self, fallback: &str) -> String {
-        self.image_ordinal().map(|number| format!("Image #{number}"))
-            .or_else(|| self.label.clone()).unwrap_or_else(|| fallback.to_owned())
+        self.image_ordinal()
+            .map(|number| format!("Image #{number}"))
+            .or_else(|| {
+                self.label.clone().and_then(|mut label| {
+                    for range in crate::input::image_marker_ranges(&label).into_iter().rev() {
+                        if crate::image_chip::session_image_key(&label[range.clone()]).is_some() {
+                            label.replace_range(range, "");
+                        }
+                    }
+                    let label = label.trim();
+                    (!label.is_empty()).then(|| label.to_owned())
+                })
+            })
+            .unwrap_or_else(|| fallback.to_owned())
     }
 
     fn model_input_caption(&self) -> Option<&'static str> {
@@ -12706,6 +12729,33 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     let fixture = fixture.map(str::to_owned);
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("clean-chat") {
         return clean_chat::screenshot_fixture();
+    }
+    if crate::harness::screenshot_mode()
+        && matches!(
+            fixture.as_deref(),
+            Some("image-ordinals" | "image-ordinals-resolved")
+        )
+    {
+        let ids = crate::image_chip::ordinal_fixture_ids();
+        let mut items: Vec<_> = (1..118)
+            .map(|number| Item::User(format!("Offline history item {number}")))
+            .collect();
+        items.push(Item::User(format!(
+            "Сначала проверь вложение [#{}] и потом сравни со вторым вложением [#{}] и сохрани оба результата.", ids[0], ids[1],
+        )));
+        if fixture.as_deref() == Some("image-ordinals-resolved") {
+            items.extend(ids.into_iter().zip([113, 114]).map(|(id, ordinal)| {
+                let mut image =
+                    TranscriptImage::new("image/png".into(), format!("jcode-lazy:{id}"), None);
+                image.session_image = Some(jcode_sdk::api::SessionImageRef {
+                    image_id: id.into(),
+                    ordinal,
+                });
+                Item::Image(image)
+            }));
+        }
+        items.extend((1..=4).map(|number| Item::Assistant(format!("Offline reply {number}"))));
+        return items;
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("decision") {
         return vec![Item::Tool {

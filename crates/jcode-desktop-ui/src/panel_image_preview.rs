@@ -68,12 +68,17 @@ impl Panel {
     }
 
     pub(super) fn gallery_image_asset(&self, image: &TranscriptImage) -> Option<Arc<gpui::Image>> {
-        image.preview.clone().or_else(|| {
-            match self.history_image_requests.borrow().get(image.lazy_key()?)? {
-                HistoryImageLoad::Stored(image) => image.preview.clone(),
-                _ => None,
-            }
-        })
+        image
+            .preview
+            .clone()
+            .or_else(|| self.history_image_asset(image.lazy_key()?))
+    }
+
+    pub(super) fn history_image_asset(&self, key: &str) -> Option<Arc<gpui::Image>> {
+        match self.history_image_requests.borrow().get(key)? {
+            HistoryImageLoad::Stored(image) => image.preview.clone(),
+            _ => None,
+        }
     }
 
     pub(super) fn gallery_image_unavailable(&self, image: &TranscriptImage) -> bool {
@@ -182,6 +187,24 @@ impl Panel {
         cx.notify();
     }
 
+    pub(super) fn open_history_image_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stored = match self.history_image_requests.borrow().get(key) {
+            Some(HistoryImageLoad::Stored(image)) => Some(image.clone()),
+            _ => None,
+        };
+        if let Some(image) = stored {
+            self.open_image_preview(image, window, cx);
+        } else {
+            self.pending_history_image = Some(key.to_owned());
+            self.request_history_image(key, HistoryImageDemand::Explicit);
+        }
+    }
+
     pub(crate) fn load_history_image(
         &mut self,
         key: String,
@@ -216,7 +239,28 @@ impl Panel {
                 return;
             }
         };
-        let stored = self.session_image_gallery.loaded_image(&key, &data);
+        let stored = self
+            .session_image_gallery
+            .loaded_image(&key, &data)
+            .or_else(|| {
+                if !key.starts_with("img_") {
+                    return None;
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&data)
+                    .ok()?;
+                let media_type = image::guess_format(&bytes).ok()?.to_mime_type();
+                let marker = format!("[#{key}]");
+                let mut image =
+                    TranscriptImage::new(media_type.into(), data.clone(), Some(marker.clone()));
+                image.session_image = self.gallery_image_ordinal(&marker).map(|ordinal| {
+                    jcode_sdk::api::SessionImageRef {
+                        image_id: key.clone(),
+                        ordinal,
+                    }
+                });
+                Some(image)
+            });
         let stored_invalid = stored.as_ref().is_some_and(|image| image.preview.is_none());
         let mut invalid = false;
         let mut selected = None;
@@ -232,14 +276,7 @@ impl Panel {
                     continue;
                 };
                 if key.starts_with("img_") {
-                    let id_marker = format!("[#{key}]");
-                    let label = image.label.get_or_insert_with(String::new);
-                    if !label.contains(&id_marker) {
-                        if !label.is_empty() {
-                            label.push(' ');
-                        }
-                        label.push_str(&id_marker);
-                    }
+                    image.remember_image_id(&key);
                 }
                 image.data.clone_from(&data);
                 image.preview = Some(preview);
@@ -260,7 +297,7 @@ impl Panel {
         let mut requests = self.history_image_requests.borrow_mut();
         if let Some(image) = stored {
             requests.insert(key, HistoryImageLoad::Stored(image));
-        } else if stored_invalid || invalid {
+        } else if stored_invalid || invalid || key.starts_with("img_") {
             requests.insert(key, HistoryImageLoad::Unavailable);
         } else {
             requests.remove(&key);

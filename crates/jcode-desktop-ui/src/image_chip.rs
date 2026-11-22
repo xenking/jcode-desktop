@@ -5,7 +5,7 @@ use gpui::{
     InspectorElementId, IntoElement, LayoutId, Pixels, Position, Style, TextLayout, Window, div,
     img, prelude::*, px, relative, size,
 };
-use std::{borrow::Cow, ops::Range, sync::Arc};
+use std::{borrow::Cow, ops::Range, rc::Rc, sync::Arc};
 
 /// Replace marker glyphs while preserving byte offsets used by selection and IME.
 pub(crate) fn mask_markers(text: &str, ranges: impl IntoIterator<Item = Range<usize>>) -> String {
@@ -16,13 +16,75 @@ pub(crate) fn mask_markers(text: &str, ranges: impl IntoIterator<Item = Range<us
     display
 }
 
-pub(crate) fn mask_transcript_markers(text: &str, ranges: impl IntoIterator<Item = Range<usize>>) -> String {
-    let mut display = text.to_owned();
-    for range in ranges {
-        let spacer = format!(" {} ", "n".repeat(range.len().saturating_sub(2)));
-        display.replace_range(range, &spacer);
-    }
-    display
+pub(crate) const UNKNOWN_LABEL: &str = "[Image]";
+const LABEL_SIZE: f32 = 9.5;
+
+/// Reserve a single unbreakable word in the surrounding text run.
+/// The label, thumbnail and padding determine the width, never the marker ID.
+pub(crate) fn transcript_spacer(
+    label: &str,
+    font: gpui::Font,
+    font_size: Pixels,
+    window: &Window,
+) -> String {
+    let shape = |s: &str, font, size| {
+        window
+            .text_system()
+            .shape_line(
+                s.to_owned().into(),
+                size,
+                &[gpui::TextRun {
+                    len: s.len(),
+                    font,
+                    ..Default::default()
+                }],
+                None,
+            )
+            .width
+    };
+    let target = shape(label, gpui::font(Theme::global().FONT_UI), px(LABEL_SIZE)) + px(22.);
+    let wide = f32::from(shape("n", font.clone(), font_size)).max(1.);
+    let narrow = f32::from(shape("i", font, font_size)).max(1.);
+    let target = f32::from(target);
+    let baseline = (target / wide).floor() as usize;
+    let (n, i) = (0..=baseline + 1)
+        .map(|n| {
+            let i = ((target - n as f32 * wide) / narrow).ceil().max(0.) as usize;
+            (n, i)
+        })
+        .min_by(|(an, ai), (bn, bi)| {
+            (wide * *an as f32 + narrow * *ai as f32)
+                .total_cmp(&(wide * *bn as f32 + narrow * *bi as f32))
+        })
+        .unwrap_or_default();
+    format!("{}{}", "n".repeat(n), "i".repeat(i))
+}
+
+pub(crate) fn session_image_key(marker: &str) -> Option<&str> {
+    marker
+        .strip_prefix("[#")?
+        .strip_suffix(']')
+        .filter(|id| id.starts_with("img_"))
+}
+
+pub(super) fn ordinal_fixture_ids() -> [String; 2] {
+    std::env::var("JCODE_DESKTOP_SCREENSHOT_ORDINAL_IDS")
+        .ok()
+        .and_then(|json| serde_json::from_str::<[String; 2]>(&json).ok())
+        .filter(|ids| {
+            ids[0] != ids[1]
+                && ids.iter().all(|id| {
+                    id.strip_prefix("img_").is_some_and(|hash| {
+                        hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                })
+        })
+        .unwrap_or_else(|| {
+            [
+                "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                "img_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ]
+        })
 }
 
 #[cfg(test)]
@@ -61,14 +123,6 @@ mod tests {
 /// Normalize display text before shaping, so a storage ID takes up no more
 /// room than a numbered marker. The original prompt and wire IDs are untouched.
 pub(crate) fn numbered_text(text: &str, image_count: usize) -> (Cow<'_, str>, Vec<String>) {
-    numbered_text_with(text, image_count, |index, _| Some(index + 1))
-}
-
-pub(crate) fn numbered_text_with(
-    text: &str,
-    image_count: usize,
-    mut ordinal: impl FnMut(usize, &str) -> Option<usize>,
-) -> (Cow<'_, str>, Vec<String>) {
     let text = if image_count != 0 && text.trim() == "[image]" {
         ""
     } else {
@@ -76,10 +130,7 @@ pub(crate) fn numbered_text_with(
     };
     let ranges = crate::input::image_marker_ranges(text);
     let markers: Vec<_> = (1..=ranges.len().max(image_count))
-        .map(|number| {
-            let marker = ranges.get(number - 1).map_or("", |range| &text[range.clone()]);
-            ordinal(number - 1, marker).map_or_else(|| marker.to_owned(), |number| format!("[#image {number}]"))
-        })
+        .map(|number| format!("[#image {number}]"))
         .collect();
     if markers.is_empty() {
         return (Cow::Borrowed(text), markers);
@@ -113,11 +164,7 @@ pub(crate) fn hidden_marker() -> gpui::HighlightStyle {
 }
 
 pub(crate) fn label(marker: &str) -> String {
-    if let Some(number) = marker
-        .strip_prefix("[#image ")
-        .and_then(|s| s.strip_suffix(']'))
-        && let Ok(number) = number.parse::<usize>()
-    {
+    if let Some(number) = marker_number(marker) {
         return numbered_label(number);
     }
     marker
@@ -125,6 +172,20 @@ pub(crate) fn label(marker: &str) -> String {
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(marker)
         .to_owned()
+}
+
+pub(crate) fn prompt_label(marker: &str, ordinal: Option<usize>) -> String {
+    ordinal
+        .or_else(|| marker_number(marker))
+        .map_or_else(|| UNKNOWN_LABEL.to_owned(), numbered_label)
+}
+
+pub(crate) fn marker_number(marker: &str) -> Option<usize> {
+    marker
+        .strip_prefix("[#image ")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
 }
 
 pub(crate) fn chip(
@@ -176,8 +237,10 @@ pub(crate) fn chip_with_label(
         .child(
             div()
                 .debug_selector(move || label_selector.into())
+                .flex_none()
                 .whitespace_nowrap()
-                .text_size(px(9.5))
+                .font_family(Theme::global().FONT_UI)
+                .text_size(px(LABEL_SIZE))
                 .child(label),
         )
 }
@@ -185,11 +248,25 @@ pub(crate) fn chip_with_label(
 #[cfg(test)]
 thread_local! {
     static PAINTED_THUMBNAILS: std::cell::RefCell<Vec<Bounds<Pixels>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TRANSCRIPT_CHIPS: std::cell::RefCell<Vec<(String, Bounds<Pixels>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
 pub(crate) fn take_painted_thumbnails() -> Vec<Bounds<Pixels>> {
     PAINTED_THUMBNAILS.with(|painted| std::mem::take(&mut *painted.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn take_transcript_chips() -> Vec<(String, Bounds<Pixels>)> {
+    TRANSCRIPT_CHIPS.with(|chips| std::mem::take(&mut *chips.borrow_mut()))
+}
+
+pub(crate) type PromptImageClick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+struct ChipActions {
+    leaf: gpui::SharedString,
+    keys: Vec<String>,
+    on_click: PromptImageClick,
 }
 
 /// Paint real GPUI chips over the corresponding transparent text runs, using
@@ -199,6 +276,7 @@ pub(crate) struct PositionedChips {
     chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
     children: Vec<AnyElement>,
     selectors: (&'static str, &'static str, &'static str),
+    actions: Option<ChipActions>,
     #[cfg(test)]
     thumbnails: Vec<(Arc<Image>, Bounds<Pixels>)>,
 }
@@ -206,8 +284,11 @@ impl PositionedChips {
     pub(crate) fn new(
         layout: TextLayout,
         chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
+        leaf: gpui::SharedString,
+        keys: Vec<String>,
+        on_click: PromptImageClick,
     ) -> Self {
-        Self::with_selectors(
+        let mut positioned = Self::from_labels(
             layout,
             chips,
             (
@@ -215,10 +296,27 @@ impl PositionedChips {
                 "transcript-image-thumbnail",
                 "transcript-image-label",
             ),
-        )
+        );
+        positioned.actions = Some(ChipActions { leaf, keys, on_click });
+        positioned
     }
 
     pub(crate) fn with_selectors(
+        layout: TextLayout,
+        chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
+        selectors: (&'static str, &'static str, &'static str),
+    ) -> Self {
+        Self::from_labels(
+            layout,
+            chips
+                .into_iter()
+                .map(|(range, marker, image)| (range, label(&marker), image))
+                .collect(),
+            selectors,
+        )
+    }
+
+    fn from_labels(
         layout: TextLayout,
         chips: Vec<(Range<usize>, String, Option<Arc<Image>>)>,
         selectors: (&'static str, &'static str, &'static str),
@@ -227,6 +325,7 @@ impl PositionedChips {
             layout,
             chips,
             selectors,
+            actions: None,
             children: Vec::new(),
             #[cfg(test)]
             thumbnails: Vec::new(),
@@ -243,7 +342,7 @@ impl Element for PositionedChips {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
-        None
+        self.actions.as_ref().map(|actions| actions.leaf.clone().into())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -271,7 +370,7 @@ impl Element for PositionedChips {
         window: &mut Window,
         cx: &mut App,
     ) {
-        for (range, marker, image) in &self.chips {
+        for (index, (range, marker, image)) in self.chips.iter().enumerate() {
             let (Some(mut start), Some(end)) = (
                 self.layout.position_for_index(range.start),
                 self.layout.position_for_index(range.end),
@@ -279,10 +378,14 @@ impl Element for PositionedChips {
                 continue;
             };
             if start.y != end.y
-                && let Some(next) = self.layout.position_for_index(range.start + 1)
+                && let (Some(next), Some(after)) = (
+                    self.layout.position_for_index(range.start + 1),
+                    self.layout.position_for_index(range.start + 2),
+                )
                 && next.y == end.y
+                && after.y == next.y
             {
-                start = gpui::point(next.x - (end.x - next.x) / (range.len() - 1) as f32, next.y);
+                start = gpui::point(2. * next.x - after.x, next.y);
             }
             if start.y != end.y
                 && let (Some(next), Some(after)) = (
@@ -300,16 +403,30 @@ impl Element for PositionedChips {
             // or another marker in the stored message.
             let width = (end.x - start.x - px(2.)).max(px(1.));
             start.x += px(1.);
-            let mut element = chip(
+            #[cfg(test)]
+            if self.selectors.0 == "transcript-image-chip" {
+                let bounds = Bounds::new(start, size(width, window.line_height()));
+                TRANSCRIPT_CHIPS.with(|chips| chips.borrow_mut().push((marker.clone(), bounds)));
+            }
+            let chip = chip_with_label(
                 image.clone(),
-                marker,
+                marker.clone(),
                 self.selectors.0,
                 self.selectors.1,
                 self.selectors.2,
             )
             .w(width)
-            .h(window.line_height())
-            .into_any_element();
+            .h(window.line_height());
+            let mut element = if let Some(actions) = &self.actions {
+                let key = actions.keys[index].clone();
+                let on_click = actions.on_click.clone();
+                chip.id(index)
+                    .cursor_pointer()
+                    .on_click(move |_, window, cx| on_click(&key, window, cx))
+                    .into_any_element()
+            } else {
+                chip.into_any_element()
+            };
             element.prepaint_as_root(
                 start,
                 size(

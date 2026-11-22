@@ -191,6 +191,7 @@ fn session_image_marker_labels_the_user_chip(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| {
         let mut image = image_preview::fixture_image();
         image.source = jcode_sdk::RenderedImageSource::UserInput;
+        image.label = Some(marker.into());
         *panel.items = vec![Item::User(format!("Inspect {marker}(then continue)")), Item::Image(image)];
         assert_eq!(panel.user_image_markers(0), vec![(1, marker.to_string())]);
         cx.notify();

@@ -11,13 +11,28 @@ const COLLAPSED_PROMPT_MAX_HEIGHT: f32 = 140.;
 /// source prefix, never alter the actual prompt sent to the harness or stored.
 pub(super) fn compact_prompt(text: &str) -> Option<&str> {
     let mut lines = 1;
-    for (characters, (byte, ch)) in text.char_indices().enumerate() {
-        if characters == 600 || (ch == '\n' && lines == 6) {
-            let end = crate::input::image_marker_ranges(text).into_iter()
-                .find(|range| range.start < byte && byte < range.end)
-                .map_or(byte, |range| range.start);
-            return Some(&text[..end]);
+    let mut characters = 0;
+    let mut markers = crate::input::image_marker_ranges(text)
+        .into_iter()
+        .peekable();
+    let mut skip_until = 0;
+    for (byte, ch) in text.char_indices() {
+        if byte < skip_until {
+            continue;
         }
+        if markers.peek().is_some_and(|range| range.start == byte) {
+            let range = markers.next().unwrap();
+            skip_until = range.end;
+            characters += crate::image_chip::prompt_label(&text[range], None).len();
+            if characters > 600 {
+                return Some(&text[..byte]);
+            }
+            continue;
+        }
+        if characters == 600 || (ch == '\n' && lines == 6) {
+            return Some(&text[..byte]);
+        }
+        characters += 1;
         if ch == '\n' {
             lines += 1;
         }
@@ -211,45 +226,70 @@ impl Panel {
             .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
         // The model receives `<transcription>` tags. People see a pill instead.
         let (visible, transcribed) = super::voice::tag::strip(text);
-        let mut indices = Vec::new();
-        let (visible, labels) = crate::image_chip::numbered_text_with(&visible, 0, |slot, marker| {
-            let index = self.prompt_image_index(index, slot, marker);
-            indices.push(index);
-            let number = index.and_then(|index| match &self.items[index] {
-                Item::Image(image) => image.image_ordinal(),
-                _ => None,
-            }).or_else(|| self.gallery_image_ordinal(marker));
-            // Older daemons send the ID without ordinal metadata. Keep their
-            // local chip compact when we have its attachment on this row.
-            number.or_else(|| (index.is_some() || marker.starts_with("[#image ")).then_some(slot + 1))
-        });
         let text = visible.as_ref();
         let preview = compact_prompt(text);
         let expanded = !pinned && self.expanded_prompts.contains(&index);
         let collapsed = preview.is_some() && !expanded;
-        // Markers are part of the message even when its image payload has not
-        // arrived (or is absent from an older history). Never gate rendering
-        // the chip on the presence of a corresponding image item.
-        for image_index in indices.iter().flatten() {
-            if let Some(Item::Image(image)) = self.items.get(*image_index) {
-                self.request_history_thumbnail(image, false);
-            }
-        }
-        let panel = cx.entity().downgrade();
-        let prompt_images = markdown::PromptImages {
-            labels,
-            previews: indices.iter().map(|index| match index.and_then(|index| self.items.get(index)) {
-                Some(Item::Image(image)) => image.preview.clone(),
-                _ => None,
-            }).collect(),
-            on_click: std::rc::Rc::new(move |index, window, cx| {
-                if let Some(Some(index)) = indices.get(index) {
-                    let _ = panel.update(cx, |panel, cx| {
-                        if let Some(Item::Image(image)) = panel.items.get(*index) {
-                            panel.open_image_preview(image.clone(), window, cx);
-                        }
-                    });
+        let mut unresolved = Vec::new();
+        let attachments: HashMap<_, _> = crate::input::image_marker_ranges(text)
+            .into_iter()
+            .enumerate()
+            .map(|(slot, range)| {
+                let marker = &text[range];
+                let image =
+                    self.prompt_image_index(index, slot, marker)
+                        .and_then(|index| match self.items.get(index) {
+                            Some(Item::Image(image)) => Some(image),
+                            _ => None,
+                        });
+                let key = crate::image_chip::session_image_key(marker);
+                let number = self.gallery_image_ordinal(marker)
+                    .or_else(|| image.and_then(TranscriptImage::image_ordinal));
+                if let Some(key) =
+                    key.filter(|key| number.is_none() && self.may_request_prompt_image_ordinal(key))
+                {
+                    unresolved.push(key.to_owned());
                 }
+                if let Some(image) = image {
+                    self.request_history_thumbnail(image, false);
+                }
+                (
+                    marker.to_owned(),
+                    markdown::PromptImage {
+                        slot,
+                        label: crate::image_chip::prompt_label(marker, number),
+                        preview: image
+                            .and_then(|image| self.gallery_image_asset(image))
+                            .or_else(|| key.and_then(|key| self.history_image_asset(key))),
+                    },
+                )
+            })
+            .collect();
+        let panel = cx.entity().downgrade();
+        if !unresolved.is_empty() {
+            let panel = panel.clone();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, _| {
+                    panel.request_prompt_image_ordinals(unresolved)
+                });
+            });
+        }
+        let attachments = Rc::new(attachments);
+        let prompt_images = markdown::PromptImages {
+            attachments: attachments.clone(),
+            on_click: Rc::new(move |marker, window, cx| {
+                let Some(attachment) = attachments.get(marker) else {
+                    return;
+                };
+                let _ = panel.update(cx, |panel, cx| {
+                    if let Some(image_index) = panel.prompt_image_index(index, attachment.slot, marker)
+                        && let Some(Item::Image(image)) = panel.items.get(image_index)
+                    {
+                        panel.open_image_preview(image.clone(), window, cx);
+                    } else if let Some(key) = crate::image_chip::session_image_key(marker) {
+                        panel.open_history_image_key(key, window, cx);
+                    }
+                });
             }),
         };
         let fixture_toggle = || {

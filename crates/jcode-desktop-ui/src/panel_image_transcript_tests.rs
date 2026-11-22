@@ -218,6 +218,208 @@ fn missing_image_marker_in_paged_history_is_a_chip(cx: &mut gpui::TestAppContext
 }
 
 #[gpui::test]
+fn raw_image_references_in_paged_history_remain_compact(cx: &mut gpui::TestAppContext) {
+    let ids = crate::image_chip::ordinal_fixture_ids();
+    let ids = ids.each_ref().map(String::as_str);
+    let source = format!("Сначала [#{}] потом [#{}] готово", ids[0], ids[1]);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("raw-paged-images".into(), None, None, bridge, cx));
+    let mut message = image_marker_history_message();
+    message.content = source.clone();
+    let reply = |index| jcode_sdk::HistoryMessage {
+        role: "assistant".into(),
+        content: format!("Offline reply {index}"),
+        ..message.clone()
+    };
+    let messages = (0..38).map(reply).chain(std::iter::once(message.clone())).chain((38..47).map(reply)).collect();
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(1000.), px(750.)));
+    panel.update(vcx, |panel, cx| {
+        panel.load_bounded_history(
+            crate::harness::BoundedHistoryPage {
+                messages,
+                images: vec![],
+                before: Some("older".into()),
+                prompt_offset: Some(117),
+            },
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::ListSessionImages { .. })
+    ));
+    let take_chips = |expected: [&str; 2], vcx: &mut gpui::VisualTestContext| {
+        let mut chips = crate::image_chip::take_transcript_chips();
+        assert!(chips.len() >= 2, "both inline chips must paint: {chips:?}");
+        let chips = chips.split_off(chips.len() - 2);
+        for ((label, bounds), expected) in chips.iter().zip(expected) {
+            assert_eq!(label, expected);
+            assert!(
+                bounds.size.width > px(40.) && bounds.size.width < px(100.),
+                "unexpected reserved width: {chips:?}"
+            );
+        }
+        let label = vcx
+            .debug_bounds("transcript-image-label")
+            .expect("visible label");
+        let chip = chips
+            .iter()
+            .find(|(_, bounds)| bounds.contains(&label.center()))
+            .unwrap()
+            .1;
+        assert!(
+            (chip.right() - label.right()).abs() <= px(9.),
+            "chip leaves blank space or clips label: {chip:?} {label:?}"
+        );
+        assert!(
+            crate::markdown::take_rendered_prompt_text()
+                .iter()
+                .all(|text| !text.contains("img_"))
+        );
+        chips
+    };
+    let open = |chip: gpui::Bounds<gpui::Pixels>, image_id, vcx: &mut gpui::VisualTestContext| {
+        vcx.simulate_click(chip.center(), Default::default());
+        vcx.run_until_parked();
+        let mut received = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            if let Command::GetHistoryImage { key, .. } = command {
+                received.push(key == image_id);
+            }
+        }
+        assert!(
+            received == [true], "expected exactly one request for the clicked chip {chip:?}, matches: {received:?}"
+        );
+    };
+    let chips = take_chips(["[Image]", "[Image]"], vcx);
+    eprintln!(
+        "unresolved at default width: {:?}",
+        chips
+            .iter()
+            .map(|(_, chip)| chip.size.width)
+            .collect::<Vec<_>>()
+    );
+    open(chips[0].1, ids[0], vcx);
+    panel.update(vcx, |panel, cx| {
+        panel.load_history_image(ids[0].into(), Err("unavailable test image".into()), cx)
+    });
+    vcx.run_until_parked();
+    let _ = take_chips(["[Image]", "[Image]"], vcx);
+    panel.update(vcx, |panel, cx| {
+        panel.load_history_image(
+            crate::harness::SESSION_IMAGE_LIST_KEY.into(),
+            Ok(serde_json::json!([
+                {"image_id": ids[1], "ordinal":114, "message_index":38, "media_type":"image/png"},
+                {"image_id": ids[0], "ordinal":113, "message_index":38, "media_type":"image/png"}
+            ])
+            .to_string()),
+            cx,
+        );
+        assert!(matches!(panel.items.get(38), Some(Item::User(content)) if content == &source));
+    });
+    vcx.run_until_parked();
+    let chips = take_chips(["[Image #113]", "[Image #114]"], vcx);
+    eprintln!(
+        "resolved at default width: {:?}",
+        chips
+            .iter()
+            .map(|(_, chip)| chip.size.width)
+            .collect::<Vec<_>>()
+    );
+    let leaf = vcx
+        .debug_bounds("selectable-text-38-0")
+        .expect("prompt text must remain selectable");
+    let start = point(leaf.left() + px(1.), leaf.center().y);
+    let end = point(leaf.right() + px(20.), leaf.center().y);
+    vcx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: start,
+        modifiers: Default::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    vcx.simulate_event(gpui::MouseMoveEvent {
+        position: end,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: Default::default(),
+    });
+    vcx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: end,
+        modifiers: Default::default(),
+        click_count: 1,
+    });
+    assert_eq!(
+        vcx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+            .as_deref(),
+        Some(source.as_str())
+    );
+    vcx.simulate_window_resize(window, gpui::size(px(350.), px(600.)));
+    vcx.run_until_parked();
+    let chips = take_chips(["[Image #113]", "[Image #114]"], vcx);
+    eprintln!(
+        "resolved at 350 px: {:?}",
+        chips
+            .iter()
+            .map(|(_, chip)| chip.size.width)
+            .collect::<Vec<_>>()
+    );
+    panel.update(vcx, |panel, cx| panel.set_clean_chat(Some(true), cx));
+    vcx.run_until_parked();
+    let chips = take_chips(["[Image #113]", "[Image #114]"], vcx);
+    for ((_, chip), id) in chips.iter().zip(ids) {
+        open(*chip, id, vcx);
+        panel.update(vcx, |panel, cx| {
+            panel.load_history_image(id.into(), Ok(image_preview::fixture_image().data), cx)
+        });
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| {
+            panel
+                .image_preview
+                .as_ref()
+                .is_some_and(|image| image.has_image_id(id))
+        }));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.close_image_preview(window, cx))
+        });
+        vcx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn text_only_live_image_ids_supply_session_ordinals(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "text-only-images".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    let id = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let marker = format!("[#{id}]");
+    panel.update(vcx, |panel, cx| {
+        panel.history_loaded = true;
+        *panel.items = vec![Item::User(format!("Сначала {marker} потом"))];
+        let event = ApiEvent::UserImageIds {
+            session_id: "text-only-images".into(),
+            original_content: "Сначала [#image 1] потом".into(),
+            content: format!("Сначала {marker} потом"),
+            image_ids: vec![id.into()],
+            image_ordinals: vec![113],
+        };
+        panel.apply(&event, cx);
+    });
+    vcx.run_until_parked();
+    let chips = crate::image_chip::take_transcript_chips();
+    assert!(chips.iter().any(|(label, bounds)| label == "[Image #113]" && bounds.size.width < px(100.)), "live text-only echo chips: {chips:?}");
+}
+
+#[gpui::test]
 fn visible_lazy_history_image_fetches_thumbnail_and_opens_on_click(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("lazy-chip".into(), None, None, bridge, cx));
@@ -506,7 +708,12 @@ fn image_marker_followed_by_parenthesis_is_a_chip_not_a_link(cx: &mut gpui::Test
             Panel::new("image-paren".into(), None, None, crate::harness::spawn_inert(), cx)
         });
         panel.update(vcx, |panel, cx| {
-            *panel.items = vec![Item::User(format!("Look {marker}(сессия и TLDR видео) after")), Item::Image(image_preview::fixture_image())];
+            let mut image = image_preview::fixture_image();
+            image.label = Some(marker.into());
+            *panel.items = vec![
+                Item::User(format!("Look {marker}(сессия и TLDR видео) after")),
+                Item::Image(image),
+            ];
             cx.notify();
         });
         vcx.run_until_parked();

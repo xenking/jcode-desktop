@@ -25,6 +25,8 @@ impl GalleryImage {
 #[derive(Default)]
 pub(super) struct Gallery {
     metadata: Option<Result<Vec<GalleryImage>, String>>,
+    live_ordinals: HashMap<String, usize>,
+    requested_prompt_keys: std::collections::HashSet<String>,
     loading: bool,
 }
 
@@ -50,7 +52,19 @@ impl Gallery {
     }
 
     fn ordinal(&self, id: &str) -> Option<usize> {
-        self.metadata.as_ref()?.as_ref().ok()?.iter().find(|image| image.image_id == id)?.ordinal
+        self.live_ordinals
+            .get(id)
+            .copied()
+            .or_else(|| {
+                self.metadata
+                    .as_ref()?
+                    .as_ref()
+                    .ok()?
+                    .iter()
+                    .find(|image| image.image_id == id)?
+                    .ordinal
+            })
+            .filter(|ordinal| *ordinal > 0)
     }
 }
 
@@ -66,13 +80,29 @@ impl Panel {
         let ApiEvent::UserImageIds { session_id, original_content, content, image_ids, image_ordinals } = event else { return };
         if session_id != &self.session_id { return; }
         self.note_session_image_ordinal(image_ordinals.iter().copied().max(), cx);
+        self.session_image_gallery.live_ordinals.extend(
+            image_ids
+                .iter()
+                .cloned()
+                .zip(image_ordinals.iter().copied())
+                .filter(|(_, ordinal)| *ordinal > 0),
+        );
         let Some(index) = self.items.iter().enumerate().find_map(|(index, item)| {
             matches!(item, Item::User(text) if text == original_content && !self.user_attachment_range(index).is_empty()).then_some(index)
         }).or_else(|| self.items.iter().rposition(|item| matches!(item, Item::User(text) if text == original_content))) else { return };
         self.items[index] = Item::User(content.clone());
-        for ((slot, image_id), &ordinal) in self.user_attachment_range(index).zip(image_ids).zip(image_ordinals) {
-            if ordinal > 0 && let Item::Image(image) = &mut self.items[slot] {
-                image.session_image = Some(jcode_sdk::api::SessionImageRef { image_id: image_id.clone(), ordinal });
+        for (position, (slot, image_id)) in
+            self.user_attachment_range(index).zip(image_ids).enumerate()
+        {
+            if let Item::Image(image) = &mut self.items[slot] {
+                image.remember_image_id(image_id);
+                if let Some(&ordinal) = image_ordinals.get(position).filter(|&&ordinal| ordinal > 0)
+                {
+                    image.session_image = Some(jcode_sdk::api::SessionImageRef {
+                        image_id: image_id.clone(),
+                        ordinal,
+                    });
+                }
                 image.provisional_image_ordinal = None;
             }
         }
@@ -138,7 +168,7 @@ impl Panel {
     }
 
     pub(super) fn user_attachment_range(&self, user_index: usize) -> std::ops::Range<usize> {
-        let start = user_index + 1;
+        let start = user_index.saturating_add(1).min(self.items.len());
         let count = self.items[start..].iter().take_while(|item| {
             matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
         }).count();
@@ -160,18 +190,19 @@ impl Panel {
 
     pub(super) fn prompt_image_index(&self, user_index: usize, slot: usize, marker: &str) -> Option<usize> {
         let owned = self.user_attachment_range(user_index);
-        let image_id = marker.strip_prefix("[#").and_then(|marker| marker.strip_suffix(']')).filter(|id| id.starts_with("img_"));
-        let tentative = owned.clone().nth(slot);
-        let Some(id) = image_id else { return tentative };
+        let Some(id) = crate::image_chip::session_image_key(marker) else {
+            return owned.into_iter().nth(slot);
+        };
         let matches = |item: &Item| matches!(item, Item::Image(image) if image.has_image_id(id));
-        owned.clone().find(|index| matches(&self.items[*index]))
+        owned
+            .into_iter()
+            .find(|index| matches(&self.items[*index]))
             .or_else(|| self.items.iter().position(matches))
-            .or_else(|| tentative.filter(|index| matches!(&self.items[*index], Item::Image(image) if image.session_image.is_none())))
     }
 
     pub(super) fn gallery_image_ordinal(&self, marker: &str) -> Option<usize> {
-        let id = marker.strip_prefix("[#")?.strip_suffix(']')?;
-        self.session_image_gallery.ordinal(id)
+        self.session_image_gallery
+            .ordinal(crate::image_chip::session_image_key(marker)?)
     }
 
     pub(super) fn render_user_image_chip(
@@ -180,14 +211,10 @@ impl Panel {
         image: &TranscriptImage,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let start = self.items[..index]
-            .iter()
-            .rposition(|item| matches!(item, Item::User(_)))
-            .unwrap_or(0);
-        let number = self.items[start..index].iter().filter(|item| {
-            matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
-        }).count() + 1;
-        let label = crate::image_chip::numbered_label(image.image_ordinal().unwrap_or(number));
+        let label = image.image_ordinal().map_or_else(
+            || crate::image_chip::UNKNOWN_LABEL.to_owned(),
+            crate::image_chip::numbered_label,
+        );
         if image.preview.is_none() {
             self.request_history_thumbnail(image, false);
         }
@@ -362,6 +389,27 @@ impl Panel {
         self.bridge.send(Command::ListSessionImages {
             session_id: self.session_id.clone(),
         });
+    }
+
+    pub(super) fn may_request_prompt_image_ordinal(&self, key: &str) -> bool {
+        !self.is_pending_session()
+            && !self
+                .session_image_gallery
+                .requested_prompt_keys
+                .contains(key)
+    }
+
+    pub(super) fn request_prompt_image_ordinals(&mut self, unresolved: Vec<String>) {
+        if self.is_pending_session() {
+            return;
+        }
+        let mut new_key = false;
+        for key in unresolved {
+            new_key |= self.session_image_gallery.requested_prompt_keys.insert(key);
+        }
+        if new_key {
+            self.request_session_image_gallery();
+        }
     }
 
     pub(super) fn render_image_pane_toggle(
