@@ -44,8 +44,12 @@ fn row_preview(text: &str) -> String {
         .join(" ")
 }
 
+pub(super) fn is_swarm(name: &str) -> bool {
+    name.trim_start_matches("functions.") == "swarm"
+}
+
 pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
-    if name.trim_start_matches("functions.") != "swarm" {
+    if !is_swarm(name) {
         return None;
     }
     let input: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
@@ -103,6 +107,8 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
             })
             .collect::<Vec<_>>()
             .join(", ")
+    } else if action == "summary" {
+        "no target".to_owned()
     } else {
         get("channel")
             .or_else(|| get("to_swarm"))
@@ -119,6 +125,14 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
         target,
         text,
     })
+}
+
+pub(super) fn detail(name: &str, input: &str, output: &str, error: Option<&str>) -> String {
+    let output = match error {
+        Some(error) if output.trim() == error.trim() => "",
+        _ => output,
+    };
+    tool_output::ToolDetail::new(name, input, output, error).text
 }
 
 fn action_icon(action: &str) -> &'static [u8] {
@@ -283,11 +297,6 @@ impl Panel {
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         let click_focus = focus.clone();
-        let mut body = tool_detail(name, input, output);
-        if let Some(error) = error {
-            body.push_str("\n\nError\n");
-            body.push_str(&strip_ansi(error));
-        }
         let direction = (matches!(call.action.as_str(), "dm" | "message")
             && !call.session_ids.is_empty())
         .then_some(Direction::To);
@@ -375,7 +384,7 @@ impl Panel {
                                         .child(text_selection::plain(
                                             self.transcript_selection.clone(),
                                             format!("tool-detail-{index}"),
-                                            body,
+                                            detail(name, input, output, error),
                                             window,
                                             cx,
                                         ))

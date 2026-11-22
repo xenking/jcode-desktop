@@ -643,6 +643,38 @@ fn tool_error_is_available_in_expanded_detail(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn expanded_tool_failure_shows_the_error_once_and_keeps_distinct_output(
+    cx: &mut gpui::TestAppContext,
+) {
+    let message = "Error: Pass to_session for summary";
+    let items = vec![Item::Tool {
+        call_id: "duplicate".into(),
+        name: "swarm".into(),
+        input: r#"{"action":"summary","mode":"all"}"#.into(),
+        output: message.into(),
+        done: true,
+        error: Some(message.into()),
+    }];
+    let (panel, vcx) = panel_with(cx, items);
+    click(vcx, "tool-swarm-header");
+    let detail = document_text(&panel, vcx);
+    assert_eq!(detail.matches(message).count(), 1, "{detail}");
+    assert!(vcx.debug_bounds("swarm-body-0").is_some());
+
+    panel.update(vcx, |panel, cx| {
+        let Item::Tool { output, .. } = &mut panel.items[0] else {
+            unreachable!()
+        };
+        *output = "Other diagnostic from the tool".into();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let detail = document_text(&panel, vcx);
+    assert!(detail.contains("Other diagnostic from the tool"), "{detail}");
+    assert_eq!(detail.matches(message).count(), 1, "{detail}");
+}
+
+#[gpui::test]
 fn tool_output_expands_past_the_old_clip_and_scrolls(cx: &mut gpui::TestAppContext) {
     let output: String = (0..200).map(|n| format!("output line {n}\n")).collect();
     let (panel, vcx) = panel_with(
