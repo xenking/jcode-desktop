@@ -1158,7 +1158,7 @@ mod tests {
         assert!(vcx.debug_bounds("context-usage-billing-label").is_some());
         let compact = vcx.debug_bounds("context-usage-compact").unwrap();
         let shake = vcx.debug_bounds("context-usage-shake").unwrap();
-        let status = vcx.debug_bounds("context-usage-compact-status").unwrap();
+        let status = vcx.debug_bounds("context-usage-compact-savings").unwrap();
         assert!(compact.contains(&status.center()));
         assert_eq!(compact.top(), shake.top());
         assert!(shake.bottom() < bar.top());

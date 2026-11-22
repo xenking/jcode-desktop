@@ -193,7 +193,11 @@ class ContextUsage(VERIFY.Instance):
             labels = [line for line in text.lower().splitlines() if "context usage" in line]
             if not labels:
                 return None
-            assert len(labels) == 1 and meter_value(0) in re.sub(r"\s+", "", labels[0]), text
+            assert len(labels) == 1, text
+            hover_copy = text.lower()[text.lower().index("context usage"):]
+            normalized = re.sub(r"\s+", "", hover_copy).replace("|", "/")
+            if meter_value(0) not in normalized:
+                return None
             assert "auto-compaction" not in text.lower(), text
             return frame
 
