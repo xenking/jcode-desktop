@@ -20,6 +20,51 @@ fn snapshot(revision: u64, note: &str) -> jcode_applet_types::AgentApplets {
 }
 
 #[gpui::test]
+fn old_applets_stay_at_mount_when_one_is_updated(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "session-a".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        let mut state = snapshot(1, "");
+        let mut other = state.instances[0].clone();
+        other.id = "second".into();
+        state.instances.push(other);
+        for (id, rev) in [("review", 1), ("second", 1), ("second", 2)] {
+            panel.items.push(Item::Tool {
+                name: "applet".into(),
+                call_id: format!("{id}-{rev}"),
+                input: String::new(),
+                output: format!("Applet `{id}` revision {rev}."),
+                done: true,
+                error: None,
+            });
+            panel.items.push(Item::Assistant("Next message".into()));
+        }
+        let runtime = crate::applet_runtime::get(cx);
+        runtime.sync_agent("session-a", &state);
+        let expected = vec![
+            (1, agent_instance_id("session-a", "review")),
+            (3, agent_instance_id("session-a", "second")),
+        ];
+        for clean in [false, true] {
+            panel.set_clean_chat(Some(clean), cx);
+            panel.sync_applet_rows(cx);
+            assert_eq!(panel.applet_rows, expected);
+            state.instances[1].document.revision += 1;
+            crate::applet_runtime::get(cx).sync_agent("session-a", &state);
+            panel.sync_applet_rows(cx);
+            assert_eq!(panel.applet_rows, expected);
+        }
+        panel
+    });
+    vcx.run_until_parked();
+}
+
+#[gpui::test]
 fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(
@@ -41,18 +86,24 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
     vcx.update(|_, cx| assert!(crate::applet_runtime::get(cx).sync_agent("session-a", &snapshot)));
     panel.update(vcx, |_, cx| cx.notify());
     vcx.run_until_parked();
-    assert!(
-        vcx.debug_bounds("task-count-0/0")
-            .is_some()
-    );
-    vcx.update(|_, cx| cx.set_global(crate::applet_view::CatalogTasks {
-        rows: [("session-a".into(), vec![("Saved task".into(), "completed".into())])].into(),
-        progress: [("session-a".into(), (1,1))].into(),
-    }));
+    assert!(vcx.debug_bounds("task-count-0/0").is_some());
+    vcx.update(|_, cx| {
+        cx.set_global(crate::applet_view::CatalogTasks {
+            rows: [(
+                "session-a".into(),
+                vec![("Saved task".into(), "completed".into())],
+            )]
+            .into(),
+            progress: [("session-a".into(), (1, 1))].into(),
+        })
+    });
     panel.update(vcx, |_, cx| cx.notify());
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("task-count-1/1").is_some());
-    assert!(vcx.debug_bounds("applet-table-row-Saved task|completed").is_some());
+    assert!(
+        vcx.debug_bounds("applet-table-row-Saved task|completed")
+            .is_some()
+    );
     vcx.update(|_, cx| cx.set_global(crate::applet_view::CatalogTasks::default()));
     for (call, output, row, progress) in [
         (

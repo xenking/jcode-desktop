@@ -5421,6 +5421,7 @@ impl Panel {
         let host = runtime.host.borrow();
         let mut rows = Vec::new();
         let mut seen = HashSet::new();
+        let mut receipts = None;
         for mounted in host.inline_for(&self.session_id) {
             let id = mounted.instance.id.clone();
             if let Placement::Inline {
@@ -5437,15 +5438,31 @@ impl Panel {
                 }
                 continue;
             }
-            let position = *self
-                .applet_positions
-                .entry(id.clone())
-                .or_insert(self.items.len());
+            // Older snapshots only stored End. Recover the original mount, not a later update.
+            let position = *self.applet_positions.entry(id.clone()).or_insert_with(|| {
+                let origins = receipts.get_or_insert_with(|| {
+                    let mut origins = HashMap::new();
+                    for (index, item) in self.items.iter().enumerate() {
+                        if let Item::Tool { name, output, .. } = item
+                            && name == "applet"
+                            && let Some((local, rest)) = output.trim_start().strip_prefix("Applet `").and_then(|s| s.split_once("` revision "))
+                            && rest.starts_with("1.")
+                        {
+                            origins.entry(crate::applet_runtime::agent_instance_id(&self.session_id, local)).or_insert(index + 1);
+                        }
+                    }
+                    origins
+                });
+                origins.get(&id).copied().unwrap_or(self.items.len())
+            });
             seen.insert(id.clone());
             rows.push((position, id));
         }
         drop(host);
-        self.applet_positions.retain(|id, _| seen.contains(id));
+        // The panel snapshot may arrive before the first runtime snapshot.
+        if !rows.is_empty() || !seen.is_empty() {
+            self.applet_positions.retain(|id, _| seen.contains(id));
+        }
         rows.sort_by_key(|(position, _)| *position);
         // Any card change (mount, patch, close) can change row heights.
         self.transcript_measurements.dirty = true;

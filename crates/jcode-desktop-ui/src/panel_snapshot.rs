@@ -4,6 +4,8 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptSnapshot {
     items: Vec<Item>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    applet_positions: HashMap<String, usize>,
     streaming_text: String,
     #[serde(default)]
     live_assistant_output: Option<assistant_output::LiveAssistantOutput>,
@@ -44,6 +46,7 @@ impl Panel {
     pub(super) fn transcript_snapshot(&self) -> TranscriptSnapshot {
         TranscriptSnapshot {
             items: self.items.to_vec(),
+            applet_positions: self.applet_positions.clone(),
             streaming_text: self.streaming_text.clone(),
             live_assistant_output: self.live_assistant_output.clone(),
             streaming_reasoning: self.streaming_reasoning.clone(),
@@ -69,6 +72,7 @@ impl Panel {
             && (!snapshot.items.is_empty()
                 || !snapshot.streaming_text.is_empty()
                 || !snapshot.streaming_reasoning.is_empty());
+        self.applet_positions = snapshot.applet_positions;
         self.expanded_regions = snapshot.expanded_regions;
         self.user_times = snapshot.user_times;
         self.codemode_summaries = snapshot.codemode_summaries;
