@@ -558,10 +558,8 @@ mod tests {
             vcx.debug_bounds("tool-swarm-header").unwrap().size.height,
             header.size.height
         );
-        vcx.simulate_click(
-            vcx.debug_bounds("tool-swarm-header").unwrap().center(),
-            gpui::Modifiers::none(),
-        );
+        let center = vcx.debug_bounds("tool-swarm-header").unwrap().center();
+        vcx.simulate_click(center, gpui::Modifiers::none());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("codemode-error").is_some());
         assert!(vcx.debug_bounds("codemode-source").is_some());
