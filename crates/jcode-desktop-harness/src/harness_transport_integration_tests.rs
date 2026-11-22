@@ -118,7 +118,8 @@ impl Fixture {
                         ApiRequest::ListSideQuestions { parent_session_id } => ApiEvent::SideQuestions {
                             topics: vec![serde_json::from_value(serde_json::json!({
                                 "session_id": "btw-a", "parent_session_id": parent_session_id,
-                                "created_at_ms": 3, "message_start": 42, "question_preview": "Topic A"
+                                "created_at_ms": 3, "message_start": 42,
+                                "context": { "model": "side-model", "reasoning_effort": "high" }
                             })).unwrap()],
                         },
                         ApiRequest::GetSideQuestionHistory { session_id } => ApiEvent::History {
@@ -427,7 +428,9 @@ fn side_question_history_reads_an_unattached_child_then_continues_the_same_id() 
         matches!(until(&updates, |update| matches!(update, Update::SideQuestionOpened { .. })),
         Update::SideQuestionOpened { result: Ok(thread), .. }
             if thread.session.session_id == child && thread.turns.len() == 1
-                && thread.turns[0].answer == "Saved answer A")
+                && thread.turns[0].answer == "Saved answer A"
+                && thread.session.context.as_ref().is_some_and(|c|
+                    c.model.as_deref() == Some("side-model") && c.reasoning_effort.as_deref() == Some("high")))
     );
     let reads: Vec<_> = fixture
         .requests

@@ -238,8 +238,8 @@ impl Workspace {
         }
     }
 
-    /// Feed events for a `/btw` child into the card that owns it, never into a
-    /// chat tab. Returns true when the event belonged to a side question.
+    /// Feed a side question's events into its card. Only an open full chat for
+    /// the same child should also receive them through normal routing.
     pub(crate) fn route_side_question_event(
         &mut self,
         session_id: &str,
@@ -257,7 +257,10 @@ impl Workspace {
             panel.update(cx, |panel, cx| {
                 panel.apply_side_question_event(event, cx);
             });
-            return true;
+            return !self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id);
         }
         false
     }
@@ -287,8 +290,9 @@ impl Workspace {
         }) else {
             return;
         };
-        let session = card.session;
+        let mut session = card.session;
         let session_id = session.session_id.clone();
+        let legacy_archive = std::mem::take(&mut session.archived);
         if !self
             .sessions
             .iter()
@@ -296,12 +300,16 @@ impl Workspace {
         {
             self.sessions.push(session.clone());
         }
-        // A side question is archived so it stays out of the session list; a
-        // promoted one is a conversation the user asked to keep.
-        self.bridge.send(Command::RestoreSideQuestion {
-            session_id: session_id.clone(),
-        });
-        self.bridge.send(Command::RefreshSessions);
+        if legacy_archive {
+            self.bridge.send(Command::RestoreSideQuestion {
+                session_id: session_id.clone(),
+            });
+            self.bridge.send(Command::RefreshSessions);
+        } else {
+            self.bridge.send(Command::PromoteSideQuestion {
+                session_id: session_id.clone(),
+            });
+        }
         if self.single_panel {
             self.open_fork_window(&session_id);
             return;
@@ -314,12 +322,6 @@ impl Workspace {
                 .panel
                 .update(cx, |panel, cx| panel.apply(&identity, cx));
         }
-        source.update(cx, |panel, cx| {
-            panel.workspace_command_notice(
-                "Opened the side question as a chat. The original conversation is unchanged.",
-                cx,
-            )
-        });
     }
 
     /// Call once after snapshot slots have been restored. Observers belong to the

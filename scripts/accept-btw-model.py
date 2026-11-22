@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import re
 import secrets
-import socket
 import sys
 import tempfile
 
@@ -64,27 +63,6 @@ class Fixture(VERIFY.Instance):
         self.runtime_wait(lambda: not self.drive("state")["panel"]["status"].startswith("lost:"),
                           "Desktop reconnects to the replacement bridge")
 
-    def rpc(self, commands):
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(10)
-            client.connect(str(self.api_socket))
-            with client.makefile("rb") as reader:
-                def request(req, **fields):
-                    nonlocal sequence
-                    sequence += 1
-                    client.sendall(json.dumps(dict(v=1, id=sequence, req=req, **fields)).encode() + b"\n")
-                    for line in reader:
-                        reply = json.loads(line)
-                        if reply.get("reply_to") == sequence:
-                            if reply["ev"] == "error":
-                                raise RuntimeError(f"{req}: {reply}")
-                            return reply
-                    raise RuntimeError(f"no reply to {req}")
-
-                sequence = 0
-                request("hello", min_version=1, max_version=1, client="btw-acceptance")
-                return [request(req, **fields) for req, fields in commands]
-
     def forks(self, parent):
         return {session["id"] for file in (self.profile / "jcode/sessions").glob("session_*.json")
                 if (session := json.loads(file.read_text())).get("parent_id") == parent}
@@ -105,7 +83,7 @@ class Fixture(VERIFY.Instance):
         self.drive("press_key", {"key": "fixture:enter"})
         self.runtime_wait(lambda: self.answer_count() == 1, "one fake provider request from the side question")
         child = self.runtime_wait(lambda: next(iter(self.forks(parent)), None), "persisted side question child")
-        _, _, _, child_info = self.rpc([
+        _, _, _, child_info = self.harness_requests([
             ("attach_session", {"session_id": child}),
             ("set_reasoning_effort", {"session_id": child, "effort": CHILD_EFFORT}),
             ("set_model", {"session_id": child, "model": CHILD_MODEL}),
@@ -128,11 +106,17 @@ class Fixture(VERIFY.Instance):
         self.target["session_id"] = child
         promoted = self.drive("state")["panel"]
         VERIFY.save(self.run / "promoted.json", promoted)
+        def promoted_history():
+            return any(QUESTION in str(item.get("User", ""))
+                       for item in self.drive("state")["panel"]["loaded_transcript_items"]
+                       if isinstance(item, dict))
+
+        self.runtime_wait(promoted_history, "original question is present in the promoted chat")
         self.screenshot("promoted.png")
         assert identity(promoted) == expected, f"promotion lost child identity: {identity(promoted)!r} != {expected!r}"
         assert identity(self.drive("state", session=parent)["panel"]) == identity(before)
 
-        self.rpc([
+        self.harness_requests([
             ("attach_session", {"session_id": child}),
             ("set_reasoning_effort", {"session_id": child, "effort": RECONNECTED_EFFORT}),
         ])

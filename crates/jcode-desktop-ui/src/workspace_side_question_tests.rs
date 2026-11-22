@@ -308,7 +308,9 @@ fn workspace_side_question_streams_in_a_card_and_promotes_to_a_chat(cx: &mut gpu
     vcx.update(|window, cx| {
         workspace.update(cx, |workspace, cx| {
             let source = workspace.slots[0].panel.entity_id();
-            workspace.promote_side_question(&PromoteSideQuestion { source, session }, window, cx);
+            let action = PromoteSideQuestion { source, session };
+            workspace.promote_side_question(&action, window, cx);
+            workspace.promote_side_question(&action, window, cx);
         })
     });
     vcx.run_until_parked();
@@ -326,7 +328,12 @@ fn workspace_side_question_streams_in_a_card_and_promotes_to_a_chat(cx: &mut gpu
         );
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::RestoreSideQuestion { session_id }) if session_id == "btw-1"),
+        matches!(commands.try_recv(), Ok(Command::PromoteSideQuestion { session_id }) if session_id == "btw-1"),
         "a promoted side question rejoins the session list"
+    );
+    assert!(
+        !commands
+            .try_iter()
+            .any(|command| matches!(command, Command::PromoteSideQuestion { .. }))
     );
 }

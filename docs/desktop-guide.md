@@ -36,6 +36,21 @@ The local directory behavior below applies when **This computer** is the default
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
 
+## Side questions
+
+Type `/btw` followed by a question to start a separate topic about the current
+chat. The answer appears above the main composer. Use **Follow-up** in the card
+to continue the same topic without sending anything to the main chat.
+
+Type `/btw` by itself or select **History** in a card to browse this chat's
+saved topics. Desktop also accepts `btw` by itself in the main composer when
+you press Enter without attachments. `btw` in a sentence remains ordinary text.
+Listing topics and opening an answer do not contact the model. **Open in sidechat**
+makes the same topic available as a separate chat.
+
+History requires a runtime and bridge with side-question support. Older Desktop
+questions saved as ordinary archived forks do not appear in the new history.
+
 ## Agent-created document panels
 
 Ask your agent to open a document with the `panel` tool. `action: "spawn"` (the

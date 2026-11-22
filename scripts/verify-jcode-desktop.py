@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import signal
@@ -272,6 +273,7 @@ class Instance:
                        JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1")
         if self.manifest["fixture"] == "side-question-history":
             env["JCODE_DESKTOP_CONTROL_SIDE_QUESTIONS"] = "1"
+            self.side_question_desktop_env = env
         if self.manifest.get("queued"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         if self.manifest.get("queue_edit"):
@@ -725,20 +727,25 @@ class Instance:
         parent = self.target["session_id"]
         ordinary = "btw this is an ordinary message"
         first, follow, second = "Topic A verification", "Follow up A verification", "Topic B verification"
+        follow_promoted = "Continue the promoted topic A"
+        child_model, child_effort = "gpt-5-btw-child", "high"
         draft = "Keep this main draft unsent"
         provider_log = self.run / "fake-requests.jsonl"
 
         def requests():
             return [json.loads(line) for line in provider_log.read_text().splitlines()] if provider_log.exists() else []
 
-        def prompts():
-            return [next(message["content"] for message in reversed(req["messages"])
-                         if message["role"] == "user"
-                         and not str(message["content"]).startswith("<system-reminder>"))
-                    for req in requests()]
+        def user_prompts(request):
+            return [re.sub(r"^\[[^\]\n]+\] ", "", message["content"])
+                    for message in request["messages"] if message["role"] == "user"
+                    and not message["content"].startswith("<system-reminder>")]
 
         def panel():
             return self.drive("state")["panel"]
+
+        def transcript_text(items):
+            return [item[key] for item in items if isinstance(item, dict)
+                    for key in ("User", "Assistant") if key in item]
 
         def side():
             return panel()["fixture_side_questions"]
@@ -764,14 +771,25 @@ class Instance:
 
         self.runtime_wait(lambda: panel()["model"], "visible parent runtime")
         submit(ordinary)
-        baseline = self.runtime_wait(lambda: (p if len(p["loaded_transcript_items"]) >= 2
-                                              and p["status"] == "idle" else None)
-                                     if (p := panel()) else None, "ordinary parent conversation")
+        self.runtime_wait(lambda: len(requests()) == 1 and panel()["status"] == "idle", "ordinary parent message")
+        self.drive("set_composer", {"text": "btw"})
+        self.drive("send")
+        baseline = self.runtime_wait(lambda: p if (p := panel())["status"] == "idle"
+                                     and len(transcript_text(p["loaded_transcript_items"])) == 4 else None,
+                                     "Desktop control sent literal btw to the parent")
         submit("/btw")
         self.runtime_wait(lambda: side()["history"] == [], "empty parent history")
-        assert len(requests()) == 1, "bare /btw contacted the provider"
+        assert len(requests()) == 2, "bare /btw contacted the provider"
         submit(f"/btw {first}")
         topic_a = answered(first)
+        child_a = topic_a["session_id"]
+        _, _, _, info = self.harness_requests([
+            ("attach_session", {"session_id": child_a}),
+            ("set_model", {"session_id": child_a, "model": child_model}),
+            ("set_reasoning_effort", {"session_id": child_a, "effort": child_effort}),
+            ("get_runtime_info", {"session_id": child_a}),
+        ])
+        assert (info["model"], info["reasoning_effort"]) == (child_model, child_effort)
         self.drive("set_composer", {"text": draft})
         click("side-question-follow-up")
         self.drive("press_key", {"key": f"fixture:follow-up-text:{follow}"})
@@ -794,6 +812,10 @@ class Instance:
         self.api_socket.unlink(missing_ok=True)
         self.legacy_socket.unlink(missing_ok=True)
         self.start_background_daemon()
+        self.runtime_stop(self.process)
+        self.start_desktop(self.side_question_desktop_env, [], suffix="-restarted")
+        assert self.target["session_id"] == parent
+        self.runtime_wait(lambda: panel()["model"], "parent reattached after Desktop restart")
         submit("btw")
         topics = self.runtime_wait(lambda: h if isinstance(h := side()["history"], list) and len(h) == 2 else None,
                                    "two persisted side questions after daemon and bridge restart")
@@ -804,21 +826,44 @@ class Instance:
         index = next(i for i, item in enumerate(topics) if item["session_id"] == topic_a["session_id"])
         click(f"side-question-topic-{index}")
         reopened = answered(follow)
-        assert reopened == continued
+        assert reopened["turns"] == continued["turns"] and reopened["session_id"] == child_a
+        assert (reopened["model"], reopened["reasoning_effort"]) == (child_model, child_effort)
         after = self.drive("state")
         assert after["panel"]["composer"] == draft
-        assert after["panel"]["loaded_transcript_items"] == baseline["loaded_transcript_items"]
+        assert transcript_text(after["panel"]["loaded_transcript_items"]) == transcript_text(baseline["loaded_transcript_items"])
         assert [p["session"] for row in after["navigation"]["rows"] for p in row["panels"]] == [parent]
-        wire = prompts()
-        assert len(wire) == 4 and all(expected in json.dumps(actual)
-                                      for expected, actual in zip((ordinary, first, follow, second), wire)), wire
-        follow_wire = json.dumps(requests()[2]["messages"])
-        assert first in follow_wire and topic_a["turns"][0]["answer"] in follow_wire
-        assert first not in json.dumps(requests()[3]["messages"]), "new topic inherited side question A"
-        save(self.run / "side-question-history-after.json", after)
         proof = {"passed": True, "parent": parent, "topics": topics, "continued": reopened,
-                 "model_requests": len(wire), "history": history_frame,
-                 "answer": self.screenshot("side-question-history-after.png")}
+                 "history": history_frame, "answer": self.screenshot("side-question-history-after.png")}
+        click("side-question-promote")
+        try:
+            click("side-question-promote")
+        except RuntimeError as error:
+            if '"code": "selector_not_visible"' not in str(error):
+                raise
+        else:
+            raise AssertionError("the opened topic still accepts a second promotion")
+        promoted = reopened["session_id"]
+        visibility = self.profile / "jcode/state/side-question-visibility" / f"{promoted}.json"
+        self.runtime_wait(lambda: visibility.read_text() == "false", "daemon persisted native promotion")
+        navigation = self.drive("list")["navigation"]
+        assert [p["session"] for row in navigation["rows"] for p in row["panels"]].count(promoted) == 1
+        assert panel()["composer"] == draft
+        assert len(requests()) == 5, "history or promotion started a request"
+        self.target["session_id"] = promoted
+        self.runtime_wait(lambda: (panel()["model"], panel()["reasoning_effort"]) == (child_model, child_effort),
+                          "promoted chat retained the restored child model and effort")
+        submit(follow_promoted)
+        self.runtime_wait(lambda: len(requests()) == 6 and panel()["status"] == "idle", "one promoted follow-up")
+        assert visibility.read_text() == "false", "follow-up hid the promoted chat"
+        assert self.drive("state", session=parent)["panel"]["composer"] == draft
+        wire = requests()
+        assert [user_prompts(request)[-1] for request in wire] == [ordinary, "btw", first, follow, second, follow_promoted]
+        assert user_prompts(wire[3]).count(first) == 1, "follow-up duplicated the original side question"
+        assert topic_a["turns"][0]["answer"] in json.dumps(wire[3]["messages"])
+        assert first not in user_prompts(wire[4]), "new topic inherited side question A"
+        assert (wire[-1]["model"], wire[-1]["reasoning_effort"]) == (child_model, child_effort)
+        save(self.run / "side-question-history-after.json", after)
+        proof.update(model_requests=len(wire), promoted=promoted)
         save(self.run / "side-question-history-proof.json", proof)
         return proof
 
@@ -1100,6 +1145,7 @@ class Instance:
         config = "[server]\nmobile_push = false\n"
         if self.manifest["fixture"] == "side-question-history":
             config += "[features]\nmemory = false\n"
+            runtime["FAKE_PREMIUM_MODEL"] = "gpt-5-btw-child"
         (self.profile / "jcode/config.toml").write_text(config)
         self.runtime_cli = [self.manifest["jcode_bin"], "--no-update", "--no-selfdev"]
         provider = REPO.parent / "jcode/scripts/fake_openai_server.py"
@@ -1117,6 +1163,27 @@ class Instance:
                                 env=self.runtime_env, cwd=self.profile / "home", capture_output=True,
                                 text=True, check=True, timeout=20)
         return result.stdout
+
+    def harness_requests(self, commands):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(10)
+            client.connect(str(self.api_socket))
+            with client.makefile("rb") as reader:
+                def request(req, **fields):
+                    nonlocal sequence
+                    sequence += 1
+                    client.sendall(json.dumps(dict(v=1, id=sequence, req=req, **fields)).encode() + b"\n")
+                    for line in reader:
+                        reply = json.loads(line)
+                        if reply.get("reply_to") == sequence:
+                            if reply["ev"] == "error":
+                                raise RuntimeError(f"{req}: {reply}")
+                            return reply
+                    raise RuntimeError(f"no reply to {req}")
+
+                sequence = 0
+                request("hello", min_version=1, max_version=1, client="desktop-fixture")
+                return [request(req, **fields) for req, fields in commands]
 
     def runtime_spawn(self, name, command):
         with (self.run / f"{name}.log").open("a") as log:

@@ -27,21 +27,31 @@ pub(super) fn list(
     let topics = client
         .list_side_questions(&parent.session_id)
         .map_err(|error| error.to_string())?;
-    topics
+    Ok(topics
         .into_iter()
+        .filter(|topic| topic.message_start.is_some())
         .map(|topic| {
-            let history = client
+            let question = client
                 .get_side_question_history(&topic.session_id)
-                .map_err(|error| error.to_string())?;
-            Ok(SideQuestionTopic {
+                .ok()
+                .and_then(|messages| messages.into_iter().find(|message| message.role == "user"))
+                .map(|message| one_line_preview(&message.content))
+                .unwrap_or_else(|| "Untitled side question".into());
+            SideQuestionTopic {
                 session_id: parent.ui_id(&topic.session_id),
-                question: history
-                    .into_iter()
-                    .find(|message| message.role == "user")
-                    .map(|message| message.content.chars().take(200).collect())
-                    .unwrap_or_else(|| "Untitled side question".into()),
-            })
+                question,
+            }
         })
+        .collect())
+}
+
+fn one_line_preview(question: &str) -> String {
+    question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
         .collect()
 }
 
@@ -51,7 +61,7 @@ pub(super) fn open(
     session_id: &str,
 ) -> Result<SideQuestionThread, String> {
     let child = remote::SessionAddress::parse(session_id)?;
-    client
+    let topic = client
         .list_side_questions(&parent.session_id)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -81,14 +91,12 @@ pub(super) fn open(
     let session = SessionInfo {
         session_id: session_id.to_string(),
         working_dir: None,
-        title: turns
-            .first()
-            .map(|turn| turn.question.chars().take(200).collect()),
+        title: turns.first().map(|turn| one_line_preview(&turn.question)),
         status: "idle".into(),
         parent_session_id: None,
         agent_label: None,
         swarm_status: None,
-        context: None,
+        context: topic.context,
         transcript_bytes: None,
         user_connected: false,
         edit_stats: None,

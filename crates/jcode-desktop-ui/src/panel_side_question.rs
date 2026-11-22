@@ -3,9 +3,8 @@
 //! The question runs in a hidden fork of the current session: it inherits the
 //! transcript as context, so the answer is about this conversation, but the
 //! source session is never touched. That keeps the parent's prompt cache and
-//! transcript intact. The answer streams into a compact card above the
-//! composer; "Open as chat" promotes the answer to a real chat and "Dismiss"
-//! hides it. The fork itself stays archived on disk, so nothing is lost.
+//! transcript intact. The card can continue the same fork or open it as a
+//! full chat. Dismiss leaves the fork on disk for `/btw` history.
 use super::*;
 use crate::harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
 use jcode_sdk::{ApiEvent, SessionInfo};
@@ -61,6 +60,33 @@ impl SideQuestionCard {
     pub(crate) fn is_working(&self) -> bool {
         self.status == SideQuestionStatus::Working
     }
+
+    fn model_and_effort(&self) -> (Option<&str>, Option<&str>) {
+        match &self.identity {
+            Some(
+                ApiEvent::ModelInfo {
+                    model,
+                    reasoning_effort,
+                    ..
+                }
+                | ApiEvent::RuntimeInfo {
+                    model,
+                    reasoning_effort,
+                    ..
+                },
+            ) => (model.as_deref(), reasoning_effort.as_deref()),
+            _ => self
+                .session
+                .context
+                .as_ref()
+                .map_or((None, None), |context| {
+                    (
+                        context.model.as_deref(),
+                        context.reasoning_effort.as_deref(),
+                    )
+                }),
+        }
+    }
 }
 
 impl Panel {
@@ -83,7 +109,9 @@ impl Panel {
         serde_json::json!({"history":history,"card":self.side_question.as_ref().map(|card| {
             let mut turns = card.previous.iter().map(|turn| serde_json::json!({"question":turn.question,"answer":turn.answer})).collect::<Vec<_>>();
             turns.push(serde_json::json!({"question":card.question,"answer":card.answer}));
-            serde_json::json!({"session_id":card.child_session_id,"working":card.is_working(),"turns":turns})
+            let (model, effort) = card.model_and_effort();
+            serde_json::json!({"session_id":card.child_session_id,"working":card.is_working(),"turns":turns,
+                "model":model,"reasoning_effort":effort})
         })})
     }
 
@@ -219,7 +247,11 @@ impl Panel {
                 );
                 card.previous = turns;
                 card.answer = last.answer;
-                card.status = SideQuestionStatus::Done;
+                card.status = if card.answer.is_empty() {
+                    SideQuestionStatus::Failed
+                } else {
+                    SideQuestionStatus::Done
+                };
                 card.scroll.scroll_to_bottom();
                 self.show_side_question(card, cx);
             }
@@ -279,6 +311,7 @@ impl Panel {
         match event {
             ApiEvent::ModelInfo { model: Some(_), .. }
             | ApiEvent::RuntimeInfo { model: Some(_), .. } => {
+                changed = card.identity.as_ref() != Some(event);
                 card.identity = Some(event.clone());
             }
             ApiEvent::TextDelta { text, .. } if card.is_working() => {
@@ -349,6 +382,7 @@ impl Panel {
         }
         let card = self.side_question.as_ref()?;
         let theme = Theme::global();
+        let (model, effort) = card.model_and_effort();
         let status = match card.status {
             SideQuestionStatus::Working => "thinking…",
             SideQuestionStatus::Done => "done",
@@ -386,12 +420,23 @@ impl Panel {
                             .text_size(px(12.))
                             .text_color(theme.TEXT_DIM)
                             .child(status),
-                    ),
+                    )
+                    .children(model.map(|model| {
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .child(match effort {
+                                Some(effort) => format!("{model} · {effort}"),
+                                None => model.to_string(),
+                            })
+                    })),
             );
-        let answer = if card.answer.trim().is_empty() && card.is_working() {
-            "Thinking…"
-        } else {
-            &card.answer
+        let answer = match card.answer.trim() {
+            "" if card.is_working() => "Thinking…",
+            "" => "No answer saved.",
+            _ => &card.answer,
         };
         body = body.child(
             div()
@@ -453,7 +498,7 @@ impl Panel {
                             })),
                     )
                     .child(
-                        side_button("side-question-promote", "Open as chat")
+                        side_button("side-question-promote", "Open in sidechat")
                             .bg(theme.ACCENT_DIM)
                             .text_color(theme.TEXT)
                             .children(crate::fixture_control_targets::marker(

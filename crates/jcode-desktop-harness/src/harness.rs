@@ -502,7 +502,10 @@ pub enum Command {
     DismissSideQuestion {
         session_id: String,
     },
-    /// Bring a promoted side-question fork back into the session list.
+    PromoteSideQuestion {
+        session_id: String,
+    },
+    /// Compatibility path for a side question created as a legacy archive.
     RestoreSideQuestion {
         session_id: String,
     },
@@ -654,6 +657,7 @@ enum SessionCommand {
     ContinueSideQuestion {
         question: String,
     },
+    ReplaySideQuestionHistory,
     Cancel,
     ForceStopTurn,
     BackgroundTool,
@@ -1522,6 +1526,7 @@ fn run_with_transports(
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
+    let mut watched_sessions = HashSet::new();
 
     loop {
         if std::time::Instant::now() >= next_edit_check {
@@ -1721,6 +1726,7 @@ fn run_with_transports(
                 }
             }
             Command::Watch { session_id } => {
+                watched_sessions.insert(session_id.clone());
                 ensure_session_worker(&mut workers, session_id, &updates, &transports);
             }
             Command::GetCompactedHistory {
@@ -1759,6 +1765,7 @@ fn run_with_transports(
                 );
             }
             Command::Unwatch { session_id } => {
+                watched_sessions.remove(&session_id);
                 if let Some(worker) = workers.remove(&session_id) {
                     let _ = worker.send(SessionCommand::Stop);
                 }
@@ -2133,11 +2140,40 @@ fn run_with_transports(
                 );
             }
             Command::DismissSideQuestion { session_id } => {
-                if let Some(worker) = workers.remove(&session_id) {
+                if !watched_sessions.contains(&session_id)
+                    && let Some(worker) = workers.remove(&session_id)
+                {
                     let _ = worker.send(SessionCommand::Stop);
                 }
             }
+            Command::PromoteSideQuestion { session_id } => {
+                if !watched_sessions.contains(&session_id)
+                    && let Some(worker) = workers.get(&session_id)
+                {
+                    let _ = worker.send(SessionCommand::ReplaySideQuestionHistory);
+                }
+                let (updates, transports, internal) = (updates.clone(), transports.clone(), internal.clone());
+                std::thread::spawn(move || {
+                    let result = side_questions::read(&transports, &session_id, |client, session| {
+                        client.promote_side_question(&session.session_id).map_err(|error| error.to_string())
+                    });
+                    match result {
+                        Ok(()) => { let _ = internal.send(Command::RefreshSessions); }
+                        Err(reason) => {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id,
+                                reason: format!("Could not open sidechat: {reason}"),
+                            });
+                        }
+                    }
+                });
+            }
             Command::RestoreSideQuestion { session_id } => {
+                if !watched_sessions.contains(&session_id)
+                    && let Some(worker) = workers.get(&session_id)
+                {
+                    let _ = worker.send(SessionCommand::ReplaySideQuestionHistory);
+                }
                 send_to_session_worker(
                     &mut workers,
                     session_id,
@@ -4052,6 +4088,10 @@ fn session_worker_with_connector(
                                 });
                             }
                         }
+                    }
+                    SessionCommand::ReplaySideQuestionHistory => {
+                        let _ = updates.send(Update::SessionConnected { session_id: session_id.clone() });
+                        history.load(&client, real_id, &session_id, &updates);
                     }
                     SessionCommand::Cancel => {
                         recovery.supersede();
