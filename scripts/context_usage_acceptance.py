@@ -68,13 +68,14 @@ class ContextUsage(VERIFY.Instance):
     def exercise(self):
         first = self.target["session_id"]
         second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        first_total = 57_665 if self.manifest["compact"] else 11_042
         for session, count, prompt in [(first, 11042, "First session, short context."),
                                        (second, 224142, "Second session. " * 150)]:
             self.runtime_debug("message", f"[e2e:input-tokens:{count}] {prompt}", "--session", session, "--wait")
         if self.manifest["compact"]:
             for turn in range(4):
                 self.runtime_debug("message", f"[e2e:pad] First session, turn {turn}", "--session", first, "--wait")
-            self.runtime_debug("message", "First session, keep this recent turn.", "--session", first, "--wait")
+            self.runtime_debug("message", f"[e2e:input-tokens:{first_total}] First session, keep this recent turn.", "--session", first, "--wait")
         def open_second():
             try:
                 self.drive("open_session", {"session_id": second})
@@ -87,7 +88,7 @@ class ContextUsage(VERIFY.Instance):
         self.runtime_wait(open_second, "second private session in Desktop's catalog")
         self.selected(first)
         expected = [self.context_usage(session) for session in (first, second)]
-        assert [usage["total_tokens"] for usage in expected] == [11042, 224142], expected
+        assert [usage["total_tokens"] for usage in expected] == [first_total, 224142], expected
         assert all(usage["meter"]["source"] == "provider_reported" for usage in expected), expected
         requests = (self.run / "fake-requests.jsonl").read_bytes()
         before = [self.drive("state", session=s)["panel"]["loaded_transcript_items"] for s in (first, second)]
@@ -99,16 +100,21 @@ class ContextUsage(VERIFY.Instance):
                     return f"{tokens / size:.1f}".rstrip("0").rstrip(".") + suffix
             return str(tokens)
 
+        def meter_value(index):
+            meter = expected[index]["meter"]
+            used = compact_count(meter["occupied_tokens"])
+            limit = compact_count(meter["compaction_threshold_tokens"])
+            return f"{used}/{limit}"
+
         def panel(name, index):
             frame, text = self.capture_text(name)
             conversation = next(bucket["tokens"] for bucket in expected[index]["categories"]
                                 if bucket["kind"] == "conversation")
-            meter = expected[index]["meter"]
-            value = f"{compact_count(meter['occupied_tokens'])}/{compact_count(meter['compaction_threshold_tokens'])}"
             text = text.lower()
-            if all(label in text for label in (
-                "context usage", "compact now", "shake tools", "conversation", "to compact",
-            )) and re.search(rf"\b{compact_count(conversation)}\b", text) and value in re.sub(r"\s+", "", text):
+            required = ("context usage", "compact now", "shake tools", "conversation", "to compact")
+            seen_conversation = re.search(rf"\b{re.escape(compact_count(conversation))}\b", text)
+            if (all(label in text for label in required) and seen_conversation
+                    and meter_value(index) in re.sub(r"\s+", "", text)):
                 assert all(label not in text for label in (
                     "estimated breakdown", "model window", "of current context", "higher rates",
                 )), text
@@ -126,18 +132,21 @@ class ContextUsage(VERIFY.Instance):
             labels = [line for line in text.lower().splitlines() if "context usage" in line]
             if not labels:
                 return None
-            assert len(labels) == 1 and "/" in labels[0], text
+            assert len(labels) == 1 and meter_value(0) in re.sub(r"\s+", "", labels[0]), text
             assert "auto-compaction" not in text.lower(), text
             return frame
 
-        click("hover:panel-context-meter")
-        frames["hover"] = self.runtime_wait(hovered, "one-line native context hover")
         click("panel-context-meter")
         frames["first"] = self.runtime_wait(lambda: panel("first.png", 0), "native first-session breakdown")
         click("context-usage-shake")
         self.drive("press_key", {"key": "fixture:escape"})
         _, closed = self.capture_text("closed.png")
         assert "context usage" not in closed.lower(), closed
+        meter = expected[0]["meter"]
+        percent = 100 * meter["occupied_tokens"] / meter["compaction_threshold_tokens"]
+        assert f"{percent:.0f}%" in closed and meter_value(0) not in re.sub(r"\s+", "", closed), closed
+        click("hover:panel-context-meter")
+        frames["hover"] = self.runtime_wait(hovered, "one-line native context hover")
         click("panel-context-meter")
         frames["reopened"] = self.runtime_wait(lambda: panel("reopened.png", 0), "native reopened breakdown")
         self.selected(second)
