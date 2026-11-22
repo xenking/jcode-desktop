@@ -50,9 +50,13 @@ class ReleaseTargetTests(unittest.TestCase):
     def test_macos_keeps_both_universal_slices(self):
         workflow = (ROOT / ".github/workflows/macos-beta.yml").read_text()
         self.assertIn("targets: aarch64-apple-darwin,x86_64-apple-darwin", workflow)
-        packager = (ROOT / "scripts/package-macos.sh").read_text()
-        for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
-            self.assertIn(target, packager)
+        job_env, steps = workflow.split("    steps:\n", 1)
+        targets = re.search(r'^      PACKAGE_TARGETS: "([^"]+)"$', job_env, re.M)
+        self.assertIsNotNone(targets, "Build and verification must share a job-level target list")
+        self.assertEqual(targets[1].split(), ["aarch64-apple-darwin", "x86_64-apple-darwin"])
+        self.assertNotIn("PACKAGE_TARGETS:", steps, "Steps must not override the shared target list")
+        self.assertIn("run: jcode-desktop/scripts/package-macos.sh", steps)
+        self.assertIn("run: jcode-desktop/scripts/verify-macos-package.sh", steps)
 
     def test_native_voice_build_dependencies_are_installed(self):
         # CPAL uses ALSA on FreeBSD as well as Linux. These must be installed

@@ -13,7 +13,7 @@ SPEC.loader.exec_module(AUTO)
 class RuntimePinTests(unittest.TestCase):
     def runtime_pin(self, workflow):
         text = (ROOT / '.github/workflows' / workflow).read_text()
-        match = re.search(r'repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b', text)
+        match = re.search(r'repository: xenking/jcode\s+ref: ([0-9a-f]{40})\b', text)
         self.assertIsNotNone(match, workflow)
         return match[1]
 
@@ -27,6 +27,14 @@ class RuntimePinTests(unittest.TestCase):
         def workflow(_, path):
             pin = "b" * 40 if path.endswith("freebsd-release.yml") else "a" * 40
             return f"repository: 1jehuang/jcode\n          ref: {pin}"
+        with patch.object(AUTO, "git", side_effect=workflow):
+            with self.assertRaisesRegex(ValueError, "same Jcode runtime"):
+                AUTO.validate_runtime_pins("HEAD")
+
+    def test_repository_drift_is_rejected_even_with_an_identical_sha(self):
+        def workflow(_, path):
+            owner = "1jehuang" if path.endswith("freebsd-release.yml") else "xenking"
+            return f"repository: {owner}/jcode\n          ref: {'a' * 40}"
         with patch.object(AUTO, "git", side_effect=workflow):
             with self.assertRaisesRegex(ValueError, "same Jcode runtime"):
                 AUTO.validate_runtime_pins("HEAD")

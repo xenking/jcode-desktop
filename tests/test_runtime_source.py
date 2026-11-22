@@ -37,6 +37,21 @@ class RuntimeSourceTests(unittest.TestCase):
         self.assertGreater(sum(package == 'jcode-base' for _, package, _ in deps), 1)
         self.assertIn(('crates/jcode-core/Cargo.toml', 'jcode-core', []), deps)
 
+    def test_sibling_runtime_symlink_does_not_hide_manifest_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            desktop = root / 'desktop'
+            desktop.mkdir()
+            (desktop / 'Cargo.toml').write_text(
+                '[dependencies]\njcode-sdk = { path = "../jcode/crates/jcode-sdk" }\n'
+            )
+            runtime = root / 'runtime-worktree'
+            runtime.mkdir()
+            (root / 'jcode').symlink_to(runtime, target_is_directory=True)
+            self.assertEqual(RUNTIME.runtime_dependencies(desktop), [
+                ('crates/jcode-sdk/Cargo.toml', 'jcode-sdk', []),
+            ])
+
     def test_compatible_source_passes(self):
         manifests = RUNTIME.verify(ROOT, self.sources().__getitem__)
         self.assertIn('crates/jcode-voice/Cargo.toml', manifests)

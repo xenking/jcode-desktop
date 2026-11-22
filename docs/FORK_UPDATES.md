@@ -15,6 +15,22 @@ The updater expects `<base>/desktop-latest/latest.json` and
 The Sparkle feed is only embedded when `SPARKLE_PUBLIC_KEY` is set, so local
 ad-hoc builds have no Sparkle auto-update at all.
 
+## Checks and release triggers
+
+Each push to `main` and PR targeting `main` runs one read-only Linux job,
+`Desktop contracts`. It checks the runtime commit pinned by the native release
+workflows, then runs the script and release-policy tests. It does not build
+the app or contact live release services. To run the tests locally:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Native packaging and smoke tests stay in the macOS, Linux, Windows and FreeBSD
+release workflows. The release coordinator accepts only manual dispatch and
+defaults to a dry run. A normal `main` push cannot create a release tag, access
+signing credentials or start a native release build.
+
 ## Recommended update flow (no releases published)
 
 The fork publishes no release assets, so the in-app check finds nothing and is

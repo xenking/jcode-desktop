@@ -157,12 +157,13 @@ def validate_runtime_pins(ref):
     pins = []
     for workflow in (*BUILD_WORKFLOWS.values(), "freebsd-release.yml"):
         text = git("show", f"{ref}:.github/workflows/{workflow}")
-        match = re.search(r"repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b", text)
+        match = re.search(r"repository: ((?:xenking|1jehuang)/jcode)\s+ref: ([0-9a-f]{40})\b", text)
         if not match:
             raise ValueError(f"Missing immutable Jcode runtime pin in {workflow}")
-        pins.append(match[1])
+        pins.append(match.groups())
     if len(set(pins)) != 1:
-        raise ValueError("Build workflows must pin the same Jcode runtime commit")
+        raise ValueError("Build workflows must pin the same Jcode runtime repository and commit")
+    return pins[0]
 
 
 def execute(github, decision, commit, now):
