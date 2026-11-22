@@ -172,7 +172,8 @@ fn completed_public_answer_does_not_send_another_final_request(cx: &mut gpui::Te
         assert!(
             p.items
                 .iter()
-                .any(|item| matches!(item, Item::Assistant(text) if text.starts_with("Done.")))
+                .filter_map(Item::assistant_text)
+                .any(|text| text.starts_with("Done."))
         );
         p.todo_state_received(snapshot(vec![item("work", "completed")]), cx);
     });
