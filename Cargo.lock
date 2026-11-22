@@ -3841,6 +3841,7 @@ version = "0.1.0"
 dependencies = [
  "jcode-applet-types",
  "jcode-background-types",
+ "jcode-message-types",
  "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
