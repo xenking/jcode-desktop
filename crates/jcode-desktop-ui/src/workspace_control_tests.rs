@@ -38,7 +38,7 @@ fn click_ask_option_requires_permission_and_exact_request(cx: &mut gpui::TestApp
             DesktopResponse::Ok { .. }
         ));
         assert_eq!(
-            w.slots[0].panel.read(cx).control_state(window, cx)["ask"]["chosen"],
+            w.slots[0].panel.read(cx).control_state(window, cx).unwrap()["ask"]["chosen"],
             serde_json::json!([[1]])
         );
     });
@@ -48,6 +48,63 @@ use jcode_sdk::desktop_control::{
 };
 
 include!("workspace_control_open_tests.rs");
+
+#[cfg(unix)]
+#[gpui::test]
+fn state_returns_visible_applet_without_adding_it_to_history(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("session-a", cx);
+        w.slots[0].panel.update(cx, |p, _| p.control_test_tool());
+        let applets = serde_json::from_value(serde_json::json!({"instances": [{
+            "id": "review", "applet": "jcode.agent",
+            "placement": {"kind": "inline", "session_id": "session-a", "anchor": {"kind": "end"}},
+            "document": {"revision": 1, "title": "Review", "view": {"type": "text", "text": "Check this"}}
+        }]})).unwrap();
+        assert!(crate::applet_runtime::get(cx).sync_agent("session-a", &applets));
+        w
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        let response = control::handle_window_request(
+            &workspace,
+            DesktopRequest {
+                v: DESKTOP_CONTROL_VERSION,
+                action: DesktopAction::State {
+                    target: DesktopTarget {
+                        window_id: format!(
+                            "{}:{}",
+                            std::process::id(),
+                            window.window_handle().window_id().as_u64()
+                        ),
+                        session_id: "session-a".into(),
+                    },
+                },
+            },
+            false,
+            window,
+            cx,
+        );
+        let DesktopResponse::Ok { result } = response else {
+            panic!("state failed: {response:?}");
+        };
+        let panel = &result["panel"];
+        let item = panel["visible_transcript_items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["item"]["Applet"]
+                    == crate::applet_runtime::agent_instance_id("session-a", "review")
+            })
+            .expect("visible native applet");
+        assert!(item["selector"].as_str().unwrap().starts_with("row:"));
+        assert_eq!(
+            panel["loaded_transcript_items"].as_array().unwrap().len(),
+            1
+        );
+    });
+}
 
 #[gpui::test]
 fn state_reports_actually_rendered_tool_rows(cx: &mut gpui::TestAppContext) {
@@ -140,7 +197,7 @@ fn click_tool_and_enter_use_targeted_semantic_actions(cx: &mut gpui::TestAppCont
             DesktopResponse::Ok { .. }
         ));
         assert!(
-            w.slots[0].panel.read(cx).control_state(window, cx)["expanded_regions"]
+            w.slots[0].panel.read(cx).control_state(window, cx).unwrap()["expanded_regions"]
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("call-1"))
@@ -158,7 +215,7 @@ fn click_tool_and_enter_use_targeted_semantic_actions(cx: &mut gpui::TestAppCont
             DesktopResponse::Ok { .. }
         ));
         assert!(
-            !w.slots[0].panel.read(cx).control_state(window, cx)["expanded_regions"]
+            !w.slots[0].panel.read(cx).control_state(window, cx).unwrap()["expanded_regions"]
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("call-1"))
@@ -402,7 +459,7 @@ fn expand_tool_requires_exact_existing_call_and_is_idempotent(cx: &mut gpui::Tes
             DesktopResponse::Ok { .. }
         ));
         assert!(
-            w.slots[0].panel.read(cx).control_state(window, cx)["expanded_regions"]
+            w.slots[0].panel.read(cx).control_state(window, cx).unwrap()["expanded_regions"]
                 .as_array()
                 .unwrap()
                 .iter()

@@ -174,7 +174,9 @@ pub(super) fn handle_window_request(
         ) {
             return error("unsupported_key", "unknown fixture key");
         }
-        let keystroke = gpui::Keystroke::parse(key).expect("fixture keys are valid");
+        let Ok(keystroke) = gpui::Keystroke::parse(key) else {
+            return error("unsupported_key", "invalid fixture key");
+        };
         window.dispatch_event(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -373,9 +375,15 @@ impl Workspace {
                     json!({"window_id": target_window, "session_id": session_id, "panel_id": panel_id}),
                 )
             }
-            DesktopAction::List {} => ok(
-                json!({"window_id":window_id(window), "navigation": self.navigation_state(window, cx), "sessions":self.sessions}),
-            ),
+            DesktopAction::List {} => {
+                let sessions = match serde_json::to_value(&self.sessions) {
+                    Ok(sessions) => sessions,
+                    Err(err) => return error("state_serialization", &err.to_string()),
+                };
+                ok(
+                    json!({"window_id": window_id(window), "navigation": self.navigation_state(window, cx), "sessions": sessions}),
+                )
+            }
             DesktopAction::Focus {
                 target,
                 allow_user_window,
@@ -428,7 +436,14 @@ impl Workspace {
                 let panel = slot.panel.read(cx);
                 let input = panel.input.read(cx);
                 let draft = input.snapshot();
-                let mut state = panel.control_state(window, cx);
+                let mut state = match panel.control_state(window, cx) {
+                    Ok(state) => state,
+                    Err(err) => return error("state_serialization", &err.to_string()),
+                };
+                let search = match self.control_search_state(window, cx) {
+                    Ok(search) => search,
+                    Err(err) => return error("state_serialization", &err.to_string()),
+                };
                 state["agent_owned_draft"] = json!(
                     self.control_drafts.get(&slot.panel.entity_id())
                         == Some(&(draft.content, input.control_revision()))
@@ -436,7 +451,7 @@ impl Workspace {
                         && draft.stashed_prompt.is_none()
                 );
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":slot.panel.entity_id().as_u64(), "panel":state, "search_open":self.resume_open(), "search":self.control_search_state(window, cx), "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": (crate::fixture_control_targets::draft_session() || crate::fixture_control_targets::side_questions()).then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
+                    json!({"window_id":target.window_id, "panel_id":slot.panel.entity_id().as_u64(), "panel":state, "search_open":self.resume_open(), "search":search, "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": (crate::fixture_control_targets::draft_session() || crate::fixture_control_targets::side_questions()).then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
                 )
             }
             DesktopAction::Search {

@@ -26,8 +26,18 @@ pub(super) struct BackgroundJobs {
 }
 
 impl BackgroundJobs {
-    pub fn control_state(&self) -> serde_json::Value {
-        serde_json::json!({"tasks": self.tasks, "selected": self.selected, "output": self.output})
+    pub fn control_state(&self) -> serde_json::Result<serde_json::Value> {
+        #[derive(serde::Serialize)]
+        struct State<'a> {
+            tasks: &'a [Job],
+            selected: Option<&'a str>,
+            output: Option<&'a BackgroundTaskOutput>,
+        }
+        serde_json::to_value(State {
+            tasks: &self.tasks,
+            selected: self.selected.as_deref(),
+            output: self.output.as_ref(),
+        })
     }
 
     pub fn active(&self) -> usize {

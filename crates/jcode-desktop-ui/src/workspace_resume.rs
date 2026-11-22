@@ -679,20 +679,21 @@ impl Workspace {
         &self,
         window: &Window,
         cx: &App,
-    ) -> Option<serde_json::Value> {
+    ) -> serde_json::Result<Option<serde_json::Value>> {
         self.resume.as_ref().map(|state| {
             let preview = crate::fixture_control_targets::resume_preview()
                 .then(|| state.preview.as_ref()?.as_ref().ok())
                 .flatten()
-                .map(|panel| panel.read(cx).control_state(window, cx));
-            serde_json::json!({
+                .map(|panel| panel.read(cx).control_state(window, cx))
+                .transpose()?;
+            Ok(serde_json::json!({
                 "query": state.search.read(cx).snapshot().content,
                 "status": state.daemon.status_line(),
                 "selected": state.selected,
                 "preview_focus": state.preview_focus.contains_focused(window, cx),
                 "fixture_preview": preview.map(|state| state["visible_transcript_items"].clone()),
-            })
-        })
+            }))
+        }).transpose()
     }
 
     pub(super) fn close_session_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1910,7 +1911,7 @@ mod tests {
 
     fn visible_rows(panel: &Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> serde_json::Value {
         panel.update_in(vcx, |panel, window, cx| {
-            panel.control_state(window, cx)["visible_transcript_items"].clone()
+            panel.control_state(window, cx).unwrap()["visible_transcript_items"].clone()
         })
     }
 

@@ -1,5 +1,17 @@
 //! Semantic data exposed by Desktop control, independent of painted pixels.
 use super::*;
+use serde_json::Value;
+
+// Unlike serde_json::json!, this does not unwrap the result of a custom Serialize impl.
+macro_rules! state_object {
+    ($($key:literal: $value:expr),* $(,)?) => {
+        (|| -> serde_json::Result<Value> {
+            Ok(Value::Object([
+                $(($key.into(), serde_json::to_value(&$value)?)),*
+            ].into_iter().collect()))
+        })()
+    };
+}
 
 impl Panel {
     pub(crate) fn control_click_ask(
@@ -147,7 +159,7 @@ impl Panel {
         true
     }
 
-    pub(crate) fn control_state(&self, window: &Window, cx: &App) -> serde_json::Value {
+    pub(crate) fn control_state(&self, window: &Window, cx: &App) -> serde_json::Result<Value> {
         // Bounds refer to the last laid-out frame. Do not associate stale row
         // descriptors with a newer transcript after an event, before repaint.
         let visible = self
@@ -187,13 +199,17 @@ impl Panel {
                         Item::Tool { call_id, .. } => format!("tool:{call_id}"),
                         _ => format!("row:{}:{index}", self.items.revision()),
                     };
-                    visible
-                        .push(serde_json::json!({"row": index, "selector":selector, "item": item}));
+                    let item = match item {
+                        Item::Applet(id) => state_object! {"Applet": id}?,
+                        item => serde_json::to_value(item)?,
+                    };
+                    visible.push(state_object! {"row": index, "selector": selector, "item": item}?);
                 }
-                visible
-            });
+                Ok::<_, serde_json::Error>(visible)
+            })
+            .transpose()?;
         let ask = self.ask_card.as_ref().map(|card| {
-            serde_json::json!({
+            state_object! {
                 "request_id": card.request_id,
                 "tool_call_id": card.tool_call_id,
                 "questions": card.questions,
@@ -203,22 +219,22 @@ impl Panel {
                 "submitting": card.submitting(),
                 "error": card.submit_error,
                 "option_selectors": card.questions.get(card.cursor_question).map(|question| (0..question.options.len()).map(|option| format!("ask:{}:{}:{}", card.request_id, card.cursor_question, option)).collect::<Vec<_>>()).unwrap_or_default(),
-            })
-        });
+            }
+        }).transpose()?;
         let workers = self
             .swarm_workers
             .iter()
             .map(|worker| {
-                serde_json::json!({
+                state_object! {
                     "session_id": worker.session_id,
                     "name": worker.name,
                     "label": worker.row_title(),
                     "state": worker.state.label(),
                     "age_ms": worker.age_ms,
                     "meta": worker.meta,
-                })
+                }
             })
-            .collect::<Vec<_>>();
+            .collect::<serde_json::Result<Vec<_>>>()?;
         let scroll_proof = crate::fixture_control_targets::transcript_scroll_fixture()
             || crate::fixture_control_targets::context_overlay_fixture();
         let scroll_fixture = scroll_proof.then(|| {
@@ -246,7 +262,7 @@ impl Panel {
             .into_iter()
             .find(|kind| self.picker_triggers[*kind as usize].is_focused(window))
             .map(picker_name);
-        serde_json::json!({
+        state_object! {
             "scroll_fixture": scroll_fixture,
             "gallery_navigation": crate::fixture_control_targets::gallery_navigation().then(|| {
                 let indices = self.session_image_indices();
@@ -267,7 +283,7 @@ impl Panel {
             "session_id": self.session_id,
             "title": self.title.to_string(),
             "status": self.status,
-            "background_jobs": self.background_jobs.control_state(),
+            "background_jobs": self.background_jobs.control_state()?,
             "tab_activity": self.tab_ring().map(|ring| ring.mode.label()),
             "connection_phase": self.connection_phase,
             "model": self.model,
@@ -301,6 +317,6 @@ impl Panel {
             "workers": workers,
             "workers_open": self.swarm_list_open,
             "expanded_regions": self.expanded_regions,
-        })
+        }
     }
 }
