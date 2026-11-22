@@ -30,9 +30,7 @@ pub(super) fn active_error(items: &[Item]) -> Option<usize> {
     for (index, item) in items.iter().enumerate().rev() {
         match item {
             Item::Error(_) | Item::RuntimeError { .. } => return Some(index),
-            Item::Stopped(notice) => {
-                return (notice.shows_error() || notice.provisional).then_some(index);
-            }
+            Item::Stopped(_) => return Some(index),
             Item::User(_) if conversation_item(item) => break,
             item if item
                 .assistant_text()
@@ -161,7 +159,7 @@ impl Panel {
     }
 
     pub(super) fn shows_transcript_activity(&self) -> bool {
-        !self.clean_chat_enabled() && self.activity_active() && self.ask_card.is_none()
+        self.activity_active() && self.ask_card.is_none()
     }
 
     pub(super) fn set_clean_chat(&mut self, override_mode: Option<bool>, cx: &mut Context<Self>) {
@@ -299,6 +297,115 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn clean_chat_shows_work_and_confirmed_interruption_without_trace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "clean-status".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.set_clean_chat(Some(true), cx);
+            panel.items.push(Item::User("Run a check".into()));
+            panel
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::SessionStatus {
+                    session_id: "clean-status".into(),
+                    status: "thinking".into(),
+                    pending_soft_interrupts: None,
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ToolStart {
+                    session_id: "clean-status".into(),
+                    call_id: "check".into(),
+                    name: "read".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-activity").is_some());
+        assert!(vcx.debug_bounds("tool-header").is_none());
+        assert!(vcx.debug_bounds("prompt-number-0-1").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::SessionStatus {
+                    session_id: "clean-status".into(),
+                    status: "cancelled".into(),
+                    pending_soft_interrupts: None,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-activity").is_none());
+        assert!(vcx.debug_bounds("response-stop-notice").is_some());
+        assert!(vcx.debug_bounds("tool-header").is_none());
+    }
+
+    #[gpui::test]
+    fn clean_chat_numbers_prompts_and_decisions_together(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new("clean-numbers".into(), None, None, crate::harness::spawn_inert(), cx);
+            panel.set_clean_chat(Some(true), cx);
+            *panel.items = vec![
+                Item::User("First".into()),
+                Item::Tool { call_id: "ask-1".into(), name: "ask".into(),
+                    input: r#"{"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#.into(),
+                    output: "User answers:\n1. Which? -> B".into(), done: true, error: None },
+                Item::User("Next".into()),
+            ];
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("prompt-number-0-1").is_some());
+        assert!(vcx.debug_bounds("decision-number-2").is_some());
+        assert!(vcx.debug_bounds("prompt-number-2-3").is_some());
+        assert!(vcx.debug_bounds("tool-header").is_none());
+    }
+
+    #[gpui::test]
+    fn clean_chat_keeps_failure_and_force_stop_action_visible(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "clean-stop".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.set_clean_chat(Some(true), cx);
+            panel.items.push(Item::User("Run".into()));
+            panel.items.push(Item::Error("System error".into()));
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("recovery-error").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::User("Retry".into()));
+            let mut notice = stop_reason::StopNotice::cancel_requested();
+            notice.title = "Stop not confirmed".into();
+            panel.items.push(Item::Stopped(notice));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let button = vcx
+            .debug_bounds("force-stop-button")
+            .expect("force stop is available");
+        vcx.simulate_click(button.center(), Default::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("response-stop-notice").is_some());
+        panel.read_with(vcx, |panel, _| assert!(matches!(panel.items.last(), Some(Item::Stopped(notice)) if notice.title == "Force stop requested")));
+    }
 
     fn text(id: &str, text: &str) -> ApiEvent {
         ApiEvent::TextDelta {

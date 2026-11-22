@@ -187,9 +187,7 @@ impl Panel {
             window.request_animation_frame();
         }
         let clean_chat = self.clean_chat_enabled();
-        let number = (!clean_chat)
-            .then(|| self.absolute_prompt_number(index))
-            .flatten();
+        let number = self.absolute_prompt_number(index);
         // Keep the number outside the card in a compact circular badge. Wider
         // turn numbers grow into a pill without taking space from card padding.
         let number_width = number.map_or(0., |number| {
