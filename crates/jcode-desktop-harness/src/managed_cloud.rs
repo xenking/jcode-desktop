@@ -337,6 +337,7 @@ pub(crate) fn connect_with_sync_status(
     let options = SshConnectOptions {
         // Temporarily disabled until inline tool responses have broader testing.
         supports_user_response: false,
+        supports_applets: true,
         port: Some(port),
         user: Some(user),
         identity_file: Some(key.private_key()),

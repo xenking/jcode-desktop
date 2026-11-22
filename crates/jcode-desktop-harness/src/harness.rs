@@ -65,6 +65,7 @@ mod transport {
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
                 // Temporarily disabled until inline tool responses have broader testing.
                 supports_user_response: false,
+                supports_applets: true,
                 client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
                 connect_timeout: std::time::Duration::from_secs(20),
                 request_timeout: Some(std::time::Duration::from_secs(30)),
@@ -1313,6 +1314,7 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
             client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
             supports_user_response: false,
+            supports_applets: true,
             ..Default::default()
         });
     }
@@ -1323,6 +1325,7 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
             ensure_runtime: false,
             // Temporarily disabled until inline tool responses have broader testing.
             supports_user_response: false,
+            supports_applets: true,
             ..Default::default()
         })?;
         crate::runtime_generation::verify_local_bridge(client.runtime_identity.as_ref())?;

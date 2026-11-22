@@ -853,6 +853,7 @@ fn button(
     let compact = matches!(variant, ButtonVariant::Compact);
     div()
         .id(id)
+        .debug_selector(|| "applet-action".into())
         .flex()
         .flex_row()
         .flex_none()
@@ -1099,6 +1100,7 @@ fn text_input(
         input.update(app, |input, icx| input.set_content(current, icx));
     }
     div()
+        .debug_selector(|| "applet-input".into())
         .px_3()
         // The inner editor already carries its own vertical padding.
         .py(px(if multiline { 6. } else { 0. }))

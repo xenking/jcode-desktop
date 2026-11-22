@@ -23,8 +23,8 @@ class RuntimeSourceTests(unittest.TestCase):
                 'pub user_connected: bool\naccount_label: Option<String>\neffective_budget: Option<usize>\n'
                 'pub struct HistoryTool {\npub tool: Option<HistoryTool>'
             ),
-            'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub fn runtime_command(',
-            'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool',
+            'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub supports_applets: bool\npub fn runtime_command(',
+            'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool\npub supports_applets: bool',
             'crates/jcode-sdk/src/collections.rs': 'pub fn create_with_id(',
             'crates/jcode-harness-api/src/runtime_commands.rs': 'pub enum RuntimeCommand {',
             'crates/jcode-voice/src/lib.rs': 'pub mod dictation;\npub mod global;\npub use streaming_capture::',

@@ -174,6 +174,7 @@ impl PrivateBridge {
             request_timeout: Some(Duration::from_secs(10)),
             ensure_runtime: false,
             supports_user_response: false,
+            supports_applets: true,
         })?;
         crate::runtime_generation::verify_capabilities(&client)?;
         Ok(client)
