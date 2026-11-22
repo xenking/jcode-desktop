@@ -9,15 +9,34 @@ pub(super) fn read<T>(
     read: impl FnOnce(&JcodeClient, &remote::SessionAddress) -> Result<T, String>,
 ) -> Result<T, String> {
     let parent = remote::SessionAddress::parse(parent_session_id)?;
+    #[cfg(unix)]
+    let mut private_route = super::private_routes::PrivateRoute::default();
     let client = match parent.host.as_deref() {
         Some(host) => transports.connect(host),
-        None => connect("side-question-history"),
+        None => {
+            #[cfg(unix)]
+            if let Some(client) = private_route
+                .connect(&parent.session_id)
+                .map_err(|error| error.to_string())?
+            {
+                return read_side_question_api(&client, &parent, read);
+            }
+            connect("side-question-history")
+        }
     }
     .map_err(|error| error.to_string())?;
+    read_side_question_api(&client, &parent, read)
+}
+
+fn read_side_question_api<T>(
+    client: &JcodeClient,
+    parent: &remote::SessionAddress,
+    read: impl FnOnce(&JcodeClient, &remote::SessionAddress) -> Result<T, String>,
+) -> Result<T, String> {
     if !client.supports(jcode_sdk::SIDE_QUESTIONS_CAPABILITY) {
         return Err("Side question history requires an updated runtime and bridge.".into());
     }
-    read(&client, &parent)
+    read(client, parent)
 }
 
 pub(super) fn list(
