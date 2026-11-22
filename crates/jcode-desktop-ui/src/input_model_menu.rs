@@ -89,6 +89,7 @@ pub(crate) fn route_spec(route: &ModelRouteInfo) -> String {
     let bare = explicit_model_provider_prefix(&route.model)
         .map_or(route.model.as_str(), |(_, _, bare)| bare);
     let mut selection = RouteSelection::from_model_route(&ModelRoute {
+        reasoning_efforts: route.reasoning_efforts.clone(),
         model: bare.to_string(),
         provider: route.provider.clone(),
         api_method: route.api_method.clone(),
@@ -694,6 +695,7 @@ mod tests {
     fn route(model: &str, method: &str, count: u64) -> ModelRouteInfo {
         ModelRouteInfo {
             speed_options: Vec::new(),
+            reasoning_efforts: None,
             model: model.into(),
             provider: "OpenAI".into(),
             api_method: method.into(),

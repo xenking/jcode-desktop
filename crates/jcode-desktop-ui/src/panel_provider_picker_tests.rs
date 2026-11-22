@@ -18,6 +18,7 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
         });
         let route = |model: &str, method: &str| jcode_sdk::ModelRouteInfo {
             speed_options: Vec::new(),
+            reasoning_efforts: None,
             model: model.into(),
             provider: String::new(),
             api_method: method.into(),
@@ -186,6 +187,7 @@ fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppCon
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     let route = |model: &str, provider: &str, method: &str| jcode_sdk::ModelRouteInfo {
         speed_options: Vec::new(),
+        reasoning_efforts: None,
         model: model.into(),
         provider: provider.into(),
         api_method: method.into(),

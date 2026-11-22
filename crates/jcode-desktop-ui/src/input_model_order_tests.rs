@@ -6,6 +6,7 @@ use jcode_sdk::ModelRouteInfo;
 fn route(model: &str, provider: &str, method: &str, count: u64) -> ModelRouteInfo {
     ModelRouteInfo {
         speed_options: Vec::new(),
+        reasoning_efforts: None,
         model: model.into(),
         provider: provider.into(),
         api_method: method.into(),

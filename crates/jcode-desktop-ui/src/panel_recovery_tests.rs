@@ -378,6 +378,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                 routes: vec![
                     jcode_sdk::ModelRouteInfo {
                         speed_options: Vec::new(),
+                        reasoning_efforts: None,
                         usage: None,
                         model: "openai:test".into(),
                         provider: "openai".into(),
@@ -387,6 +388,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                     },
                     jcode_sdk::ModelRouteInfo {
                         speed_options: Vec::new(),
+                        reasoning_efforts: None,
                         usage: None,
                         model: "unavailable".into(),
                         provider: "openai".into(),

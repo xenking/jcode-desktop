@@ -1037,6 +1037,7 @@ pub fn composer_picker_fixture_runtime(
         .into_iter()
         .map(|model| jcode_sdk::ModelRouteInfo {
             model: model.into(),
+            reasoning_efforts: None,
             provider: "openai".into(),
             api_method: "openai-oauth".into(),
             available: true,
@@ -1096,6 +1097,7 @@ fn spawn_screenshot() -> Bridge {
                     .into_iter()
                     .map(|model| jcode_sdk::ModelRouteInfo {
                         speed_options: Vec::new(),
+                        reasoning_efforts: None,
                         model: model.into(),
                         provider: "openai".into(),
                         api_method: "openai-api".into(),

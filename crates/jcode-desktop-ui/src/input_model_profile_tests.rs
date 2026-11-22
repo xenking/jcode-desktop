@@ -25,6 +25,7 @@ fn model_selector_frame_profile(cx: &mut gpui::TestAppContext) {
         let routes: Vec<_> = (0..count)
             .map(|i| jcode_sdk::ModelRouteInfo {
                 speed_options: Vec::new(),
+                reasoning_efforts: None,
                 model: format!("atlas-{i:04}"),
                 provider: "OpenAI".into(),
                 api_method: "openai-api-key".into(),

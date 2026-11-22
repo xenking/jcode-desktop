@@ -6824,6 +6824,7 @@ mod tests {
         let routes: Vec<_> = (1..=5)
             .map(|n| jcode_sdk::ModelRouteInfo {
                 speed_options: Vec::new(),
+                reasoning_efforts: None,
                 model: format!("atlas-{n}"),
                 provider: "OpenAI".into(),
                 api_method: "openai-api-key".into(),
@@ -6898,6 +6899,7 @@ mod tests {
                     let model = format!("atlas-{n}");
                     jcode_sdk::ModelRouteInfo {
                         speed_options: Vec::new(),
+                        reasoning_efforts: None,
                         usage: Some(jcode_sdk::ModelUsage {
                             count: if model == favored { 99 } else { n },
                             ..Default::default()
@@ -6937,6 +6939,7 @@ mod tests {
         let window = input_window(cx);
         let route = |model: &str, count| jcode_sdk::ModelRouteInfo {
             speed_options: Vec::new(),
+            reasoning_efforts: None,
             model: model.into(),
             provider: "openai".into(),
             api_method: "oauth".into(),

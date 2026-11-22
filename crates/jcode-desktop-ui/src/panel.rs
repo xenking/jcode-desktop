@@ -2977,6 +2977,7 @@ impl Panel {
                         };
                         jcode_sdk::ModelRouteInfo {
                             speed_options: Vec::new(),
+                            reasoning_efforts: None,
                             api_method: format!("{provider}-api-key"),
                             model,
                             provider,
@@ -10555,6 +10556,7 @@ mod tests {
     fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
         jcode_sdk::ModelRouteInfo {
             speed_options: Vec::new(),
+            reasoning_efforts: None,
             usage: None,
             model: model.into(),
             provider: "openai".into(),
@@ -11781,6 +11783,7 @@ mod tests {
                         account_label: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             speed_options: Vec::new(),
+                            reasoning_efforts: None,
                             usage: None,
                             model: "gpt-5.6-sol".into(),
                             provider: "openai".into(),

@@ -373,6 +373,7 @@ mod tests {
                     account_label: None,
                     routes: vec![jcode_sdk::ModelRouteInfo {
                         speed_options: Vec::new(),
+                        reasoning_efforts: None,
                         model: "claude-opus-5-5".into(),
                         provider: "anthropic".into(),
                         api_method: "claude-oauth".into(),
