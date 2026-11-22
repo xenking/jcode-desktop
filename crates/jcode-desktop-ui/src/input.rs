@@ -179,6 +179,7 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub struct PromptInput {
+    session_image_base: usize,
     pub focus_handle: FocusHandle,
     #[cfg(target_os = "macos")]
     ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
@@ -1080,7 +1081,7 @@ impl PromptInput {
         let mut ranges = self.chip_ranges();
         ranges.sort_unstable_by_key(|(_, range)| range.start);
         let mut numbers = vec![None; self.attachments.len()];
-        let mut number = 0;
+        let mut number = self.session_image_base;
         for (index, _) in ranges {
             if matches!(
                 self.attachments[index].payload,
@@ -1095,6 +1096,17 @@ impl PromptInput {
             }
         }
         numbers
+    }
+
+    pub(super) fn session_image_base(&self) -> usize {
+        self.session_image_base
+    }
+
+    pub(super) fn set_session_image_base(&mut self, base: usize, cx: &mut Context<Self>) {
+        if self.session_image_base < base {
+            self.session_image_base = base;
+            cx.notify();
+        }
     }
 
     fn expanded_chip_range(&self, mut edit: Range<usize>) -> Range<usize> {
@@ -1164,6 +1176,7 @@ impl PromptInput {
     ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            session_image_base: 0,
             #[cfg(target_os = "macos")]
             ime_log_focus_subscriptions: None,
             content: "".into(),
@@ -2315,12 +2328,6 @@ impl PromptInput {
             Vec::new()
         };
         attachments.sort_by_key(|a| content.find(a.label.as_ref()).unwrap_or(usize::MAX));
-        let normalize_images = attachments.iter().any(|attachment| {
-            matches!(
-                &attachment.payload,
-                AttachmentPayload::File { image: Some(_), .. }
-            )
-        });
         let mut images = Vec::new();
         let mut files = Vec::new();
         let mut replacements = Vec::new();
@@ -2337,8 +2344,10 @@ impl PromptInput {
                 } => {
                     images.push((media_type, encoded.to_string()));
                     if let Some(range) = range {
-                        let output = normalize_images.then(|| format!("[#image {}]", images.len()));
-                        replacements.push((range, output, String::new()));
+                        // Draft markers are editor keys. The wire marker indexes
+                        // the reordered payload, not the draft's insertion order.
+                        let output = format!("[#image {}]", images.len());
+                        replacements.push((range, Some(output), String::new()));
                     }
                 }
                 // Only queue editors hold these, and they never submit.
@@ -5513,12 +5522,19 @@ mod tests {
                 width: 1,
                 height: 1,
             };
+            input.set_session_image_base(9, cx);
             input.set_content("AB".into(), cx);
             input.selected_range = 2..2;
             input.attach_image(image(1), cx);
             input.selected_range = 0..0;
             input.attach_image(image(2), cx);
-            assert_eq!(input.image_chip_numbers(), [Some(2), Some(1)]);
+            assert_eq!(input.image_chip_numbers(), [Some(11), Some(10)]);
+            let draft = input.content.clone();
+            input.open_model_menu(Vec::new(), cx);
+            assert!(input.image_chip_numbers().is_empty());
+            input.close_model_menu(cx);
+            assert_eq!(input.content, draft);
+            assert_eq!(input.image_chip_numbers(), [Some(11), Some(10)]);
         });
         vcx.run_until_parked();
         let position = input.read_with(vcx, |input, _| {
@@ -5548,11 +5564,12 @@ mod tests {
             cx.notify();
         });
         vcx.simulate_keystrokes("backspace");
+        input.read_with(vcx, |input, _| assert_eq!(input.image_chip_numbers(), [Some(10)]));
         vcx.simulate_keystrokes("cmd-z");
-        input.read_with(vcx, |input, _| assert_eq!(input.attachments.len(), 2));
+        input.read_with(vcx, |input, _| assert_eq!(input.image_chip_numbers(), [Some(11), Some(10)]));
         vcx.simulate_keystrokes("enter");
         let (text, images) = seen.lock().unwrap().clone().unwrap();
-        assert_eq!(text, "[#image 2]AB[#image 1]");
+        assert_eq!(text, "[#image 1]AB[#image 2]");
         assert_eq!(
             images,
             vec![

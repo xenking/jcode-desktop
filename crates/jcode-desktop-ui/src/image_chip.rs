@@ -61,6 +61,14 @@ mod tests {
 /// Normalize display text before shaping, so a storage ID takes up no more
 /// room than a numbered marker. The original prompt and wire IDs are untouched.
 pub(crate) fn numbered_text(text: &str, image_count: usize) -> (Cow<'_, str>, Vec<String>) {
+    numbered_text_with(text, image_count, |index, _| Some(index + 1))
+}
+
+pub(crate) fn numbered_text_with(
+    text: &str,
+    image_count: usize,
+    mut ordinal: impl FnMut(usize, &str) -> Option<usize>,
+) -> (Cow<'_, str>, Vec<String>) {
     let text = if image_count != 0 && text.trim() == "[image]" {
         ""
     } else {
@@ -68,7 +76,10 @@ pub(crate) fn numbered_text(text: &str, image_count: usize) -> (Cow<'_, str>, Ve
     };
     let ranges = crate::input::image_marker_ranges(text);
     let markers: Vec<_> = (1..=ranges.len().max(image_count))
-        .map(|number| format!("[#image {number}]"))
+        .map(|number| {
+            let marker = ranges.get(number - 1).map_or("", |range| &text[range.clone()]);
+            ordinal(number - 1, marker).map_or_else(|| marker.to_owned(), |number| format!("[#image {number}]"))
+        })
         .collect();
     if markers.is_empty() {
         return (Cow::Borrowed(text), markers);

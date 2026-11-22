@@ -22,6 +22,7 @@ impl PartialEq for TranscriptImage {
         self.media_type == other.media_type
             && self.data == other.data
             && self.label == other.label
+            && self.session_image == other.session_image
             && self.source == other.source
             && self.anchor == other.anchor
     }

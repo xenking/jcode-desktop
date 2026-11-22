@@ -37,13 +37,7 @@ impl Panel {
                     .and_then(|s| s.strip_suffix(']'))
                     .filter(|s| s.starts_with("img_"))
                 {
-                    images.iter().position(|image| {
-                        image.data.strip_prefix("jcode-lazy:") == Some(id)
-                            || image
-                                .label
-                                .as_ref()
-                                .is_some_and(|label| label.contains(marker))
-                    })
+                    images.iter().position(|image| image.has_image_id(id))
                 } else {
                     (image_offset + index < images.len()).then_some(image_offset + index)
                 }
@@ -76,7 +70,10 @@ impl Panel {
             .map(|(index, range)| {
                 (
                     range.clone(),
-                    shown[range.clone()].to_owned(),
+                    selected[index].and_then(|i| images.get(i))
+                        .and_then(TranscriptImage::image_ordinal)
+                        .or_else(|| self.gallery_image_ordinal(&shown[range.clone()]))
+                        .map_or_else(|| shown[range.clone()].to_owned(), |number| format!("[#image {number}]")),
                     selected[index]
                         .and_then(|i| images.get(i))
                         .and_then(|image| image.preview.clone()),
@@ -110,7 +107,7 @@ impl Panel {
             .filter(|(index, _)| !selected.contains(&Some(*index)))
             .filter(|_| show_extras)
             .map(|(index, image)| {
-                let label = image
+                let label = image.image_ordinal().map(|number| format!("[#image {number}]")).or_else(|| image
                     .data
                     .strip_prefix("jcode-lazy:")
                     .filter(|id| id.starts_with("img_"))
@@ -122,7 +119,7 @@ impl Panel {
                                 .map(|range| text[range].to_owned())
                                 .find(|marker| marker.starts_with("[#img_"))
                         })
-                    })
+                    }))
                     .unwrap_or_else(|| format!("[#image {}]", index + 1));
                 crate::image_chip::chip(
                     image.preview.clone(),

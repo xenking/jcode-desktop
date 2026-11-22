@@ -208,7 +208,16 @@ impl Panel {
             .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
         // The model receives `<transcription>` tags. People see a pill instead.
         let (visible, transcribed) = super::voice::tag::strip(text);
-        let (visible, labels) = crate::image_chip::numbered_text(&visible, 0);
+        let mut indices = Vec::new();
+        let (visible, labels) = crate::image_chip::numbered_text_with(&visible, 0, |slot, marker| {
+            let index = self.prompt_image_index(index, slot, marker);
+            indices.push(index);
+            let number = index.and_then(|index| match &self.items[index] {
+                Item::Image(image) => image.image_ordinal(),
+                _ => None,
+            }).or_else(|| self.gallery_image_ordinal(marker));
+            number.or_else(|| marker.starts_with("[#image ").then_some(slot + 1))
+        });
         let text = visible.as_ref();
         let preview = compact_prompt(text);
         let expanded = !pinned && self.expanded_prompts.contains(&index);
@@ -216,9 +225,7 @@ impl Panel {
         // Markers are part of the message even when its image payload has not
         // arrived (or is absent from an older history). Never gate rendering
         // the chip on the presence of a corresponding image item.
-        let indices: Vec<_> = self.user_image_markers(index)
-            .into_iter().map(|(index, _)| index).collect();
-        for image_index in &indices {
+        for image_index in indices.iter().flatten() {
             if let Some(Item::Image(image)) = self.items.get(*image_index) {
                 self.request_history_thumbnail(image, false);
             }
@@ -226,12 +233,12 @@ impl Panel {
         let panel = cx.entity().downgrade();
         let prompt_images = markdown::PromptImages {
             labels,
-            previews: indices.iter().map(|index| match self.items.get(*index) {
+            previews: indices.iter().map(|index| match index.and_then(|index| self.items.get(index)) {
                 Some(Item::Image(image)) => image.preview.clone(),
                 _ => None,
             }).collect(),
             on_click: std::rc::Rc::new(move |index, window, cx| {
-                if let Some(index) = indices.get(index) {
+                if let Some(Some(index)) = indices.get(index) {
                     let _ = panel.update(cx, |panel, cx| {
                         if let Some(Item::Image(image)) = panel.items.get(*index) {
                             panel.open_image_preview(image.clone(), window, cx);

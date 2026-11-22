@@ -583,6 +583,10 @@ pub struct TranscriptImage {
     media_type: String,
     data: String,
     label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_image: Option<jcode_sdk::api::SessionImageRef>,
+    #[serde(skip)]
+    provisional_image_ordinal: Option<usize>,
     #[serde(skip)]
     preview: Option<Arc<gpui::Image>>,
     source: jcode_sdk::RenderedImageSource,
@@ -609,6 +613,8 @@ impl TranscriptImage {
             data,
             label,
             preview,
+            session_image: None,
+            provisional_image_ordinal: None,
             source: jcode_sdk::RenderedImageSource::UserInput,
             anchor: None,
         }
@@ -618,7 +624,23 @@ impl TranscriptImage {
         let mut transcript = Self::new(image.media_type, image.data, image.label);
         transcript.source = image.source;
         transcript.anchor = image.anchor;
+        transcript.session_image = image.session_image;
         transcript
+    }
+
+    fn has_image_id(&self, id: &str) -> bool {
+        self.session_image.as_ref().is_some_and(|image| image.image_id == id)
+            || self.data.strip_prefix("jcode-lazy:") == Some(id)
+            || self.label.as_deref().is_some_and(|label| label.contains(&format!("[#{id}]")))
+    }
+
+    fn image_ordinal(&self) -> Option<usize> {
+        self.session_image.as_ref().map(|image| image.ordinal).or(self.provisional_image_ordinal)
+    }
+
+    fn display_label(&self, fallback: &str) -> String {
+        self.image_ordinal().map(|number| format!("Image #{number}"))
+            .or_else(|| self.label.clone()).unwrap_or_else(|| fallback.to_owned())
     }
 
     fn model_input_caption(&self) -> Option<&'static str> {
@@ -3729,6 +3751,7 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        self.note_session_image_ordinal(images.iter().filter_map(|image| image.session_image.as_ref()).map(|image| image.ordinal).max(), cx);
         self.restore_tool_times(&messages);
         if self.history_paging.is_none() {
             self.history_paging = history_paging::HistoryPaging::from_history(&messages);
@@ -3912,6 +3935,7 @@ impl Panel {
         }
         self.response_stats.observe(event, self.provider.as_deref());
         self.observe_activity_state(event);
+        self.observe_session_image_ids(event, cx);
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
             && !self.demo
@@ -4328,6 +4352,7 @@ impl Panel {
                 }
             }
             ApiEvent::SidePaneImages { images, .. } => {
+                self.note_session_image_ordinal(images.iter().filter_map(|image| image.session_image.as_ref()).map(|image| image.ordinal).max(), cx);
                 for image in images.iter().cloned() {
                     self.insert_rendered_image(image);
                 }
@@ -4629,7 +4654,10 @@ impl Panel {
         if self.items.iter().any(|item| {
             matches!(item, Item::Image(existing)
                 if existing.anchor == image.anchor && existing.source == image.source
-                    && existing.media_type == image.media_type && existing.data == image.data
+                    && match (&existing.session_image, &image.session_image) {
+                        (Some(existing), Some(incoming)) => existing.image_id == incoming.image_id,
+                        _ => existing.media_type == image.media_type && existing.data == image.data,
+                    }
                     && (!matches!(&image.source, jcode_sdk::RenderedImageSource::ToolResult { tool_name } if tool_name == "ask") || existing.label == image.label))
         }) {
             return;
@@ -5425,10 +5453,7 @@ impl Panel {
                 let label = if display.screenshot_mode {
                     "Image attachment".to_string()
                 } else {
-                    image
-                        .label
-                        .clone()
-                        .unwrap_or_else(|| "Image attachment".to_string())
+                    image.display_label("Image attachment")
                 };
                 div()
                     .id(("transcript-image", index))
@@ -11363,6 +11388,7 @@ mod tests {
             let event = ApiEvent::SidePaneImages {
                 session_id: "session-a".into(),
                 images: vec![jcode_sdk::RenderedImage {
+                    session_image: None,
                     history_message_index: None,
                     media_type: "image/png".into(),
                     data: "iVBORw0KGgo=".into(),
@@ -11407,6 +11433,7 @@ mod tests {
                     content: "what is in this?".into(),
                 }],
                 vec![jcode_sdk::RenderedImage {
+                    session_image: None,
                     history_message_index: None,
                     media_type: "image/png".into(),
                     data: "iVBORw0KGgo=".into(),

@@ -166,6 +166,7 @@ fn incoming(call: &str) -> jcode_sdk::RenderedImage {
             tool_name: "read".into(),
         },
         anchor: Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: call.into() }),
+        session_image: None,
         history_message_index: None,
     }
 }

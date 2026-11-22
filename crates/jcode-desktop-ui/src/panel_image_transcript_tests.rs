@@ -7,9 +7,11 @@ fn live_user_image_marker_is_replaced_by_server_session_id(cx: &mut gpui::TestAp
     let id = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     panel.update(vcx, |panel, cx| {
         *panel.items = vec![Item::User(old.into()), Item::Image(image_preview::fixture_image())];
-        let event = serde_json::from_value(serde_json::json!({"ev":"user_image_ids", "session_id":"live-image-ids", "original_content":old, "content":format!("look [#{id}]"), "image_ids":[id]})).unwrap();
+        let event = serde_json::from_value(serde_json::json!({"ev":"user_image_ids", "session_id":"live-image-ids", "original_content":old, "content":format!("look [#{id}]"), "image_ids":[id], "image_ordinals":[7]})).unwrap();
         panel.apply(&event, cx);
         assert!(matches!(&panel.items[0], Item::User(text) if text == &format!("look [#{id}]")));
+        assert_eq!(panel.input.read(cx).session_image_base(), 7);
+        assert!(matches!(&panel.items[1], Item::Image(image) if image.image_ordinal() == Some(7) && image.has_image_id(id)));
     });
 }
 
@@ -21,7 +23,7 @@ fn session_gallery_appears_only_after_older_images_are_known(cx: &mut gpui::Test
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("panel-images").is_none());
     let id = "img_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let images = serde_json::json!([{ "image_id": id, "message_index": 4, "timestamp": "2026-01-01T00:00:00Z", "media_type": "image/png" }]).to_string();
+    let images = serde_json::json!([{ "image_id": id, "ordinal": 8, "message_index": 4, "timestamp": "2026-01-01T00:00:00Z", "media_type": "image/png" }]).to_string();
     panel.update(vcx, |panel, cx| panel.load_history_image(crate::harness::SESSION_IMAGE_LIST_KEY.into(), Ok(images), cx));
     vcx.run_until_parked();
     let button = vcx.debug_bounds("panel-images").unwrap();
@@ -33,7 +35,7 @@ fn session_gallery_appears_only_after_older_images_are_known(cx: &mut gpui::Test
     assert!(matches!(commands.try_recv(), Ok(Command::GetHistoryImage { key, .. }) if key == id));
     panel.update(vcx, |panel, cx| panel.load_history_image(id.into(), Ok(image_preview::fixture_image().data), cx));
     vcx.run_until_parked();
-    assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()), "gallery image must open after fetching by ID");
+    assert!(panel.read_with(vcx, |panel, cx| panel.image_preview.as_ref().is_some_and(|image| image.image_ordinal() == Some(8)) && panel.input.read(cx).session_image_base() == 8), "gallery aliases preserve the early image number and update the composer");
 }
 
 fn image_marker_history_message() -> jcode_sdk::HistoryMessage {
@@ -61,6 +63,7 @@ fn reconnect_history_keeps_user_images_at_their_original_prompt(cx: &mut gpui::T
         label: None,
         source: jcode_sdk::RenderedImageSource::UserInput,
         anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        session_image: Some(jcode_sdk::api::SessionImageRef { image_id: id.clone(), ordinal: i + 10 }),
         history_message_index: None,
     }).collect::<Vec<_>>();
     panel.update(vcx, |panel, cx| {
@@ -81,6 +84,10 @@ fn reconnect_history_keeps_user_images_at_their_original_prompt(cx: &mut gpui::T
         }, cx);
         assert_eq!(panel.session_image_indices(), vec![1, 2, 3, 4, 5]);
         assert_eq!(panel.user_image_markers(0).len(), 5);
+        assert_eq!(panel.input.read(cx).session_image_base(), 14);
+        for (i, id) in ids.iter().enumerate() {
+            assert!(matches!(&panel.items[i + 1], Item::Image(image) if image.image_ordinal() == Some(i + 10) && image.has_image_id(id)));
+        }
         assert!(panel.items[1..6].iter().all(|item| matches!(item, Item::Image(image) if image.preview.is_some())));
         assert!(matches!(&panel.items[6], Item::Tool { name, .. } if name == "bash"));
         assert_eq!(panel.transcript_render_rows().len(), 2);
@@ -99,6 +106,7 @@ fn restored_user_images_need_a_visible_owner_and_fill_its_missing_slots(cx: &mut
         media_type: "image/png".into(), data: "jcode-lazy:abc".into(), label: None,
         source: jcode_sdk::RenderedImageSource::UserInput,
         anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }),
+        session_image: None,
         history_message_index: None,
     };
     let rejected = vec![anchored(0), anchored(3), jcode_sdk::RenderedImage {
@@ -185,6 +193,7 @@ fn visible_lazy_history_image_fetches_thumbnail_and_opens_on_click(cx: &mut gpui
         media_type: "image/png".into(), data: "jcode-lazy:abc".into(), label: None,
         source: jcode_sdk::RenderedImageSource::UserInput,
         anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        session_image: None,
         history_message_index: None,
     };
     panel.update(vcx, |panel, cx| panel.load_history(vec![image_marker_history_message()], vec![image], cx));
@@ -208,6 +217,7 @@ fn lazy_thumbnail_finishes_without_opening_preview(cx: &mut gpui::TestAppContext
         media_type: "image/png".into(), data: "jcode-lazy:background".into(), label: None,
         source: jcode_sdk::RenderedImageSource::UserInput,
         anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        session_image: None,
         history_message_index: None,
     };
     panel.update(vcx, |panel, cx| panel.load_history(vec![image_marker_history_message()], vec![image], cx));
@@ -532,6 +542,7 @@ fn image(call: &str, data: &str, boundary: Option<usize>) -> jcode_sdk::Rendered
             tool_name: "read".into(),
         },
         anchor: Some(jcode_sdk::RenderedImageAnchor::ToolCall { id: call.into() }),
+        session_image: None,
         history_message_index: boundary,
     }
 }

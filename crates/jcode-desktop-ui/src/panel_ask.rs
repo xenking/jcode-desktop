@@ -2086,6 +2086,7 @@ mod tests {
             {"role":"tool","content":"1. Which? -> B (comment: reason)","tool":{"id":"ask-1","name":"ask","input":input}}
         ])).unwrap();
         let image = jcode_sdk::RenderedImage {
+            session_image: None,
             history_message_index: Some(2),
             media_type: "image/png".into(),
             data: base64::engine::general_purpose::STANDARD

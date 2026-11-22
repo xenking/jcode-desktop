@@ -190,6 +190,8 @@ impl Panel {
     ) {
         if key == crate::harness::SESSION_IMAGE_LIST_KEY {
             self.session_image_gallery.receive(result);
+            self.note_session_image_ordinal(self.session_image_gallery.highest_ordinal(), cx);
+            self.transcript_measurements.dirty = true;
             cx.notify();
             return;
         }
@@ -350,10 +352,7 @@ impl Panel {
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(
-                                    image
-                                        .label
-                                        .clone()
-                                        .unwrap_or_else(|| "Image preview".into()),
+                                    image.display_label("Image preview"),
                                 ),
                         )
                         .children(

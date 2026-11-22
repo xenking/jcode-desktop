@@ -5,9 +5,21 @@ use super::*;
 #[derive(Clone, serde::Deserialize)]
 struct GalleryImage {
     image_id: String,
+    #[serde(default)]
+    ordinal: Option<usize>,
     message_index: usize,
     timestamp: Option<String>,
     media_type: String,
+}
+
+impl GalleryImage {
+    fn transcript_image(&self, data: String) -> TranscriptImage {
+        let mut image = TranscriptImage::new(self.media_type.clone(), data, Some(format!("[#{}]", self.image_id)));
+        image.session_image = self.ordinal.map(|ordinal| jcode_sdk::api::SessionImageRef {
+            image_id: self.image_id.clone(), ordinal,
+        });
+        image
+    }
 }
 
 #[derive(Default)]
@@ -30,15 +42,42 @@ impl Gallery {
             .ok()?
             .iter()
             .find(|image| image.image_id == image_id)?;
-        Some(TranscriptImage::new(
-            image.media_type.clone(),
-            data.to_owned(),
-            Some(format!("[#{image_id}]")),
-        ))
+        Some(image.transcript_image(data.to_owned()))
+    }
+
+    pub(super) fn highest_ordinal(&self) -> Option<usize> {
+        self.metadata.as_ref()?.as_ref().ok()?.iter().filter_map(|image| image.ordinal).max()
+    }
+
+    fn ordinal(&self, id: &str) -> Option<usize> {
+        self.metadata.as_ref()?.as_ref().ok()?.iter().find(|image| image.image_id == id)?.ordinal
     }
 }
 
 impl Panel {
+    pub(super) fn note_session_image_ordinal(&mut self, ordinal: Option<usize>, cx: &mut Context<Self>) {
+        if let Some(ordinal) = ordinal {
+            self.input.update(cx, |input, cx| input.set_session_image_base(ordinal, cx));
+        }
+    }
+
+    pub(super) fn observe_session_image_ids(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        let ApiEvent::UserImageIds { session_id, original_content, content, image_ids, image_ordinals } = event else { return };
+        if session_id != &self.session_id { return; }
+        self.note_session_image_ordinal(image_ordinals.iter().copied().max(), cx);
+        let Some(index) = self.items.iter().enumerate().find_map(|(index, item)| {
+            matches!(item, Item::User(text) if text == original_content && !self.user_attachment_range(index).is_empty()).then_some(index)
+        }).or_else(|| self.items.iter().rposition(|item| matches!(item, Item::User(text) if text == original_content))) else { return };
+        self.items[index] = Item::User(content.clone());
+        for ((slot, image_id), &ordinal) in self.user_attachment_range(index).zip(image_ids).zip(image_ordinals) {
+            if ordinal > 0 && let Item::Image(image) = &mut self.items[slot] {
+                image.session_image = Some(jcode_sdk::api::SessionImageRef { image_id: image_id.clone(), ordinal });
+                image.provisional_image_ordinal = None;
+            }
+        }
+        self.transcript_measurements.dirty = true;
+    }
+
     pub(super) fn reconcile_history_images(
         &mut self,
         messages: &[jcode_sdk::HistoryMessage],
@@ -87,6 +126,9 @@ impl Panel {
                 let incoming_lazy = image.data.starts_with("jcode-lazy:");
                 if existing.data != image.data && !(incoming_lazy && !existing_lazy && existing.preview.is_some()) {
                     *existing = TranscriptImage::from_rendered(image);
+                } else if let Some(reference) = image.session_image {
+                    existing.session_image = Some(reference);
+                    existing.provisional_image_ordinal = None;
                 }
             } else {
                 self.insert_transcript_image(range.end, TranscriptImage::from_rendered(image));
@@ -108,13 +150,27 @@ impl Panel {
         let Some(Item::User(text)) = self.items.get(user_index) else {
             return Vec::new();
         };
-        let labels = crate::input::image_marker_ranges(text)
-            .into_iter()
-            .map(|range| text[range].to_string());
-        labels
-            .zip(self.user_attachment_range(user_index))
-            .map(|(label, index)| (index, label))
-            .collect()
+        crate::input::image_marker_ranges(text).into_iter().enumerate().filter_map(|(slot, range)| {
+            let marker = &text[range];
+            let index = self.prompt_image_index(user_index, slot, marker)?;
+            self.user_attachment_range(user_index).contains(&index).then(|| (index, marker.to_owned()))
+        }).collect()
+    }
+
+    pub(super) fn prompt_image_index(&self, user_index: usize, slot: usize, marker: &str) -> Option<usize> {
+        let owned = self.user_attachment_range(user_index);
+        let image_id = marker.strip_prefix("[#").and_then(|marker| marker.strip_suffix(']')).filter(|id| id.starts_with("img_"));
+        let tentative = owned.clone().nth(slot);
+        let Some(id) = image_id else { return tentative };
+        let matches = |item: &Item| matches!(item, Item::Image(image) if image.has_image_id(id));
+        owned.clone().find(|index| matches(&self.items[*index]))
+            .or_else(|| self.items.iter().position(matches))
+            .or_else(|| tentative.filter(|index| matches!(&self.items[*index], Item::Image(image) if image.session_image.is_none())))
+    }
+
+    pub(super) fn gallery_image_ordinal(&self, marker: &str) -> Option<usize> {
+        let id = marker.strip_prefix("[#")?.strip_suffix(']')?;
+        self.session_image_gallery.ordinal(id)
     }
 
     pub(super) fn render_user_image_chip(
@@ -130,7 +186,7 @@ impl Panel {
         let number = self.items[start..index].iter().filter(|item| {
             matches!(item, Item::Image(image) if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput))
         }).count() + 1;
-        let label = crate::image_chip::numbered_label(number);
+        let label = crate::image_chip::numbered_label(image.image_ordinal().unwrap_or(number));
         if image.preview.is_none() {
             self.request_history_thumbnail(image, false);
         }
@@ -272,10 +328,7 @@ impl Panel {
         image: &TranscriptImage,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let label = image
-            .label
-            .clone()
-            .unwrap_or_else(|| "Image attachment".into());
+        let label = image.display_label("Image attachment");
         div()
             .id(("transcript-image-link", index))
             .debug_selector(move || format!("transcript-image-link-{index}"))
@@ -387,10 +440,10 @@ impl Panel {
                         .gap_1()
                         .children(images.into_iter().enumerate().map(|(index, image)| {
                             let id = image.image_id.clone();
-                            let media_type = image.media_type.clone();
+                            let image_label = image.ordinal.map_or_else(|| id.clone(), |ordinal| format!("Image #{ordinal}"));
                             let label = format!(
                                 "{} · message {} · {}",
-                                id,
+                                image_label,
                                 image.message_index + 1,
                                 image.timestamp.as_deref().unwrap_or("time unavailable")
                             );
@@ -407,11 +460,7 @@ impl Panel {
                                 .hover(|el| el.bg(theme.QUOTE_BG))
                                 .child(label)
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    let image = TranscriptImage::new(
-                                        media_type.clone(),
-                                        format!("jcode-lazy:{id}"),
-                                        Some(format!("[#{id}]")),
-                                    );
+                                    let image = image.transcript_image(format!("jcode-lazy:{id}"));
                                     this.open_image_preview(image, window, cx);
                                     cx.stop_propagation();
                                 }))
@@ -465,10 +514,7 @@ impl Panel {
                         .text_size(px(11.))
                         .text_color(theme.TEXT_DIM)
                         .child(
-                            image
-                                .label
-                                .clone()
-                                .unwrap_or_else(|| "Image attachment".into()),
+                            image.display_label("Image attachment"),
                         ),
                 )
                 .child(

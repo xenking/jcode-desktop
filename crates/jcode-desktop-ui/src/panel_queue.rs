@@ -1232,6 +1232,7 @@ impl Panel {
             });
         }
         self.prepare_prompt(&content);
+        let image_base = self.input.read(cx).session_image_base();
         if steering {
             // Not delivered yet: show it as queued, and let the transcript
             // take it once the model has seen it.
@@ -1249,11 +1250,11 @@ impl Panel {
         let index = self.items.len();
         self.items.push(Item::User(content));
         self.stamp_user(index);
-        self.items.extend(
-            images.into_iter().map(|(media_type, data)| {
-                Item::Image(TranscriptImage::new(media_type, data, None))
-            }),
-        );
+        self.items.extend(images.into_iter().enumerate().map(|(offset, (media_type, data))| {
+            let mut image = TranscriptImage::new(media_type, data, None);
+            image.provisional_image_ordinal = Some(image_base.saturating_add(offset + 1));
+            Item::Image(image)
+        }));
         self.pending_users.push_back(index);
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
         self.stick_to_bottom = true;
