@@ -1108,6 +1108,7 @@ mod tests {
                         current_tokens: Some(44_000),
                         compact: None,
                         shake: None,
+                        compact_measurement: None,
                         compact_status: Some(jcode_sdk::api::ContextActionStatus::SavingsUnknown),
                         shake_status: Some(jcode_sdk::api::ContextActionStatus::Unsupported),
                     }),
@@ -1211,6 +1212,16 @@ mod tests {
         let Ok(Command::ReadContextBreakdown { reply, .. }) = commands.try_recv() else {
             panic!("Context Usage did not refresh when reopened");
         };
+
+        use jcode_sdk::api::{ShakeToolsAction, ShakeToolsResult, ShakeToolsStats};
+        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "an early Shake click must wait for inspection"
+        );
         reply
             .try_send(crate::harness::ContextInspection {
                 shake_supported: true,
@@ -1218,16 +1229,10 @@ mod tests {
             })
             .unwrap();
         vcx.run_until_parked();
-
-        use jcode_sdk::api::{ShakeToolsAction, ShakeToolsResult, ShakeToolsStats};
-        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
-        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
-        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
         let Ok(Command::ShakeTools {
             session_id,
             action: ShakeToolsAction::Preview,
-            reply,
+            reply: shake_reply,
         }) = commands.try_recv()
         else {
             panic!("Shake tools did not preview the selected session");
@@ -1237,7 +1242,7 @@ mod tests {
             commands.try_recv().is_err(),
             "a pending preview cannot run twice"
         );
-        reply
+        shake_reply
             .try_send(Ok(ShakeToolsResult::Preview {
                 confirmation: "only-this-preview".into(),
                 cache_at_risk: true,
@@ -1270,8 +1275,50 @@ mod tests {
         assert!(vcx.debug_bounds("context-usage-result").is_some());
         assert!(commands.try_recv().is_err());
 
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        let meter = vcx.debug_bounds("panel-context-meter").unwrap();
+        vcx.simulate_click(meter.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let Ok(Command::ReadContextBreakdown {
+            reply: stale_breakdown,
+            ..
+        }) = commands.try_recv()
+        else {
+            panic!("missing breakdown request before the early Compact click");
+        };
         let compact = vcx.debug_bounds("context-usage-compact").unwrap();
         vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "an early Compact click must wait for inspection"
+        );
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(
+            stale_breakdown
+                .try_send(crate::harness::ContextInspection::default())
+                .is_err()
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "closing cancels an unsent Compact action"
+        );
+
+        let meter = vcx.debug_bounds("panel-context-meter").unwrap();
+        vcx.simulate_click(meter.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let Ok(Command::ReadContextBreakdown { reply, .. }) = commands.try_recv() else {
+            panic!("missing breakdown request after cancellation");
+        };
+        let compact = vcx.debug_bounds("context-usage-compact").unwrap();
+        vcx.simulate_click(compact.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        reply
+            .try_send(crate::harness::ContextInspection::default())
+            .unwrap();
         vcx.run_until_parked();
         assert!(matches!(
             commands.try_recv(),
@@ -1320,6 +1367,63 @@ mod tests {
         vcx.simulate_click(input.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("context-usage").is_none());
+    }
+
+    #[gpui::test]
+    fn context_usage_discards_waiting_shake_on_session_switch(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("old-session".into(), None, None, bridge, cx));
+        vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("claude-sonnet-4-6".into());
+            panel.provider = Some("anthropic".into());
+            panel.apply(
+                &ApiEvent::ContextOccupancy {
+                    session_id: "old-session".into(),
+                    prompt_tokens: 41_000,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let meter = vcx.debug_bounds("panel-context-meter").unwrap();
+        vcx.simulate_click(meter.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let Ok(Command::ReadContextBreakdown {
+            target: crate::harness::ContextBreakdownTarget::Session(session_id),
+            reply,
+        }) = commands.try_recv()
+        else {
+            panic!("missing old-session breakdown request");
+        };
+        assert_eq!(session_id, "old-session");
+        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
+        vcx.simulate_click(shake.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err());
+
+        panel.update(vcx, |panel, cx| {
+            let session = serde_json::from_value(
+                serde_json::json!({ "session_id": "new-session", "status": "idle" }),
+            )
+            .unwrap();
+            panel.attach_startup_session(session, cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            reply
+                .try_send(crate::harness::ContextInspection {
+                    shake_supported: true,
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "a stale click must not run Shake in either session"
+        );
+        assert!(vcx.debug_bounds("context-usage-shake-confirm").is_none());
     }
 
     #[gpui::test]

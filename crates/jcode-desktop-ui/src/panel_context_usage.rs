@@ -16,7 +16,7 @@ pub(super) struct State {
     meter: Option<ContextMeter>,
     breakdown: Option<ContextBreakdown>,
     action: ActionState,
-    shake_supported: bool,
+    shake_supported: Option<bool>,
     shake_task: Option<Task<()>>,
     pub(super) compacting: bool,
     compact_measurement_supported: bool,
@@ -122,6 +122,8 @@ pub(super) enum Action {
 enum ActionState {
     #[default]
     Idle,
+    WaitingForBreakdown(Action),
+    PreviewingShake,
     Running(Action),
     ConfirmShake(ShakePreview),
     Finished {
@@ -130,7 +132,18 @@ enum ActionState {
     },
 }
 
+impl ActionState {
+    fn running_action(&self) -> Option<Action> {
+        match self {
+            Self::PreviewingShake => Some(Action::Shake),
+            Self::Running(action) => Some(*action),
+            _ => None,
+        }
+    }
+}
+
 struct ShakePreview {
+    session_id: String,
     confirmation: String,
     cache_at_risk: bool,
     stats: ShakeToolsStats,
@@ -171,6 +184,25 @@ fn percent_of(tokens: u64, total: u64) -> String {
 }
 
 fn action_forecast_label(action: Action, forecast: ContextActionForecast) -> Option<String> {
+    if action == Action::Compact
+        && let Some(ContextActionMeasurement {
+            before_tokens,
+            after_tokens,
+        }) = forecast.compact_measurement
+    {
+        return Some(match before_tokens.cmp(&after_tokens) {
+            std::cmp::Ordering::Greater => format!(
+                "~{} saved",
+                percent_of(before_tokens - after_tokens, before_tokens)
+            ),
+            std::cmp::Ordering::Equal => "No change".into(),
+            std::cmp::Ordering::Less if before_tokens == 0 => "Context grows".into(),
+            std::cmp::Ordering::Less => format!(
+                "~{} larger",
+                percent_of(after_tokens - before_tokens, before_tokens)
+            ),
+        });
+    }
     let (status, savings) = match action {
         Action::Compact => (forecast.compact_status, forecast.compact),
         Action::Shake => (forecast.shake_status, forecast.shake),
@@ -272,6 +304,29 @@ mod action_forecast_tests {
             Some("<0.1%")
         );
     }
+
+    #[test]
+    fn compact_preview_percentage_uses_its_own_before_tokens_and_handles_growth() {
+        for (after_tokens, label) in [
+            (100_000, "~50.0% saved"),
+            (200_000, "No change"),
+            (220_000, "~10.0% larger"),
+        ] {
+            let forecast = ContextActionForecast {
+                current_tokens: Some(400_000),
+                compact_status: None,
+                compact_measurement: Some(ContextActionMeasurement {
+                    before_tokens: 200_000,
+                    after_tokens,
+                }),
+                ..ContextActionForecast::unavailable(ContextActionStatus::Unknown)
+            };
+            assert_eq!(
+                action_forecast_label(Action::Compact, forecast).as_deref(),
+                Some(label)
+            );
+        }
+    }
 }
 
 impl Panel {
@@ -304,7 +359,7 @@ impl Panel {
         error: bool,
         cx: &mut Context<Self>,
     ) {
-        if matches!(self.context_usage.action, ActionState::Running(current) if current == action) {
+        if self.context_usage.action.running_action() == Some(action) {
             self.context_usage.action = ActionState::Finished { label, error };
             cx.notify();
         }
@@ -318,11 +373,16 @@ impl Panel {
         self.context_usage.refresh_queued = false;
         self.context_usage.compacting = false;
         self.context_usage.compact_measurement_supported = false;
-        self.context_usage.shake_supported = false;
+        self.context_usage.shake_supported = None;
         self.context_usage.shake_task = None;
         if matches!(
             self.context_usage.action,
-            ActionState::Running(_) | ActionState::ConfirmShake(_)
+            ActionState::WaitingForBreakdown(_)
+        ) {
+            self.context_usage.action = ActionState::Idle;
+        } else if matches!(
+            self.context_usage.action,
+            ActionState::PreviewingShake | ActionState::Running(_) | ActionState::ConfirmShake(_)
         ) {
             self.context_usage.action = ActionState::Finished {
                 label: "Connection lost. Action outcome unknown.".into(),
@@ -335,9 +395,12 @@ impl Panel {
         self.context_can_mutate()
             && !matches!(
                 self.context_usage.action,
-                ActionState::Running(_) | ActionState::ConfirmShake(_)
+                ActionState::WaitingForBreakdown(_)
+                    | ActionState::PreviewingShake
+                    | ActionState::Running(_)
+                    | ActionState::ConfirmShake(_)
             )
-            && (action == Action::Compact || self.context_usage.shake_supported)
+            && (action == Action::Compact || self.context_usage.shake_supported != Some(false))
     }
 
     fn context_can_mutate(&self) -> bool {
@@ -350,19 +413,43 @@ impl Panel {
             && !self.status.starts_with("lost:")
     }
 
+    fn start_context_action(&mut self, action: Action, cx: &mut Context<Self>) {
+        match action {
+            Action::Compact => {
+                self.context_usage.compact_measurement_supported = self
+                    .context_usage
+                    .breakdown
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.action_forecast)
+                    .is_some_and(|forecast| {
+                        forecast.current_tokens.is_some() || forecast.compact_measurement.is_some()
+                    });
+                self.discard_context_preview();
+                self.context_usage.action = ActionState::Running(action);
+                self.run_session_operation(SessionOperation::Compact, action.label());
+                cx.notify();
+            }
+            Action::Shake => self.run_shake_tools(ShakeToolsAction::Preview, cx),
+        }
+    }
+
     fn run_shake_tools(&mut self, action: ShakeToolsAction, cx: &mut Context<Self>) {
         let session_id = self.session_id.clone();
         let bridge = self.bridge.clone();
         let is_preview = matches!(action, ShakeToolsAction::Preview);
-        self.context_usage.action = ActionState::Running(Action::Shake);
+        self.context_usage.action = if is_preview {
+            ActionState::PreviewingShake
+        } else {
+            self.discard_context_preview();
+            ActionState::Running(Action::Shake)
+        };
         self.context_usage.shake_task = Some(cx.spawn(async move |panel, cx| {
             let result = bridge.shake_tools(session_id.clone(), action).await;
             let _ = panel.update(cx, |panel, cx| {
                 if panel.session_id != session_id
-                    || !matches!(
-                        panel.context_usage.action,
-                        ActionState::Running(Action::Shake)
-                    )
+                    || panel.context_usage.action.running_action() != Some(Action::Shake)
+                    || is_preview
+                        != matches!(panel.context_usage.action, ActionState::PreviewingShake)
                 {
                     return;
                 }
@@ -375,6 +462,7 @@ impl Panel {
                     }) if is_preview => {
                         panel.context_usage.action = if panel.context_usage.open {
                             ActionState::ConfirmShake(ShakePreview {
+                                session_id,
                                 confirmation,
                                 cache_at_risk,
                                 stats,
@@ -425,7 +513,9 @@ impl Panel {
         if self.context_usage.is_open() {
             self.close_context_usage(cx);
         } else {
+            self.discard_context_preview();
             self.context_usage.open = true;
+            self.context_usage.shake_supported = None;
             window.focus(&self.focus_handle, cx);
             self.refresh_context_usage(cx);
             cx.notify();
@@ -437,11 +527,23 @@ impl Panel {
             return;
         }
         self.context_usage.open = false;
-        self.context_usage.breakdown = None;
-        if matches!(self.context_usage.action, ActionState::ConfirmShake(_)) {
+        self.discard_context_preview();
+        if matches!(
+            self.context_usage.action,
+            ActionState::WaitingForBreakdown(_)
+                | ActionState::PreviewingShake
+                | ActionState::ConfirmShake(_)
+        ) {
+            self.context_usage.shake_task = None;
             self.context_usage.action = ActionState::Idle;
         }
         cx.notify();
+    }
+
+    fn discard_context_preview(&mut self) {
+        self.context_usage.read = None;
+        self.context_usage.refresh_queued = false;
+        self.context_usage.breakdown = None;
     }
 
     pub(crate) fn refresh_context_usage(&mut self, cx: &mut Context<Self>) {
@@ -469,9 +571,25 @@ impl Panel {
             ContextBreakdownTarget::SessionMeter(self.session_id.clone())
         };
         let bridge = self.bridge.clone();
+        let session_id = self.session_id.clone();
+        let model = self.model.clone();
         self.context_usage.read = Some(cx.spawn(async move |panel, cx| {
             let inspection = bridge.read_context_breakdown(target).await;
             let _ = panel.update(cx, |panel, cx| {
+                panel.context_usage.read = None;
+                if panel.session_id != session_id || panel.model != model {
+                    if matches!(
+                        panel.context_usage.action,
+                        ActionState::WaitingForBreakdown(_)
+                    ) {
+                        panel.context_usage.action = ActionState::Idle;
+                    }
+                    panel.context_usage.breakdown = None;
+                    panel.context_usage.refresh_queued = false;
+                    panel.refresh_context_usage(cx);
+                    cx.notify();
+                    return;
+                }
                 if let Some(breakdown) = inspection.breakdown {
                     if let Some(meter) = &breakdown.meter
                         && (meter.state != ContextMeterState::Unavailable
@@ -483,8 +601,20 @@ impl Panel {
                         panel.context_usage.breakdown = Some(breakdown);
                     }
                 }
-                panel.context_usage.shake_supported = inspection.shake_supported;
-                panel.context_usage.read = None;
+                panel.context_usage.shake_supported = Some(inspection.shake_supported);
+                if let ActionState::WaitingForBreakdown(action) = panel.context_usage.action {
+                    panel.context_usage.action = ActionState::Idle;
+                    if panel.context_usage.open && panel.context_can_mutate() {
+                        if action == Action::Shake && !inspection.shake_supported {
+                            panel.context_usage.action = ActionState::Finished {
+                                label: "This runtime does not support manual Shake tools.".into(),
+                                error: true,
+                            };
+                        } else {
+                            panel.start_context_action(action, cx);
+                        }
+                    }
+                }
                 if std::mem::take(&mut panel.context_usage.refresh_queued) {
                     panel.refresh_context_usage(cx);
                 }
@@ -794,7 +924,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
-        let enabled = self.context_can_mutate() && self.context_usage.shake_supported;
+        let enabled = self.context_can_mutate() && self.session_id == preview.session_id;
         let confirm = div()
             .id("context-usage-shake-confirm")
             .debug_selector(|| "context-usage-shake-confirm".into())
@@ -816,13 +946,12 @@ impl Panel {
                 crate::keyboard::button(el)
                     .cursor_pointer()
                     .on_click(cx.listener(|panel, _, window, cx| {
-                        if !panel.context_usage.open
-                            || !panel.context_can_mutate()
-                            || !panel.context_usage.shake_supported
-                        {
+                        if !panel.context_usage.open || !panel.context_can_mutate() {
                             return;
                         }
-                        if let ActionState::ConfirmShake(preview) = &panel.context_usage.action {
+                        if let ActionState::ConfirmShake(preview) = &panel.context_usage.action
+                            && panel.session_id == preview.session_id
+                        {
                             let confirmation = preview.confirmation.clone();
                             window.focus(&panel.focus_handle, cx);
                             panel.run_shake_tools(ShakeToolsAction::Apply { confirmation }, cx);
@@ -897,12 +1026,22 @@ impl Panel {
     ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
         let enabled = self.context_action_enabled(action);
-        let running =
-            matches!(self.context_usage.action, ActionState::Running(current) if current == action);
-        let forecast = (!running)
+        let waiting = matches!(self.context_usage.action, ActionState::WaitingForBreakdown(current) if current == action);
+        let running = self.context_usage.action.running_action() == Some(action);
+        let forecast = (!waiting && !running)
             .then(|| self.context_action_forecast(action))
             .flatten();
         let selector = action.selector();
+        let session_id = self.session_id.clone();
+        let compact_measurement = (action == Action::Compact)
+            .then(|| {
+                self.context_usage
+                    .breakdown
+                    .as_ref()?
+                    .action_forecast?
+                    .compact_measurement
+            })
+            .flatten();
         div()
             .id(selector)
             .debug_selector(move || selector.into())
@@ -917,13 +1056,13 @@ impl Panel {
             .rounded_full()
             .bg(theme.chip_background())
             .text_size(px(11.))
-            .text_color(if enabled || running {
+            .text_color(if enabled || waiting || running {
                 theme.TEXT
             } else {
                 theme.TEXT_FAINT
             })
             .when(
-                action == Action::Shake && !self.context_usage.shake_supported && !running,
+                action == Action::Shake && self.context_usage.shake_supported == Some(false) && !running,
                 |el| {
                     el.tooltip(|_, cx| {
                         cx.new(|_| {
@@ -940,40 +1079,40 @@ impl Panel {
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.chip_active_background()))
                     .on_click(cx.listener(move |panel, _, window, cx| {
-                        if !panel.context_usage.is_open() || !panel.context_action_enabled(action) {
+                        if panel.session_id != session_id || !panel.context_usage.is_open() || !panel.context_action_enabled(action) {
                             return;
                         }
                         window.focus(&panel.focus_handle, cx);
-                        match action {
-                            Action::Compact => {
-                                panel.context_usage.compact_measurement_supported = panel
-                                    .context_usage
-                                    .breakdown
-                                    .as_ref()
-                                    .and_then(|snapshot| snapshot.action_forecast)
-                                    .is_some_and(|forecast| forecast.current_tokens.is_some());
-                                panel.context_usage.action = ActionState::Running(action);
-                                panel.run_session_operation(
-                                    SessionOperation::Compact,
-                                    action.label(),
-                                );
-                                cx.notify();
-                            }
-                            Action::Shake => panel.run_shake_tools(ShakeToolsAction::Preview, cx),
+                        if panel.context_usage.read.is_some() {
+                            panel.context_usage.action = ActionState::WaitingForBreakdown(action);
+                            cx.notify();
+                        } else {
+                            panel.start_context_action(action, cx);
                         }
                         cx.stop_propagation();
                     }))
             })
-            .child(if running {
+            .child(if waiting {
+                "Waiting for estimate…"
+            } else if running {
                 action.busy_label()
             } else {
                 action.label()
             })
             .children(forecast.map(|forecast| {
                 div()
+                    .id("context-usage-action-savings")
                     .debug_selector(move || format!("{selector}-savings"))
                     .text_color(theme.composer_secondary())
                     .child(forecast)
+                    .when_some(compact_measurement, |el, measurement| {
+                        el.tooltip(move |_, cx| {
+                            cx.new(|_| super::usage::MeterTooltip(format!(
+                                "Local Snapcompact estimate: {} → {} tokens. Excludes provider-generated decisions.",
+                                format_tokens(measurement.before_tokens), format_tokens(measurement.after_tokens),
+                            ))).into()
+                        })
+                    })
             }))
     }
 }
