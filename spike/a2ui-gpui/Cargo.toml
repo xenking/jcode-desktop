@@ -1,0 +1,15 @@
+[package]
+name = "a2ui-gpui-spike"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7", features = ["profiler", "test-api"] }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7", features = ["font-kit"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[patch."https://github.com/1jehuang/gpui"]
+gpui_macros = { path = "../../vendor/gpui_macros" }

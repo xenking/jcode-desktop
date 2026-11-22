@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "createSurface": {
+    "surfaceId": "demo",
+    "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+    "components": [
+      {"id": "root", "component": "Button", "child": "label", "action": {"event": {"name": "greet", "context": {"recipient": "world"}}}},
+      {"id": "label", "component": "Text", "text": "Say hello"}
+    ]
+  }
+}

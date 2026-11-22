@@ -1,0 +1,1 @@
+root = GreetingButton("Say hello", "greet", "world")
