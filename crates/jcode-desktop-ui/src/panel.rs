@@ -42,6 +42,9 @@ mod runtime_commands;
 #[path = "panel_commands.rs"]
 mod desktop_commands;
 
+#[path = "panel_clean_chat.rs"]
+mod clean_chat;
+
 #[cfg(test)]
 #[path = "panel_command_workflow_tests.rs"]
 mod command_workflow_tests;
@@ -461,6 +464,7 @@ struct TranscriptDerived {
     latest_todo: Option<Arc<TodoCardPayload>>,
     /// Ordinary and publish-tracker header fingerprints, computed on rebuild.
     tail_headers: [u64; 2],
+    active_error: Option<usize>,
 }
 
 fn transcript_tail_headers(payload: Option<&TodoCardPayload>) -> [u64; 2] {
@@ -483,6 +487,7 @@ struct TranscriptDerivedKey {
     streaming: u64,
     expansions: u64,
     display: crate::config::DisplayConfig,
+    clean_chat: bool,
 }
 
 #[derive(Clone)]
@@ -663,6 +668,8 @@ pub struct PanelSnapshot {
     #[serde(default, skip_serializing_if = "DraftConfig::is_empty")]
     pub(crate) draft_config: DraftConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) clean_chat_override: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptSnapshot>,
     #[serde(default)]
     pub image_pane_open: bool,
@@ -801,6 +808,8 @@ pub struct Panel {
     image_preview_drag: Option<gpui::Point<gpui::Pixels>>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
+    clean_chat_override: Option<bool>,
+    pending_approval: Option<clean_chat::PendingApproval>,
     rewind_selection: Option<rewind::Selection>,
     expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
@@ -1721,6 +1730,8 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             rewind_selection: None,
             transcript_list,
+            clean_chat_override: None,
+            pending_approval: None,
             expandable_viewport_height: px(0.),
             transcript_row_count: 0,
             transcript_measurements: Default::default(),
@@ -2504,6 +2515,7 @@ impl Panel {
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
             draft_config: self.draft_config.clone(),
+            clean_chat_override: self.clean_chat_override,
             transcript: None,
             image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
@@ -2542,6 +2554,7 @@ impl Panel {
         if let Some(transcript) = snapshot.transcript {
             self.restore_transcript(transcript);
         }
+        self.clean_chat_override = snapshot.clean_chat_override;
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
@@ -2851,6 +2864,9 @@ impl Panel {
         }
         if trimmed == "/rewind" {
             self.start_rewind(cx);
+            return true;
+        }
+        if self.handle_clean_chat_command(trimmed, cx) {
             return true;
         }
         if self.handle_special_command(trimmed, cx)
@@ -3969,6 +3985,16 @@ impl Panel {
             } => {
                 self.show_ask(request_id, tool_call_id, questions, cx);
             }
+            ApiEvent::PermissionRequest {
+                tool_name,
+                description,
+                ..
+            } => {
+                self.pending_approval = Some(clean_chat::PendingApproval {
+                    tool_name: tool_name.clone(),
+                    description: description.clone(),
+                });
+            }
             ApiEvent::RuntimeCommandResult {
                 session_id,
                 command,
@@ -4161,6 +4187,13 @@ impl Panel {
                 }
             }
             ApiEvent::ToolExec { call_id, name, .. } => {
+                if self
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|approval| approval.tool_name == *name)
+                {
+                    self.pending_approval = None;
+                }
                 if name == "ask" {
                     self.schedule_ask_recovery(cx);
                 }
@@ -4596,6 +4629,7 @@ impl Panel {
 
     /// Settle partial output and stop activity without waiting for a later idle event.
     fn finish_response(&mut self) {
+        self.pending_approval = None;
         self.transcript_measurements.dirty = true;
         self.flush_reasoning();
         self.flush_streaming();
@@ -4985,11 +5019,15 @@ impl Panel {
     /// The selectable text document is synced on the same schedule.
     fn transcript_derived(&mut self, cx: &mut Context<Self>) -> &TranscriptDerived {
         use std::hash::{Hash, Hasher};
+        let display = crate::config::display();
+        let clean_chat = self.clean_chat_with_display(&display);
         let streaming = {
             let mut state = std::collections::hash_map::DefaultHasher::new();
-            self.reasoning_reveal
-                .visible(&self.streaming_reasoning)
-                .hash(&mut state);
+            if !clean_chat {
+                self.reasoning_reveal
+                    .visible(&self.streaming_reasoning)
+                    .hash(&mut state);
+            }
             self.text_reveal
                 .visible(&self.streaming_text)
                 .hash(&mut state);
@@ -5015,21 +5053,20 @@ impl Panel {
             applet_rows_version: self.applet_rows_version,
             streaming,
             expansions,
-            display: crate::config::display(),
+            display,
+            clean_chat,
         };
         if self
             .transcript_derived
             .as_ref()
             .is_none_or(|derived| derived.key != key)
         {
-            if self
-                .transcript_derived
-                .as_ref()
-                .is_some_and(|derived| derived.key.display != key.display)
-            {
+            if self.transcript_derived.as_ref().is_some_and(|derived| {
+                derived.key.display != key.display || derived.key.clean_chat != clean_chat
+            }) {
                 self.transcript_measurements.dirty = true;
             }
-            let rows = Arc::new(self.transcript_render_rows());
+            let rows = Arc::new(self.transcript_render_rows_with_display(&key.display));
             if let Some(document) = self.transcript_text_document.sync(
                 &self.items,
                 &rows,
@@ -5048,6 +5085,7 @@ impl Panel {
                     derived.key.items_revision == key.items_revision
                         && derived.key.applet_rows_version == key.applet_rows_version
                         && derived.key.display == key.display
+                        && derived.key.clean_chat == clean_chat
                 })
                 .map(|derived| derived.prompt_rows.clone())
                 .unwrap_or_else(|| {
@@ -5078,12 +5116,16 @@ impl Panel {
                     let tail_headers = transcript_tail_headers(latest_todo.as_deref());
                     (latest_todo, tail_headers)
                 });
+            let active_error = clean_chat
+                .then(|| clean_chat::active_error(&self.items))
+                .flatten();
             self.transcript_derived = Some(TranscriptDerived {
                 key,
                 rows,
                 prompt_rows,
                 latest_todo,
                 tail_headers,
+                active_error,
             });
         }
         self.transcript_derived.as_ref().unwrap()
@@ -5111,12 +5153,22 @@ impl Panel {
         &self,
         display: &crate::config::DisplayConfig,
     ) -> Vec<TranscriptRenderRow> {
+        let clean_chat = self.clean_chat_with_display(display);
+        let detail_items = if clean_chat {
+            &[]
+        } else {
+            self.items.as_slice()
+        };
+        let detail_applets = if clean_chat {
+            &[]
+        } else {
+            self.applet_rows.as_slice()
+        };
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
         let mut inline_images = HashSet::new();
         let mut user_attachments_end = 0;
-        let completed_asks: HashSet<&str> = self
-            .items
+        let completed_asks: HashSet<&str> = detail_items
             .iter()
             .filter_map(|item| match item {
                 Item::Tool {
@@ -5131,8 +5183,7 @@ impl Panel {
         // A completion notice is redundant only when a completed bg call
         // already contains the same task, status and actual output preview.
         // Keep nonmatching previews and ongoing tasks: they carry distinct data.
-        let completed_bg: Vec<(String, String, String)> = self
-            .items
+        let completed_bg: Vec<(String, String, String)> = detail_items
             .iter()
             .filter_map(|item| {
                 let Item::Tool {
@@ -5172,7 +5223,7 @@ impl Panel {
                 Some((task, status, preview))
             })
             .collect();
-        let mut applets = self.applet_rows.iter().enumerate().peekable();
+        let mut applets = detail_applets.iter().enumerate().peekable();
         let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
             // Derived rows need indices that never collide with items or the
             // live streaming sentinels at the top of the range.
@@ -5188,7 +5239,9 @@ impl Panel {
             {
                 rows.push(applet_row(ordinal, instance));
             }
-            // Filter presentation only, never persisted items.
+            if clean_chat && !clean_chat::conversation_item(item) {
+                continue;
+            }
             if matches!(item, Item::User(_)) {
                 user_attachments_end = if prompt::is_pinnable_prompt(item) {
                     self.user_attachment_range(index).end
@@ -5290,7 +5343,8 @@ impl Panel {
         }
 
         for (index, item) in [
-            (!self.streaming_reasoning.is_empty()
+            (!clean_chat
+                && !self.streaming_reasoning.is_empty()
                 && display.thinking_display != crate::config::ThinkingDisplay::Off)
                 .then(|| {
                     (
@@ -6792,14 +6846,43 @@ impl Render for Panel {
         // leaving stale cards interspersed through the conversation.
         let instant_motion = self.tick_stream_reveal(window, cx);
         self.sync_applet_rows(cx);
+        let clean_chat = self.clean_chat_enabled();
+        let previous_projection = self
+            .transcript_derived
+            .as_ref()
+            .filter(|derived| derived.key.clean_chat != clean_chat)
+            .map(|derived| derived.rows.clone());
         let derived = self.transcript_derived(cx);
         let rows = derived.rows.clone();
         let prompt_rows = derived.prompt_rows.clone();
-        let latest_todo = derived.latest_todo.clone();
-        let tail_headers = derived.tail_headers;
+        let latest_todo = (!clean_chat).then(|| derived.latest_todo.clone()).flatten();
+        let tail_headers = if clean_chat {
+            [0; 2]
+        } else {
+            derived.tail_headers
+        };
+        let active_error = derived.active_error;
+        let projection_changed = previous_projection.is_some();
+        let anchor = previous_projection
+            .filter(|_| !self.stick_to_bottom)
+            .and_then(|previous| {
+                clean_chat::remap_anchor(
+                    &previous,
+                    &rows,
+                    self.transcript_list.logical_scroll_top(),
+                )
+            });
+        if projection_changed {
+            self.cancel_transcript_momentum();
+            self.tail_glide.reset();
+        }
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
-        let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
+        let publish_tracker = if clean_chat {
+            None
+        } else {
+            self.render_publish_tracker(latest_todo.as_deref())
+        };
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
@@ -6807,7 +6890,7 @@ impl Render for Panel {
         let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
-        let show_turn_activity = self.activity_active() && self.ask_card.is_none();
+        let show_turn_activity = self.shows_transcript_activity();
         let row_count = rows.len() + usize::from(show_turn_activity);
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
@@ -6888,6 +6971,9 @@ impl Render for Panel {
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
             self.transcript_list.remeasure_items(range);
+        }
+        if let Some(anchor) = anchor {
+            self.transcript_list.scroll_to(anchor);
         }
         if (self.transcript_end_pad - dock_pad).abs() > 0.5 {
             self.transcript_end_pad = dock_pad;
@@ -7291,6 +7377,9 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
                 panel.jump_to_latest(cx);
             }))
+            .on_action(cx.listener(|panel, _: &shortcuts::ToggleCleanChat, _, cx| {
+                panel.toggle_clean_chat(cx);
+            }))
             .on_action(
                 cx.listener(|panel, _: &shortcuts::BackgroundRunningTool, _, cx| {
                     panel.background_running_tool_if_any(cx);
@@ -7373,6 +7462,10 @@ impl Render for Panel {
                     .truncate()
                     .child(label)
             }))
+            .when(!self.transcript_only, |el| {
+                el.child(self.render_clean_chat_toggle(clean_chat, cx))
+            })
+            .children(self.render_chat_blockers(active_error, window, cx))
             .children(publish_tracker)
             .children(self.render_rewind_hint())
             .children(pinned_todo.map(|payload| {

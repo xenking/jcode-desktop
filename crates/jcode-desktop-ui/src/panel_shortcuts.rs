@@ -2,11 +2,16 @@ use super::*;
 
 // Declared in the leaf `ui_actions` module so the composer can bind them
 // without depending on the panel.
-pub(crate) use crate::ui_actions::{BackgroundRunningTool, JumpToLatest, JumpToLatestIfEmpty};
+pub(crate) use crate::ui_actions::{
+    BackgroundRunningTool, JumpToLatest, JumpToLatestIfEmpty, ToggleCleanChat,
+};
+
+pub(crate) const CLEAN_CHAT_CHORD: &str = "ctrl-shift-j";
 
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("shift-space", JumpToLatest, Some("ChatPanel")),
+        gpui::KeyBinding::new(CLEAN_CHAT_CHORD, ToggleCleanChat, Some("ChatPanel")),
         // The inline queue editor shares editing bindings, not this composer shortcut.
         gpui::KeyBinding::new(
             "space",

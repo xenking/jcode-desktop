@@ -253,6 +253,7 @@ pub struct DisplayConfig {
     pub diff_display: DiffDisplay,
     pub debug_visual: bool,
     pub screenshot_mode: bool,
+    pub clean_chat_default: bool,
 }
 
 impl Default for DisplayConfig {
@@ -266,6 +267,7 @@ impl Default for DisplayConfig {
             diff_display: DiffDisplay::Inline,
             debug_visual: false,
             screenshot_mode: false,
+            clean_chat_default: false,
         }
     }
 }
@@ -333,6 +335,7 @@ impl DisplayConfig {
             "tool_call_details" => next.tool_call_details = boolean(self.tool_call_details)?,
             "debug_visual" => next.debug_visual = boolean(self.debug_visual)?,
             "screenshot_mode" => next.screenshot_mode = boolean(self.screenshot_mode)?,
+            "clean_chat_default" => next.clean_chat_default = boolean(self.clean_chat_default)?,
             _ => return Err("Unknown Desktop display setting.".into()),
         }
         Ok(next)

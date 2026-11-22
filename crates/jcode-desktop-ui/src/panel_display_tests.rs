@@ -92,6 +92,7 @@ fn every_display_preference_participates_in_derived_cache_key() {
         streaming: 3,
         expansions: 4,
         display: crate::config::DisplayConfig::default(),
+        clean_chat: false,
     };
     for setting in [
         "alignment",
@@ -102,6 +103,8 @@ fn every_display_preference_participates_in_derived_cache_key() {
         "diff_display",
         "debug_visual",
         "screenshot_mode",
+        "clean_chat_default",
+        "clean_chat_override",
     ] {
         let mut next = base.clone();
         match setting {
@@ -115,6 +118,8 @@ fn every_display_preference_participates_in_derived_cache_key() {
             "diff_display" => next.display.diff_display = crate::config::DiffDisplay::File,
             "debug_visual" => next.display.debug_visual = true,
             "screenshot_mode" => next.display.screenshot_mode = true,
+            "clean_chat_default" => next.display.clean_chat_default = true,
+            "clean_chat_override" => next.clean_chat = true,
             _ => unreachable!(),
         }
         assert!(base != next, "{setting} must invalidate derived rows");

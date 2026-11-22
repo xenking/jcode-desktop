@@ -198,7 +198,10 @@ impl Panel {
         if animating {
             window.request_animation_frame();
         }
-        let number = self.absolute_prompt_number(index);
+        let clean_chat = self.clean_chat_enabled();
+        let number = (!clean_chat)
+            .then(|| self.absolute_prompt_number(index))
+            .flatten();
         // Keep the number outside the card in a compact circular badge. Wider
         // turn numbers grow into a pill without taking space from card padding.
         let number_width = number.map_or(0., |number| {
@@ -326,7 +329,7 @@ impl Panel {
                                 )
                             })),
             )
-            .when(transcribed, |card| {
+            .when(transcribed && !clean_chat, |card| {
                 let theme = Theme::global();
                 card.child(
                     div()
@@ -423,20 +426,23 @@ impl Panel {
                 )
             })
             .child(card)
-            .when_some(self.user_clock(index), |row, clock| {
-                // A quiet arrival time beside the card, from the message record.
-                row.child(
-                    div()
-                        .debug_selector(move || format!("prompt-time-{index}"))
-                        .flex_none()
-                        .ml(px(6.))
-                        .mt(px(7.))
-                        .font_family(Theme::global().FONT_MONO)
-                        .text_size(px(10.))
-                        .text_color(Theme::global().TEXT_FAINT)
-                        .child(clock),
-                )
-            })
+            .when_some(
+                (!clean_chat).then(|| self.user_clock(index)).flatten(),
+                |row, clock| {
+                    // A quiet arrival time beside the card, from the message record.
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("prompt-time-{index}"))
+                            .flex_none()
+                            .ml(px(6.))
+                            .mt(px(7.))
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_size(px(10.))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(clock),
+                    )
+                },
+            )
             .into_any_element()
     }
 
