@@ -4804,6 +4804,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::TextDone { session_id, .. }
         | ApiEvent::TextReplace { session_id, .. }
+        | ApiEvent::MemoryInjected { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
         | ApiEvent::ToolStart { session_id, .. }
@@ -4880,6 +4881,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::TextDone { session_id, .. }
         | ApiEvent::TextReplace { session_id, .. }
+        | ApiEvent::MemoryInjected { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
         | ApiEvent::ToolStart { session_id, .. }

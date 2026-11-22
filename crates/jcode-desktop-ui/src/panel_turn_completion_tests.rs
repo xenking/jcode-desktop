@@ -23,6 +23,13 @@ fn interleaved_notifications_do_not_split_or_merge_assistant_markdown(
         session_id: session_id.clone(),
         message_id: Some(id.into()),
     };
+    let replace = |id: &str, text: &str| ApiEvent::TextReplace {
+        session_id: session_id.clone(),
+        message_id: Some(id.into()),
+        text: text.into(),
+    };
+    let first = "**Список вкладок** в окне.";
+    let second = "Переключатель готов.";
     panel.update(vcx, |panel, cx| {
         panel.items.clear();
         panel.clean_chat_override = Some(false);
@@ -39,9 +46,16 @@ fn interleaved_notifications_do_not_split_or_merge_assistant_markdown(
                 count: 1,
                 content: "One recalled memory".into(),
             },
+        ] {
+            panel.apply(&event, cx);
+        }
+        let checkpoint = serde_json::to_vec(&panel.transcript_snapshot()).unwrap();
+        panel.restore_transcript(serde_json::from_slice(&checkpoint).unwrap());
+        for event in [
             delta("answer-1", "ок** в окне."),
             done("answer-1"),
-            delta("answer-2", "Переключатель готов."),
+            delta("answer-2", second),
+            replace("answer-1", first),
             done("answer-2"),
         ] {
             panel.apply(&event, cx);
@@ -58,24 +72,84 @@ fn interleaved_notifications_do_not_split_or_merge_assistant_markdown(
                     TranscriptRowSource::Owned(item) => item,
                 };
                 match item {
-                    Item::Assistant(text) => Some(text.as_str().to_owned()),
                     Item::AgentMessage { message, .. } => Some(message.clone()),
                     Item::Memory(_) => Some("One recalled memory".into()),
-                    _ => None,
+                    _ => item.assistant_text().map(str::to_owned),
                 }
             })
             .collect();
         assert_eq!(
             timeline,
             [
-                "**Список вкладок** в окне.",
+                first,
                 "Incoming DM",
                 "One recalled memory",
-                "Переключатель готов.",
+                second,
             ],
         );
+        assert_eq!(
+            panel.workspace_command_page(false).content,
+            format!("## Assistant\n\n{first}\n\n## Assistant\n\n{second}\n\n"),
+        );
     });
-    assert!(vcx.debug_bounds("assistant-response").is_some());
+    let first_row = vcx.debug_bounds("selectable-text-0-0").unwrap();
+    let second_row = vcx.debug_bounds("selectable-text-3-0").unwrap();
+    assert!(first_row.bottom() < second_row.top());
+
+    panel.update(vcx, |panel, cx| {
+        panel.clean_chat_override = Some(true);
+        let rows = panel.transcript_render_rows();
+        let mut doc = text_document::TranscriptTextDocument::default();
+        let segments = doc.sync(&panel.items, &rows, &HashSet::new(), &HashSet::new()).unwrap();
+        let first_plain = segments.iter().filter(|(key, _)| key.starts_with("0-")).map(|(_, text)| text.as_ref()).collect::<String>();
+        let second_plain = segments.iter().filter(|(key, _)| key.starts_with("3-")).map(|(_, text)| text.as_ref()).collect::<String>();
+        assert_eq!(first_plain, "Список вкладок в окне.");
+        assert_eq!(second_plain, second);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("selectable-text-0-0").is_some());
+    assert!(vcx.debug_bounds("selectable-text-3-0").is_some());
+}
+
+#[gpui::test]
+fn reconnect_history_does_not_extend_a_preceding_framed_answer(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "interleaved-text".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    panel.update(vcx, |panel, cx| {
+        let session_id = panel.session_id.clone();
+        panel.history_loaded = true;
+        *panel.items = vec![Item::User("Question".into())];
+        for event in [
+            ApiEvent::TextDelta {
+                session_id: session_id.clone(),
+                message_id: Some("first".into()),
+                text: "Ready.".into(),
+            },
+            ApiEvent::TextDone { session_id: session_id.clone(), message_id: Some("first".into()) },
+        ] {
+            panel.apply(&event, cx);
+        }
+        let message = |role: &str, content: &str| jcode_sdk::HistoryMessage {
+            role: role.into(), content: content.into(), attachments: vec![],
+            tool: None, response_stats: None, timestamp_ms: None,
+        };
+        panel.load_history(vec![
+            message("user", "Question"),
+            message("assistant", "Ready."),
+            message("assistant", "Ready. The switch works."),
+        ], vec![], cx);
+        panel.apply(&ApiEvent::SessionStatus { session_id, status: "idle".into(), pending_soft_interrupts: None }, cx);
+        assert_eq!(panel.items.iter().filter_map(Item::assistant_text).collect::<Vec<_>>(),
+            ["Ready.", "Ready. The switch works."]);
+    });
 }
 
 #[gpui::test]

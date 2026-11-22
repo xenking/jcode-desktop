@@ -40,6 +40,15 @@ impl Panel {
             return;
         }
         self.flush_reasoning();
+        let id = id.filter(|id| !id.is_empty());
+        if let Some(id) = id
+            && let Some(index) = self.assistant_output_index(id)
+            && let Item::AssistantOutput { text: anchored, .. } = &mut self.items[index]
+        {
+            anchored.push_str(text);
+            self.transcript_measurements.dirty = true;
+            return;
+        }
         if self
             .live_assistant_output
             .as_ref()
@@ -47,7 +56,7 @@ impl Panel {
         {
             self.settle_assistant_output(AssistantOutputPhase::Update);
         }
-        if let Some(id) = id.filter(|id| !id.is_empty())
+        if let Some(id) = id
             && self.live_assistant_output.is_none()
         {
             self.live_assistant_output = Some(LiveAssistantOutput {
@@ -134,46 +143,56 @@ impl Panel {
 
     pub(super) fn replace_assistant_output(&mut self, id: Option<&str>, text: &str) {
         let Some(id) = id else { return };
+        if let Some(index) = self.assistant_output_index(id)
+            && let Item::AssistantOutput { text: existing, .. } = &mut self.items[index]
+        {
+            existing.clear();
+            existing.push_str(text);
+            self.transcript_measurements.dirty = true;
+            return;
+        }
         let live = self
             .live_assistant_output
             .as_ref()
             .is_some_and(|output| output.id == id && !output.closed);
-        let mut fragments = self
-            .items
-            .iter_mut()
+        if live {
+            self.streaming_text.clear();
+            self.streaming_text.push_str(text);
+            self.text_reveal.snap(text.len());
+            self.transcript_measurements.dirty = true;
+        } else if !text.is_empty() {
+            self.append_assistant_delta(text, Some(id));
+        }
+    }
+
+    fn assistant_output_index(&self, id: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
             .rev()
-            .take_while(|item| !matches!(item, Item::User(_)))
-            .filter_map(|item| match item {
-                Item::AssistantOutput {
-                    text,
-                    stream_id: Some(old),
-                    phase,
-                } if old == id && *phase != AssistantOutputPhase::Final => Some(text),
-                _ => None,
+            .take_while(|(_, item)| !matches!(item, Item::User(_)))
+            .find_map(|(index, item)| {
+                matches!(item, Item::AssistantOutput {
+                stream_id: Some(candidate), ..
+            } if candidate == id)
+                .then_some(index)
             })
-            .collect::<Vec<_>>();
-        if fragments.is_empty() && !live {
-            if !text.is_empty() {
-                self.append_assistant_delta(text, Some(id));
-            }
+    }
+
+    pub(super) fn flush_streaming(&mut self) {
+        let text = std::mem::take(&mut self.streaming_text);
+        self.text_reveal.snap(0);
+        if text.is_empty() || (self.live_assistant_output.is_none() && text.trim().is_empty()) {
             return;
         }
-        let mut remaining = text;
-        let mut fragments = fragments.drain(..).rev().peekable();
-        while let Some(fragment) = fragments.next() {
-            let mut end = if live || fragments.peek().is_some() {
-                fragment.len().min(remaining.len())
-            } else {
-                remaining.len()
-            };
-            while !remaining.is_char_boundary(end) {
-                end -= 1;
-            }
-            fragment.replace_range(.., &remaining[..end]);
-            remaining = &remaining[end..];
-        }
-        if live {
-            self.streaming_text.replace_range(.., remaining);
+        if let Some(output) = &self.live_assistant_output
+            && let Some(index) = self.assistant_output_index(&output.id)
+            && let Item::AssistantOutput { text: anchored, .. } = &mut self.items[index]
+        {
+            anchored.push_str(&text);
+        } else {
+            let item = self.assistant_output_item(text);
+            self.items.push(item);
         }
         self.transcript_measurements.dirty = true;
     }

@@ -3918,20 +3918,22 @@ impl Panel {
             return;
         }
 
-        if let Some(existing) = self
+        let latest = self
             .items
-            .iter_mut()
+            .iter()
+            .enumerate()
             .rev()
-            .take_while(|item| !matches!(item, Item::User(_)))
-            .find_map(|item| match item {
-                Item::Assistant(text) | Item::AssistantOutput { text, .. } => Some(text),
-                _ => None,
-            })
-        {
-            if existing == response {
+            .take_while(|(_, item)| !matches!(item, Item::User(_)))
+            .find(|(_, item)| item.assistant_text().is_some_and(|text| !text.trim().is_empty()));
+        if let Some((index, item)) = latest {
+            if item.assistant_text() == Some(response) {
                 return;
             }
-            if response.starts_with(existing.as_str()) {
+            if let Item::Assistant(existing) | Item::AssistantOutput {
+                text: existing, stream_id: None, ..
+            } = &mut self.items[index]
+                && response.starts_with(existing.as_str())
+            {
                 *existing = response.to_string();
                 return;
             }
@@ -3976,6 +3978,7 @@ impl Panel {
         if matches!(
             event,
             ApiEvent::TextDelta { .. }
+                | ApiEvent::TextReplace { .. }
                 | ApiEvent::ReasoningDelta { .. }
                 | ApiEvent::ToolStart { .. }
                 | ApiEvent::MessageAccepted { .. }
@@ -4342,6 +4345,8 @@ impl Panel {
                 // line and the reloaded one come from one body. Never coalesce
                 // repeated injections: each delivery is part of the timeline.
                 if !content.trim().is_empty() {
+                    self.flush_reasoning();
+                    self.flush_streaming();
                     self.items
                         .push(Item::Memory(compaction::CompactionRow::complete(
                             content.clone(),
@@ -4700,17 +4705,6 @@ impl Panel {
         }
         self.status = "idle".into();
         self.connection_phase.clear();
-    }
-
-    fn flush_streaming(&mut self) {
-        if !self.streaming_text.trim().is_empty() {
-            self.transcript_measurements.dirty = true;
-            let text = std::mem::take(&mut self.streaming_text);
-            let item = self.assistant_output_item(text);
-            self.items.push(item);
-        } else {
-            self.streaming_text.clear();
-        }
     }
 
     /// Advance the paced reveal of live reasoning and response text. Only the
