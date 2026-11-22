@@ -55,6 +55,9 @@ class Provider(ASK.Provider):
         for choice in ({"index": 0, "delta": delta}, {"index": 0, "delta": {}, "finish_reason": finish}):
             chunk = {"id": "footer-fixture", "object": "chat.completion.chunk", "model": "fake-model", "choices": [choice]}
             self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            if turn == "Continue after cancellation" and choice["delta"]:
+                self.wfile.flush()
+                time.sleep(3)
         self.wfile.write(b"data: [DONE]\n\n")
 
 
@@ -83,6 +86,9 @@ class Fixture(VERIFY.Instance):
 
     def start_desktop(self, env, modes, suffix=""):
         self.test_env, self.test_modes = env, modes
+        if self.manifest["motion"] == "on":
+            config = self.profile / "desktop.toml"
+            config.write_text(config.read_text().replace("reduce_motion = true", "reduce_motion = false"))
         super().start_desktop(env, modes, suffix)
 
     def visible(self, selector):
@@ -94,16 +100,30 @@ class Fixture(VERIFY.Instance):
                 raise
             return False
 
-    def frame(self, state, name=None):
+    def frame(self, state, name=None, interval=.15):
         selector = f"session-status-{state}"
-        self.runtime_wait(lambda: self.visible(selector), selector)
+        deadline = time.monotonic() + 25
+        while not self.visible(selector):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"timed out waiting for {selector}")
+            time.sleep(interval)
         return self.screenshot((name or state) + ".png")
+
+    def motion_frames(self, frames, state, terminal=False):
+        if not self.manifest["motion"]:
+            return
+        time.sleep(.4)
+        frames[f"{state}-later"] = self.screenshot(f"{state}-later.png")
+        if terminal:
+            time.sleep(.25)
+            frames[f"{state}-settled"] = self.screenshot(f"{state}-settled.png")
 
     def exercise(self):
         frames = {"idle": self.frame("idle")}
         self.drive("set_composer", {"text": "Choose one"})
         self.drive("send")
         frames["ask"] = self.frame("ask")
+        self.motion_frames(frames, "ask")
         assert not self.visible("session-status-tools"), "Ask duplicated the tool status"
         assert not self.visible("transcript-activity"), "Ask duplicated the current transcript status"
         state = self.drive("state")["panel"]
@@ -112,7 +132,8 @@ class Fixture(VERIFY.Instance):
         self.drive("press_key", {"key": "fixture:enter"})
         frames["tools-after-ask"] = self.frame("tools", "tools-after-ask")
         assert self.visible("transcript-activity"), "real tool activity did not return after answering Ask"
-        frames["done"] = self.frame("done")
+        frames["done"] = self.frame("done", interval=.025)
+        self.motion_frames(frames, "done", terminal=True)
         assert not self.visible("session-status-idle"), "final did not survive transport idle"
         sid = self.target["session_id"]
         self.drive("set_composer", {"text": "Choose again"})
@@ -125,12 +146,15 @@ class Fixture(VERIFY.Instance):
             client.until(lambda event: event.get("type") == "done" and event.get("id") == 1)
             client.send(type="cancel", id=2)
             client.until(lambda event: event.get("type") == "ack" and event.get("id") == 2)
-            frames["stopped"] = self.frame("stopped")
+            frames["stopped"] = self.frame("stopped", interval=.025)
+            self.motion_frames(frames, "stopped", terminal=True)
             assert self.drive("state")["panel"]["ask"] is None, "cancelled question still owns the composer"
         finally:
             client.close()
         self.drive("set_composer", {"text": "Continue after cancellation"})
         self.drive("send")
+        self.runtime_wait(lambda: self.drive("state")["panel"]["streaming_text"], "streaming reply")
+        frames["responding"] = self.frame("working", "responding")
         frames["done-after-cancel"] = self.frame("done", "done-after-cancel")
         assert self.drive("state")["panel"]["ask"] is None
 
@@ -147,6 +171,7 @@ class Fixture(VERIFY.Instance):
         self.start_desktop(self.test_env, self.test_modes, "-restart")
         assert self.target["session_id"] == sid
         frames["waiting-after-restart"] = self.frame("waiting", "waiting-after-restart")
+        self.motion_frames(frames, "waiting-after-restart")
         if self.visible("swarm-status"):
             panel = self.drive("state")["panel"]
             assert panel["workers_open"] and (panel["workers"] or panel["background_jobs"]["tasks"]), (
@@ -163,6 +188,7 @@ def main():
     parser.add_argument("--desktop", type=Path, required=True)
     parser.add_argument("--jcode", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--motion", choices=("on", "reduced"), help="Capture extra motion frames")
     args = parser.parse_args()
     VERIFY.require_safe_host()
     run = args.evidence.resolve()
@@ -180,6 +206,7 @@ def main():
             (scratch / "control").mkdir(mode=0o700)
             manifest = {"schema": VERIFY.SCHEMA, "evidence": str(run), "phase": "starting",
                         "scratch": str(scratch), "token": token, "fixture": "swarm-dm",
+                        "motion": args.motion,
                         "binary": str(args.desktop.resolve()), "jcode_bin": str(args.jcode.resolve()),
                         "provider": f"http://127.0.0.1:{server.server_port}/v1"}
             fixture = Fixture(run, manifest)

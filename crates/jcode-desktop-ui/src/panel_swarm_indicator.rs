@@ -675,6 +675,7 @@ mod tests {
         let (panel, vcx) = setup(cx);
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("session-status-idle").is_some());
+        let slot_size = gpui::size(px(18.), px(super::super::composer::TAB_HEIGHT));
         for (frame, expected) in [
             (serde_json::json!({"ev":"reasoning_delta","text":"hm"}), "session-status-working"),
             (serde_json::json!({"ev":"tool_start","call_id":"c1","name":"swarm"}), "session-status-tools"),
@@ -690,7 +691,12 @@ mod tests {
             panel.update(vcx, |panel, cx| panel.apply(&event(frame.clone()), cx));
             vcx.run_until_parked();
             assert!(vcx.debug_bounds(expected).is_some(), "{frame}");
-            assert_eq!(vcx.debug_bounds("session-status").unwrap().top(), before.top());
+            let after = vcx.debug_bounds("session-status").unwrap();
+            assert_eq!(
+                after.size, slot_size,
+                "{expected} must fit the icon-only slot"
+            );
+            assert_eq!(after.top(), before.top());
         }
     }
 

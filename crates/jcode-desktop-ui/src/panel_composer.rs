@@ -98,6 +98,7 @@ impl Panel {
         let workers_pill = self.render_swarm_indicator(cx);
         let cache_pill = self.render_cache_pill(cx);
         let rig_hud = self.render_rig_hud(cx);
+        let activity_icon = self.render_session_status(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
             .flex_shrink(4.)
@@ -126,7 +127,7 @@ impl Panel {
                     .children(workers_pill)
                     .children(rig_hud)
                     .children(cache_pill)
-                    .child(self.render_session_status())
+                    .child(activity_icon)
                     .children(self.render_image_pane_toggle(cx)),
             );
         let pills = div()

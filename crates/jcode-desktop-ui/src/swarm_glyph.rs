@@ -27,8 +27,12 @@ pub(crate) enum Icon {
     Cross,
     Stop,
     Pause,
+    Idle,
     Thinking,
+    Tool,
     Background,
+    Waiting,
+    Ask,
     /// The swarm: three connected nodes, the upstream sidebar's worker mark.
     Workers,
     /// The prompt-cache countdown while the window is open.
@@ -52,8 +56,12 @@ impl Icon {
             Self::Cross => icon!("cross"),
             Self::Stop => icon!("stop"),
             Self::Pause => icon!("pause"),
+            Self::Idle => icon!("idle"),
             Self::Thinking => icon!("thinking"),
+            Self::Tool => icon!("tool"),
             Self::Background => include_bytes!("../../../assets/icons/tools/bg.svg"),
+            Self::Waiting => icon!("waiting"),
+            Self::Ask => icon!("ask"),
             Self::Workers => icon!("workers"),
             Self::Timer => icon!("timer"),
             Self::Snowflake => icon!("snowflake"),
@@ -67,6 +75,7 @@ pub(crate) enum Motion {
     Still,
     Spin(Duration),
     Pulse(Duration),
+    Arrive(Duration),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,6 +135,9 @@ impl Mark {
                 )));
             }
             (Motion::Pulse(_), Some(phase)) => icon = icon.opacity(pulse_opacity(phase)),
+            (Motion::Arrive(_), Some(progress)) => {
+                icon = icon.opacity(0.55 + 0.45 * jcode_desktop_motion::ease_out_cubic(progress));
+            }
             _ => {}
         }
         icon
@@ -153,38 +165,48 @@ fn phase(period: Duration, cx: &gpui::App) -> f32 {
 
 pub(crate) struct MarkView {
     mark: Mark,
+    arrived_at: Option<Instant>,
     tick_pending: Rc<Cell<bool>>,
 }
 
 impl Render for MarkView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let reduce = cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
-        let period = match self.mark.motion {
-            Motion::Spin(period) | Motion::Pulse(period) => Some(period),
-            Motion::Still => None,
-        };
-        let phase = period.filter(|_| !reduce).map(|period| {
-            // One pending tick per render: a mark that stops being drawn
-            // stops ticking on its own.
-            if !self.tick_pending.replace(true) {
-                let pending = self.tick_pending.clone();
-                let id = cx.entity_id();
-                let weak = cx.entity().downgrade();
-                cx.spawn(async move |_, cx| {
-                    crate::animation_clock::next_tick(cx.background_executor(), TICK).await;
-                    pending.set(false);
-                    if weak.upgrade().is_some() {
-                        cx.update(|cx| cx.notify(id));
-                    }
-                })
-                .detach();
+        let frame = if reduce {
+            self.arrived_at = None;
+            None
+        } else {
+            match self.mark.motion {
+                Motion::Spin(period) | Motion::Pulse(period) => Some(phase(period, cx)),
+                Motion::Arrive(duration) => self.arrived_at.and_then(|start| {
+                    let elapsed = cx
+                        .background_executor()
+                        .now()
+                        .saturating_duration_since(start);
+                    (elapsed < duration).then(|| elapsed.as_secs_f32() / duration.as_secs_f32())
+                }),
+                Motion::Still => None,
             }
-            phase(period, cx)
-        });
+        };
+        // One pending tick per render: a mark that stops being drawn
+        // stops ticking on its own.
+        if frame.is_some() && !self.tick_pending.replace(true) {
+            let pending = self.tick_pending.clone();
+            let id = cx.entity_id();
+            let weak = cx.entity().downgrade();
+            cx.spawn(async move |_, cx| {
+                crate::animation_clock::next_tick(cx.background_executor(), TICK).await;
+                pending.set(false);
+                if weak.upgrade().is_some() {
+                    cx.update(|cx| cx.notify(id));
+                }
+            })
+            .detach();
+        }
         div()
             .flex_none()
             .size(px(self.mark.size))
-            .child(self.mark.render(phase))
+            .child(self.mark.render(frame))
     }
 }
 
@@ -213,9 +235,27 @@ impl Marks {
                 .child(mark.render(None))
                 .into_any_element();
         }
+        self.retained_element(key, mark, cx)
+    }
+
+    /// Keep the previous mark even when still, so entry transitions only run
+    /// on a change of glyph, not on every render or on restored sessions.
+    pub(crate) fn retained_element<T: 'static>(
+        &mut self,
+        key: &str,
+        mark: Mark,
+        cx: &mut Context<T>,
+    ) -> AnyElement {
         if let Some(view) = self.marks.get(key) {
             if view.read(cx).mark != mark {
                 view.update(cx, |view, cx| {
+                    view.arrived_at = if !matches!(mark.motion, Motion::Arrive(_)) {
+                        None
+                    } else if view.mark.icon != mark.icon {
+                        Some(cx.background_executor().now())
+                    } else {
+                        view.arrived_at
+                    };
                     view.mark = mark;
                     cx.notify();
                 });
@@ -224,6 +264,7 @@ impl Marks {
         }
         let view = cx.new(|_| MarkView {
             mark,
+            arrived_at: None,
             tick_pending: Rc::default(),
         });
         self.marks.insert(key.to_owned(), view.clone());
@@ -289,8 +330,13 @@ mod tests {
             Icon::Spinner,
             Icon::Check,
             Icon::Cross,
+            Icon::Stop,
             Icon::Pause,
+            Icon::Idle,
             Icon::Thinking,
+            Icon::Tool,
+            Icon::Waiting,
+            Icon::Ask,
             Icon::Workers,
             Icon::Timer,
             Icon::Snowflake,
