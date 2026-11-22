@@ -38,9 +38,17 @@ fn title_actions_fit_and_rename_does_not_select_or_close(cx: &mut gpui::TestAppC
         assert_eq!(hovered_tab.size.width, tab.size.width);
         assert_close_fits_cap(hovered_tab, hovered_close);
         assert_eq!(title.left(), hovered_title.left());
-        assert!(title.right() > hovered_close.left());
-        assert!(hovered_title.right() <= rename.left());
+        assert_eq!(title.right(), hovered_title.right());
+        let fade = vcx.debug_bounds("live-session-tab-0-fade").unwrap();
+        assert_eq!(fade.size.width, px(16.0));
+        assert!(
+            (fade.right() - rename.left()).abs() < px(0.01),
+            "fade ends at the first action: {fade:?}, {rename:?}"
+        );
         assert!(rename.right() <= hovered_close.left());
+        let pill = vcx.debug_bounds("close-session-pill-0").unwrap();
+        assert_eq!(pill.size, gpui::size(px(20.0), px(20.0)));
+        assert_eq!(pill.center(), hovered_close.center());
         vcx.simulate_click(rename.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, _| {
@@ -95,8 +103,6 @@ fn close_fill_and_glyph_follow_the_panel_activity(cx: &mut gpui::TestAppContext)
             let colors = TabCloseColors::for_tab(slot.panel.read(cx).tab_ring(), idle);
             assert_eq!(colors.background, accent.opacity(0.16));
             assert_eq!(colors.glyph, theme.TEXT.blend(accent.opacity(0.75)));
-            assert_eq!(colors.hover_background, accent.opacity(0.32));
-            assert_eq!(colors.hover_glyph, theme.TEXT.blend(accent.opacity(0.45)));
         }
         w
     });
@@ -121,9 +127,11 @@ fn hovered_inactive_tab_close_targets_that_tab_only(cx: &mut gpui::TestAppContex
     });
     vcx.run_until_parked();
     let close = vcx.debug_bounds("close-session-button-1").unwrap();
-    vcx.update(|window, cx| window.simulate_mouse_move(close.center(), cx));
+    // The transparent margin outside the compact pill still closes this tab.
+    let hit = gpui::point(close.center().x, close.top() + px(2.0));
+    vcx.update(|window, cx| window.simulate_mouse_move(hit, cx));
     vcx.run_until_parked();
-    vcx.simulate_click(close.center(), gpui::Modifiers::default());
+    vcx.simulate_click(hit, gpui::Modifiers::default());
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, cx| {
         let surviving: Vec<_> = w

@@ -8,6 +8,8 @@ const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 const TAB_HOVER_LIFT: f32 = 2.0;
 const TAB_RENAME_SIZE: f32 = 20.0;
+const TAB_CLOSE_PILL_SIZE: f32 = 20.0;
+const TAB_CLOSE_GLYPH_SIZE: f32 = 16.0;
 const TAB_STATUS_WIDTH: f32 = 88.0;
 const TAB_WINDOW_DRAG_WIDTH: f32 = 16.0;
 const TAB_OVERFLOW_WIDTH: f32 = 56.0;
@@ -136,8 +138,6 @@ fn tab_surface(mut color: gpui::Rgba) -> gpui::Rgba {
 struct TabCloseColors {
     background: gpui::Rgba,
     glyph: gpui::Rgba,
-    hover_background: gpui::Rgba,
-    hover_glyph: gpui::Rgba,
 }
 
 impl TabCloseColors {
@@ -147,8 +147,6 @@ impl TabCloseColors {
         Self {
             background: accent.opacity(0.16),
             glyph: text.blend(accent.opacity(0.75)),
-            hover_background: accent.opacity(0.32),
-            hover_glyph: text.blend(accent.opacity(0.45)),
         }
     }
 }
@@ -521,14 +519,7 @@ impl Workspace {
             focus,
         )
         .debug_selector(move || format!("close-session-button-{index}"))
-        .bg(colors.background)
-        .text_color(colors.glyph)
-        .text_size(px(diameter * 0.58))
-        .hover(move |style| {
-            style
-                .bg(colors.hover_background)
-                .text_color(colors.hover_glyph)
-        })
+        .group("tab-close-hitbox")
         .tooltip(|_, cx| {
             cx.new(|_| {
                 TabTooltip(if cfg!(target_os = "macos") {
@@ -544,7 +535,26 @@ impl Workspace {
             this.set_active(index, cx);
             this.close_panel(&ClosePanel, window, cx);
         }))
-        .child("×")
+        .child(
+            div()
+                .id(("close-session-pill", index))
+                .debug_selector(move || format!("close-session-pill-{index}"))
+                .flex_none()
+                .size(px(TAB_CLOSE_PILL_SIZE))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(colors.background)
+                .text_color(colors.glyph)
+                .text_size(px(TAB_CLOSE_GLYPH_SIZE))
+                .group_hover("tab-close-hitbox", |style| {
+                    style
+                        .bg(Theme::global().ERROR_BG)
+                        .text_color(Theme::global().ERROR)
+                })
+                .child("×"),
+        )
     }
 
     fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -957,11 +967,22 @@ impl Workspace {
             let show_rename = show_close && hot && focused && can_rename && visible >= 88.0;
             let actions_width = if show_close { diameter } else { 0.0 }
                 + if show_rename { TAB_RENAME_SIZE } else { 0.0 };
+            let border_width = (current.width / 2.0).min(1.0);
+            let title_inset = 2.0;
+            // Paint the title at the same width, but leave no visible text
+            // inside the action hitboxes when they are revealed.
+            let title_cover = (actions_width + border_width - title_inset - padding).max(0.0);
+            let fade_width = if show_close { 16.0 } else { 20.0 };
+            let fade = gpui::linear_gradient(
+                90.0,
+                gpui::linear_color_stop(fill.opacity(0.0), 0.0),
+                gpui::linear_color_stop(fill, 1.0),
+            );
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
                 .flex_none()
-                .w(px((visible - 2.0 - actions_width).max(0.0)))
+                .w(px((visible - title_inset).max(0.0)))
                 .min_w_0()
                 .overflow_hidden()
                 .px(px(padding))
@@ -990,10 +1011,36 @@ impl Workspace {
                                 Some(index) => format!("live-session-tab-{index}-title"),
                                 None => "live-session-empty-tab-title".into(),
                             })
+                            .relative()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(title.clone()),
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(title.clone())
+                            .child(
+                                div()
+                                    .debug_selector(move || match index {
+                                        Some(index) => format!("live-session-tab-{index}-fade"),
+                                        None => "live-session-empty-tab-fade".into(),
+                                    })
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right(px(title_cover))
+                                    .w(px(fade_width))
+                                    .bg(fade),
+                            )
+                            .when(show_close, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right_0()
+                                        .w(px(title_cover))
+                                        .bg(fill),
+                                )
+                            }),
                     )
                 });
             tab_bodies.push(
@@ -1019,7 +1066,7 @@ impl Workspace {
                     // Their border must not force the layout wider than its slot.
                     // Use this single outline on every edge. An extra accent
                     // stripe makes the top heavier and squares off the corners.
-                    .border(px((current.width / 2.0).min(1.0)))
+                    .border(px(border_width))
                     .border_color(match ring {
                         // The ring paints the outline itself. Hide the static
                         // border so progress reads as filling, not overlaying.
