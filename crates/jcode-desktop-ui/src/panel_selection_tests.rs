@@ -56,6 +56,41 @@ fn transcript_drag_highlights_and_copies_text(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn tab_from_selected_transcript_text_reaches_the_first_tool(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "selection-tab".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.clean_chat_override = Some(false);
+        *panel.items = vec![
+            Item::Assistant("Select this paragraph".into()),
+            Item::Tool {
+                call_id: "call".into(),
+                name: "bash".into(),
+                input: r#"{"command":"printf hello"}"#.into(),
+                output: "hello".into(),
+                done: true,
+                error: None,
+            },
+            Item::Assistant("A later paragraph".into()),
+        ];
+        panel
+    });
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-0-0"),
+        "Select this paragraph"
+    );
+    vcx.update(|window, cx| window.focus_next(cx));
+    vcx.simulate_keystrokes("enter");
+    panel.read_with(vcx, |panel, _| assert!(panel.expanded_regions.contains("call")));
+}
+
+#[gpui::test]
 fn transcript_selection_stops_after_release_outside_panel(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {

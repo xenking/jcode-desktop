@@ -205,6 +205,11 @@ impl Panel {
             .flex_col()
             .gap_2();
         if let Some(focus) = &state.focused {
+            list = crate::text_selection::TextSelection::focus_scope(
+                list,
+                &self.transcript_selection,
+                cx,
+            );
             let id = focus.session_id.clone();
             list = list.child(
                 div()

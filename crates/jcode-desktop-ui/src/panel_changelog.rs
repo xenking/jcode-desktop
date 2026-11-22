@@ -416,7 +416,11 @@ impl Panel {
                     .px_5()
                     .pt_4()
                     .pb_10()
-                    .child(content),
+                    .child(crate::text_selection::TextSelection::focus_scope(
+                        content,
+                        &self.transcript_selection,
+                        cx,
+                    )),
             )
             .into_any_element()
     }

@@ -1618,7 +1618,7 @@ impl Panel {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
         let transcript_list = ListState::new(0, ListAlignment::Top, px(600.));
-        let transcript_selection = cx.new(TextSelection::new);
+        let transcript_selection = cx.new(TextSelection::new_scoped);
         cx.observe(&transcript_selection, |panel, selection, cx| {
             let dragging = selection.read(cx).is_dragging();
             if dragging && !panel.transcript_dragging {
@@ -2219,7 +2219,6 @@ impl Panel {
     ) -> gpui::AnyElement {
         let base = file.path.parent().unwrap_or(Path::new("/")).to_path_buf();
         let selection = self.transcript_selection.clone();
-        let focus = selection.read(cx).focus_handle();
         let on_link = Self::file_link_handler(
             base.clone(),
             Some((file.path.clone(), cx.entity().downgrade())),
@@ -2237,14 +2236,6 @@ impl Panel {
             .min_h_0()
             .flex()
             .flex_col()
-            .key_context(TextSelection::key_context())
-            .track_focus(&focus)
-            .on_action({
-                let selection = selection.clone();
-                move |_: &text_selection::Copy, _, cx| {
-                    selection.update(cx, |selection, cx| selection.copy(cx));
-                }
-            })
             .on_mouse_up(gpui::MouseButton::Left, {
                 let selection = selection.clone();
                 move |_, _, cx| {
@@ -7149,12 +7140,11 @@ impl Render for Panel {
                 }
                 body.into_any_element()
             };
-            return div()
+            let contents = div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .track_focus(&self.focus_handle)
                 .child(
                     div()
                         .flex_none()
@@ -7208,7 +7198,15 @@ impl Render for Panel {
                             )
                         }),
                 )
-                .child(body)
+                .child(body);
+            return div()
+                .size_full()
+                .track_focus(&self.focus_handle)
+                .child(TextSelection::focus_scope(
+                    contents,
+                    &self.transcript_selection,
+                    cx,
+                ))
                 .into_any_element();
         }
         if self.applet.is_some() {
@@ -7315,7 +7313,6 @@ impl Render for Panel {
         }
         let streaming = !self.streaming_text.is_empty();
         let transcript_selection = self.transcript_selection.clone();
-        let transcript_selection_focus = transcript_selection.read(cx).focus_handle();
         let transcript_shell = div()
             .relative()
             // Keyed descendants (including browser-backed image previews) must
@@ -7353,14 +7350,6 @@ impl Render for Panel {
                     "transcript".into()
                 }
             })
-            .key_context(TextSelection::key_context())
-            .track_focus(&transcript_selection_focus)
-            .on_action({
-                let transcript_selection = transcript_selection.clone();
-                move |_: &text_selection::Copy, _window, cx| {
-                    transcript_selection.update(cx, |selection, cx| selection.copy(cx));
-                }
-            })
             .on_mouse_up(gpui::MouseButton::Left, move |_event, _window, cx| {
                 transcript_selection.update(cx, |selection, cx| {
                     selection.finish();
@@ -7376,6 +7365,8 @@ impl Render for Panel {
                 self.transcript_selection.clone(),
                 Some(self.transcript_list.clone()),
             ));
+        let transcript_shell =
+            TextSelection::focus_scope(transcript_shell, &self.transcript_selection, cx);
 
         // Live rows are appended after the settled ones and share the same
         // renderer, so a streaming turn looks identical to a finished one.

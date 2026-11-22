@@ -139,6 +139,7 @@ struct PaintedGeometry {
 /// Selection and focus shared by the selectable leaves in one transcript.
 pub struct TextSelection {
     focus_handle: FocusHandle,
+    scoped_focus: bool,
     selection: Option<Selection>,
     selecting: bool,
     document: Vec<(SharedString, SharedString)>,
@@ -163,6 +164,7 @@ impl TextSelection {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            scoped_focus: false,
             selection: None,
             selecting: false,
             document: Vec::new(),
@@ -173,6 +175,24 @@ impl TextSelection {
             last_scroll: None,
             copied: None,
         }
+    }
+
+    /// Use [`Self::focus_scope`] on the containing surface instead of
+    /// registering the same keyboard anchor for each selectable leaf.
+    pub fn new_scoped(cx: &mut Context<Self>) -> Self {
+        Self {
+            scoped_focus: true,
+            ..Self::new(cx)
+        }
+    }
+
+    pub fn focus_scope<T: InteractiveElement>(element: T, model: &Entity<Self>, cx: &App) -> T {
+        let focus = model.read(cx).focus_handle();
+        let model = model.clone();
+        element
+            .track_focus(&focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(move |_: &Copy, _, cx| model.update(cx, |selection, cx| selection.copy(cx)))
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -676,10 +696,10 @@ pub fn selectable_with_offsets(
 ) -> gpui::AnyElement {
     let key = key.into();
     let text = text.into();
-    let focus_handle = model.read(cx).focus_handle();
+    let selection = model.read(cx);
+    let focus_handle = selection.focus_handle();
     let element_id: SharedString = format!("selectable-text-{key}").into();
     let copied = {
-        let selection = model.read(cx);
         (selection.copied_visible() && selection.tail_key() == Some(&key))
             .then(|| {
                 let painted = selection.painted.borrow();
@@ -694,13 +714,8 @@ pub fn selectable_with_offsets(
         .id(element_id.clone())
         .debug_selector(move || element_id.to_string())
         .cursor(CursorStyle::IBeam)
-        .track_focus(&focus_handle)
-        // Leaves also appear in pinned tasks and document headers, outside a
-        // transcript key context. Keep keyboard copy local to the focused leaf.
-        .key_context(KEY_CONTEXT)
-        .on_action({
-            let model = model.clone();
-            move |_: &Copy, _, cx| model.update(cx, |selection, cx| selection.copy(cx))
+        .when(!selection.scoped_focus, |leaf| {
+            TextSelection::focus_scope(leaf, &model, cx)
         })
         .on_mouse_down(MouseButton::Left, {
             let model = model.clone();
