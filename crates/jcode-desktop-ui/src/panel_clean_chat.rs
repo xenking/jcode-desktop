@@ -49,6 +49,15 @@ pub(super) fn active_error(items: &[Item]) -> Option<usize> {
 pub(super) fn message_heading(item: &Item, previous: Option<&Item>) -> Option<gpui::AnyElement> {
     let (label, selector, separator, emphasized) = match item {
         Item::User(_) => ("You", "clean-chat-user", previous.is_some(), true),
+        Item::Tool {
+            name,
+            done: true,
+            output,
+            error,
+            ..
+        } if name == "ask" && decision::answered(output, error.as_deref()) => {
+            ("You", "clean-chat-user", previous.is_some(), true)
+        }
         Item::AssistantOutput {
             phase, stream_id, ..
         } => {

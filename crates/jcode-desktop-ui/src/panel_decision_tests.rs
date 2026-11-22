@@ -58,6 +58,7 @@ fn history_restores_decision_and_counts_it_as_a_user_turn(cx: &mut gpui::TestApp
         )
     });
     panel.update(vcx, |panel, cx| {
+        panel.set_clean_chat(Some(true), cx);
         *panel.items = items;
         cx.notify();
     });
@@ -65,6 +66,8 @@ fn history_restores_decision_and_counts_it_as_a_user_turn(cx: &mut gpui::TestApp
     assert!(vcx.debug_bounds("decision-card").is_some());
     assert!(vcx.debug_bounds("decision-choice").is_some());
     assert!(vcx.debug_bounds("decision-question-Which?").is_some());
+    assert!(vcx.debug_bounds("clean-chat-user").is_some());
+    assert!(vcx.debug_bounds("tool-header").is_none());
     assert!(vcx.debug_bounds("decision-answer-✓ B").is_some());
 }
 
