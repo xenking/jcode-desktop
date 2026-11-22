@@ -426,11 +426,21 @@ unsafe extern "C-unwind" fn activate(
                             }
                         }
                     }
-                    let _ = cx.update(|window, _| window.refresh());
+                    let markdown_file = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE").is_some();
+                    let _ = cx.update(|window, cx| {
+                        window.refresh();
+                        if markdown_file {
+                            window.draw(cx).clear(cx);
+                        }
+                    });
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(600))
                         .await;
                     let _ = cx.update(|window, cx| {
+                        if markdown_file {
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        }
                         match window.render_to_image() {
                             Ok(image) => match image.save(&path) {
                                 Ok(()) => eprintln!("screenshot: wrote {}", path.display()),

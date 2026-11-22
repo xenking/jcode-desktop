@@ -17145,7 +17145,7 @@ mod accounts_panel_tests {
         )
         .unwrap();
         let png = base64::engine::general_purpose::STANDARD
-            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNd0AAAAASUVORK5CYII=")
+            .decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAASCAIAAAC1qksFAAAAH0lEQVR4nGPQqn1NU8QwasGoBaMWjFowasGoBfSwAACFt4iuk2SIigAAAABJRU5ErkJggg==")
             .unwrap();
         std::fs::write(base.join("chart.png"), png).unwrap();
 
@@ -17155,6 +17155,7 @@ mod accounts_panel_tests {
             workspace.push_test_panel("source", cx);
             workspace
         });
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
         vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         source.update(vcx, |panel, cx| {
@@ -17171,6 +17172,13 @@ mod accounts_panel_tests {
                 gpui::point(bounds.left() + px(28.), bounds.center().y),
                 gpui::Modifiers::default(),
             );
+            vcx.run_until_parked();
+            workspace.update(vcx, |w, cx| {
+                let row = w.active_row;
+                w.camera_x[row] = w.camera_target[row];
+                w.camera_started[row] = None;
+                cx.notify();
+            });
             vcx.run_until_parked();
         };
         click_link(vcx, "markdown-link:report.md");
@@ -17198,6 +17206,9 @@ mod accounts_panel_tests {
                 format!("file://{}", details.display())
             );
         });
+        let document = vcx.debug_bounds("markdown-file-preview").unwrap();
+        let results_heading = vcx.debug_bounds("selectable-text-file-71").unwrap();
+        assert!(document.contains(&results_heading.center()));
     }
 
     #[gpui::test]

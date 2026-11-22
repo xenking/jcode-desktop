@@ -144,6 +144,60 @@ fn file_image_parts(text: &str) -> Vec<(&str, Option<(&str, &str)>)> {
     result
 }
 
+struct FileImageAsset;
+
+impl gpui::Asset for FileImageAsset {
+    type Source = gpui::Resource;
+    type Output = Result<Arc<gpui::RenderImage>, gpui::ImageCacheError>;
+
+    fn load(
+        source: Self::Source,
+        cx: &mut gpui::App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        let id = jcode_desktop_api::ImageIds::get(cx).next();
+        let decode = <gpui::ImageAssetLoader as gpui::Asset>::load(source, cx);
+        async move {
+            let mut image = decode.await?;
+            Arc::get_mut(&mut image).expect("fresh image decode").id = id;
+            Ok(image)
+        }
+    }
+}
+
+#[derive(IntoElement)]
+struct FileImage {
+    key: SharedString,
+    path: std::path::PathBuf,
+    alt: String,
+}
+
+impl gpui::RenderOnce for FileImage {
+    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+        let node = div().debug_selector(|| "markdown-file-image".into());
+        match window.use_asset::<FileImageAsset>(&self.path.into(), cx) {
+            Some(Ok(image)) if image.frame_count() > 0 => {
+                let size = image.size(0).map(|dimension| u32::from(dimension) as f32);
+                let scale = (540.0 / size.height).min(1.0);
+                node.relative()
+                    .flex_none()
+                    .w(px(size.width * scale))
+                    .max_w_full()
+                    .aspect_ratio(size.width / size.height)
+                    .child(
+                        gpui::img(image)
+                            .id(self.key)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    )
+            }
+            Some(_) => node.child(self.alt),
+            None => node.text_color(Theme::global().TEXT_DIM).child(self.alt),
+        }
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn file_heading_indices_follow_scroll_children_and_disambiguate() {
@@ -1209,26 +1263,12 @@ fn styled_line_with_avatar(
                                         || s.eq_ignore_ascii_case("https")
                                 });
                                 if let Some(path) = (file.resolve_image)(target) {
-                                    use gpui::StyledImage as _;
-                                    let label = if alt.is_empty() {
-                                        "Image unavailable"
-                                    } else {
-                                        alt
+                                    FileImage {
+                                        key: part_key,
+                                        path,
+                                        alt: if alt.is_empty() { "Image" } else { alt }.to_owned(),
                                     }
-                                    .to_owned();
-                                    div()
-                                        .debug_selector(|| "markdown-file-image".into())
-                                        .child(
-                                            gpui::img(path)
-                                                .id(part_key)
-                                                .max_w_full()
-                                                .max_h(px(540.0))
-                                                .object_fit(gpui::ObjectFit::Contain)
-                                                .with_fallback(move || {
-                                                    div().child(label.clone()).into_any_element()
-                                                }),
-                                        )
-                                        .into_any_element()
+                                    .into_any_element()
                                 } else if external || target.starts_with("//") {
                                     let label =
                                         if alt.is_empty() { "Image" } else { alt }.to_owned();
@@ -2704,7 +2744,7 @@ fn render_document_with_prompt_background(
     let file = (key_prefix == "file")
         .then(|| FILE_OPTIONS.with(|slot| slot.borrow().clone()))
         .flatten();
-    let root = div().flex().flex_col().children(children);
+    let root = div().flex().flex_col();
     if let Some(file) = file {
         root.id("file-markdown-scroll")
             .debug_selector(|| "markdown-file-preview".into())
@@ -2714,9 +2754,14 @@ fn render_document_with_prompt_background(
             .p_4()
             .overflow_y_scroll()
             .track_scroll(&file.scroll)
+            .children(
+                children
+                    .into_iter()
+                    .map(|block| div().flex_none().min_w_0().child(block)),
+            )
             .into_any_element()
     } else {
-        root.into_any_element()
+        root.children(children).into_any_element()
     }
 }
 
