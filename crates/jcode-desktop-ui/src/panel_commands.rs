@@ -39,6 +39,29 @@ fn setting_choices(key: &str) -> &'static str {
 }
 
 impl Panel {
+    pub(super) fn handle_clean_chat_command(
+        &mut self,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (command, args) = split_command(content);
+        if command != "/clean-chat" {
+            return false;
+        }
+        match args {
+            "" | "toggle" => self.toggle_clean_chat(cx),
+            "on" => self.set_clean_chat(Some(true), cx),
+            "off" => self.set_clean_chat(Some(false), cx),
+            "default" => self.set_clean_chat(None, cx),
+            _ => {
+                self.items
+                    .push(Item::Error("Usage: `/clean-chat [on|off|default]`.".into()));
+                cx.notify();
+            }
+        }
+        true
+    }
+
     pub(super) fn handle_desktop_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         let (command, args) = split_command(content);
         if let Some(key) = display_key(command) {

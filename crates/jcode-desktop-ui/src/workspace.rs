@@ -8508,7 +8508,41 @@ impl Workspace {
         }
         let applet_settings = self.render_applet_settings(cx);
         let about = self.render_about_settings(cx);
+        let clean_chat = crate::config::display().clean_chat_default;
+        let clean_chat_setting = crate::keyboard::button(
+            div()
+                .id("settings-clean-chat")
+                .debug_selector(|| "settings-clean-chat".into())
+                .flex_none()
+                .px_3()
+                .py_2()
+                .rounded_full()
+                .flex()
+                .justify_between()
+                .gap_2()
+                .cursor_pointer()
+                .bg(Theme::global().PANEL_BG)
+                .hover(|el| el.bg(Theme::global().TOOL_BG))
+                .child("Clean chat by default")
+                .child(
+                    div()
+                        .text_color(if clean_chat {
+                            Theme::global().ACCENT
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
+                        .child(if clean_chat { "On" } else { "Off" }),
+                ),
+        )
+        .on_click(cx.listener(|_, _, _, cx| {
+            match crate::config::set_display("clean_chat_default", "toggle") {
+                Ok(_) => cx.refresh_windows(),
+                Err(error) => eprintln!("{error}"),
+            }
+            cx.notify();
+        }));
         settings
+            .child(clean_chat_setting)
             .child(self.render_account_settings(cx))
             .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
@@ -11076,6 +11110,7 @@ mod tests {
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
                     draft_config: Default::default(),
+                    clean_chat_override: None,
                     transcript: None,
                     image_pane_open: false,
                     side_document: None,
@@ -11313,6 +11348,7 @@ mod tests {
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             draft_config: Default::default(),
+                            clean_chat_override: None,
                             transcript: None,
                             image_pane_open: false,
                             side_document: None,

@@ -453,6 +453,60 @@ fn finish_drag_copy(
 }
 
 #[gpui::test]
+fn clean_chat_filters_mixed_transcript_and_clipboard(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "clean-chat-fixture".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        let history = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":"Real question","timestamp_ms":1795326000000_i64},
+            {"role":"assistant","content":"Public progress with no final marker"},
+            {"role":"tool","content":"private output","tool":{"id":"tool","name":"bash","input":{"command":"printf hidden"}}},
+            {"role":"user","content":"DM from Worker: private coordination"},
+            {"role":"memory","content":"private recall"},
+            {"role":"assistant","content":"Answer without a heading","response_stats":{"output_tokens":32}}
+        ]))
+        .expect("valid SDK history");
+        let (items, times) = Panel::history_items(history, vec![]);
+        panel.user_times = times;
+        *panel.items = items;
+        panel
+            .items
+            .push(Item::Reasoning("private reasoning".into()));
+        panel.items.push(Item::ProviderGuardrailRetry {
+            turn_id: "fixture".into(),
+            text: "private retry".into(),
+        });
+        panel
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-time-0").is_some());
+    assert!(vcx.debug_bounds("tool-header").is_some());
+    let toggle = vcx
+        .debug_bounds("clean-chat-toggle")
+        .expect("the chat exposes its display toggle");
+    vcx.simulate_click(toggle.center(), Default::default());
+    vcx.run_until_parked();
+    let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
+    let last = vcx.debug_bounds("selectable-text-5-0").unwrap();
+    begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
+    assert_eq!(
+        finish_drag_copy(vcx, point(last.right() - px(0.1), last.center().y)),
+        "Real question\nPublic progress with no final marker\nAnswer without a heading"
+    );
+    assert!(vcx.debug_bounds("provider-guardrail-retry").is_none());
+    assert!(vcx.debug_bounds("agent-message-sender").is_none());
+    assert!(vcx.debug_bounds("prompt-time-0").is_none());
+    assert!(vcx.debug_bounds("tool-header").is_none());
+    panel.read_with(vcx, |panel, _| assert_eq!(panel.items.len(), 9));
+}
+
+#[gpui::test]
 fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {

@@ -130,7 +130,12 @@ gpui::actions!(
 
 gpui::actions!(
     panel_shortcuts,
-    [JumpToLatest, JumpToLatestIfEmpty, BackgroundRunningTool]
+    [
+        JumpToLatest,
+        JumpToLatestIfEmpty,
+        BackgroundRunningTool,
+        ToggleCleanChat
+    ]
 );
 
 /// Alt+B/Ctrl+B move the running tool to the background, matching the TUI.
