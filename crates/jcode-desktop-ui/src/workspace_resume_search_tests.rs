@@ -254,7 +254,9 @@ fn focusing_the_active_panel_while_searching_keeps_the_query_field_typing(
 }
 
 #[gpui::test]
-fn session_browser_fits_back_and_search_chrome_into_two_rows(cx: &mut gpui::TestAppContext) {
+fn session_browser_fits_back_search_and_catalog_chrome_into_three_rows(
+    cx: &mut gpui::TestAppContext,
+) {
     let (workspace, mut vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.push_test_panel("chat", cx);
@@ -279,7 +281,14 @@ fn session_browser_fits_back_and_search_chrome_into_two_rows(cx: &mut gpui::Test
     }
     assert!((search.center().y - status.center().y).abs() <= px(1.));
     assert!(search.right() <= status.left());
-    assert!(results.top() <= search.bottom() + px(8.));
+    // Sort and origin controls sit in their own row between search and the
+    // list. The Back row is a window drag region, so they cannot live there.
+    let controls = vcx
+        .debug_bounds("resume-sort-agent-activity")
+        .expect("sort control is visible");
+    assert!(controls.top() >= search.bottom());
+    assert!(controls.top() <= search.bottom() + px(8.));
+    assert!(results.top() <= controls.bottom() + px(8.));
     assert!(vcx.debug_bounds("resume-title").is_none());
 }
 
