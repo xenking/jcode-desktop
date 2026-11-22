@@ -3,10 +3,15 @@ use crate::applet_runtime::{AgentOutbound, agent_instance_id};
 use serde_json::json;
 
 fn snapshot(revision: u64, note: &str) -> jcode_applet_types::AgentApplets {
+    let state = if revision <= 2 {
+        json!({})
+    } else {
+        json!({"note": note})
+    };
     serde_json::from_value(json!({"instances": [{
         "id": "review", "applet": "jcode.agent",
         "placement": {"kind": "inline", "session_id": "server", "anchor": {"kind": "end"}},
-        "document": {"revision": revision, "title": "Review", "state": {"note": note},
+        "document": {"revision": revision, "title": "Review", "state": state,
             "view": {"type": "stack", "children": [
                 {"type": "input", "key": "note", "bind": "note", "placeholder": "Note"},
                 {"type": "button", "key": "approve", "label": "Approve", "on_press": {"action": "approve"}}

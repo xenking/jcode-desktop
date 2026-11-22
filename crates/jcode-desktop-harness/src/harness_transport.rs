@@ -61,6 +61,7 @@ impl RemoteTransports {
         let options = SshConnectOptions {
             // Temporarily disabled until inline tool responses have broader testing.
             supports_user_response: false,
+            supports_applets: true,
             client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
             connect_timeout: Duration::from_secs(20),
             request_timeout: Some(Duration::from_secs(30)),

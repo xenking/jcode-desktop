@@ -246,8 +246,21 @@ impl Runtime {
                 next.document.state.as_object_mut(),
             ) && let Some(local) = mounted.instance.document.state.as_object()
             {
+                let mut fields = std::collections::HashSet::new();
+                let mut nodes = vec![&next.document.view];
+                while let Some(node) = nodes.pop() {
+                    use jcode_applet_types::view::NodeKind::*;
+                    if let Input { bind, .. }
+                    | Toggle { bind, .. }
+                    | Select { bind, .. }
+                    | Tabs { bind, .. } = &node.kind
+                    {
+                        fields.insert(bind.as_str());
+                    }
+                    nodes.extend(node.children());
+                }
                 for (key, value) in local {
-                    if previous.get(key) == incoming.get(key) && incoming.contains_key(key) {
+                    if previous.get(key) == incoming.get(key) && fields.contains(key.as_str()) {
                         incoming.insert(key.clone(), value.clone());
                     }
                 }

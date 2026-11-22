@@ -23,9 +23,10 @@ API_REQUIREMENTS = {
     ),
     "crates/jcode-sdk/src/client.rs": (
         r"pub\s+supports_user_response\s*:\s*bool",
+        r"pub\s+supports_applets\s*:\s*bool",
         r"pub\s+fn\s+runtime_command\s*\(",
     ),
-    "crates/jcode-sdk/src/ssh.rs": (r"pub\s+supports_user_response\s*:\s*bool",),
+    "crates/jcode-sdk/src/ssh.rs": (r"pub\s+supports_user_response\s*:\s*bool", r"pub\s+supports_applets\s*:\s*bool"),
     "crates/jcode-sdk/src/collections.rs": (r"pub\s+fn\s+create_with_id\s*\(",),
     "crates/jcode-harness-api/src/runtime_commands.rs": (r"pub\s+enum\s+RuntimeCommand\b",),
     "crates/jcode-voice/src/lib.rs": (
