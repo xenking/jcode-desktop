@@ -1,15 +1,18 @@
 # Desktop tab recovery
 
 Launching Jcode Desktop after an unexpected exit automatically restores the last
-workspace checkpoint when its owner is no longer running and the checkpoint is
-at most 30 seconds old. A normal application quit saves the final checkpoint
-and restores it on the next launch without the age limit. Launching while the
-app is already running continues to show its existing window.
+workspace checkpoint for the launch mode once its owner is no longer running.
+There is no expiration. The old checkpoint stays on disk until the replacement
+workspace has applied it. If the new launch requests a session, Desktop opens or
+selects it after restoring the tabs. A normal quit still saves the final state
+for the next ordinary launch. Launching while the app is already running
+continues to open or show a window as before.
 
-The UI checkpoints once per second. This bounds the usual unsaved layout/draft
-window to about one second. The 30-second cutoff uses the last successful
-checkpoint, not an OS-provided crash timestamp. A blocked UI or failed disk write
-can make the checkpoint older, in which case recovery conservatively starts fresh.
+The UI samples once per second and saves workspace changes such as tab layout or
+draft edits. An unchanged workspace writes a heartbeat every ten seconds. The
+session picker's query, selection and keyboard focus do not trigger a crash
+checkpoint write. Crash recovery returns to the active tab unless the launch
+explicitly requests the picker or another session.
 
 Restoration preserves session panels, order, rows, widths, active panel, drafts,
 and transcript scroll position through the existing workspace snapshot format.
@@ -31,14 +34,11 @@ hot-reload worker or its quit callback from overwriting a newer generation.
 Recovery is conservatively disabled for foreign processes on non-Unix platforms,
 where process liveness detection has not yet been implemented.
 
-## Recover tabs after a delayed restart
+## Inspect a checkpoint manually
 
-After the 30-second window the app starts fresh instead of automatically
-reopening the crashed workspace. Before replacing an expired crash checkpoint
-with tabs, Desktop retains it next to the current checkpoint as
-`crash-recovery.missed.json` (or the matching mode-specific `.missed.json` file).
-The archive contains drafts and is owner-only on Unix. It is not loaded at
-startup. Each mode retains the most recently archived checkpoint.
+Older versions used a 30-second cutoff and copied expired checkpoints to
+`crash-recovery.missed.json` (or a mode-specific `.missed.json` file). These old
+archives are not loaded on startup. They can still be inspected manually.
 
 List tab positions, the selected tab, exact session IDs, and titles without
 launching Desktop or changing its live state. Use `jq` on a private copy:
@@ -64,8 +64,8 @@ UI was installed.
 ## Verification
 
 ```sh
-cargo test -p jcode-desktop-ui --lib workspace::recovery -- --test-threads=1
-cargo build -p jcode-desktop -p jcode-desktop-ui
+justrust test -p jcode-desktop-ui --lib workspace::recovery
+justrust build -p jcode-desktop -p jcode-desktop-ui
 python3 scripts/accept-crash-recovery.py target/crash-accept-main
 python3 scripts/accept-crash-recovery.py target/crash-accept-workspace --no-sidebar
 python3 scripts/accept-crash-recovery.py target/crash-accept-reload --reloads 1
@@ -73,8 +73,8 @@ python3 scripts/accept-crash-recovery.py target/crash-accept-reload --reloads 1
 
 The acceptance script uses offline fixture sessions, an isolated home and runtime
 directory, and private Xvfb/Openbox, never the user's running app or sessions.
-It verifies SIGKILL restoration, native draft editing, focus and widths, archival
-of expired checkpoints, and restoration after a normal quit. Screenshots must
+It verifies SIGKILL restoration, native draft editing, focus and widths, a
+delayed relaunch with a session argument, and restoration after a normal quit. Screenshots must
 contain nonblank app pixels. Each run pins private copies of the executable and optional UI plugin
 to avoid interference from concurrent builds. `--reloads` exercises native Ctrl+R
 activation with the prebuilt plugin and a no-build Cargo shim, not compilation.

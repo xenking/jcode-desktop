@@ -961,6 +961,7 @@ impl Workspace {
         cx: &mut Context<Self>,
         host: HostHandle,
         snapshot: Option<WorkspaceSnapshot>,
+        crash_launch: Option<jcode_desktop_api::WindowLaunch>,
     ) -> Self {
         crate::input::bind_keys(cx);
         crate::init_harness();
@@ -971,10 +972,9 @@ impl Workspace {
         updates::ensure_release_check();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
-        let launch = snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.launch.clone())
-            .map(Into::into)
+        let recovering_crash = crash_launch.is_some();
+        let launch = crash_launch
+            .or_else(|| snapshot.as_ref()?.launch.clone().map(Into::into))
             .unwrap_or_else(|| {
                 jcode_desktop_api::WindowLaunches::get(
                     cx,
@@ -982,7 +982,6 @@ impl Workspace {
                 )
             });
         let performance_enabled = crate::performance::enabled(std::env::args_os());
-        let resume_requested = jcode_desktop_api::LaunchMode::resume_requested(&launch.args);
         let resume_snapshot = snapshot.as_ref().map(|snapshot| snapshot.resume.clone());
         let single_panel = jcode_desktop_api::LaunchMode::from_args(&launch.args)
             == jcode_desktop_api::LaunchMode::SinglePanel;
@@ -1641,18 +1640,7 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
-        // Restore the picker after slots, but before a default remote can start.
-        let fresh_launch = resume_snapshot.is_none();
-        workspace.restore_resume(resume_snapshot, resume_requested, window, cx);
-        // A reload snapshot already records which chat is open. Only a fresh
-        // `--session=<id>` launch opens the requested session.
-        if fresh_launch
-            && let Some(session_id) =
-                jcode_desktop_api::LaunchMode::requested_session(&workspace.launch.args)
-        {
-            workspace.resume = None;
-            workspace.open_requested_session(session_id, window, cx);
-        }
+        workspace.finish_launch(resume_snapshot, recovering_crash, window, cx);
         if workspace.resume.is_none() && workspace.remotes.default_host.is_some() {
             workspace.start_default_startup(cx);
         }
@@ -1664,6 +1652,30 @@ impl Workspace {
         workspace.load_collections(cx);
         workspace.open_collections_fixture_form(window, cx);
         workspace
+    }
+
+    fn finish_launch(
+        &mut self,
+        resume_snapshot: Option<resume::Snapshot>,
+        recovering_crash: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_desktop_api::LaunchMode;
+        let apply_launch = resume_snapshot.is_none() || recovering_crash;
+        let resume_requested = LaunchMode::resume_requested(&self.launch.args);
+        // A crash restores tabs, then applies this launch's arguments. Clean
+        // quit, restart manifests and in-process reloads keep their saved UI.
+        if recovering_crash && resume_requested {
+            self.open_resume(&OpenResume, window, cx);
+        } else {
+            self.restore_resume(resume_snapshot, resume_requested, window, cx);
+        }
+        if apply_launch && let Some(session_id) = LaunchMode::requested_session(&self.launch.args) {
+            self.resume = None;
+            self.open_requested_session(session_id, window, cx);
+            self.focus_restore = FocusSnapshot::Workspace;
+        }
     }
 
     fn open_startup_draft(&mut self, cx: &mut Context<Self>) {

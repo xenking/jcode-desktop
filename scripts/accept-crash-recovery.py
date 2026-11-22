@@ -125,7 +125,6 @@ def main():
     log_path = root / "logs/jcode-desktop/jcode-desktop.log"
     recovery = log_path.parent / ("crash-recovery-no-sidebar.json" if args.no_sidebar
                                   else "crash-recovery.json")
-    missed_recovery = recovery.with_suffix(".missed.json")
     processes, logs, evidence = [], [], []
     app = None
 
@@ -161,7 +160,7 @@ def main():
     def count_generations():
         return log_path.read_text().count("activated UI generation") if log_path.exists() else 0
 
-    def start(label, fixture_count, expected_count):
+    def start(label, fixture_count, expected_count, session=None):
         nonlocal app
         state_path.unlink(missing_ok=True)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(fixture_count)
@@ -169,6 +168,8 @@ def main():
         command = [str(binary)] + (["--hot-reload", str(plugin)] if args.reloads else ["--no-hot-reload"])
         if args.no_sidebar:
             command.append("--no-sidebar")
+        if session:
+            command.append(f"--session={session}")
         app = launch(label, command)
         wait(label + " render", lambda: (s := navigation(state_path)) is not None
              and len(panels(s)) == expected_count and s)
@@ -247,7 +248,6 @@ def main():
         original = checkpoint("three panels and typed draft persisted", lambda c:
                               len(c["snapshot"]["slots"]) == 3
                               and draft(c, "screenshot-fixture") == text
-                              and c["snapshot"]["focus"] == {"Panel": 0}
                               and abs(c["snapshot"]["slots"][0]["width_fraction"] - 1 / 3) > .01)
         before = capture("before-crash")
         assert any(abs(p["width"] - 1 / 3) > .01 for p in panels(before)), "width shortcut had no effect"
@@ -275,22 +275,24 @@ def main():
         capture("restored-after-sigkill")
 
         crash()
-        expired = read_json(recovery)
-        assert expired is not None
-        expired["updated_at_ms"] = int(time.time() * 1000) - 120_000
-        recovery.write_text(json.dumps(expired))
-        start("expired", 1, 1)
-        checkpoint("expired checkpoint replaced by fresh workspace", lambda c:
-                   len(c["snapshot"]["slots"]) == 1 and draft(c, "screenshot-fixture") == "")
-        assert read_json(missed_recovery) == expired, "expired checkpoint lost its tabs or draft"
-        assert missed_recovery.stat().st_mode & 0o777 == 0o600, "archive must be private"
-        capture("expired-is-fresh")
+        delayed = read_json(recovery)
+        assert delayed is not None and not delayed["clean"]
+        delayed["updated_at_ms"] = int(time.time() * 1000) - 120_000
+        recovery.write_text(json.dumps(delayed))
+        added = "session-requested-after-crash"
+        expected_ids = {slot["panel"]["session_id"] for slot in delayed["snapshot"]["slots"]} | {added}
+        start("delayed", 1, 4, session=added)
+        checkpoint("delayed launch keeps old tabs and opens the requested session", lambda c:
+                   {slot["panel"]["session_id"] for slot in c["snapshot"]["slots"]} == expected_ids
+                   and c["snapshot"]["slots"][c["snapshot"]["active"]]["panel"]["session_id"] == added
+                   and draft(c, "screenshot-fixture") == text + " plus native typing")
+        capture("delayed-restores-tabs-and-opens-session")
         quit_normally()
 
-        start("after-normal-quit", 3, 1)
+        start("after-normal-quit", 1, 4)
         checkpoint("normal quit restores the last workspace", lambda c:
-                   len(c["snapshot"]["slots"]) == 1 and draft(c, "screenshot-fixture") == "")
-        assert read_json(missed_recovery) == expired, "normal quit replaced the archive"
+                   {slot["panel"]["session_id"] for slot in c["snapshot"]["slots"]} == expected_ids
+                   and draft(c, "screenshot-fixture") == text + " plus native typing")
         capture("normal-quit-restores-tabs")
         quit_normally()
         (root / "results.json").write_text(json.dumps({
@@ -300,7 +302,7 @@ def main():
             "source_plugin": str(source_plugin) if source_plugin else None,
             "no_sidebar": args.no_sidebar, "checks": evidence,
         }, indent=2) + "\n")
-        print(f"PASS: SIGKILL recovery, draft/focus/layout, expiration, normal quit, {args.reloads} UI reloads. Artifacts: {root}")
+        print(f"PASS: SIGKILL recovery, draft/focus/layout, delayed relaunch, normal quit, {args.reloads} UI reloads. Artifacts: {root}")
     finally:
         os.close(read_fd)
         if write_fd is not None:

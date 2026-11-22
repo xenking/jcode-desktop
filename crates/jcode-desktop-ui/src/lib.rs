@@ -308,22 +308,24 @@ unsafe extern "C-unwind" fn activate(
     // generations so allocation destructors and these accessors stay callable.
     unsafe { host.install_element_arena_context() };
     init_harness();
-    let snapshot = if snapshot_len == 0 {
-        // A `/restart-all` relaunch names its own saved window state.
-        let restart = {
-            let window = unsafe { &*window.cast::<Window>() };
-            let app = unsafe { &*app.cast::<App>() };
-            workspace::restart::take_restore_state(window, app)
-        };
-        restart.or_else(|| {
-            let window = unsafe { &*window.cast::<Window>() };
-            let app = unsafe { &*app.cast::<App>() };
-            workspace::recovery::load(window, app)
-        })
+    let activation_window = unsafe { &*window.cast::<Window>() };
+    let activation_app = unsafe { &*app.cast::<App>() };
+    let recovery = workspace::recovery::Recovery::for_window(activation_window, activation_app);
+    let (snapshot, crash_owner) = if snapshot_len == 0 {
+        let recovered = recovery
+            .as_ref()
+            .and_then(workspace::recovery::Recovery::load);
+        let restart = workspace::restart::take_restore_state(activation_window, activation_app);
+        match recovered {
+            Some(restored) if restored.crash_owner.is_some() || restart.is_none() => {
+                (Some(restored.snapshot), restored.crash_owner)
+            }
+            _ => (restart, None),
+        }
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
-            Ok(snapshot) => Some(snapshot),
+            Ok(snapshot) => (Some(snapshot), None),
             Err(error) => {
                 eprintln!("refusing invalid workspace snapshot: {error:#}");
                 return ACTIVATE_FAILED;
@@ -362,8 +364,12 @@ unsafe extern "C-unwind" fn activate(
             }
             cx.quit()
         });
-        let workspace =
-            window.replace_root(app, |window, cx| Workspace::new(window, cx, host, snapshot));
+        let crash_launch = crash_owner.as_ref().map(|_| {
+            jcode_desktop_api::WindowLaunches::get(app, window.window_handle().window_id().as_u64())
+        });
+        let workspace = window.replace_root(app, |window, cx| {
+            Workspace::new(window, cx, host, snapshot, crash_launch)
+        });
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
             let fixture = harness::screenshot_mode();
@@ -471,7 +477,17 @@ unsafe extern "C-unwind" fn activate(
         // Workspace construction installs composer bindings. Native Edit menu
         // key equivalents must be generated from that complete keymap.
         application_menu::init(app);
-        workspace::recovery::install(&workspace, window, app);
+        if let Some(recovery) = recovery {
+            use workspace::recovery::Claim;
+            let claim = if snapshot_len != 0 {
+                Claim::Reload
+            } else if let Some(owner) = crash_owner.as_deref() {
+                Claim::Restored(owner)
+            } else {
+                Claim::Fresh
+            };
+            recovery.install(&workspace, window, app, claim);
+        }
         workspace::restart::install(&workspace, window, app);
         workspace::applets::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
