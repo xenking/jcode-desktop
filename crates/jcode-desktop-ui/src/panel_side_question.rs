@@ -242,6 +242,10 @@ impl Panel {
                             .bg(theme.ACCENT_DIM)
                             .text_color(theme.TEXT)
                             .child("Open as chat")
+                            .children(crate::fixture_control_targets::marker(
+                                || "side-question-promote".into(),
+                                || Some(self.session_id.clone()),
+                            ))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let Some(session) = this
                                     .side_question_card_opt()

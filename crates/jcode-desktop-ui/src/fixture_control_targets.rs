@@ -142,6 +142,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("status-worker:")
         || selector.starts_with("background-job:")
         || selector.starts_with("agent-message:")
+        || selector == "side-question-promote"
         || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
         || (draft_session()
             && (selector.starts_with("draft-model-row:")

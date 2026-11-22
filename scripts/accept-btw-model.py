@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Exercise Desktop /btw promotion and reconnect against a private fake provider."""
+import argparse
+import importlib.util
+import json
+from pathlib import Path
+import secrets
+import socket
+import sys
+import tempfile
+
+
+HERE = Path(__file__).resolve().parent
+SPEC = importlib.util.spec_from_file_location("verify_desktop", HERE / "verify-jcode-desktop.py")
+VERIFY = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(VERIFY)
+PARENT_MODEL = "fake-model"
+CHILD_MODEL = "gpt-5-btw-child"
+CHILD_EFFORT = "high"
+QUESTION = "Why was retry removed?"
+
+
+class Fixture(VERIFY.Instance):
+    def start_background_runtime(self, env):
+        self.runtime_env = {**env, "JCODE_TEST_SESSION": "1"}
+        self.legacy_socket = self.profile / "jcode/legacy.sock"
+        self.api_socket = self.profile / "jcode/api.sock"
+        port = self.profile / "fake-port"
+        self.runtime_env.update(
+            JCODE_PROVIDER="openai-compatible", JCODE_MODEL=PARENT_MODEL,
+            OPENAI_COMPAT_API_KEY="fixture-only", JCODE_OPENAI_COMPAT_DEFAULT_MODEL=PARENT_MODEL,
+            FAKE_LOG=str(self.run / "provider.jsonl"), FAKE_PORT_FILE=str(port),
+            FAKE_PREMIUM_MODEL=CHILD_MODEL, JCODE_SOCKET=str(self.legacy_socket),
+            JCODE_API_SOCKET=str(self.api_socket),
+        )
+        (self.profile / "jcode/config.toml").write_text("[server]\nmobile_push = false\n")
+        self.runtime_cli = [self.manifest["jcode_bin"], "--no-update", "--no-selfdev"]
+        fake = HERE.parent.parent / "jcode/scripts/fake_openai_server.py"
+        self.runtime_spawn("fake-provider", [sys.executable, str(fake), "0"])
+        self.runtime_wait(lambda: port.is_file() and port.read_text().strip(), "loopback provider")
+        self.runtime_env["JCODE_OPENAI_COMPAT_API_BASE"] = f"http://127.0.0.1:{port.read_text().strip()}/v1"
+        self.daemon = self.runtime_spawn("private-daemon", [*self.runtime_cli, "serve", "--socket", str(self.legacy_socket)])
+        self.runtime_wait(self.legacy_socket.exists, "private daemon")
+        self.start_bridge()
+        parent = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_CONTROL_RUNTIME_SOCKET=str(self.api_socket),
+                   JCODE_DESKTOP_CONTROL_RUNTIME_SESSION=parent)
+
+    def start_bridge(self):
+        self.api_bridge = self.runtime_spawn("private-bridge", [
+            *self.runtime_cli, "api-bridge", "--api-socket", str(self.api_socket),
+        ])
+        self.runtime_wait(self.api_socket.exists, "private API bridge")
+
+    def rpc(self, commands):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(10)
+            client.connect(str(self.api_socket))
+            with client.makefile("rb") as reader:
+                def request(req, **fields):
+                    nonlocal sequence
+                    sequence += 1
+                    client.sendall(json.dumps(dict(v=1, id=sequence, req=req, **fields)).encode() + b"\n")
+                    for line in reader:
+                        reply = json.loads(line)
+                        if reply.get("reply_to") == sequence:
+                            if reply["ev"] == "error":
+                                raise RuntimeError(f"{req}: {reply}")
+                            return reply
+                    raise RuntimeError(f"no reply to {req}")
+
+                sequence = 0
+                request("hello", min_version=1, max_version=1, client="btw-acceptance")
+                return [request(req, **fields) for req, fields in commands]
+
+    def catalog(self):
+        return self.rpc([("list_sessions", {"include_archived": True})])[0]["sessions"]
+
+    def answer_count(self):
+        path = self.run / "provider.jsonl"
+        if not path.exists():
+            return 0
+        return sum(any(m.get("role") == "user" and QUESTION in str(m.get("content"))
+                       for m in request["messages"]) for request in map(json.loads, path.read_text().splitlines()))
+
+    def exercise(self):
+        parent = self.target["session_id"]
+        self.runtime_wait(lambda: self.drive("state")["panel"]["model"] == PARENT_MODEL, "parent model")
+        self.drive("set_composer", {"text": f"/btw {QUESTION}"})
+        self.drive("press_key", {"key": "fixture:enter"})
+        self.runtime_wait(lambda: self.answer_count() == 1, "one fake provider request from the side question")
+        child = self.runtime_wait(lambda: next((s["session_id"] for s in self.catalog()
+                                                if s["session_id"] != parent and s.get("archived")), None),
+                                  "archived side question child")
+        _, _, _, child_info = self.rpc([
+            ("attach_session", {"session_id": child}),
+            ("set_model", {"session_id": child, "model": CHILD_MODEL}),
+            ("set_reasoning_effort", {"session_id": child, "effort": CHILD_EFFORT}),
+            ("get_runtime_info", {"session_id": child}),
+        ])
+        expected = identity(child_info)
+        assert expected == (CHILD_MODEL, CHILD_EFFORT), child_info
+        self.screenshot("side-question.png")
+        self.drive("click", {"selector": "side-question-promote"})
+        self.target["session_id"] = child
+        promoted = self.drive("state")["panel"]
+        VERIFY.save(self.run / "promoted.json", promoted)
+        self.screenshot("promoted.png")
+        assert identity(promoted) == expected, f"promotion lost child identity: {identity(promoted)!r} != {expected!r}"
+        assert identity(self.drive("state", session=parent)["panel"]) == (PARENT_MODEL, None)
+        self.runtime_wait(lambda: {s["session_id"] for s in self.catalog() if not s.get("archived")} == {parent, child},
+                          "the same child restored without a second fork")
+
+        self.runtime_stop(self.api_bridge)
+        self.api_socket.unlink(missing_ok=True)
+        self.runtime_wait(lambda: self.drive("state")["panel"]["status"].startswith("lost:"),
+                          "Desktop detects bridge disconnect")
+        self.start_bridge()
+
+        def reconnected_panel():
+            panel = self.drive("state")["panel"]
+            return panel if identity(panel) == expected and not panel["status"].startswith("lost:") else None
+
+        reconnected = self.runtime_wait(reconnected_panel, "child identity after reconnect")
+        VERIFY.save(self.run / "reconnected.json", reconnected)
+        assert self.answer_count() == 1, "promotion or reconnect sent another provider request"
+        assert {s["session_id"] for s in self.catalog()} == {parent, child}, "promotion or reconnect forked again"
+        return {"parent": parent, "child": child, "model": expected[0], "effort": expected[1], "requests": 1}
+
+
+def identity(panel):
+    return panel["model"], panel["reasoning_effort"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--desktop", type=Path, required=True)
+    parser.add_argument("--jcode", type=Path, required=True)
+    parser.add_argument("--evidence", type=Path, required=True)
+    args = parser.parse_args()
+    VERIFY.require_safe_host()
+    run = args.evidence.resolve()
+    run.mkdir(mode=0o700, parents=True)
+    with tempfile.TemporaryDirectory(prefix="jdb-", dir="/tmp") as directory:
+        scratch = Path(directory).resolve()
+        token = secrets.token_hex(16)
+        owner = scratch / ".owner"
+        owner.write_text(token)
+        owner.chmod(0o600)
+        (scratch / "control").mkdir(mode=0o700)
+        manifest = {"schema": VERIFY.SCHEMA, "evidence": str(run), "phase": "starting",
+                    "scratch": str(scratch), "token": token, "fixture": "swarm-dm",
+                    "binary": str(args.desktop.resolve()), "jcode_bin": str(args.jcode.resolve())}
+        fixture = Fixture(run, manifest)
+        try:
+            fixture.start()
+            proof = fixture.exercise()
+            VERIFY.save(run / "btw-proof.json", proof)
+            print(json.dumps(proof))
+        finally:
+            fixture.cleanup("side question model acceptance finished")
+
+
+if __name__ == "__main__":
+    main()
