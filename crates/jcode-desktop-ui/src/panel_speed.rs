@@ -191,6 +191,9 @@ impl Panel {
         self.speed.options.clear();
         self.speed.last_response = None;
         self.sync_open_speed_picker(cx);
+        self.bridge.send(Command::RefreshRuntime {
+            session_id: self.session_id.clone(),
+        });
     }
 
     pub(super) fn record_speed_report(
