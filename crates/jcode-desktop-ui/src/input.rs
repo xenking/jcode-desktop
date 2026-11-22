@@ -371,6 +371,7 @@ fn motion_reduced(cx: &App) -> bool {
 struct CommandSuggestion {
     value: String,
     help: String,
+    active_choice: bool,
     detail: Option<String>,
     header: Option<String>,
     toggle: Option<String>,
@@ -413,6 +414,7 @@ fn command_suggestions_with_efforts(
             .map(|model| CommandSuggestion {
                 value: format!("/model {model}"),
                 help: "Switch this session".into(),
+                active_choice: false,
                 detail: None,
                 header: None,
                 toggle: None,
@@ -433,13 +435,12 @@ fn command_suggestions_with_efforts(
             .filter(|effort| query.is_empty() || effort.contains(&query))
             .map(|effort| CommandSuggestion {
                 value: format!("/effort {effort}"),
-                help: if efforts.current == Some(effort) {
-                    "Current".into()
-                } else if effort == "swarm" {
+                help: if effort == "swarm" {
                     "Low-effort root that fans work out to workers".into()
                 } else {
                     "Set reasoning effort".into()
                 },
+                active_choice: efforts.current == Some(effort),
                 detail: None,
                 header: None,
                 toggle: None,
@@ -464,6 +465,7 @@ fn command_suggestions_with_efforts(
         .map(|(value, help, _)| CommandSuggestion {
             value: value.into(),
             help: help.into(),
+            active_choice: false,
             detail: None,
             header: None,
             toggle: None,
@@ -491,6 +493,7 @@ fn mode_suggestions(
         }
         let header = (group.replace(section) != Some(section)).then(|| section.into());
         rows.push(CommandSuggestion {
+            active_choice: false,
             value: format!("/mode {name}"),
             help: help.to_owned(),
             detail: None,
@@ -1985,11 +1988,6 @@ impl PromptInput {
             return Vec::new();
         }
         let now = model_menu::now_unix_secs();
-        let current = model_menu::current_spec(
-            self.current_model.as_deref(),
-            &self.command_models,
-            &self.model_details,
-        );
         let trimmed = command_content.trim_end();
         let first = trimmed.split_whitespace().next().unwrap_or_default();
         if first == "/mode" {
@@ -2034,6 +2032,7 @@ impl PromptInput {
                 CommandSuggestion {
                     value: trimmed.to_owned(),
                     help,
+                    active_choice: false,
                     detail: None,
                     header: None,
                     toggle: None,
@@ -2054,6 +2053,7 @@ impl PromptInput {
                     suggestions.push(CommandSuggestion {
                         value,
                         help: description.clone(),
+                        active_choice: false,
                         detail: Some("Skill".into()),
                         header: None,
                         toggle: None,
@@ -2072,20 +2072,12 @@ impl PromptInput {
             .into_iter()
             .map(|mut suggestion| {
                 if let Some(model) = suggestion.value.strip_prefix("/model ") {
-                    let managing = self.model_stage == model_stage::ModelStage::Manage;
                     suggestion.detail = Some(
                         self.model_details
                             .get(model)
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    if !managing {
-                        suggestion.help = if current == Some(model) {
-                            "Current".into()
-                        } else {
-                            String::new()
-                        };
-                    }
                 }
                 suggestion
             })
@@ -3187,7 +3179,7 @@ impl PromptInput {
             && let Some(index) = self
                 .command_suggestions()
                 .iter()
-                .position(|row| row.help == "Current" || row.detail.as_deref() == Some("Current"))
+                .position(|row| row.active_choice)
         {
             self.command_selection = index;
             self.reveal_command(index);
@@ -6836,7 +6828,8 @@ mod tests {
                 input.set_content("/model".into(), cx);
                 let suggestions = input.command_suggestions();
                 assert_eq!(suggestions[0].value, "/model z-favorite");
-                assert_eq!(suggestions[0].help, "Current");
+                assert!(suggestions[0].active_choice);
+                assert!(suggestions[0].help.is_empty());
                 assert!(
                     suggestions[0]
                         .detail

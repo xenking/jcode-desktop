@@ -61,7 +61,8 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
         let current = input.command_suggestions();
         assert!(!Arc::ptr_eq(&before_current, &current));
         assert_eq!(current[0].value, "/model openai-api:atlas-0006");
-        assert_eq!(current[0].help, "Current");
+        assert!(current[0].active_choice);
+        assert!(current[0].help.is_empty());
 
         let group = current.iter().find_map(|row| row.toggle.clone()).unwrap();
         input.toggle_model_group(group.clone(), cx);
@@ -93,7 +94,7 @@ fn unchanged_runtime_routes_skip_rebuilding_the_catalog(cx: &mut gpui::TestAppCo
 
         // The current model still applies without rebuilding routes.
         input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
-        assert_eq!(input.command_suggestions()[0].help, "Current");
+        assert!(input.command_suggestions()[0].active_choice);
 
         // A real catalog change is still applied.
         routes[7].available = false;
@@ -110,6 +111,25 @@ fn unchanged_runtime_routes_skip_rebuilding_the_catalog(cx: &mut gpui::TestAppCo
         input.set_command_models(vec!["fallback".into()], cx);
         input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
         assert_eq!(input.command_models.len(), 7);
+    });
+}
+
+#[gpui::test]
+fn effort_choice_remains_active_as_the_keyboard_highlight_moves(cx: &mut gpui::TestAppContext) {
+    let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+    input.update(cx, |input, cx| {
+        input.set_effort_state(vec!["low", "medium", "high"], Some("medium".into()), cx);
+        input.start_picker_search("/effort", Vec::new(), cx);
+        let rows = input.command_suggestions();
+        assert_eq!(input.command_selection, 1);
+        assert_eq!(rows[1].value, "/effort medium");
+        assert!(rows[1].active_choice);
+        assert_eq!(rows[1].help, "Set reasoning effort");
+
+        input.command_selection = 2;
+        let rows = input.command_suggestions();
+        assert!(!rows[2].active_choice);
+        assert!(rows[1].active_choice);
     });
 }
 

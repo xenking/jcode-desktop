@@ -48,6 +48,10 @@ impl PromptInput {
         )
         .into_iter()
         .map(|row| {
+            let active_choice = row
+                .value
+                .strip_prefix("/model ")
+                .is_some_and(|spec| Some(spec) == current);
             // Enter switches model and effort together: the row carries the
             // level picked with the effort keys (or the one in force).
             let action = row.value.strip_prefix("/model ").map(|spec| {
@@ -61,6 +65,7 @@ impl PromptInput {
             CommandSuggestion {
                 value: row.value,
                 help: String::new(),
+                active_choice,
                 detail: None,
                 header: row.header,
                 toggle: row.toggle,
@@ -71,6 +76,7 @@ impl PromptInput {
         if !searching {
             rows.push(CommandSuggestion {
                 value: "Manage models".into(),
+                active_choice: false,
                 help: match hidden.len() {
                     0 => String::new(),
                     count => format!("{count} hidden"),
@@ -151,11 +157,8 @@ impl PromptInput {
             .enumerate()
             .map(|(index, effort)| CommandSuggestion {
                 value: format!("/effort {effort}"),
-                help: if on_current_model && self.current_effort.as_deref() == Some(effort) {
-                    "Current".into()
-                } else {
-                    String::new()
-                },
+                help: String::new(),
+                active_choice: on_current_model && self.current_effort.as_deref() == Some(effort),
                 detail: None,
                 header: (index == 0)
                     .then(|| model_stage::effort_header(model, &self.model_details)),
@@ -184,6 +187,7 @@ impl PromptInput {
         .filter_map(|row| {
             let spec = row.value.strip_prefix("/model ")?.to_string();
             Some(CommandSuggestion {
+                active_choice: false,
                 help: if hidden.contains(&spec) {
                     "Hidden".into()
                 } else {
@@ -330,6 +334,7 @@ impl PromptInput {
     ) -> gpui::AnyElement {
         let is_toggle = suggestion.toggle.is_some();
         let selected = index == self.command_selection;
+        let active_choice = suggestion.active_choice;
         let ink = if selected {
             Theme::global().BG
         } else {
@@ -455,6 +460,9 @@ impl PromptInput {
             .flex_none()
             .flex()
             .flex_col()
+            .when(active_choice, |row| {
+                row.debug_selector(move || format!("active-picker-choice-{index}"))
+            })
             .children(header)
             .child(
                 div()
@@ -476,6 +484,13 @@ impl PromptInput {
                     .px_3()
                     .py_1p5()
                     .rounded_md()
+                    .when(model.is_some() || suggestion.value.starts_with("/effort "), |row| {
+                        row.border_1().border_color(match (active_choice, selected) {
+                            (true, true) => Theme::global().BG.into(),
+                            (true, false) => Theme::global().TEXT.into(),
+                            (false, _) => gpui::transparent_black(),
+                        })
+                    })
                     .bg(if selected {
                         Theme::global().TEXT
                     } else {
@@ -549,7 +564,7 @@ impl PromptInput {
                                     })),
                             ),
                     )
-                    .child(
+                    .children((!suggestion.help.is_empty()).then(|| {
                         div()
                             .max_w(relative(0.4))
                             .min_w_0()
@@ -560,8 +575,8 @@ impl PromptInput {
                             } else {
                                 Theme::global().TEXT_FAINT
                             })
-                            .child(suggestion.help),
-                    )
+                            .child(suggestion.help)
+                    }))
                     .children(
                         model
                             .filter(|_| selected)
