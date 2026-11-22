@@ -52,6 +52,12 @@ fn separate_error<'a>(body: &str, error: Option<&'a str>) -> Option<&'a str> {
     error.filter(|error| error.trim() != body_diagnostic)
 }
 
+fn report_body(output: &str, body_bytes: Option<usize>) -> &str {
+    body_bytes
+        .and_then(|end| output.get(..end))
+        .unwrap_or(output)
+}
+
 impl Panel {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_codemode_detail(
@@ -68,12 +74,16 @@ impl Panel {
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let failed = wrapper_failed(summary, error, output);
-        let body = match output.strip_prefix("result:\n") {
+        let report = report_body(
+            output,
+            summary.and_then(|summary| summary.report_body_bytes),
+        );
+        let body = match report.strip_prefix("result:\n") {
             Some(result) if result.trim_end_matches('\n').is_empty() => "\"\"",
             Some(result) => result,
-            None => output,
+            None => report,
         };
-        let error = separate_error(output, error);
+        let error = separate_error(report, error);
         let heading = if failed && error.is_none() {
             "Codemode error"
         } else {
@@ -86,7 +96,7 @@ impl Panel {
             .flex_col()
             .gap_3()
             .when_some(single, |el, call| {
-                el.child(self.render_codemode_call(index, 0, call, window, cx))
+                el.child(self.render_codemode_call(index, 0, call, false, window, cx))
             })
             .when_some(error, |el, error| {
                 el.child(
@@ -207,7 +217,7 @@ impl Panel {
                         .gap_2()
                         .pl_2()
                         .children(summary.calls.iter().enumerate().map(|(ordinal, call)| {
-                            self.render_codemode_call(index, ordinal, call, window, cx)
+                            self.render_codemode_call(index, ordinal, call, true, window, cx)
                         }))
                         .when(summary.calls_omitted > 0, |el| {
                             el.child(
@@ -227,8 +237,9 @@ impl Panel {
         index: usize,
         ordinal: usize,
         call: &CodemodeCall,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        show_preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
         let theme = Theme::global();
         let (status, color) = match call.status {
@@ -244,6 +255,8 @@ impl Panel {
         div()
             .debug_selector(move || format!("codemode-call-{}", ordinal + 1))
             .min_w_0()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -267,6 +280,38 @@ impl Panel {
                             .text_color(theme.TEXT_FAINT)
                             .child(format!("{} ms", call.duration_ms)),
                     ),
+            )
+            .when_some(call.diagnostic.as_deref(), |el, diagnostic| {
+                el.child(
+                    div()
+                        .debug_selector(|| "codemode-call-diagnostic".into())
+                        .pl_4()
+                        .text_color(color)
+                        .child(text_selection::plain(
+                            self.transcript_selection.clone(),
+                            format!("codemode-call-diagnostic-{index}-{ordinal}"),
+                            strip_ansi(diagnostic),
+                            window,
+                            cx,
+                        )),
+                )
+            })
+            .when_some(
+                call.preview.as_deref().filter(|_| show_preview),
+                |el, preview| {
+                    el.child(
+                        div()
+                            .pl_4()
+                            .text_color(theme.TEXT_DIM)
+                            .child(text_selection::plain(
+                                self.transcript_selection.clone(),
+                                format!("codemode-call-preview-{index}-{ordinal}"),
+                                strip_ansi(preview),
+                                window,
+                                cx,
+                            )),
+                    )
+                },
             )
     }
 
@@ -335,6 +380,8 @@ impl Panel {
 }
 
 pub(super) fn screenshot_history() -> Vec<jcode_sdk::HistoryMessage> {
+    let single = "result:\nChecks scheduled.\n";
+    let multi = "result:\n2 tasks remain.\n";
     serde_json::from_value(serde_json::json!([
         {
             "role": "tool", "content": "Direct message sent to camel",
@@ -346,21 +393,21 @@ pub(super) fn screenshot_history() -> Vec<jcode_sdk::HistoryMessage> {
             "content": "DM from camel: The native control flow passes. The remaining check is the compact layout."
         },
         {
-            "role": "tool", "content": "result:\nChecks scheduled.\n\n[1 tool call, 0.1s]",
+            "role": "tool", "content": format!("{single}\ncalls:\n  #1 swarm ok 39ms 20B\n\n[1 tool call, 0.1s]"),
             "tool": {"id": "fixture-codemode-single", "name": "codemode", "duration_ms": 104,
                 "input": {"code": "const send = tools['swa' + 'rm'];\nawait send({ action: 'message', to_session: 'camel', message: 'Check the narrow layout.' });\nreturn 'Checks scheduled.';", "intent": "Ask camel for the narrow layout check"},
-                "codemode": {"codemode_status": "success", "codemode_calls": [
-                    {"tool": "swarm", "action": "message", "target": "camel", "direction": "outbound", "status": "success", "duration_ms": 39}
-                ]}}
+                "report_body_bytes": single.len(), "codemode_status": "success", "codemode_calls": [
+                    {"tool": "swarm", "action": "message", "target": "camel", "direction": "outbound", "status": "success", "duration_ms": 39, "preview": "Check the narrow layout."}
+                ]}
         },
         {
-            "role": "tool", "content": "result:\n2 tasks remain.\n\n[2 tool calls, 0.3s]",
+            "role": "tool", "content": format!("{multi}\ncalls:\n  #1 todo ok 24ms 60000B\n  #2 swarm error 88ms 0B\n\n[2 tool calls, 0.3s]"),
             "tool": {"id": "fixture-codemode-multi", "name": "codemode", "duration_ms": 302,
                 "input": {"code": "const tasks = await tools.todo({});\nawait tools.swarm({ action: 'summary', to_session: 'camel' }).catch(() => null);\nreturn '2 tasks remain.';", "intent": "Summarize the remaining checks"},
-                "codemode": {"codemode_status": "success", "codemode_calls": [
+                "report_body_bytes": multi.len(), "codemode_status": "success", "codemode_calls": [
                     {"tool": "todo", "status": "success", "duration_ms": 24},
-                    {"tool": "swarm", "action": "summary", "target": "camel", "status": "error", "duration_ms": 88}
-                ]}}
+                    {"tool": "swarm", "action": "summary", "target": "camel", "status": "error", "duration_ms": 88, "diagnostic": "Resource not found"}
+                ]}
         }
     ])).expect("valid tool cards fixture")
 }
@@ -394,6 +441,38 @@ mod tests {
         assert_eq!(separate_error("result:\nother result\n", error), error);
     }
 
+    #[test]
+    fn output_boundary_preserves_literal_footer_and_legacy_or_invalid_offsets() {
+        let user_body = "result:\nГотово 🐪\n\ncalls:\n  this is part of the result\n";
+        let output = format!("{user_body}\ncalls:\n  #1 swarm ok 3ms 5B\n\n[1 tool call, 0.0s]");
+        assert_eq!(report_body(&output, Some(user_body.len())), user_body);
+        for boundary in [None, Some("result:\n".len() + 1), Some(output.len() + 1)] {
+            assert_eq!(report_body(&output, boundary), output);
+        }
+    }
+
+    #[test]
+    fn screenshot_payload_uses_wire_preview_and_small_todo_return() {
+        let entries = screenshot_history();
+        let single = entries[2].tool.as_ref().unwrap().codemode.as_ref().unwrap();
+        let swarm = single_swarm(single).unwrap();
+        assert_eq!(swarm.preview.as_deref(), Some("Check the narrow layout."));
+        assert_eq!(
+            report_body(&entries[2].content, single.report_body_bytes),
+            "result:\nChecks scheduled.\n"
+        );
+        let multi = entries[3].tool.as_ref().unwrap().codemode.as_ref().unwrap();
+        assert_eq!(multi.calls[0].tool, "todo");
+        assert_eq!(
+            multi.calls[1].diagnostic.as_deref(),
+            Some("Resource not found")
+        );
+        assert_eq!(
+            report_body(&entries[3].content, multi.report_body_bytes),
+            "result:\n2 tasks remain.\n"
+        );
+    }
+
     #[gpui::test]
     fn codemode_single_swarm_keeps_provenance_and_reports_wrapper_failure(
         cx: &mut gpui::TestAppContext,
@@ -420,14 +499,16 @@ mod tests {
         assert!(vcx.debug_bounds("swarm-codemode-provenance").is_none());
         let mut summary = tool.codemode.unwrap();
         summary.status = CodemodeStatus::Error;
-        let output = "error: wrapper aborted after delivery\n\n[1 tool call, 0.1s]";
+        let body = "error: wrapper aborted after delivery\n";
+        let output = format!("{body}\n[1 tool call, 0.1s]");
+        summary.report_body_bytes = Some(body.len());
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::ToolDone {
                     session_id: "tool-cards-test".into(),
                     call_id: tool.id.clone(),
                     name: tool.name.clone(),
-                    output: output.into(),
+                    output: output.clone(),
                     error: None,
                     codemode: Some(summary.clone()),
                 },
@@ -464,12 +545,12 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("codemode-source").is_none());
 
-        let saved: jcode_sdk::HistoryMessage = serde_json::from_value(serde_json::json!({
-            "role": "tool", "content": output, "tool": {
-                "id": "stored-wrapper", "name": tool.name, "input": tool.input, "codemode": summary
-            }
-        }))
-        .unwrap();
+        let mut saved = single_history();
+        saved.content = output;
+        let stored_tool = saved.tool.as_mut().unwrap();
+        stored_tool.id = "stored-wrapper".into();
+        stored_tool.codemode = Some(summary);
+        let saved = serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
         let (panel, vcx) = test_panel(cx);
         panel.update(vcx, |panel, cx| panel.load_history(vec![saved], vec![], cx));
         vcx.run_until_parked();
@@ -496,9 +577,11 @@ mod tests {
         vcx.run_until_parked();
         let first = vcx.debug_bounds("codemode-call-1").unwrap();
         let second = vcx.debug_bounds("codemode-call-2").unwrap();
+        let diagnostic = vcx.debug_bounds("codemode-call-diagnostic").unwrap();
         let code = vcx.debug_bounds("codemode-source").unwrap();
         assert!(result.bottom() <= first.top());
         assert!(first.bottom() <= second.top() && second.bottom() <= code.top());
+        assert!(diagnostic.top() >= second.top() && diagnostic.bottom() <= second.bottom());
         assert!(vcx.debug_bounds("tool-output-size").is_some());
     }
 

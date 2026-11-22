@@ -140,15 +140,17 @@ pub(super) fn from_codemode(call: &CodemodeCall, input: &str) -> Call {
     } else {
         target.to_owned()
     };
-    let intent = serde_json::from_str::<serde_json::Value>(input)
-        .ok()
-        .and_then(|args| args.get("intent")?.as_str().map(str::to_owned))
-        .unwrap_or_default();
+    let text = call.preview.as_ref().cloned().unwrap_or_else(|| {
+        serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|args| args.get("intent")?.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    });
     Call {
         action: call.action.clone().unwrap_or_default(),
         session_ids: Vec::new(),
         target,
-        text: intent,
+        text,
         direction: (call.direction == Some(CodemodeDirection::Outbound)).then_some(Direction::To),
     }
 }
