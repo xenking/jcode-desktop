@@ -354,7 +354,22 @@ fn crash_snapshot(
     // saved active panel, while a clean quit saves the full final UI state.
     snapshot.resume = super::resume::Snapshot::Closed;
     snapshot.focus = super::FocusSnapshot::Workspace;
+    settle_motion(&mut snapshot);
     Ok(snapshot)
+}
+
+/// A crash restores where motion was heading, not a frame of it: the camera
+/// lands on its target, and a panel stuck to the bottom ignores its offset on
+/// restore. Recording mid-animation frames or streaming scroll offsets would
+/// rewrite the checkpoint every tick without changing what a crash restores.
+fn settle_motion(snapshot: &mut WorkspaceSnapshot) {
+    snapshot.camera_x = snapshot.camera_target;
+    for slot in &mut snapshot.slots {
+        if slot.panel.stick_to_bottom {
+            slot.panel.scroll_x = 0.0;
+            slot.panel.scroll_y = 0.0;
+        }
+    }
 }
 
 fn install_at_path(
@@ -833,6 +848,25 @@ mod tests {
             }
         }
         assert_eq!(writes, 6, "checkpoint writes in one simulated minute");
+        for second in 1..=60 {
+            workspace.update(vcx, |workspace, _| {
+                let row = workspace.active_row;
+                workspace.camera_target[row] = 0.0;
+                workspace.camera_x[row] = second as f32 * 3.5;
+            });
+            vcx.run_until_parked();
+            vcx.executor().advance_clock(Duration::from_secs(1));
+            vcx.run_until_parked();
+            let next = fs::metadata(&path).unwrap().ino();
+            if next != inode {
+                writes += 1;
+                inode = next;
+            }
+        }
+        assert_eq!(
+            writes, 12,
+            "camera animation frames do not rewrite the checkpoint between heartbeats"
+        );
         workspace.update(vcx, |workspace, cx| {
             workspace.push_test_panel("session-b", cx)
         });
