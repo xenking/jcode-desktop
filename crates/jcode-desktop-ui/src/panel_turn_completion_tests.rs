@@ -1,6 +1,84 @@
 use super::*;
 
 #[gpui::test]
+fn interleaved_notifications_do_not_split_or_merge_assistant_markdown(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "interleaved-text".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    let session_id = "interleaved-text".to_string();
+    let delta = |id: &str, text: &str| ApiEvent::TextDelta {
+        session_id: session_id.clone(),
+        message_id: Some(id.into()),
+        text: text.into(),
+    };
+    let done = |id: &str| ApiEvent::TextDone {
+        session_id: session_id.clone(),
+        message_id: Some(id.into()),
+    };
+    panel.update(vcx, |panel, cx| {
+        panel.items.clear();
+        panel.clean_chat_override = Some(false);
+        for event in [
+            delta("answer-1", "**Список вклад"),
+            ApiEvent::AgentMessage {
+                session_id: session_id.clone(),
+                from_session: "worker".into(),
+                from_name: Some("Worker".into()),
+                message: "Incoming DM".into(),
+            },
+            ApiEvent::MemoryInjected {
+                session_id: session_id.clone(),
+                count: 1,
+                content: "One recalled memory".into(),
+            },
+            delta("answer-1", "ок** в окне."),
+            done("answer-1"),
+            delta("answer-2", "Переключатель готов."),
+            done("answer-2"),
+        ] {
+            panel.apply(&event, cx);
+        }
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |panel, _| {
+        let timeline: Vec<_> = panel
+            .transcript_render_rows()
+            .iter()
+            .filter_map(|row| {
+                let item = match &row.source {
+                    TranscriptRowSource::Settled(index) => &panel.items[*index],
+                    TranscriptRowSource::Owned(item) => item,
+                };
+                match item {
+                    Item::Assistant(text) => Some(text.as_str().to_owned()),
+                    Item::AgentMessage { message, .. } => Some(message.clone()),
+                    Item::Memory(_) => Some("One recalled memory".into()),
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(
+            timeline,
+            [
+                "**Список вкладок** в окне.",
+                "Incoming DM",
+                "One recalled memory",
+                "Переключатель готов.",
+            ],
+        );
+    });
+    assert!(vcx.debug_bounds("assistant-response").is_some());
+}
+
+#[gpui::test]
 fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace =
