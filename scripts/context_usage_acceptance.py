@@ -10,6 +10,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import time
 
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +21,8 @@ SPEC.loader.exec_module(VERIFY)
 
 class ContextUsage(VERIFY.Instance):
     def start_desktop(self, env, modes, suffix=""):
-        env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="empty", JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1")
+        env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="empty", JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1",
+                   JCODE_DESKTOP_SCREENSHOT_CONTEXT_OVERLAY_PROOF="1")
         env.pop("JCODE_DESKTOP_SCREENSHOT_SWARM", None)
         return super().start_desktop(env, modes, suffix)
 
@@ -28,6 +30,24 @@ class ContextUsage(VERIFY.Instance):
         if name == "fake-provider":
             self.runtime_env.update(JCODE_MODEL="gpt-5.6-terra", JCODE_OPENAI_COMPAT_DEFAULT_MODEL="gpt-5.6-terra")
         return super().runtime_spawn(name, command)
+
+    def start_background_runtime(self, env):
+        super().start_background_runtime(env)
+        first = env["JCODE_DESKTOP_CONTROL_RUNTIME_SESSION"]
+        self.second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        self.runtime_debug("message", "[e2e:pad] [e2e:input-tokens:11042] First session with long history.",
+                           "--session", first, "--wait")
+        threshold = self.context_usage(first)["meter"]["compaction_threshold_tokens"]
+        self.second_total = round(threshold * .35)
+        self.runtime_debug("message", f"[e2e:input-tokens:{self.second_total}] " + "Second session. " * 150,
+                           "--session", self.second, "--wait")
+        self.first_total = 11_042
+        if self.manifest["compact"]:
+            self.first_total = 57_665
+            for turn in range(4):
+                self.runtime_debug("message", f"[e2e:pad] First session, turn {turn}", "--session", first, "--wait")
+            self.runtime_debug("message", f"[e2e:input-tokens:{self.first_total}] First session, keep this recent turn.",
+                               "--session", first, "--wait")
 
     def context_usage(self, session):
         with socket.socket(socket.AF_UNIX) as client:
@@ -67,15 +87,7 @@ class ContextUsage(VERIFY.Instance):
 
     def exercise(self):
         first = self.target["session_id"]
-        second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
-        first_total = 57_665 if self.manifest["compact"] else 11_042
-        for session, count, prompt in [(first, 11042, "First session, short context."),
-                                       (second, 224142, "Second session. " * 150)]:
-            self.runtime_debug("message", f"[e2e:input-tokens:{count}] {prompt}", "--session", session, "--wait")
-        if self.manifest["compact"]:
-            for turn in range(4):
-                self.runtime_debug("message", f"[e2e:pad] First session, turn {turn}", "--session", first, "--wait")
-            self.runtime_debug("message", f"[e2e:input-tokens:{first_total}] First session, keep this recent turn.", "--session", first, "--wait")
+        second = self.second
         def open_second():
             try:
                 self.drive("open_session", {"session_id": second})
@@ -88,7 +100,7 @@ class ContextUsage(VERIFY.Instance):
         self.runtime_wait(open_second, "second private session in Desktop's catalog")
         self.selected(first)
         expected = [self.context_usage(session) for session in (first, second)]
-        assert [usage["total_tokens"] for usage in expected] == [first_total, 224142], expected
+        assert [usage["total_tokens"] for usage in expected] == [self.first_total, self.second_total], expected
         assert all(usage["meter"]["source"] == "provider_reported" for usage in expected), expected
         requests = (self.run / "fake-requests.jsonl").read_bytes()
         before = [self.drive("state", session=s)["panel"]["loaded_transcript_items"] for s in (first, second)]
@@ -119,7 +131,8 @@ class ContextUsage(VERIFY.Instance):
                     "estimated breakdown", "model window", "of current context", "higher rates",
                 )), text
                 if index == 0 and not self.manifest["compact"]:
-                    if not (re.search(r"compact now\s*0%", text) and re.search(r"shake tools\s*0%", text)):
+                    if not (re.search(r"compact now\D*[0-9][0-9.\s]*%", text)
+                            and re.search(r"shake tools\s*0%", text)):
                         return None
                 return frame
             return None
@@ -136,8 +149,40 @@ class ContextUsage(VERIFY.Instance):
             assert "auto-compaction" not in text.lower(), text
             return frame
 
+        def geometry():
+            state = self.drive("state")["panel"]
+            return {"scroll": state["scroll_fixture"], "editor": state["composer_fixture"],
+                    "draft": state["composer"]}
+
+        short = geometry()
+        draft = "Long draft stays here.\n" * 70
+        self.drive("set_composer", {"text": draft})
+        self.screenshot("draft-ready.png")  # Layout the selected hidden window before dispatching the wheel.
+        click("history:scroll-up")
+        click("scroll:transcript")
+        deadline = time.monotonic() + 5
+        while True:
+            before_overlay = geometry()
+            if (before_overlay["scroll"]["offset_y"] < 0
+                    and before_overlay["editor"]["editor_height"] > short["editor"]["editor_height"]):
+                break
+            assert time.monotonic() < deadline, before_overlay
+            time.sleep(.05)
+        time.sleep(.3)  # Let the native wheel animation settle before taking the baseline.
+        before_overlay = geometry()
+        assert before_overlay["draft"] == draft and before_overlay["scroll"]["offset_y"] < 0, before_overlay
+        frames["before_overlay"] = self.screenshot("before-overlay.png")
         click("panel-context-meter")
         frames["first"] = self.runtime_wait(lambda: panel("first.png", 0), "native first-session breakdown")
+        with_overlay = geometry()
+        assert with_overlay == before_overlay, (before_overlay, with_overlay)
+        click("panel-context-meter")
+        frames["after_overlay"] = self.screenshot("after-overlay.png")
+        after_overlay = geometry()
+        assert after_overlay == before_overlay, (before_overlay, after_overlay)
+        self.drive("set_composer", {"text": ""})
+        click("panel-context-meter")
+        self.runtime_wait(lambda: panel("after-clear.png", 0), "native overlay after clearing the draft")
         click("context-usage-shake")
         self.drive("press_key", {"key": "fixture:escape"})
         _, closed = self.capture_text("closed.png")
@@ -154,6 +199,10 @@ class ContextUsage(VERIFY.Instance):
         assert "context usage" not in switched.lower(), switched
         click("panel-context-meter")
         frames["second"] = self.runtime_wait(lambda: panel("second.png", 1), "native second-session breakdown")
+        click("panel-context-meter")
+        click("proof-pointer:16,140")
+        frames["ring"], ring_text = self.capture_text("ring-35-percent.png")
+        assert "35%" in ring_text and "context usage" not in ring_text.lower(), ring_text
         self.selected(first)
         _, returned = self.capture_text("return-arrival.png")
         if "context usage" not in returned.lower():
@@ -164,7 +213,9 @@ class ContextUsage(VERIFY.Instance):
         assert expected == [self.context_usage(session) for session in (first, second)]
         assert requests == (self.run / "fake-requests.jsonl").read_bytes()
         assert before == [self.drive("state", session=s)["panel"]["loaded_transcript_items"] for s in (first, second)]
-        proof = {"breakdowns": expected, "frames": frames}
+        proof = {"breakdowns": expected, "frames": frames,
+                 "overlay_geometry": {"before": before_overlay["scroll"], "open": with_overlay["scroll"],
+                                      "closed": after_overlay["scroll"], "editor": before_overlay["editor"]}}
         if self.manifest["compact"]:
             def compacted():
                 frame, text = self.capture_text("compacted.png")

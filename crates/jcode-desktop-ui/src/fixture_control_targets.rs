@@ -18,6 +18,11 @@ pub(crate) fn transcript_scroll_fixture() -> bool {
             == Ok("transcript-scroll")
 }
 
+pub(crate) fn context_overlay_fixture() -> bool {
+    enabled()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_CONTEXT_OVERLAY_PROOF").as_deref() == Ok("1")
+}
+
 pub(crate) fn draft_session() -> bool {
     enabled()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
@@ -155,6 +160,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                 || selector.starts_with("resume-action:")
                 || selector == "resume-preview:wheel"))
         || matches!(selector, "compaction-divider" | "history:scroll-up")
+        || (context_overlay_fixture() && selector == "scroll:transcript")
         || (transcript_scroll_fixture()
             && matches!(
                 selector,

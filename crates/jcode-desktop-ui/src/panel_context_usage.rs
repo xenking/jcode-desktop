@@ -81,14 +81,34 @@ impl State {
 
 fn category(kind: ContextBreakdownKind, theme: &Theme) -> (&'static str, gpui::Rgba) {
     match kind {
-        ContextBreakdownKind::SystemPrompt => ("System", theme.TEXT_DIM),
-        ContextBreakdownKind::BuiltinTools => ("Tools", theme.CODE_KEYWORD),
+        ContextBreakdownKind::SystemPrompt => ("System prompt", theme.TEXT_DIM),
+        ContextBreakdownKind::BuiltinTools => ("Tool definitions", theme.CODE_KEYWORD),
         ContextBreakdownKind::SkillsModes => ("Skills & modes", theme.WARN),
-        ContextBreakdownKind::DynamicTools => ("MCP", theme.CODE_ATTRIBUTE),
-        ContextBreakdownKind::Agents => ("Agents", theme.LINK),
+        ContextBreakdownKind::DynamicTools => ("MCP & dynamic tools", theme.CODE_ATTRIBUTE),
+        ContextBreakdownKind::Agents => ("Subagent definitions", theme.LINK),
         ContextBreakdownKind::Conversation => ("Conversation", theme.CODE_STRING),
         ContextBreakdownKind::Unattributed => ("Unattributed", theme.TEXT_FAINT),
     }
+}
+
+fn legend_row(label: &'static str, color: gpui::Rgba, value: String, theme: &Theme) -> gpui::Div {
+    let selector = format!("context-usage-count-{label}-{value}");
+    div()
+        .debug_selector(move || format!("context-usage-row-{label}"))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_2()
+        .child(div().flex_none().size(px(10.)).rounded_sm().bg(color))
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .child(
+            div()
+                .debug_selector(move || selector)
+                .flex_none()
+                .font_family(theme.FONT_MONO)
+                .text_color(theme.composer_secondary())
+                .child(value),
+        )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -516,15 +536,13 @@ impl Panel {
         ContextDisplay { meter }
     }
 
-    pub(super) fn render_context_usage(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::Stateful<gpui::Div>> {
+    pub(super) fn render_context_usage(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if !self.context_usage.is_open() {
             return None;
         }
         let theme = Theme::global();
         let display = self.context_display();
+        let percent = display.percent();
         let value = display.value();
         let selector = format!("context-usage-value-{value}");
         let categories: Vec<_> = self
@@ -532,18 +550,16 @@ impl Panel {
             .breakdown
             .iter()
             .flat_map(|snapshot| &snapshot.categories)
-            .filter_map(|bucket| {
-                let tokens = bucket.tokens.filter(|&n| n > 0)?;
+            .map(|bucket| {
                 let (label, color) = category(bucket.kind, theme);
-                Some((label, color, tokens))
+                (label, color, bucket.tokens)
             })
             .collect();
         let scale = display.scale();
-        let occupied = display
-            .meter
-            .occupied_tokens
-            .zip(scale)
-            .map(|(used, scale)| (used as f64 / scale as f64).min(1.) as f32);
+        let usage = display.meter.occupied_tokens.zip(scale);
+        let occupied = usage.map(|(used, scale)| (used as f64 / scale as f64).min(1.) as f32);
+        let remaining = usage.map(|(used, scale)| scale.saturating_sub(used));
+        let free_color = gpui::rgba(0x8c8c8c55);
         let cutoff = display
             .meter
             .long_context_pricing_above_input_tokens
@@ -551,182 +567,219 @@ impl Panel {
         let marker_fraction = cutoff.zip(scale).and_then(|(cutoff, scale)| {
             (cutoff < scale).then(|| (cutoff as f64 / scale as f64) as f32)
         });
-        let sum: f64 = categories.iter().map(|(_, _, tokens)| *tokens as f64).sum();
+        let sum = categories
+            .iter()
+            .filter_map(|(_, _, tokens)| *tokens)
+            .fold(0u64, u64::saturating_add);
+        let unmatched = display
+            .meter
+            .occupied_tokens
+            .map(|used| used.saturating_sub(sum));
         // Keep any unmatched occupancy neutral. If estimates overshoot, scale them to fit.
         let category_extent = display
             .meter
             .occupied_tokens
-            .map_or(sum, |used| sum.max(used as f64));
+            .map_or(sum, |used| sum.max(used));
         let owner = cx.weak_entity();
-        Some(
-            div()
-                .id("context-usage")
-                .debug_selector(|| "context-usage".into())
-                .relative()
-                .children(marker(
-                    || "context-usage".into(),
-                    || Some(self.session_id.clone()),
-                ))
-                .child(
-                    gpui::canvas(
-                        |_, _, _| (),
-                        move |bounds, _, window, _| {
-                            crate::popover::dismiss_outside(window, [bounds], move |_, cx| {
-                                let _ = owner.update(cx, |panel, cx| panel.close_context_usage(cx));
-                            });
-                        },
+        let card = div()
+            .id("context-usage")
+            .debug_selector(|| "context-usage".into())
+            .relative()
+            .children(marker(
+                || "context-usage".into(),
+                || Some(self.session_id.clone()),
+            ))
+            .w_full()
+            .min_w_0()
+            .max_h_full()
+            .overflow_y_scroll()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .rounded_xl()
+            .border_1()
+            .border_color(theme.INPUT_BORDER)
+            .bg(theme.popover_background())
+            .shadow_lg()
+            .occlude()
+            .font_family(theme.FONT_UI)
+            .text_size(px(13.))
+            .text_color(theme.TEXT)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .flex_wrap()
+                    .justify_between()
+                    .gap_x_2()
+                    .gap_y_0p5()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(94.))
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Context Usage"),
                     )
-                    .absolute()
-                    .size_full(),
-                )
-                .w_full()
-                .max_w(px(460.))
-                .self_start()
-                .min_w_0()
-                .mb_2()
-                .p_3()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .rounded_xl()
-                .border_1()
-                .border_color(theme.INPUT_BORDER)
-                .bg(theme.popover_background())
-                .font_family(theme.FONT_UI)
-                .text_size(px(13.))
-                .text_color(theme.TEXT)
-                .child(
-                    div()
-                        .flex()
-                        .w_full()
-                        .items_center()
-                        .flex_wrap()
-                        .justify_between()
-                        .gap_x_2()
-                        .gap_y_0p5()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Context Usage"),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(move || selector)
-                                .flex_none()
-                                .text_size(px(12.))
-                                .text_color(theme.composer_secondary())
-                                .child(if display.threshold().is_some() {
-                                    format!("{value} to compact")
-                                } else if display.meter.occupied_tokens.is_some() {
-                                    format!("{value} tokens")
-                                } else {
-                                    "Occupancy unknown".into()
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .debug_selector(|| "context-usage-bar".into())
-                        .relative()
-                        .w_full()
-                        .h(px(8.))
-                        .flex()
-                        .overflow_hidden()
-                        .rounded_full()
-                        .bg(theme.chip_background())
-                        .children(occupied.map(|occupied| {
-                            div()
-                                .debug_selector(|| "context-usage-occupied".into())
-                                .w(relative(occupied))
-                                .h_full()
-                                .flex_none()
-                                .flex()
-                                .bg(theme.TEXT_FAINT)
-                                .children(categories.iter().map(|(label, color, tokens)| {
-                                    let label = *label;
+                    .child(
+                        div()
+                            .flex_none()
+                            .ml_auto()
+                            .max_w_full()
+                            .flex()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_2()
+                            .child(self.render_context_action(Action::Compact, cx))
+                            .child(self.render_context_action(Action::Shake, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .when(percent.is_some(), |row| row.justify_between())
+                    .when(percent.is_none(), |row| row.justify_end())
+                    .flex_wrap()
+                    .gap_x_2()
+                    .text_size(px(12.))
+                    .text_color(theme.composer_secondary())
+                    .children(
+                        percent
+                            .map(|percent| div().flex_none().child(format!("{percent:.0}% used"))),
+                    )
+                    .child(div().flex_none().debug_selector(move || selector).child(
+                        if display.threshold().is_some() {
+                            format!("{value} to compact")
+                        } else if display.meter.occupied_tokens.is_some() {
+                            format!("{value} tokens")
+                        } else {
+                            "Occupancy unknown".into()
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "context-usage-bar".into())
+                    .relative()
+                    .w_full()
+                    .h(px(8.))
+                    .flex_none()
+                    .flex()
+                    .overflow_hidden()
+                    .rounded_full()
+                    .bg(free_color)
+                    .children(occupied.map(|occupied| {
+                        div()
+                            .debug_selector(|| "context-usage-occupied".into())
+                            .w(relative(occupied))
+                            .h_full()
+                            .flex_none()
+                            .flex()
+                            .bg(theme.TEXT_FAINT)
+                            .children(categories.iter().filter_map(|(label, color, tokens)| {
+                                let tokens = tokens.filter(|&tokens| tokens > 0)?;
+                                let label = *label;
+                                Some(
                                     div()
                                         .debug_selector(move || {
                                             format!("context-usage-segment-{label}")
                                         })
                                         .flex_none()
-                                        .w(relative((*tokens as f64 / category_extent) as f32))
+                                        .w(relative(
+                                            (tokens as f64 / category_extent as f64) as f32,
+                                        ))
                                         .h_full()
-                                        .bg(*color)
-                                }))
+                                        .bg(*color),
+                                )
+                            }))
+                    }))
+                    .children(marker_fraction.map(|offset| {
+                        div()
+                            .debug_selector(|| "context-usage-billing-marker".into())
+                            .absolute()
+                            .left(relative(offset))
+                            .top_0()
+                            .h_full()
+                            .w(px(2.))
+                            .bg(theme.WARN)
+                    })),
+            )
+            .children(cutoff.map(|cutoff| {
+                div()
+                    .debug_selector(|| "context-usage-billing-label".into())
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(theme.composer_secondary())
+                    .child(format!(
+                        "Higher rates above {} input tokens per request",
+                        format_context_tokens(cutoff)
+                    ))
+            }))
+            .when(!categories.is_empty(), |panel| {
+                panel.child(
+                    div()
+                        .debug_selector(|| "context-usage-breakdown".into())
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_size(px(12.))
+                        .children(categories.iter().map(|(label, color, tokens)| {
+                            let value = tokens.map_or_else(
+                                || "—".into(),
+                                |tokens| format!("~{}", format_context_tokens(tokens)),
+                            );
+                            legend_row(label, *color, value, theme)
                         }))
-                        .children(marker_fraction.map(|offset| {
-                            div()
-                                .debug_selector(|| "context-usage-billing-marker".into())
-                                .absolute()
-                                .left(relative(offset))
-                                .top_0()
-                                .h_full()
-                                .w(px(2.))
-                                .bg(theme.WARN)
+                        .children(unmatched.filter(|&tokens| tokens > 0).map(|tokens| {
+                            legend_row(
+                                "Unmatched estimate",
+                                theme.TEXT_FAINT,
+                                format_context_tokens(tokens),
+                                theme,
+                            )
+                        }))
+                        .children(remaining.map(|tokens| {
+                            legend_row(
+                                "Remaining",
+                                free_color,
+                                format_context_tokens(tokens),
+                                theme,
+                            )
                         })),
                 )
-                .children(cutoff.map(|cutoff| {
+            })
+            .children(match &self.context_usage.action {
+                ActionState::ConfirmShake(preview) => Some(self.render_shake_preview(preview, cx)),
+                ActionState::Finished { label, error } => Some(
                     div()
-                        .debug_selector(|| "context-usage-billing-label".into())
-                        .text_size(px(11.))
-                        .text_color(theme.composer_secondary())
-                        .child(format!(
-                            "Higher rates above {} input tokens per request",
-                            format_context_tokens(cutoff)
+                        .id("context-usage-result")
+                        .debug_selector(|| "context-usage-result".into())
+                        .relative()
+                        .children(marker(
+                            || "context-usage-result".into(),
+                            || Some(self.session_id.clone()),
                         ))
-                }))
-                .when(!categories.is_empty(), |panel| {
-                    panel.child(
-                        div()
-                            .debug_selector(|| "context-usage-breakdown".into())
-                            .flex()
-                            .flex_wrap()
-                            .gap_x_3()
-                            .gap_y_1()
-                            .text_size(px(11.))
-                            .children(categories.iter().map(|(label, color, tokens)| {
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(div().flex_none().size(px(6.)).rounded_full().bg(*color))
-                                    .child(*label)
-                                    .child(
-                                        div()
-                                            .text_color(theme.composer_secondary())
-                                            .child(format!("~{}", format_context_tokens(*tokens))),
-                                    )
-                            })),
-                    )
-                })
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.render_context_action(Action::Compact, cx))
-                        .child(self.render_context_action(Action::Shake, cx)),
-                )
-                .children(match &self.context_usage.action {
-                    ActionState::ConfirmShake(preview) => {
-                        Some(self.render_shake_preview(preview, cx))
-                    }
-                    ActionState::Finished { label, error } => Some(
-                        div()
-                            .id("context-usage-result")
-                            .debug_selector(|| "context-usage-result".into())
-                            .relative()
-                            .children(marker(
-                                || "context-usage-result".into(),
-                                || Some(self.session_id.clone()),
-                            ))
-                            .text_size(px(12.))
-                            .text_color(if *error { theme.ERROR } else { theme.OK })
-                            .child(label.clone()),
-                    ),
-                    _ => None,
-                }),
+                        .text_size(px(12.))
+                        .text_color(if *error { theme.ERROR } else { theme.OK })
+                        .child(label.clone()),
+                ),
+                _ => None,
+            });
+        Some(
+            gpui::deferred(
+                crate::input::popup::Popup::new(card, px(5.))
+                    .at_composer()
+                    .dismiss_outside(Some(std::rc::Rc::new(move |_, cx| {
+                        let _ = owner.update(cx, |panel, cx| panel.close_context_usage(cx));
+                    }))),
+            )
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 

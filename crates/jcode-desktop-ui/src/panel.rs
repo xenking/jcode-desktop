@@ -6678,7 +6678,9 @@ impl Render for Panel {
                 || Some(self.session_id.clone()),
             ))
             .children(
-                crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+                (crate::fixture_control_targets::transcript_scroll_fixture()
+                    || crate::fixture_control_targets::context_overlay_fixture())
+                .then(|| {
                     crate::fixture_control_targets::marker(
                         || "scroll:transcript".into(),
                         || Some(self.session_id.clone()),

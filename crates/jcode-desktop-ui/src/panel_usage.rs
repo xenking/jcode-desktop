@@ -542,6 +542,110 @@ impl Panel {
     }
 }
 
+/// Filled annulus segment from 12 o'clock, clockwise, `fraction` of a turn.
+fn ring_path(
+    center: gpui::Point<gpui::Pixels>,
+    outer: f32,
+    inner: f32,
+    fraction: f32,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    let fraction = fraction.clamp(0., 1.);
+    if fraction <= 0. {
+        return None;
+    }
+    let at = |r: f32, t: f32| {
+        let angle = t * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        center + gpui::point(px(r * angle.cos()), px(r * angle.sin()))
+    };
+    let mut builder = gpui::PathBuilder::fill();
+    if fraction >= 0.999 {
+        // Two half arcs per circle: a single full-turn arc is degenerate.
+        builder.move_to(at(outer, 0.));
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            false,
+            true,
+            at(outer, 0.5),
+        );
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            false,
+            true,
+            at(outer, 0.),
+        );
+        builder.close();
+        builder.move_to(at(inner, 0.));
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            false,
+            false,
+            at(inner, 0.5),
+        );
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            false,
+            false,
+            at(inner, 0.),
+        );
+        builder.close();
+    } else {
+        let large = fraction > 0.5;
+        builder.move_to(at(outer, 0.));
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            large,
+            true,
+            at(outer, fraction),
+        );
+        builder.line_to(at(inner, fraction));
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            large,
+            false,
+            at(inner, 0.),
+        );
+        builder.close();
+    }
+    builder.build().ok()
+}
+
+/// Circular context gauge: a faint full track with a colored used arc.
+fn context_ring(used: Option<f32>) -> gpui::AnyElement {
+    const SIZE: f32 = super::composer::BAR_ICON;
+    let theme = Theme::global();
+    let used = used.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
+    div()
+        .debug_selector(|| "panel-context-ring".into())
+        .flex_none()
+        .size(px(SIZE))
+        .child(
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let center = bounds.center();
+                    let outer = SIZE / 2.;
+                    let inner = outer - 2.6;
+                    if let Some(track) = ring_path(center, outer, inner, 1.) {
+                        window.paint_path(track, theme.INLINE_CODE_BG);
+                    }
+                    if let Some(used) = used
+                        && let Some(arc) = ring_path(center, outer, inner, used / 100.)
+                    {
+                        window.paint_path(arc, usage_color(used, theme));
+                    }
+                },
+            )
+            .size_full(),
+        )
+        .into_any_element()
+}
+
 /// USD with cents above a dollar and more precision for small sessions.
 fn format_cost(usd: f64) -> String {
     if usd >= 1. {
@@ -661,20 +765,18 @@ impl Panel {
                 .flex_none()
                 .flex()
                 .items_center()
+                .gap_1()
                 .h(px(22.))
                 .px_1()
                 .text_size(px(10.5))
                 .font_family(theme.FONT_MONO)
                 .text_color(theme.TEXT_DIM)
-                .rounded_full()
                 .cursor_pointer()
-                .hover(|el| el.bg(theme.chip_background()))
-                .when(self.context_usage.is_open(), |el| {
-                    el.bg(theme.chip_active_background())
-                })
+                .hover(|el| el.text_color(theme.TEXT))
                 .when(!self.context_usage.is_open(), |el| {
                     el.tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone())).into())
                 })
+                .child(context_ring(percent))
                 .child(div().debug_selector(move || selector).child(label))
                 .on_click(cx.listener(|panel, _, window, cx| {
                     panel.toggle_context_usage(window, cx);
@@ -1033,7 +1135,9 @@ mod tests {
         assert!(percent.left() - ring.right() <= px(5.));
         assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_none());
         let bar = vcx.debug_bounds("context-usage-bar").unwrap();
-        let tools = vcx.debug_bounds("context-usage-segment-Tools").unwrap();
+        let tools = vcx
+            .debug_bounds("context-usage-segment-Tool definitions")
+            .unwrap();
         let chat = vcx
             .debug_bounds("context-usage-segment-Conversation")
             .unwrap();
@@ -1045,8 +1149,31 @@ mod tests {
         assert!((f32::from(marker.left() - bar.left()) - marker_offset).abs() <= 1.);
         assert!(vcx.debug_bounds("context-usage-billing-label").is_some());
         let compact = vcx.debug_bounds("context-usage-compact").unwrap();
-        let forecast = vcx.debug_bounds("context-usage-compact-savings").unwrap();
-        assert!(compact.contains(&forecast.center()));
+        let shake = vcx.debug_bounds("context-usage-shake").unwrap();
+        let status = vcx.debug_bounds("context-usage-compact-status").unwrap();
+        assert!(compact.contains(&status.center()));
+        assert_eq!(compact.top(), shake.top());
+        assert!(shake.bottom() < bar.top());
+        let tool_row = vcx
+            .debug_bounds("context-usage-row-Tool definitions")
+            .unwrap();
+        let chat_row = vcx.debug_bounds("context-usage-row-Conversation").unwrap();
+        let tools_count = vcx
+            .debug_bounds("context-usage-count-Tool definitions-~11k")
+            .unwrap();
+        let chat_count = vcx
+            .debug_bounds("context-usage-count-Conversation-~33k")
+            .unwrap();
+        let free_count = vcx
+            .debug_bounds("context-usage-count-Remaining-24k")
+            .unwrap();
+        assert!(tool_row.bottom() <= chat_row.top());
+        assert!(tool_row.contains(&tools_count.center()));
+        assert!(chat_row.contains(&chat_count.center()));
+        assert_eq!(tools_count.right(), bar.right());
+        assert_eq!(chat_count.right(), bar.right());
+        assert_eq!(free_count.right(), bar.right());
+        assert!(free_count.top() > chat_count.bottom());
         assert_eq!(
             panel.read_with(vcx, |panel, _| panel.items.len()),
             item_count

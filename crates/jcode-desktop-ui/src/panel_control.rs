@@ -219,14 +219,19 @@ impl Panel {
                 })
             })
             .collect::<Vec<_>>();
-        let scroll_fixture = crate::fixture_control_targets::transcript_scroll_fixture().then(|| {
+        let scroll_proof = crate::fixture_control_targets::transcript_scroll_fixture()
+            || crate::fixture_control_targets::context_overlay_fixture();
+        let scroll_fixture = scroll_proof.then(|| {
             let position = self.transcript_list.logical_scroll_top();
+            let viewport = self.transcript_list.viewport_bounds();
             let tool = self.swarm_scrolls.borrow().get("scroll-fixture").map(|h| (f32::from(h.offset().y), f32::from(h.max_offset().y)));
             serde_json::json!({
                 "transcript": (position.item_ix, f32::from(position.offset_in_item)),
+                "offset_y": f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y),
                 "tool": tool,
                 "prompt_height": self.transcript_list.bounds_for_item(1).map(|b| f32::from(b.size.height)),
-                "viewport_height": f32::from(self.transcript_list.viewport_bounds().size.height),
+                "viewport_y": f32::from(viewport.origin.y),
+                "viewport_height": f32::from(viewport.size.height),
             })
         });
         let picker_name = |kind| match kind {
@@ -254,8 +259,7 @@ impl Panel {
             "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),
             "picker": self.picker_search.as_ref().map(|(kind, _)| picker_name(*kind)),
             "composer": self.input.read(cx).snapshot().content,
-            "composer_fixture": crate::fixture_control_targets::transcript_scroll_fixture()
-                .then(|| self.input.read(cx).composer_proof_state()),
+            "composer_fixture": scroll_proof.then(|| self.input.read(cx).composer_proof_state()),
             "soniox_fixture": crate::fixture_control_targets::voice_soniox()
                 .then(|| self.input.read(cx).dictation_proof_state()),
             "fixture_side_question": crate::fixture_control_targets::draft_session().then(|| {
