@@ -18,6 +18,8 @@ const MAX_ROUTE_BYTES: u64 = 4096;
 struct Route {
     home: PathBuf,
     socket: PathBuf,
+    socket_device: u64,
+    socket_inode: u64,
 }
 
 fn local_session(id: &str) -> bool {
@@ -43,6 +45,25 @@ fn private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn trusted_ancestors(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| invalid("missing parent"))?;
+    // SAFETY: geteuid takes no pointers and has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    for ancestor in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        let owner = metadata.uid();
+        let mode = metadata.mode();
+        let trusted_sticky = owner == 0 && mode & 0o1000 != 0;
+        if !metadata.is_dir()
+            || (owner != 0 && owner != uid)
+            || (mode & 0o022 != 0 && !trusted_sticky)
+        {
+            return Err(invalid("route has an untrusted ancestor directory"));
+        }
+    }
+    Ok(())
+}
+
 fn private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -60,16 +81,17 @@ fn load_route(desktop_home: &Path, session_id: &str) -> io::Result<Option<Route>
         return Ok(None);
     }
     let directory = desktop_home.join(ROUTE_DIR);
-    match private_directory(&directory) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        result => result?,
-    }
-    private_directory(desktop_home)?;
     let route_path = directory.join(format!("{session_id}.json"));
-    let file = match private_file(&route_path) {
+    match fs::symlink_metadata(&route_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        result => result?,
+        result => {
+            result?;
+        }
     };
+    trusted_ancestors(&route_path)?;
+    private_directory(&directory)?;
+    private_directory(desktop_home)?;
+    let file = private_file(&route_path)?;
     let mut content = Vec::new();
     file.take(MAX_ROUTE_BYTES + 1).read_to_end(&mut content)?;
     if content.len() as u64 > MAX_ROUTE_BYTES {
@@ -79,6 +101,8 @@ fn load_route(desktop_home: &Path, session_id: &str) -> io::Result<Option<Route>
     if !route.home.is_absolute() || !route.socket.is_absolute() {
         return Err(invalid("route paths must be absolute"));
     }
+    trusted_ancestors(&route.home)?;
+    trusted_ancestors(&route.socket)?;
     private_directory(&route.home)?;
     if fs::canonicalize(&route.home)? == fs::canonicalize(desktop_home)? {
         return Err(invalid(
@@ -101,6 +125,11 @@ fn load_route(desktop_home: &Path, session_id: &str) -> io::Result<Option<Route>
     let socket = fs::symlink_metadata(&route.socket)?;
     if !socket.file_type().is_socket() || !owner_private(&socket) {
         return Err(invalid("seat socket is not an owner-only Unix socket"));
+    }
+    if (socket.dev(), socket.ino()) != (route.socket_device, route.socket_inode) {
+        return Err(invalid(
+            "seat socket identity changed; register the live socket again",
+        ));
     }
     Ok(Some(route))
 }
@@ -223,19 +252,25 @@ mod tests {
     #[test]
     fn only_an_owned_exact_session_route_selects_a_private_socket() {
         let root = tempfile::tempdir().unwrap();
-        let home = dir(root.path().join("desktop"));
+        let root_path = root.path().canonicalize().unwrap();
+        let home = dir(root_path.join("desktop"));
         assert!(load_route(&home, ID).unwrap().is_none());
         let routes = dir(home.join(ROUTE_DIR));
-        let private = dir(root.path().join("seat"));
+        let private = dir(root_path.join("seat"));
         let sessions = dir(private.join("sessions"));
-        let socket = root.path().join("daemon.sock");
-        mode(root.path(), 0o700);
+        let socket_parent = dir(root_path.join("endpoint"));
+        let socket = socket_parent.join("daemon.sock");
         let _daemon = UnixListener::bind(&socket).unwrap();
         mode(&socket, 0o600);
+        let socket_metadata = fs::symlink_metadata(&socket).unwrap();
         let registration = routes.join(format!("{ID}.json"));
         fs::write(
             &registration,
-            serde_json::json!({"home":private,"socket":socket}).to_string(),
+            serde_json::json!({
+                "home":private,"socket":socket,
+                "socket_device":socket_metadata.dev(),"socket_inode":socket_metadata.ino(),
+            })
+            .to_string(),
         )
         .unwrap();
         mode(&registration, 0o600);
@@ -247,7 +282,9 @@ mod tests {
             load_route(&home, ID).unwrap(),
             Some(Route {
                 home: private,
-                socket: socket.clone()
+                socket: socket.clone(),
+                socket_device: socket_metadata.dev(),
+                socket_inode: socket_metadata.ino(),
             })
         );
         for non_matching in [
@@ -260,6 +297,28 @@ mod tests {
         mode(&socket, 0o666);
         assert!(load_route(&home, ID).is_err());
         mode(&socket, 0o600);
+        let old_socket = socket_parent.join("old.sock");
+        fs::rename(&socket, &old_socket).unwrap();
+        let _substitute = UnixListener::bind(&socket).unwrap();
+        mode(&socket, 0o600);
+        let error = load_route(&home, ID).unwrap_err();
+        assert!(error.to_string().contains("socket identity changed"));
+        fs::rename(&socket, socket_parent.join("substitute.sock")).unwrap();
+        symlink(&old_socket, &socket).unwrap();
+        assert!(load_route(&home, ID).is_err());
+        fs::remove_file(&socket).unwrap();
+        fs::rename(&old_socket, &socket).unwrap();
+        assert!(load_route(&home, ID).unwrap().is_some());
+        mode(&root_path, 0o777);
+        assert!(load_route(&home, ID).is_err());
+        mode(&root_path, 0o700);
+        let moved_parent = root_path.join("other-endpoint");
+        fs::rename(&socket_parent, &moved_parent).unwrap();
+        symlink(&moved_parent, &socket_parent).unwrap();
+        let error = load_route(&home, ID).unwrap_err();
+        assert!(error.to_string().contains("untrusted ancestor"));
+        fs::remove_file(&socket_parent).unwrap();
+        fs::rename(&moved_parent, &socket_parent).unwrap();
         mode(&registration, 0o644);
         assert!(load_route(&home, ID).is_err());
         let target = routes.join("registration");
