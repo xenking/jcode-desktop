@@ -1273,15 +1273,23 @@ impl Panel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(selected && !question.multi_select, |el| {
-                        el.child(div().size(px(10.)).bg(theme.ACCENT).rounded_full())
+                    .when(!question.multi_select, |el| {
+                        el.child(
+                            div()
+                                .size(px(10.))
+                                .rounded_full()
+                                .when(selected, |el| el.bg(theme.ACCENT)),
+                        )
                     })
-                    .when(selected && question.multi_select, |el| {
+                    .when(question.multi_select, |el| {
                         let color = theme.ACCENT;
                         el.child(
                             gpui::canvas(
                                 |_, _, _| (),
                                 move |bounds, _, window, _| {
+                                    if !selected {
+                                        return;
+                                    }
                                     let mut path = gpui::PathBuilder::stroke(px(2.));
                                     path.move_to(bounds.origin + gpui::point(px(2.), px(7.)));
                                     path.line_to(bounds.origin + gpui::point(px(5.), px(10.)));
@@ -1428,9 +1436,11 @@ impl Panel {
                         .min_w_0()
                         .rounded(if editor.is_some() { px(12.) } else { px(20.) })
                         .when(selected, |el| el.bg(theme.ACCENT_DIM))
+                        // Focus changes the outline, not the width used to wrap the options.
+                        .border_1()
                         .when(
                             self.focus_handle.is_focused(window) && card.cursor_option == o,
-                            |el| el.border_1().border_color(theme.ACCENT),
+                            |el| el.border_color(theme.ACCENT),
                         )
                         .child(row)
                         .when_some(editor, |el, input| {
