@@ -323,6 +323,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn clean_chat_paints_stream_and_final_without_toggling(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "clean-phases".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.set_clean_chat(Some(true), cx);
+            panel.items.push(Item::User("Running".into()));
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("assistant-response").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&text("reply", "Live answer"), cx)
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("assistant-response").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(&text_done("reply"), cx);
+            panel.apply(&turn_done(), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("clean-chat-final").is_some());
+    }
+
+    #[gpui::test]
     fn clean_chat_final_requires_a_completed_turn_even_across_reload(
         cx: &mut gpui::TestAppContext,
     ) {
