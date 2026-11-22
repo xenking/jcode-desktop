@@ -59,11 +59,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: xenking/jcode
-          ref: 69d40714523974b6b5b46fedecb93f1b3a620c79
+          ref: dbd4ceafea0b97f3027ee7c707e9f29076e6551d
           path: jcode
           submodules: recursive
       - name: Verify runtime source compatibility
-        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit 69d40714523974b6b5b46fedecb93f1b3a620c79
+        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit dbd4ceafea0b97f3027ee7c707e9f29076e6551d
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
