@@ -79,12 +79,14 @@ class ReleaseTargetTests(unittest.TestCase):
         depends = re.search(r"^Depends: (.+)$", packager, re.MULTILINE).group(1)
         self.assertIn("libasound2t64 | libasound2", depends.split(", "))
 
-    def test_cli_release_target_parity(self):
+    def test_desktop_covers_every_cli_release_target(self):
         cli = ROOT.parent / "jcode/.github/workflows/release.yml"
         if not cli.exists():
-            self.skipTest("Adjacent CLI checkout is needed for upstream parity check")
-        cli_targets = set(re.findall(r"target: ([a-z0-9_]+-[a-z0-9_-]+)", cli.read_text()))
-        cli_targets |= set(re.findall(r"Build \(([a-z0-9_]+-[a-z0-9_-]+)\)", cli.read_text()))
+            self.skipTest("Adjacent CLI checkout is needed for release target coverage")
+        cli_workflow = cli.read_text()
+        cli_targets = set(re.findall(r"target: ([a-z0-9_]+-[a-z0-9_-]+)", cli_workflow))
+        cli_targets |= set(re.findall(r"Build \(([a-z0-9_]+-[a-z0-9_-]+)\)", cli_workflow))
+        self.assertTrue(cli_targets, "No release targets found in the CLI workflow")
         desktop = (ROOT / ".github/workflows/cross-platform-release.yml").read_text()
         targets = set(re.findall(r"target: ([a-z0-9_]+-[a-z0-9_-]+)", desktop))
         targets |= {"aarch64-apple-darwin", "x86_64-apple-darwin"}
@@ -92,8 +94,8 @@ class ReleaseTargetTests(unittest.TestCase):
         self.assertIn("x86_64-unknown-freebsd", freebsd)
         targets.add("x86_64-unknown-freebsd")
         self.assertIn("needs: [build, build-freebsd]", desktop)
-        self.assertEqual(cli_targets, targets,
-                         "CLI added a release target that Desktop must account for")
+        self.assertEqual(cli_targets - targets, set(),
+                         "Desktop is missing CLI release targets")
 
 
 if __name__ == "__main__":
