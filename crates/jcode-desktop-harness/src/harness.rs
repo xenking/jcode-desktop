@@ -83,6 +83,9 @@ mod history;
 mod recovery;
 #[path = "harness_search.rs"]
 mod search;
+#[cfg(unix)]
+#[path = "harness_private_routes.rs"]
+mod private_routes;
 mod tab_wait;
 
 /// Test whether an ID belongs to a remote namespace, even if malformed.
@@ -3091,6 +3094,8 @@ fn session_worker_with_transports(
     initial_client: Option<JcodeClient>,
     transports: transport::RemoteTransports,
 ) {
+    #[cfg(unix)]
+    let mut private_route = private_routes::PrivateRoute::default();
     // Keep the shared master alive across this worker's API reconnect, but
     // never after the worker stops. Adoption preserves the creator's owner.
     #[cfg(unix)]
@@ -3110,7 +3115,13 @@ fn session_worker_with_transports(
                 }
                 result
             }
-            None => connect("panel"),
+            None => {
+                #[cfg(unix)]
+                if let Some(client) = private_route.connect(&address.session_id)? {
+                    return Ok(client);
+                }
+                connect("panel")
+            }
         }
     });
 }
