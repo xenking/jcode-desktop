@@ -85,11 +85,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: xenking/jcode
-          ref: b3d13567f9bcf22f8dd14061d2187b784a0bf960
+          ref: fd2a5f0ca1389f0c3e001e6625196b9149ed8fcf
           path: jcode
           submodules: recursive
       - name: Verify runtime source compatibility
-        run: python jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit b3d13567f9bcf22f8dd14061d2187b784a0bf960
+        run: python jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit fd2a5f0ca1389f0c3e001e6625196b9149ed8fcf
       - name: Validate release target and publication contracts
         run: python -m unittest discover -s jcode-desktop/tests -p test_release_targets.py -v
       - name: Configure MSVC build environment

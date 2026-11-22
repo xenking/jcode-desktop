@@ -2986,6 +2986,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ask_recovery_after_snapshot_ignores_only_expired_tools(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "session-a".into(),
+                None,
+                None,
+                crate::harness::spawn_recording().0,
+                cx,
+            )
+        });
+        let fallback_tool = |id: &str| super::super::Item::Tool {
+            call_id: id.into(),
+            name: "ask".into(),
+            input: serde_json::json!({"questions": [question(false)]}).to_string(),
+            output: String::new(),
+            done: false,
+            error: None,
+        };
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(fallback_tool("expired"));
+            panel.reconcile_asks(1, Some(&[]), cx);
+            assert!(panel.recoverable_ask().is_none());
+            panel.items.push(fallback_tool("fresh"));
+            panel.schedule_ask_recovery(cx);
+        });
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_secs(2));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.ask_card.as_ref().unwrap().request_id, "ask-fresh");
+        });
+    }
+
+    #[gpui::test]
     fn reconnect_retires_missing_asks_and_late_ack_cannot_close_the_current_attempt(
         cx: &mut gpui::TestAppContext,
     ) {

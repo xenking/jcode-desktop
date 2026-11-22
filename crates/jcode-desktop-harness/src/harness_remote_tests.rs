@@ -57,8 +57,16 @@ impl Server {
     }
 
     fn with_failures(
+        history_failures: usize,
+        attach_failures: usize,
+    ) -> (JcodeClient, Self) {
+        Self::with_pending_asks(history_failures, attach_failures, None)
+    }
+
+    fn with_pending_asks(
         mut history_failures: usize,
         mut attach_failures: usize,
+        pending_ask_ids: Option<Vec<String>>,
     ) -> (JcodeClient, Self) {
         let (socket, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
@@ -88,7 +96,7 @@ impl Server {
                     }
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
                         ApiEvent::Attached {
-                            pending_ask_ids: None,
+                            pending_ask_ids: pending_ask_ids.clone(),
                             session: info("same-id"),
                         }
                     }
@@ -436,6 +444,61 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(server.next(), ApiRequest::DetachSession { session_id } if session_id == "same-id")
     );
     server.disconnect();
+}
+
+#[test]
+fn ask_reconnect_reports_new_pending_owner_and_never_replays_an_old_answer() {
+    let (commands, rx) = channel();
+    let (tx, updates) = update_channel();
+    let (connections_tx, connections) = channel();
+    let worker = std::thread::spawn(move || {
+        let mut attachment = 0;
+        session_worker_with_connector("same-id".into(), rx, tx, None, |_| {
+            let request = if attachment == 0 { "ask-old" } else { "ask-new" };
+            attachment += 1;
+            let (client, server) = Server::with_pending_asks(0, 0, Some(vec![request.into()]));
+            connections_tx.send(server).unwrap();
+            Ok(client)
+        });
+    });
+    let await_attachment = |request_id: &str| {
+        let Update::AskAttachment { attachment_id, pending_ask_ids, .. } =
+            wait_update(&updates, |u| matches!(u, Update::AskAttachment { .. }))
+        else { unreachable!() };
+        assert_eq!(pending_ask_ids.unwrap(), [request_id]);
+        attachment_id
+    };
+    let first = connections.recv_timeout(Duration::from_secs(3)).unwrap();
+    let old_attachment = await_attachment("ask-old");
+    first.disconnect();
+    wait_update(&updates, |u| matches!(u, Update::SessionLost { .. }));
+
+    let answer = |request_id: &str, attachment_id, attempt_id| {
+        commands.send(SessionCommand::AskResponse {
+            request_id: request_id.into(),
+            attachment_id,
+            attempt_id,
+            response: jcode_sdk::AskResponse::default(),
+        }).unwrap();
+    };
+    answer("ask-old", old_attachment, 1);
+    let second = connections.recv_timeout(Duration::from_secs(3)).unwrap();
+    let new_attachment = await_attachment("ask-new");
+    assert_ne!(old_attachment, new_attachment);
+    wait_update(&updates, |u| matches!(u, Update::AskResponseSettled {
+        attempt_id: 1, result: Err(AskResponseError::ConnectionChanged), ..
+    }));
+    assert!(!second.requests.try_iter().any(|r| matches!(r, ApiRequest::AskResponse { .. })));
+
+    answer("ask-new", new_attachment, 2);
+    assert!(matches!(second.next(), ApiRequest::AskResponse { request_id, response, .. }
+        if request_id == "ask-new" && response.answers.is_none()));
+    wait_update(&updates, |u| matches!(u, Update::AskResponseSettled {
+        attempt_id: 2, result: Ok(()), ..
+    }));
+    commands.send(SessionCommand::Stop).unwrap();
+    worker.join().unwrap();
+    second.disconnect();
 }
 
 #[test]
