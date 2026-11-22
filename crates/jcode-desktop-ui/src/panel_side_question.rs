@@ -10,8 +10,6 @@ use super::*;
 use crate::harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
 use crate::input::VerticalResize;
 use jcode_sdk::{ApiEvent, SessionInfo};
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -40,7 +38,6 @@ pub(crate) struct SideQuestionCard {
     previous: Vec<SideQuestionTurn>,
     editor: Entity<PromptInput>,
     scroll: gpui::ScrollHandle,
-    reveal_question: Rc<Cell<bool>>,
     resize: VerticalResize,
     selection: Entity<TextSelection>,
     error: Option<String>,
@@ -65,7 +62,6 @@ impl SideQuestionCard {
             previous: Vec::new(),
             editor,
             scroll: gpui::ScrollHandle::new(),
-            reveal_question: Rc::default(),
             resize: VerticalResize::default(),
             selection: cx.new(TextSelection::new),
             error: None,
@@ -173,7 +169,7 @@ impl Panel {
         card.reasoning.clear();
         card.error = None;
         card.status = SideQuestionStatus::Working;
-        card.reveal_question.set(true);
+        card.scroll.set_offset(Default::default());
         let editor = card.editor.clone();
         cx.defer(move |cx| {
             editor.update(cx, |editor, cx| editor.set_submission_enabled(false, cx))
@@ -224,7 +220,7 @@ impl Panel {
             .as_ref()
             .filter(|card| card.child_session_id == session_id)
         {
-            card.reveal_question.set(true);
+            card.scroll.set_offset(Default::default());
             self.side_question_history = None;
             cx.notify();
             return;
@@ -277,7 +273,6 @@ impl Panel {
                 } else {
                     SideQuestionStatus::Done
                 };
-                card.reveal_question.set(!card.previous.is_empty());
                 self.show_side_question(card, cx);
             }
             Err(error) => {
@@ -495,9 +490,6 @@ impl Panel {
             .min_w_0()
             .gap_3()
             .pr_2()
-            .children(card.previous.iter().enumerate().map(|(index, turn)| {
-                side_turn(&turn.question, &turn.answer, index, false, card, window, cx)
-            }))
             .child(side_turn(
                 &card.question,
                 &card.answer,
@@ -506,11 +498,18 @@ impl Panel {
                 card,
                 window,
                 cx,
-            ));
-        let reveal = card.reveal_question.clone();
-        let scroll = card.scroll.clone();
-        let latest = card.previous.len();
-        let entity = cx.entity().entity_id();
+            ))
+            .when(!card.previous.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.TEXT_DIM)
+                        .child("Earlier in this side chat"),
+                )
+                .children(card.previous.iter().enumerate().rev().map(|(index, turn)| {
+                    side_turn(&turn.question, &turn.answer, index, false, card, window, cx)
+                }))
+            });
 
         Some(
             side_card("side-question-card")
@@ -532,24 +531,7 @@ impl Panel {
                         .child(crate::scrollbar::vertical(
                             &card.scroll,
                             "side-question-scrollbar",
-                        ))
-                        .when(reveal.get(), |el| {
-                            // GPUI's scroll-to-item needs a measured viewport. Run it once
-                            // after the scroll surface has prepainted, not on answer deltas.
-                            el.child(
-                                gpui::canvas(
-                                    |_, _, _| (),
-                                    move |_, _, _, cx| {
-                                        if reveal.replace(false) {
-                                            scroll.scroll_to_top_of_item(latest);
-                                            cx.defer(move |cx| cx.notify(entity));
-                                        }
-                                    },
-                                )
-                                .absolute()
-                                .size_full(),
-                            )
-                        }),
+                        )),
                 )
                 .child(
                     div()
