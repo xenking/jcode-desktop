@@ -7392,6 +7392,9 @@ impl Render for Panel {
         };
         let active_error = derived.active_error;
         let projection_changed = previous_projection.is_some();
+        if let Some(previous) = &previous_projection {
+            self.remap_rewind_projection(previous, &rows);
+        }
         let anchor = previous_projection
             .filter(|_| !self.stick_to_bottom)
             .and_then(|previous| {

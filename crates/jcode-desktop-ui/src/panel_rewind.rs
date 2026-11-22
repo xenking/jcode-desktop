@@ -20,11 +20,26 @@ enum Target {
 impl Target {
     fn matches(self, item: &Item) -> bool {
         prompt::is_pinnable_prompt(item)
-            || matches!(self, Self::Message) && item.assistant_text().is_some_and(|text| !text.trim().is_empty())
+            || matches!(self, Self::Message)
+                && item
+                    .assistant_text()
+                    .is_some_and(|text| !text.trim().is_empty())
     }
 }
 
 impl Panel {
+    fn rewind_candidates(&self, target: Target) -> Vec<usize> {
+        self.transcript_render_rows()
+            .into_iter()
+            .filter_map(|row| {
+                self.items
+                    .get(row.index)
+                    .filter(|item| target.matches(item))
+                    .map(|_| row.index)
+            })
+            .collect()
+    }
+
     pub(super) fn start_rewind(&mut self, cx: &mut Context<Self>) {
         if self.is_side_document()
             || self.preview_state.is_some()
@@ -36,11 +51,7 @@ impl Panel {
             self.items.push(Item::Error(
                 "Wait for the current turn before rewinding.".into(),
             ));
-        } else if let Some(selected) = self
-            .items
-            .iter()
-            .rposition(|item| Target::Message.matches(item))
-        {
+        } else if let Some(selected) = self.rewind_candidates(Target::Message).last().copied() {
             self.rewind_selection = Some(Selection {
                 selected,
                 reveal: true,
@@ -70,20 +81,56 @@ impl Panel {
     }
 
     pub(super) fn shift_rewind_selection(&mut self, items: usize, rows: usize) {
+        let older_target = self
+            .rewind_selection
+            .as_ref()
+            .and_then(|selection| selection.older_target);
+        let next = older_target.and_then(|target| {
+            self.rewind_candidates(target)
+                .into_iter()
+                .rev()
+                .find(|&index| index < items)
+        });
         if let Some(selection) = &mut self.rewind_selection {
             selection.selected += items;
             selection.original_scroll.item_ix += rows;
-            if let Some(target) = selection.older_target {
-                if let Some(next) = self.items[..items]
-                    .iter()
-                    .rposition(|item| target.matches(item))
-                {
+            if selection.older_target.is_some() {
+                if let Some(next) = next {
                     selection.selected = next;
                     selection.reveal = true;
                     selection.older_target = None;
                 } else {
                     self.request_older_history();
                 }
+            }
+        }
+    }
+
+    pub(super) fn remap_rewind_projection(
+        &mut self,
+        old: &[TranscriptRenderRow],
+        new: &[TranscriptRenderRow],
+    ) {
+        let Some(selection) = &mut self.rewind_selection else {
+            return;
+        };
+        if let Some(offset) = clean_chat::remap_anchor(old, new, selection.original_scroll) {
+            selection.original_scroll = offset;
+        }
+        if !new.iter().any(|row| row.index == selection.selected) {
+            let selected = selection.selected;
+            if let Some(index) = new
+                .iter()
+                .filter_map(|row| {
+                    self.items
+                        .get(row.index)
+                        .filter(|item| Target::Message.matches(item))
+                        .map(|_| row.index)
+                })
+                .min_by_key(|&index| index.abs_diff(selected))
+            {
+                selection.selected = index;
+                selection.reveal = true;
             }
         }
     }
@@ -109,7 +156,12 @@ impl Panel {
             return px(0.);
         };
         // Room to center the first and last messages without overscrolling the list.
-        let inset = window.viewport_size().height / 2.;
+        let viewport_height = self.transcript_list.viewport_bounds().size.height;
+        let inset = if viewport_height > px(0.) {
+            (viewport_height - px(dock_pad)).max(px(0.)) / 2.
+        } else {
+            window.viewport_size().height / 2.
+        };
         let changed = selection.inset != inset;
         if changed {
             if selection.inset == px(0.) {
@@ -196,17 +248,11 @@ impl Panel {
                     Target::Message
                 };
                 let older = matches!(key, "up" | "left");
-                let selected = selected.min(self.items.len());
+                let candidates = self.rewind_candidates(target);
                 let next = if older {
-                    self.items[..selected]
-                        .iter()
-                        .rposition(|item| target.matches(item))
+                    candidates.into_iter().rev().find(|&index| index < selected)
                 } else {
-                    self.items
-                        .iter()
-                        .enumerate()
-                        .skip(selected + 1)
-                        .find_map(|(index, item)| target.matches(item).then_some(index))
+                    candidates.into_iter().find(|&index| index > selected)
                 };
                 if let Some(index) = next {
                     self.choose_rewind_row(index, cx);
@@ -226,7 +272,9 @@ impl Panel {
         fn key(item: &Item) -> Option<RewindMessageKey> {
             match item {
                 Item::User(text) => RewindMessageKey::new("user", text),
-                _ => item.assistant_text().and_then(|text| RewindMessageKey::new("assistant", text)),
+                _ => item
+                    .assistant_text()
+                    .and_then(|text| RewindMessageKey::new("assistant", text)),
             }
         }
         let Some(target) = self.items.get(selected).and_then(key) else {

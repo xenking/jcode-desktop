@@ -2,6 +2,66 @@ use super::*;
 use jcode_sdk::api::RewindMessageKey;
 
 #[gpui::test]
+fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("rewind".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.set_clean_chat(Some(true), cx);
+        panel.items.push(Item::User("First".into()));
+        panel
+            .items
+            .push(Item::Assistant(jcode_render_core::reasoning_line_markup(
+                "hidden",
+            )));
+        panel.items.push(Item::Assistant("Answer".into()));
+        panel
+            .items
+            .push(Item::Assistant(jcode_render_core::reasoning_line_markup(
+                "hidden again",
+            )));
+        panel.items.push(Item::User("Second".into()));
+        panel
+            .items
+            .push(Item::Assistant(jcode_render_core::reasoning_line_markup(
+                "hidden last",
+            )));
+        panel.start_rewind(cx);
+    });
+    let check = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+        for _ in 0..4 {
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+        }
+        let row = vcx
+            .debug_bounds(selector)
+            .expect("visible selection");
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        assert!(
+            viewport.contains(&row.center()),
+            "{row:?} outside {viewport:?}"
+        );
+    };
+    check(vcx, "rewind-selected-4");
+    vcx.simulate_keystrokes("up");
+    check(vcx, "rewind-selected-2");
+    vcx.simulate_keystrokes("up");
+    check(vcx, "rewind-selected-0");
+    vcx.simulate_keystrokes("down down");
+    check(vcx, "rewind-selected-4");
+    vcx.simulate_keystrokes("left");
+    check(vcx, "rewind-selected-0");
+    vcx.simulate_keystrokes("right");
+    check(vcx, "rewind-selected-4");
+    panel.update(vcx, |panel, cx| panel.set_clean_chat(Some(false), cx));
+    vcx.simulate_keystrokes("down");
+    check(vcx, "rewind-selected-5");
+    panel.update(vcx, |panel, cx| panel.set_clean_chat(Some(true), cx));
+    check(vcx, "rewind-selected-4");
+    vcx.simulate_keystrokes("escape");
+    assert!(vcx.debug_bounds("rewind-keys").is_none());
+}
+
+#[gpui::test]
 fn rewind_uses_transcript_rows_and_returns_focus_to_composer(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();
