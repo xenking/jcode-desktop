@@ -32,9 +32,7 @@ fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::Tes
         for _ in 0..4 {
             vcx.update(|window, cx| window.simulate_next_frame(cx));
         }
-        let row = vcx
-            .debug_bounds(selector)
-            .expect("visible selection");
+        let row = vcx.debug_bounds(selector).expect("visible selection");
         let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
         assert!(
             viewport.contains(&row.center()),
@@ -46,6 +44,14 @@ fn clean_chat_rewind_skips_hidden_messages_in_both_directions(cx: &mut gpui::Tes
     check(vcx, "rewind-selected-2");
     vcx.simulate_keystrokes("up");
     check(vcx, "rewind-selected-0");
+    let outline = vcx.debug_bounds("rewind-selected-0").unwrap();
+    let first = panel.read_with(vcx, |panel, _| {
+        panel.transcript_list.bounds_for_item(0).unwrap()
+    });
+    assert!(
+        outline.top() - first.top() < px(32.),
+        "oversized rewind gutter: {outline:?} in {first:?}"
+    );
     vcx.simulate_keystrokes("down down");
     check(vcx, "rewind-selected-4");
     vcx.simulate_keystrokes("left");

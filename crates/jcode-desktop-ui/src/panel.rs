@@ -7543,7 +7543,7 @@ impl Render for Panel {
         } else {
             self.tail_glide.reset();
         }
-        let rewind_inset = self.reveal_rewind_selection(&rows, dock_pad, window, cx);
+        let rewind_inset = self.reveal_rewind_selection(&rows, dock_pad, clean_chat, window, cx);
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));

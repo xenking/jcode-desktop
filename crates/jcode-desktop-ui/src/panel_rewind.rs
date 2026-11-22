@@ -149,15 +149,19 @@ impl Panel {
         &mut self,
         rows: &[TranscriptRenderRow],
         dock_pad: f32,
+        clean_chat: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Pixels {
         let Some(selection) = &mut self.rewind_selection else {
             return px(0.);
         };
-        // Room to center the first and last messages without overscrolling the list.
+        // In Clean Chat a short edge gutter keeps the outline visible without
+        // inserting half a screen of empty scroll space after the final reply.
         let viewport_height = self.transcript_list.viewport_bounds().size.height;
-        let inset = if viewport_height > px(0.) {
+        let inset = if clean_chat {
+            px(8.)
+        } else if viewport_height > px(0.) {
             (viewport_height - px(dock_pad)).max(px(0.)) / 2.
         } else {
             window.viewport_size().height / 2.
