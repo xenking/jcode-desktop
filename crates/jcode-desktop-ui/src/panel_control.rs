@@ -245,6 +245,21 @@ impl Panel {
             .map(picker_name);
         serde_json::json!({
             "scroll_fixture": scroll_fixture,
+            "gallery_navigation": crate::fixture_control_targets::gallery_navigation().then(|| {
+                let indices = self.session_image_indices();
+                let position = self.transcript_list.logical_scroll_top();
+                serde_json::json!({
+                    "count": indices.len(),
+                    "open": self.image_pane_open,
+                    "selected": self.selected_session_image_index().and_then(|index| indices.binary_search(&index).ok()),
+                    "focused": self.image_pane_focus.is_focused(window),
+                    "preview": self.image_preview.is_some(),
+                    "x": f32::from(self.image_pane_scroll.offset().x),
+                    "max_x": f32::from(self.image_pane_scroll.max_offset().x),
+                    "caret": self.input.read(cx).snapshot().selection_start,
+                    "transcript": (position.item_ix, f32::from(position.offset_in_item)),
+                })
+            }),
             "session_id": self.session_id,
             "title": self.title.to_string(),
             "status": self.status,

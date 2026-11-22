@@ -171,6 +171,7 @@ pub(super) fn handle_window_request(
     if matches!(&request.action, DesktopAction::Render { .. })
         || (fixture_input_enabled
             && (crate::fixture_control_targets::resume_preview()
+                || crate::fixture_control_targets::gallery_navigation()
                 || crate::fixture_control_targets::transcript_scroll_fixture())
             && matches!(&request.action, DesktopAction::State { .. }))
     {

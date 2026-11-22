@@ -260,6 +260,100 @@ impl Panel {
         cx.notify();
     }
 
+    fn select_session_image(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        self.image_pane_selected = index;
+        self.reveal_selected_session_image();
+        cx.notify();
+    }
+
+    fn reveal_selected_session_image(&self) {
+        if let Some(index) = self.selected_session_image_index() {
+            let ordinal = self.items[..index]
+                .iter()
+                .filter(|item| matches!(item, Item::Image(_)))
+                .count();
+            self.image_pane_scroll.scroll_to_item(ordinal);
+        }
+    }
+
+    fn image_pane_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.modifiers != gpui::Modifiers::default() {
+            return;
+        }
+        let step = match event.keystroke.key.as_str() {
+            "left" => -1,
+            "right" => 1,
+            "escape" => {
+                self.set_image_pane_open(false, cx);
+                self.focus_input(window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            _ => return,
+        };
+        let indices = self.session_image_indices();
+        if let Some(selected) = self.selected_session_image_index()
+            && let Ok(ordinal) = indices.binary_search(&selected)
+        {
+            let next = ordinal.saturating_add_signed(step).min(indices.len() - 1);
+            self.select_session_image(Some(indices[next]), cx);
+        }
+        cx.stop_propagation();
+    }
+
+    fn render_fitted_gallery_image(
+        &self,
+        image: &TranscriptImage,
+        preview: std::sync::Arc<gpui::Image>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let preview_image = image.clone();
+        let marker = crate::fixture_control_targets::marker(
+            || "gallery-nav:picture".into(),
+            || Some(self.session_id.clone()),
+        );
+        let open_preview = cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            this.open_image_preview(preview_image.clone(), window, cx);
+            cx.stop_propagation();
+        });
+        gpui::canvas(
+            move |bounds, window, cx| {
+                let (mut picture, fitted) = match crate::image_cache::load(&preview, window, cx) {
+                    Some(Ok(decoded)) => {
+                        let fitted = gpui::ObjectFit::Contain.get_bounds(bounds, decoded.size(0));
+                        let picture = div()
+                            .id("session-image-picture")
+                            .debug_selector(|| "session-image-picture".into())
+                            .relative()
+                            .children(marker)
+                            .size_full()
+                            .cursor_pointer()
+                            .child(
+                                img(decoded)
+                                    .debug_selector(|| "session-image-preview-ready".into())
+                                    .size_full(),
+                            )
+                            .on_click(open_preview)
+                            .into_any_element();
+                        (picture, fitted)
+                    }
+                    state => (image_pane_placeholder(state.is_some()), bounds),
+                };
+                picture.layout_as_root(fitted.size.map(gpui::AvailableSpace::Definite), window, cx);
+                picture.prepaint_at(fitted.origin, window, cx);
+                picture
+            },
+            |_, mut picture, window, cx| picture.paint(window, cx),
+        )
+        .absolute()
+        .size_full()
+    }
+
     pub(super) fn request_session_image_gallery(&mut self) {
         if self.session_image_gallery.loading || self.is_pending_session() {
             return;
@@ -315,8 +409,12 @@ impl Panel {
                     .text_color(color)
                     .size(px(13.)),
             )
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, window, cx| {
                 this.set_image_pane_open(!this.image_pane_open, cx);
+                if !this.image_pane_open && this.image_pane_focus.is_focused(window) {
+                    this.focus_input(window, cx);
+                }
                 cx.stop_propagation();
             }))
             .into_any_element()
@@ -346,8 +444,7 @@ impl Panel {
                 image.model_input_caption().unwrap_or("Image attachment")
             ))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.image_pane_selected = Some(index);
-                cx.notify();
+                this.select_session_image(Some(index), cx);
                 cx.stop_propagation();
             }))
             .into_any_element()
@@ -385,8 +482,11 @@ impl Panel {
             .border_color(theme.PANEL_BORDER)
             .bg(theme.PANEL_BG)
             .p_3()
-            .gap_2()
+            .gap(if self.image_pane_stacked { px(4.) } else { px(8.) })
             .overflow_hidden()
+            // The workspace handles gestures in capture, before a scrolling Div.
+            // Exclude its hitbox here even when the gallery is already at an edge.
+            .occlude()
             .child(
                 div()
                     .flex()
@@ -408,6 +508,15 @@ impl Panel {
                                     .map_or(indices.len(), Vec::len)
                             )),
                     )
+                    .when(!indices.is_empty(), |header| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.))
+                                .text_color(theme.TEXT_DIM)
+                                .child("←/→ Browse · Esc Close"),
+                        )
+                    })
                     .child(
                         div()
                             .id("session-image-close")
@@ -433,7 +542,8 @@ impl Panel {
                         .id("session-gallery-list")
                         .debug_selector(|| "session-gallery-list".into())
                         .flex_none()
-                        .max_h(px(140.))
+                        .when(self.image_pane_stacked, |list| list.max_h(px(36.)))
+                        .when(!self.image_pane_stacked, |list| list.max_h(px(140.)))
                         .w_full()
                         .overflow_y_scroll()
                         .flex()
@@ -475,7 +585,6 @@ impl Panel {
                 ),
             })
             .when_some(image, |el, image| {
-                let preview_image = image.clone();
                 let asset = self.gallery_image_asset(image);
                 el.child(
                     div()
@@ -489,20 +598,15 @@ impl Panel {
                         .overflow_hidden()
                         .bg(theme.USER_BG)
                         .children(self.gallery_image_preloader(image, cx))
+                        .children(
+                            crate::fixture_control_targets::marker(
+                                || "gallery-nav:gap".into(),
+                                || Some(self.session_id.clone()),
+                            )
+                            .map(|marker| marker.size(px(2.))),
+                        )
                         .when_some(asset.clone(), |el, preview| {
-                            el.cursor_pointer()
-                                .child(
-                                    img(crate::image_cache::source(preview))
-                                        .debug_selector(|| "session-image-preview-ready".into())
-                                        .absolute()
-                                        .size_full()
-                                        .object_fit(gpui::ObjectFit::Contain)
-                                        .with_fallback(|| image_pane_placeholder(true)),
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_image_preview(preview_image.clone(), window, cx);
-                                    cx.stop_propagation();
-                                }))
+                            el.child(self.render_fitted_gallery_image(image, preview, cx))
                         })
                         .when(asset.is_none(), |el| {
                             el.child(image_pane_placeholder(self.gallery_image_unavailable(image)))
@@ -510,28 +614,30 @@ impl Panel {
                 )
                 .child(
                     div()
-                        .flex_none()
-                        .min_w_0()
-                        .text_size(px(11.))
-                        .text_color(theme.TEXT_DIM)
-                        .child(
-                            image.display_label("Image attachment"),
-                        ),
-                )
-                .child(
-                    div()
                         .flex()
-                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .flex_none()
                         .text_size(px(10.))
                         .text_color(theme.TEXT_FAINT)
-                        .child(image.model_input_caption().unwrap_or("Session attachment"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT_DIM)
+                                .child(format!(
+                                    "{} · {}",
+                                    image.display_label("Image attachment"),
+                                    image.model_input_caption().unwrap_or("Session attachment")
+                                )),
+                        )
                         .child(
                             div()
                                 .id("session-image-latest")
                                 .debug_selector(|| "session-image-latest".into())
+                                .flex_none()
                                 .px_2()
                                 .py_1()
                                 .rounded_md()
@@ -543,8 +649,7 @@ impl Panel {
                                     "Follow latest"
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.image_pane_selected = None;
-                                    cx.notify();
+                                    this.select_session_image(None, cx);
                                     cx.stop_propagation();
                                 })),
                         ),
@@ -576,9 +681,16 @@ impl Panel {
                 let strip = div()
                         .id("session-image-thumbnails")
                         .debug_selector(|| "session-image-thumbnails".into())
+                        .track_focus(&self.image_pane_focus)
+                        .on_key_down(cx.listener(Self::image_pane_key_down))
                         .flex_none()
-                        .h(px(72.))
+                        .h(px(70.))
                         .w_full()
+                        .p(px(2.))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme.PANEL_BORDER)
+                        .focus(|style| style.border_color(Theme::global().ACCENT))
                         .overflow_x_scroll()
                         .track_scroll(&self.image_pane_scroll)
                         .flex()
@@ -633,8 +745,7 @@ impl Panel {
                                         })
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.image_pane_selected = Some(index);
-                                    cx.notify();
+                                    this.select_session_image(Some(index), cx);
                                     cx.stop_propagation();
                                 }))
                         }));

@@ -783,6 +783,7 @@ pub struct Panel {
     draft_has_images: bool,
     image_pane_selected: Option<usize>,
     image_pane_scroll: ScrollHandle,
+    image_pane_focus: FocusHandle,
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
     pending_history_image: Option<String>,
@@ -1700,6 +1701,7 @@ impl Panel {
             draft_has_images: false,
             image_pane_selected: None,
             image_pane_scroll: ScrollHandle::new(),
+            image_pane_focus: cx.focus_handle().tab_stop(true),
             image_pane_stacked: false,
             image_preview: None,
             pending_history_image: None,
@@ -6315,6 +6317,7 @@ impl Panel {
     pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
         self.input.read(cx).focus_handle.is_focused(window)
             || self.input_focus_handle(cx).is_focused(window)
+            || (self.image_pane_open && self.image_pane_focus.is_focused(window))
             || self.focus_handle.contains_focused(window, cx)
             || self
                 .transcript_selection

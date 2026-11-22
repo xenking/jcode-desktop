@@ -306,6 +306,151 @@ fn image_pane_thumbnails_select_item_indices_and_main_opens_lightbox(
 }
 
 #[gpui::test]
+fn image_pane_letterbox_does_not_open_the_preview(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = setup(cx);
+    click(vcx, "panel-images");
+    let bounds = vcx.debug_bounds("session-image-main").unwrap();
+    let at = gpui::point(bounds.left() + px(1.), bounds.top() + px(1.));
+    vcx.simulate_click(at, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_none());
+    click(vcx, "session-image-main");
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+    assert_draft(&panel, vcx);
+}
+
+#[gpui::test]
+fn image_pane_arrows_and_escape_only_capture_when_the_filmstrip_has_focus(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = setup(cx);
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input_focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    click(vcx, "panel-images");
+    vcx.simulate_keystrokes("left");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("session-image-pane").is_some());
+    assert_eq!(
+        panel.read_with(vcx, |p, cx| p.input.read(cx).snapshot().selection_start),
+        DRAFT.len() - 1
+    );
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.selected_session_image_index()),
+        Some(3)
+    );
+    vcx.simulate_keystrokes("escape");
+    assert!(vcx.debug_bounds("session-image-pane").is_some());
+    assert!(panel.read_with(vcx, |p, cx| p.input.read(cx).snapshot().content.is_empty()));
+    let input = panel.read_with(vcx, |p, _| p.input.clone());
+    input.update(vcx, |input, cx| input.set_content(DRAFT.into(), cx));
+
+    click(vcx, "session-image-thumb-1");
+    assert!(vcx.update(|window, cx| panel.read(cx).image_pane_focus.is_focused(window)));
+    vcx.simulate_keystrokes("right");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.selected_session_image_index()),
+        Some(3)
+    );
+    vcx.simulate_keystrokes("left left");
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.selected_session_image_index()),
+        Some(1)
+    );
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("session-image-pane").is_none());
+    assert!(vcx.update(|window, cx| panel.read(cx).input_focus_handle(cx).is_focused(window)));
+    assert_draft(&panel, vcx);
+}
+
+#[gpui::test]
+fn image_pane_captures_wheel_and_precise_swipes_at_both_ends(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+        workspace.push_test_panel("many-images", cx);
+        workspace.push_test_panel("another-session", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        let image = fixture("frame.png");
+        *panel.items = (0..96).map(|_| Item::Image(image.clone())).collect();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    click(vcx, "panel-images");
+    let at = vcx.debug_bounds("session-image-thumbnails").unwrap().center();
+    let (first, max) = panel.read_with(vcx, |p, _| {
+        (p.image_pane_scroll.offset().x, p.image_pane_scroll.max_offset().x)
+    });
+    let focus = workspace.read_with(vcx, |w, _| w.test_focus_position());
+    let transcript = panel.read_with(vcx, |p, _| p.test_scroll_offset_y());
+    let panel_origin = vcx.debug_bounds("panel-0").unwrap().origin;
+    assert!(max > px(1_000.));
+
+    let mut wheel = |delta, touch_phase| {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta,
+            touch_phase,
+            modifiers: gpui::Modifiers::default(),
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |p, _| p.image_pane_scroll.offset().x)
+    };
+    use gpui::{ScrollDelta, TouchPhase};
+    let lines = if first == px(0.) { -4. } else { 4. };
+    assert_ne!(
+        wheel(ScrollDelta::Lines(gpui::point(0., lines)), TouchPhase::Moved),
+        first
+    );
+    for (delta, edge) in [(-10_000., -max), (10_000., px(0.))] {
+        let payload = ScrollDelta::Pixels(gpui::point(px(delta), px(delta / 2.)));
+        assert_eq!(wheel(payload, TouchPhase::Started), edge);
+        assert_eq!(wheel(payload, TouchPhase::Moved), edge);
+        assert_eq!(wheel(payload, TouchPhase::Ended), edge);
+    }
+    assert_eq!(workspace.read_with(vcx, |w, _| w.test_focus_position()), focus);
+    assert_eq!(panel.read_with(vcx, |p, _| p.test_scroll_offset_y()), transcript);
+    assert_eq!(vcx.debug_bounds("panel-0").unwrap().origin, panel_origin);
+}
+
+#[gpui::test]
+fn image_pane_leaves_room_for_the_picture_with_a_full_metadata_list(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = setup(cx);
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(480.), px(540.)));
+    panel.update(vcx, |panel, cx| {
+        let rows: Vec<_> = (0..96)
+            .map(|index| {
+                serde_json::json!({
+                    "image_id": format!("img_{index:032x}"),
+                    "message_index": index,
+                    "media_type": "image/png",
+                })
+            })
+            .collect();
+        panel.session_image_gallery.receive(Ok(serde_json::to_string(&rows).unwrap()));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    click(vcx, "panel-images");
+    let picture = vcx.debug_bounds("session-image-picture").unwrap();
+    let strip = vcx.debug_bounds("session-image-thumbnails").unwrap();
+    let pane = vcx.debug_bounds("session-image-pane").unwrap();
+    assert!(picture.size.height > px(24.), "{picture:?} within {pane:?}");
+    assert!(strip.bottom() <= pane.bottom(), "{strip:?} within {pane:?}");
+    click(vcx, "session-image-picture");
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+}
+
+#[gpui::test]
 fn image_pane_follows_incoming_images_only_without_explicit_selection(
     cx: &mut gpui::TestAppContext,
 ) {

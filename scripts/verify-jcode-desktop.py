@@ -183,7 +183,7 @@ class Instance:
         reduce_motion = "false" if self.manifest["fixture"] == "orb-todos" else "true"
         theme = self.manifest.get("theme")
         theme_line = f'theme = "{theme}"\n' if theme else ""
-        layout_line = 'layout_mode = "normal"\n' if self.manifest["fixture"] == "openrig-live-split" else ""
+        layout_line = 'layout_mode = "normal"\n' if self.manifest["fixture"] in ("openrig-live-split", "gallery-navigation") else ""
         (self.profile / "desktop.toml").write_text(f'[appearance]\n{theme_line}{layout_line}reduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
         env = environment(self.profile, self.control)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
@@ -191,6 +191,13 @@ class Instance:
         if self.manifest.get("window_width"):
             env["JCODE_DESKTOP_CONTROL_WINDOW_WIDTH"] = str(self.manifest["window_width"])
         modes = ["--single-panel"]
+        if self.manifest["fixture"] == "gallery-navigation":
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="gallery-preload",
+                       JCODE_DESKTOP_SCREENSHOT_PANELS="2",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS="gallery-preload,expandable",
+                       JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES="Session images,Another session",
+                       JCODE_DESKTOP_SCREENSHOT_GALLERY_NAVIGATION="1")
+            modes = []
         if self.manifest["fixture"] in ("openrig", "openrig-live", "openrig-live-split"):
             env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "openrig"
             modes = []
@@ -1501,7 +1508,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",

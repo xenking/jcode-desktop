@@ -28,6 +28,10 @@ fn gallery_preload() -> bool {
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gallery-preload")
 }
 
+pub(crate) fn gallery_navigation() -> bool {
+    enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_GALLERY_NAVIGATION").as_deref() == Ok("1")
+}
+
 pub(crate) fn draft_session() -> bool {
     enabled()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
@@ -171,6 +175,12 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || (gallery_preload()
             && (matches!(selector, "composer:images" | "gallery:wheel")
                 || selector.starts_with("gallery:thumb:")))
+        || (gallery_navigation()
+            && matches!(
+                selector,
+                "gallery-nav:lines" | "gallery-nav:first" | "gallery-nav:last"
+                    | "gallery-nav:gap" | "gallery-nav:picture"
+            ))
         || (transcript_scroll_fixture()
             && matches!(
                 selector,
@@ -219,7 +229,10 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "panel-context-meter"
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
-    } else if selector == "gallery:wheel" {
+    } else if matches!(
+        selector,
+        "gallery:wheel" | "gallery-nav:lines" | "gallery-nav:first" | "gallery-nav:last"
+    ) {
         "gallery:filmstrip"
     } else {
         selector
@@ -237,6 +250,34 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
             }),
             cx,
         );
+        return true;
+    }
+    if gallery_navigation() && marker == "gallery:filmstrip" && selector.starts_with("gallery-nav:") {
+        let wheel = |delta, touch_phase, window: &mut Window, cx: &mut App| {
+            window.dispatch_event(
+                PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    position,
+                    delta,
+                    modifiers: Default::default(),
+                    touch_phase,
+                }),
+                cx,
+            );
+        };
+        use gpui::{ScrollDelta, TouchPhase};
+        if selector == "gallery-nav:lines" {
+            wheel(ScrollDelta::Lines(point(0., -4.)), TouchPhase::Moved, window, cx);
+        } else {
+            let direction = if selector == "gallery-nav:first" { 1. } else { -1. };
+            for (phase, pixels) in [
+                (TouchPhase::Started, 12_000.),
+                (TouchPhase::Moved, 400.),
+                (TouchPhase::Ended, 80.),
+            ] {
+                let delta = point(px(direction * pixels), px(direction * pixels / 2.));
+                wheel(ScrollDelta::Pixels(delta), phase, window, cx);
+            }
+        }
         return true;
     }
     if selector.starts_with("hover:") {
