@@ -69,6 +69,8 @@ pub(crate) struct Runtime {
     /// Actions on agent instances, for the workspace to forward to the SDK:
     /// `(session_id, local instance id, message)`.
     pub agent_outbox: RefCell<Vec<AgentOutbound>>,
+    /// Last accepted server state, separate from locally edited host state.
+    agent_states: RefCell<HashMap<String, serde_json::Value>>,
     /// Persistent instances were restored from disk once per process.
     restored: std::cell::Cell<bool>,
     /// Last persisted bytes, so unchanged state is not rewritten.
@@ -136,6 +138,7 @@ impl Default for Runtime {
             toasts: RefCell::new(Vec::new()),
             generation: std::cell::Cell::new(0),
             agent_outbox: RefCell::new(Vec::new()),
+            agent_states: RefCell::new(HashMap::new()),
             effects: RefCell::new(Vec::new()),
             restored: std::cell::Cell::new(false),
             persisted: RefCell::new(Vec::new()),
@@ -194,8 +197,8 @@ impl Runtime {
     }
 
     /// Replace one session's agent instances with the server's snapshot.
-    /// Unchanged revisions are left alone, so typed-but-unsent input and
-    /// scroll positions survive. Instances the snapshot omits are removed.
+    /// Preserve local edits when their server value has not changed. A changed
+    /// server value wins, including an explicit reset. Omitted instances are removed.
     pub fn sync_agent(
         &self,
         session_id: &str,
@@ -203,6 +206,7 @@ impl Runtime {
     ) -> bool {
         use jcode_applet_types::Placement;
         let mut host = self.host.borrow_mut();
+        let mut server_states = self.agent_states.borrow_mut();
         let prefix = agent_instance_id(session_id, "");
         let mut keep = std::collections::HashSet::new();
         let mut changed = false;
@@ -235,8 +239,24 @@ impl Runtime {
             if same {
                 continue;
             }
+            let server_state = next.document.state.clone();
+            if let (Some(previous), Some(mounted), Some(incoming)) = (
+                server_states.get(&id).and_then(|state| state.as_object()),
+                host.instance(&id),
+                next.document.state.as_object_mut(),
+            ) && let Some(local) = mounted.instance.document.state.as_object()
+            {
+                for (key, value) in local {
+                    if previous.get(key) == incoming.get(key) && incoming.contains_key(key) {
+                        incoming.insert(key.clone(), value.clone());
+                    }
+                }
+            }
             match host.upsert(next) {
-                Ok(()) => changed = true,
+                Ok(()) => {
+                    server_states.insert(id, server_state);
+                    changed = true;
+                }
                 Err(error) => host.mark_error(&id, error),
             }
         }
@@ -249,6 +269,7 @@ impl Runtime {
         for id in stale {
             changed |= host.remove_silently(&id);
         }
+        server_states.retain(|id, _| !id.starts_with(&prefix) || keep.contains(id));
         drop(host);
         if changed {
             self.bump();

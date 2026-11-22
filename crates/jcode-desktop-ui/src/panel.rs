@@ -62,6 +62,10 @@ mod rewind;
 mod display_tests;
 
 #[cfg(test)]
+#[path = "panel_applet_interaction_tests.rs"]
+mod applet_interaction_tests;
+
+#[cfg(test)]
 #[path = "panel_selection_tests.rs"]
 mod selection_tests;
 
