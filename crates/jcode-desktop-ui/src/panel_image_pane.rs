@@ -561,6 +561,13 @@ impl Panel {
                             div()
                                 .id(("session-gallery-image", index))
                                 .debug_selector(move || format!("session-gallery-image-{index}"))
+                                .flex_none()
+                                .when(index == 0, |row| {
+                                    row.relative().children(crate::fixture_control_targets::marker(
+                                        || "gallery-nav:history".into(),
+                                        || Some(self.session_id.clone()),
+                                    ))
+                                })
                                 .px_2()
                                 .py_1()
                                 .rounded_md()

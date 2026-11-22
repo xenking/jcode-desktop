@@ -100,6 +100,10 @@ def main():
         key("escape")
         after_preview = check("preview-escape")
         assert not after_preview["preview"] and after_preview["open"], after_preview
+        click("gallery-nav:history")
+        older = check("historical-row-opens-its-image")
+        assert older["preview_label"] == f"[#img_{0:032x}]" and older["selected"] == 8, older
+        key("escape")
         click("gallery:thumb:8")
         key("escape")
         closed = check("gallery-escape")

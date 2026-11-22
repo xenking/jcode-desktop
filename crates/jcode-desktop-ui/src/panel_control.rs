@@ -254,6 +254,7 @@ impl Panel {
                     "selected": self.selected_session_image_index().and_then(|index| indices.binary_search(&index).ok()),
                     "focused": self.image_pane_focus.is_focused(window),
                     "preview": self.image_preview.is_some(),
+                    "preview_label": self.image_preview.as_ref().and_then(|image| image.label.as_deref()),
                     "x": f32::from(self.image_pane_scroll.offset().x),
                     "max_x": f32::from(self.image_pane_scroll.max_offset().x),
                     "caret": self.input.read(cx).snapshot().selection_start,

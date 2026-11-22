@@ -179,7 +179,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
             && matches!(
                 selector,
                 "gallery-nav:lines" | "gallery-nav:first" | "gallery-nav:last"
-                    | "gallery-nav:gap" | "gallery-nav:picture"
+                    | "gallery-nav:gap" | "gallery-nav:picture" | "gallery-nav:history"
             ))
         || (transcript_scroll_fixture()
             && matches!(

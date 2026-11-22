@@ -444,6 +444,10 @@ fn image_pane_leaves_room_for_the_picture_with_a_full_metadata_list(
     let picture = vcx.debug_bounds("session-image-picture").unwrap();
     let strip = vcx.debug_bounds("session-image-thumbnails").unwrap();
     let pane = vcx.debug_bounds("session-image-pane").unwrap();
+    let list = vcx.debug_bounds("session-gallery-list").unwrap();
+    let first_row = vcx.debug_bounds("session-gallery-image-0").unwrap();
+    assert!(first_row.size.height >= px(20.), "{first_row:?} in {list:?}");
+    assert!(first_row.bottom() <= list.bottom(), "{first_row:?} in {list:?}");
     assert!(picture.size.height > px(24.), "{picture:?} within {pane:?}");
     assert!(strip.bottom() <= pane.bottom(), "{strip:?} within {pane:?}");
     click(vcx, "session-image-picture");
