@@ -2,9 +2,9 @@ use super::*;
 use crate::fixture_control_targets::marker;
 use crate::harness::ContextBreakdownTarget;
 use jcode_sdk::api::{
-    ContextActionMeasurement, ContextActionSavings, ContextBreakdown, ContextBreakdownKind,
-    ContextMeter, ContextMeterState, ContextOccupancySource, ShakeToolsAction, ShakeToolsResult,
-    ShakeToolsStats,
+    ContextActionForecast, ContextActionMeasurement, ContextActionSavings, ContextActionStatus,
+    ContextBreakdown, ContextBreakdownKind, ContextMeter, ContextMeterState,
+    ContextOccupancySource, ShakeToolsAction, ShakeToolsResult, ShakeToolsStats,
 };
 
 #[derive(Default)]
@@ -149,6 +149,45 @@ fn percent_of(tokens: u64, total: u64) -> String {
     }
 }
 
+fn action_forecast_label(action: Action, forecast: ContextActionForecast) -> Option<String> {
+    let (status, savings) = match action {
+        Action::Compact => (forecast.compact_status, forecast.compact),
+        Action::Shake => (forecast.shake_status, forecast.shake),
+    };
+    let status = status.or(match savings {
+        Some(ContextActionSavings::NoChange) => Some(ContextActionStatus::NoEligible),
+        Some(ContextActionSavings::UpperBound { .. }) => Some(ContextActionStatus::SavingsUnknown),
+        _ => None,
+    });
+    if let Some(status) = status {
+        return Some(
+            match (action, status) {
+                (Action::Shake, ContextActionStatus::NoEligible) => "No eligible outputs",
+                (_, ContextActionStatus::NoEligible) => "Nothing eligible",
+                (_, ContextActionStatus::Unsupported) => "Unsupported",
+                (_, ContextActionStatus::Busy) => "Busy",
+                (_, ContextActionStatus::SavingsUnknown) => "Savings unknown",
+                (_, ContextActionStatus::Unknown) => "Not inspected",
+            }
+            .into(),
+        );
+    }
+    match savings? {
+        ContextActionSavings::Estimate { tokens } => {
+            let total = forecast
+                .current_tokens
+                .filter(|&total| tokens > 0 && tokens <= total)?;
+            let percent = percent_of(tokens, total);
+            Some(if percent.starts_with('<') {
+                percent
+            } else {
+                format!("~{percent}")
+            })
+        }
+        _ => None,
+    }
+}
+
 fn action_result(label: &str, measurement: Option<ContextActionMeasurement>) -> String {
     let Some(ContextActionMeasurement {
         before_tokens,
@@ -170,6 +209,48 @@ fn action_result(label: &str, measurement: Option<ContextActionMeasurement>) -> 
         format_tokens(before_tokens),
         format_tokens(after_tokens),
     )
+}
+
+#[cfg(test)]
+mod action_forecast_tests {
+    use super::*;
+
+    #[test]
+    fn action_labels_distinguish_no_change_unknown_busy_unsupported_and_rounding() {
+        let legacy: ContextActionForecast = serde_json::from_str(
+            r#"{"current_tokens":400000,"compact":{"kind":"upper_bound","tokens":70000},"shake":{"kind":"no_change"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            action_forecast_label(Action::Compact, legacy).as_deref(),
+            Some("Savings unknown")
+        );
+        assert_eq!(
+            action_forecast_label(Action::Shake, legacy).as_deref(),
+            Some("No eligible outputs")
+        );
+        for (status, label) in [
+            (ContextActionStatus::NoEligible, "Nothing eligible"),
+            (ContextActionStatus::Unsupported, "Unsupported"),
+            (ContextActionStatus::Busy, "Busy"),
+            (ContextActionStatus::SavingsUnknown, "Savings unknown"),
+            (ContextActionStatus::Unknown, "Not inspected"),
+        ] {
+            assert_eq!(
+                action_forecast_label(Action::Compact, ContextActionForecast::unavailable(status))
+                    .as_deref(),
+                Some(label)
+            );
+        }
+        let tiny = ContextActionForecast {
+            shake: Some(ContextActionSavings::Estimate { tokens: 1 }),
+            ..legacy
+        };
+        assert_eq!(
+            action_forecast_label(Action::Shake, tiny).as_deref(),
+            Some("<0.1%")
+        );
+    }
 }
 
 impl Panel {
@@ -740,7 +821,7 @@ impl Panel {
     }
 
     fn context_action_forecast(&self, action: Action) -> Option<String> {
-        if self.context_usage.read.is_some() || !self.context_action_enabled(action) {
+        if self.context_usage.read.is_some() {
             return None;
         }
         let forecast = self
@@ -748,29 +829,7 @@ impl Panel {
             .breakdown
             .as_ref()
             .and_then(|snapshot| snapshot.action_forecast)?;
-        let prediction = match action {
-            Action::Compact => forecast.compact,
-            Action::Shake => forecast.shake,
-        }?;
-        if prediction == ContextActionSavings::NoChange {
-            return Some("0%".into());
-        }
-        let total = forecast.current_tokens.filter(|&tokens| tokens > 0)?;
-        match prediction {
-            ContextActionSavings::Estimate { tokens } if tokens <= total => {
-                let percent = percent_of(tokens, total);
-                Some(if percent.starts_with('<') {
-                    percent
-                } else {
-                    format!("~{percent}")
-                })
-            }
-            ContextActionSavings::UpperBound { tokens } if tokens <= total => {
-                let tenths = (u128::from(tokens) * 1000).div_ceil(u128::from(total));
-                Some(format!("≤{}.{}%", tenths / 10, tenths % 10))
-            }
-            _ => None,
-        }
+        action_forecast_label(action, forecast)
     }
 
     fn render_context_action(
@@ -782,7 +841,9 @@ impl Panel {
         let enabled = self.context_action_enabled(action);
         let running =
             matches!(self.context_usage.action, ActionState::Running(current) if current == action);
-        let forecast = self.context_action_forecast(action);
+        let forecast = (!running)
+            .then(|| self.context_action_forecast(action))
+            .flatten();
         let selector = action.selector();
         div()
             .id(selector)
@@ -831,7 +892,8 @@ impl Panel {
                                     .context_usage
                                     .breakdown
                                     .as_ref()
-                                    .is_some_and(|snapshot| snapshot.action_forecast.is_some());
+                                    .and_then(|snapshot| snapshot.action_forecast)
+                                    .is_some_and(|forecast| forecast.current_tokens.is_some());
                                 panel.context_usage.action = ActionState::Running(action);
                                 panel.run_session_operation(
                                     SessionOperation::Compact,

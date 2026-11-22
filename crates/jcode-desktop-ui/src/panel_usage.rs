@@ -939,10 +939,10 @@ mod tests {
                     estimated: true,
                     action_forecast: Some(jcode_sdk::api::ContextActionForecast {
                         current_tokens: Some(44_000),
-                        compact: Some(jcode_sdk::api::ContextActionSavings::UpperBound {
-                            tokens: 11_000,
-                        }),
+                        compact: None,
                         shake: None,
+                        compact_status: Some(jcode_sdk::api::ContextActionStatus::SavingsUnknown),
+                        shake_status: Some(jcode_sdk::api::ContextActionStatus::Unsupported),
                     }),
                     categories: vec![
                         jcode_sdk::api::ContextBreakdownCategory {
@@ -965,7 +965,9 @@ mod tests {
         assert!(vcx.debug_bounds("context-pill-value-41k / 65k").is_none());
         let bar = vcx.debug_bounds("context-usage-bar").unwrap();
         let tools = vcx.debug_bounds("context-usage-segment-Tools").unwrap();
-        let chat = vcx.debug_bounds("context-usage-segment-Conversation").unwrap();
+        let chat = vcx
+            .debug_bounds("context-usage-segment-Conversation")
+            .unwrap();
         assert!(f32::from(chat.left() - tools.right()).abs() <= 1.);
         let occupied_width = f32::from(bar.size.width) * (41. / 65.);
         assert!(f32::from(chat.right() - bar.left()) <= occupied_width + 1.);
