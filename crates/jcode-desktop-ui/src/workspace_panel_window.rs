@@ -94,8 +94,17 @@ pub(crate) fn open_panel_window_at(
                 .detach();
                 let weak = cx.entity().downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
-                    let _ = weak.update(cx, |this, cx| this.finish(false, cx));
-                    true
+                    weak.update(cx, |this, cx| {
+                        if !this
+                            .panel
+                            .update(cx, |panel, cx| panel.confirm_file_close(cx))
+                        {
+                            return false;
+                        }
+                        this.finish(false, cx);
+                        true
+                    })
+                    .unwrap_or(true)
                 });
                 panel.update(cx, |panel, cx| panel.focus_input(window, cx));
                 PanelWindow {
@@ -149,12 +158,14 @@ impl PanelWindow {
                 let Some(source) = source else {
                     return;
                 };
-                if accounts && source.read(cx).can_refresh_account_runtime()
-                    && let Some(workspace) = workspace {
-                        workspace.read(cx).bridge.send(Command::RefreshRuntime {
-                            session_id: source.read(cx).session_id.clone(),
-                        });
-                    }
+                if accounts
+                    && source.read(cx).can_refresh_account_runtime()
+                    && let Some(workspace) = workspace
+                {
+                    workspace.read(cx).bridge.send(Command::RefreshRuntime {
+                        session_id: source.read(cx).session_id.clone(),
+                    });
+                }
                 if choose_model {
                     window.dispatch_action(
                         Box::new(OpenModelPicker {
@@ -170,6 +181,12 @@ impl PanelWindow {
     }
 
     fn close(&mut self, choose_model: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .panel
+            .update(cx, |panel, cx| panel.confirm_file_close(cx))
+        {
+            return;
+        }
         self.finish(choose_model, cx);
         window.remove_window();
     }
@@ -182,7 +199,8 @@ impl Render for PanelWindow {
         let theme = Theme::global();
         let width = window.viewport_size().width;
         if self.panel.read(cx).openrig_width_changed(width) {
-            self.panel.update(cx, |panel, cx| panel.set_openrig_width(width, cx));
+            self.panel
+                .update(cx, |panel, cx| panel.set_openrig_width(width, cx));
         }
         div()
             .debug_selector(|| "panel-window-root".into())

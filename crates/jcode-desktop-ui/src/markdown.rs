@@ -2003,6 +2003,7 @@ fn math_block(
 
 #[path = "markdown_syntax.rs"]
 mod syntax;
+pub(crate) use syntax::{LineHighlighter, MAX_HIGHLIGHT_LINE, token_color};
 
 pub(crate) fn highlight_code(
     body: &str,

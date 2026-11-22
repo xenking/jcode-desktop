@@ -87,7 +87,9 @@ fn tab_from_selected_transcript_text_reaches_the_first_tool(cx: &mut gpui::TestA
     );
     vcx.update(|window, cx| window.focus_next(cx));
     vcx.simulate_keystrokes("enter");
-    panel.read_with(vcx, |panel, _| assert!(panel.expanded_regions.contains("call")));
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.expanded_regions.contains("call"))
+    });
 }
 
 #[gpui::test]
@@ -391,30 +393,31 @@ fn background_task_selection_copies_expanded_details(cx: &mut gpui::TestAppConte
 
 #[gpui::test]
 fn code_file_selection_copies_multiple_lines_without_gutter(cx: &mut gpui::TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("example.rs");
+    std::fs::write(&path, "first βeta\n\nlast line").unwrap();
     cx.update(crate::input::bind_keys);
+    cx.update(crate::code_editor::bind_keys);
     let (_, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new(
-            "file-selection".into(),
-            None,
-            None,
-            crate::harness::spawn_inert(),
-            cx,
-        );
-        panel.code_file = Some(CodeFile {
-            path: "/workspace/example.rs".into(),
-            contents: Some(Ok("first βeta\n\nlast line".into())),
-            markdown: None,
-            pending_heading: None,
-        });
-        panel
+        Panel::new_code_file(path.clone(), crate::harness::spawn_inert(), cx)
+    });
+    vcx.run_until_parked();
+    let editor = vcx.debug_bounds("code-editor-text").unwrap();
+    vcx.simulate_click(editor.center(), gpui::Modifiers::default());
+    vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a cmd-c"
+    } else {
+        "ctrl-a ctrl-c"
     });
     assert_eq!(
-        drag_copy(vcx, "selectable-text-code-file-text"),
-        "first βeta\n\nlast line"
+        vcx.update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("first βeta\n\nlast line")
     );
     assert_eq!(
         drag_copy(vcx, "selectable-text-code-file-path"),
-        "/workspace/example.rs"
+        path.display().to_string()
     );
 }
 

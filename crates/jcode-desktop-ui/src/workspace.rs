@@ -8,6 +8,10 @@
 #[path = "workspace_control_tests.rs"]
 mod control_tests;
 
+#[cfg(test)]
+#[path = "workspace_file_editor_tests.rs"]
+mod file_editor_tests;
+
 #[path = "workspace_control.rs"]
 mod control;
 
@@ -4844,6 +4848,12 @@ impl Workspace {
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing)
+            && !slot.panel.update(cx, |panel, cx| panel.confirm_file_close(cx))
+        {
+            cx.stop_propagation();
+            return;
+        }
         if self.single_panel && self.active == 0 {
             // A standalone chat has no empty workspace to return to.
             window.remove_window();

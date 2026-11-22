@@ -1118,17 +1118,23 @@ pub(crate) enum MinimapSessionState {
     Error,
 }
 
+const MAX_MARKDOWN_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+
 struct CodeFile {
     path: PathBuf,
-    contents: Option<Result<String, String>>,
+    editor: Entity<crate::code_editor::CodeEditor>,
+    loaded: bool,
     markdown: Option<MarkdownFilePreview>,
     pending_heading: Option<String>,
+    preview_task: Option<gpui::Task<()>>,
+    badge: Option<&'static str>,
 }
 
 struct MarkdownFilePreview {
     visible: bool,
     scroll: ScrollHandle,
     document: markdown::FileDocument,
+    revision: u64,
 }
 
 #[derive(Debug)]
@@ -2090,70 +2096,52 @@ impl Panel {
         );
         panel.items.clear();
         let is_markdown = markdown_file::is_markdown(&path);
-        let is_text = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"));
+        let supports_preview = is_markdown || path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt"));
+        let editor = cx.new(|cx| crate::code_editor::CodeEditor::new(path.clone(), cx));
+        cx.observe(&editor, |panel: &mut Panel, editor, cx| {
+            if let Some(file) = &mut panel.code_file {
+                let badge = editor.read(cx).badge();
+                if file.badge != badge {
+                    file.badge = badge;
+                    cx.notify();
+                }
+            }
+        }).detach();
         let requested = path.clone();
         cx.spawn(async move |panel, cx| {
-            let (contents, document) = cx
-                .background_executor()
-                .spawn(async move {
-                    use std::io::Read;
-                    const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
-                    let read = || -> std::io::Result<String> {
-                        let meta = std::fs::metadata(&requested)?;
-                        if !meta.is_file() {
-                            return Err(std::io::Error::other("not a regular file"));
-                        }
-                        if meta.len() > MAX_FILE_BYTES {
-                            return Err(std::io::Error::other("file is too large to preview"));
-                        }
-                        let mut contents = String::new();
-                        std::fs::File::open(requested)?
-                            .take(MAX_FILE_BYTES + 1)
-                            .read_to_string(&mut contents)?;
-                        if contents.len() as u64 > MAX_FILE_BYTES {
-                            return Err(std::io::Error::other("file is too large to preview"));
-                        }
-                        Ok(contents)
-                    };
-                    let contents = read().map_err(|error| {
-                        if error.kind() == std::io::ErrorKind::InvalidData {
-                            "binary files cannot be previewed".to_owned()
-                        } else {
-                            error.to_string()
-                        }
-                    });
-                    let document = contents
-                        .as_ref()
-                        .ok()
-                        .filter(|_| is_markdown || is_text)
-                        .map(|source| markdown::FileDocument::parse(source));
-                    (contents, document)
-                })
-                .await;
+            let (loaded, document) = cx.background_executor().spawn(async move {
+                let loaded = jcode_desktop_model::text_buffer::load(&requested);
+                let document = loaded.as_ref().ok().filter(|_| supports_preview).and_then(|file| {
+                    let snapshot = file.buffer.snapshot();
+                    (snapshot.byte_len() <= MAX_MARKDOWN_PREVIEW_BYTES)
+                        .then(|| markdown::FileDocument::parse(&snapshot.text()))
+                });
+                (loaded, document)
+            }).await;
             let _ = panel.update(cx, |panel, cx| {
-                let Some(file) = &mut panel.code_file else {
-                    return;
-                };
+                let Some(file) = &mut panel.code_file else { return; };
+                file.editor.update(cx, |editor, cx| editor.set_loaded(loaded, cx));
+                file.loaded = true;
                 file.markdown = document.map(|document| MarkdownFilePreview {
                     visible: is_markdown,
                     scroll: ScrollHandle::new(),
                     document,
+                    revision: 0,
                 });
-                file.contents = Some(contents);
                 if let Some(fragment) = file.pending_heading.take() {
                     panel.show_file_heading(&fragment, cx);
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         panel.code_file = Some(CodeFile {
             path,
-            contents: None,
+            editor,
+            loaded: false,
             markdown: None,
             pending_heading: None,
+            preview_task: None,
+            badge: None,
         });
         panel
     }
@@ -2164,7 +2152,7 @@ impl Panel {
 
     pub(crate) fn show_file_heading(&mut self, fragment: &str, cx: &mut Context<Self>) {
         if let Some(file) = &mut self.code_file
-            && file.contents.is_none()
+            && !file.loaded
         {
             file.pending_heading = Some(fragment.to_owned());
             return;
@@ -2181,6 +2169,7 @@ impl Panel {
         };
         preview.visible = true;
         preview.scroll.scroll_to_top_of_item(index);
+        self.refresh_file_preview(cx);
         cx.notify();
     }
 
@@ -2270,15 +2259,55 @@ impl Panel {
             .into_any_element()
     }
 
-    fn toggle_file_preview(&mut self, cx: &mut Context<Self>) {
-        if let Some(preview) = self
-            .code_file
-            .as_mut()
-            .and_then(|file| file.markdown.as_mut())
-        {
-            preview.visible = !preview.visible;
-            cx.notify();
+    fn toggle_file_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(file) = &mut self.code_file else { return; };
+        let Some(preview) = &mut file.markdown else { return; };
+        if preview.visible {
+            preview.visible = false;
+            let focus = file.editor.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        } else {
+            preview.visible = true;
+            window.focus(&self.focus_handle, cx);
+            self.refresh_file_preview(cx);
         }
+        cx.notify();
+    }
+
+    fn refresh_file_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = &mut self.code_file else { return; };
+        let (Some(preview), Some((revision, snapshot))) = (&file.markdown, file.editor.read(cx).preview_snapshot()) else { return; };
+        if preview.revision == revision || file.preview_task.is_some() {
+            return;
+        }
+        file.preview_task = Some(cx.spawn(async move |panel, cx| {
+            let document = cx.background_executor().spawn(async move {
+                if snapshot.byte_len() > MAX_MARKDOWN_PREVIEW_BYTES {
+                    markdown::FileDocument::parse("Preview unavailable for files larger than 2 MB.")
+                } else {
+                    markdown::FileDocument::parse(&snapshot.text())
+                }
+            }).await;
+            let _ = panel.update(cx, |panel, cx| {
+                if let Some(file) = &mut panel.code_file {
+                    file.preview_task = None;
+                    if let Some(preview) = &mut file.markdown {
+                        preview.document = document;
+                        preview.revision = revision;
+                    }
+                    if file.markdown.as_ref().is_some_and(|preview| preview.visible) {
+                        panel.refresh_file_preview(cx);
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn confirm_file_close(&self, cx: &mut App) -> bool {
+        self.code_file.as_ref().is_none_or(|file| {
+            file.editor.update(cx, |editor, cx| editor.confirm_close(cx))
+        })
     }
 
     pub(crate) fn new_accounts(
@@ -6918,6 +6947,10 @@ impl Panel {
             self.focus_handle.clone()
         } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
+        } else if let Some(file) = &self.code_file
+            && !file.markdown.as_ref().is_some_and(|preview| preview.visible)
+        {
+            file.editor.read(cx).focus_handle.clone()
         } else if self.unfinished_work.is_some()
             || self.orchestration.is_some()
             || self.openrig.is_some()
@@ -7103,83 +7136,11 @@ impl Render for Panel {
         if let Some(file) = &self.code_file {
             let path = file.path.display().to_string();
             let preview = file.markdown.as_ref().filter(|preview| preview.visible);
-            let mut body = div()
-                .id("code-file-contents")
-                .debug_selector(|| "code-file-contents".into())
-                .flex_1()
-                .min_h_0()
-                .overflow_scroll()
-                .font_family(Theme::global().FONT_MONO)
-                .text_size(px(12.0))
-                .py_2();
             let body = if let Some(preview) = preview {
                 self.render_markdown_file(file, preview, window, cx)
             } else {
-                match &file.contents {
-                    Some(Ok(contents)) => {
-                        if !contents.is_empty() {
-                            // One shaped leaf lets a drag span lines without copying
-                            // the separate, nonselectable line-number gutter.
-                            body = body.child(
-                                div()
-                                    .flex()
-                                    .min_w_full()
-                                    .child(
-                                        div()
-                                            .w(px(52.0))
-                                            .flex_none()
-                                            .pr_3()
-                                            .text_align(gpui::TextAlign::Right)
-                                            .text_color(Theme::global().CODE_GUTTER)
-                                            .children(contents.lines().enumerate().map(
-                                                |(index, _)| div().child((index + 1).to_string()),
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .pr_4()
-                                            .whitespace_nowrap()
-                                            .text_color(Theme::global().CODE_TEXT)
-                                            .child(text_selection::plain(
-                                                self.transcript_selection.clone(),
-                                                "code-file-text",
-                                                contents.clone(),
-                                                window,
-                                                cx,
-                                            )),
-                                    ),
-                            );
-                        }
-                        if contents.is_empty() {
-                            body = body.child(
-                                div()
-                                    .px_4()
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .child("empty file"),
-                            );
-                        }
-                    }
-                    Some(Err(error)) => {
-                        body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
-                            text_selection::plain(
-                                self.transcript_selection.clone(),
-                                "code-file-error",
-                                error.clone(),
-                                window,
-                                cx,
-                            ),
-                        ));
-                    }
-                    None => {
-                        body = body.child(
-                            div()
-                                .p_4()
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child("Loading file…"),
-                        );
-                    }
-                }
-                body.into_any_element()
+                div().id("code-file-contents").debug_selector(|| "code-file-contents".into())
+                    .flex_1().min_h_0().child(file.editor.clone()).into_any_element()
             };
             let contents = div()
                 .size_full()
@@ -7214,6 +7175,10 @@ impl Render for Panel {
                                     cx,
                                 )),
                         )
+                        .when_some(file.badge, |header, badge| {
+                            header.child(div().id("code-file-badge").debug_selector(|| "code-file-badge".into())
+                                .flex_none().text_color(Theme::global().ACCENT).child(badge))
+                        })
                         .when(file.markdown.is_some(), |header| {
                             header.child(
                                 div()
@@ -7229,7 +7194,7 @@ impl Render for Panel {
                                     .hover(|style| style.bg(Theme::global().ACCENT.opacity(0.15)))
                                     .cursor_pointer()
                                     .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_file_preview(cx)),
+                                        cx.listener(|this, _, window, cx| this.toggle_file_preview(window, cx)),
                                     )
                                     .child(if preview.is_some() {
                                         "Source"
@@ -7243,6 +7208,13 @@ impl Render for Panel {
             return div()
                 .size_full()
                 .track_focus(&self.focus_handle)
+                .key_context("FileDocument")
+                .on_action(cx.listener(|panel, _: &crate::code_editor::Save, _, cx| {
+                    if let Some(file) = &panel.code_file {
+                        file.editor.update(cx, |editor, cx| editor.save_to_disk(cx));
+                        cx.stop_propagation();
+                    }
+                }))
                 .child(TextSelection::focus_scope(
                     contents,
                     &self.transcript_selection,

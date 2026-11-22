@@ -10,6 +10,7 @@ mod build_info;
 mod bundled_applets;
 mod changelog;
 mod clipboard_image;
+mod code_editor;
 mod commands;
 #[cfg(unix)]
 mod desktop_control;
@@ -131,6 +132,7 @@ use workspace::{
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
 /// bindings the user presses, rather than a second copy that could drift.
 pub fn bind_workspace_keys(cx: &mut App) {
+    code_editor::bind_keys(cx);
     terminal::bind_keys(cx);
     panel::voice::bind_keys(cx);
     panel::shortcuts::bind_keys(cx);

@@ -15,6 +15,7 @@ pub mod markdown_file;
 pub mod pdf_render;
 pub mod platform_dirs;
 pub mod prompt_completion;
+pub mod text_buffer;
 pub mod todoist;
 
 #[cfg(test)]

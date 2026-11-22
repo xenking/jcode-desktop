@@ -575,6 +575,7 @@ impl Workspace {
                 div()
                     .w(px(14.0))
                     .flex_none()
+                    .whitespace_nowrap()
                     .text_color(Theme::global().TEXT_DIM)
                     .child(icon),
             )
