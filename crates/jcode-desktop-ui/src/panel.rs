@@ -3596,6 +3596,7 @@ impl Panel {
                 }
                 "tool" => {
                     if let Some(index) = assistant_before_tool.take()
+                        && message.tool.is_some()
                         && let Item::Assistant(text) = &mut items[index]
                     {
                         items[index] = Item::AssistantOutput {
