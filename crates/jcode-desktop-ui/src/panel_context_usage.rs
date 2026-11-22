@@ -87,6 +87,7 @@ fn category(kind: ContextBreakdownKind, theme: &Theme) -> (&'static str, gpui::R
         ContextBreakdownKind::DynamicTools => ("MCP & dynamic tools", theme.CODE_ATTRIBUTE),
         ContextBreakdownKind::Agents => ("Subagent definitions", theme.LINK),
         ContextBreakdownKind::Conversation => ("Conversation", theme.CODE_STRING),
+        ContextBreakdownKind::Snapcompact => ("Snapcompact checkpoint", theme.CODE_CONTROL),
         ContextBreakdownKind::Unattributed => ("Unattributed", theme.TEXT_FAINT),
     }
 }
@@ -550,6 +551,9 @@ impl Panel {
             .breakdown
             .iter()
             .flat_map(|snapshot| &snapshot.categories)
+            .filter(|bucket| {
+                bucket.kind != ContextBreakdownKind::Snapcompact || bucket.tokens.is_some()
+            })
             .map(|bucket| {
                 let (label, color) = category(bucket.kind, theme);
                 (label, color, bucket.tokens)

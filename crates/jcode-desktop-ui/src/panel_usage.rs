@@ -1118,7 +1118,11 @@ mod tests {
                         },
                         jcode_sdk::api::ContextBreakdownCategory {
                             kind: jcode_sdk::api::ContextBreakdownKind::Conversation,
-                            tokens: Some(33_000),
+                            tokens: Some(25_000),
+                        },
+                        jcode_sdk::api::ContextBreakdownCategory {
+                            kind: jcode_sdk::api::ContextBreakdownKind::Snapcompact,
+                            tokens: Some(8_000),
                         },
                     ],
                 }),
@@ -1142,8 +1146,12 @@ mod tests {
             .debug_bounds("context-usage-segment-Conversation")
             .unwrap();
         assert!(f32::from(chat.left() - tools.right()).abs() <= 1.);
+        let checkpoint = vcx
+            .debug_bounds("context-usage-segment-Snapcompact checkpoint")
+            .unwrap();
+        assert!(f32::from(checkpoint.left() - chat.right()).abs() <= 1.);
         let occupied_width = f32::from(bar.size.width) * (41. / 65.);
-        assert!(f32::from(chat.right() - bar.left()) <= occupied_width + 1.);
+        assert!((f32::from(checkpoint.right() - bar.left()) - occupied_width).abs() <= 1.);
         let marker = vcx.debug_bounds("context-usage-billing-marker").unwrap();
         let marker_offset = f32::from(bar.size.width) * (30. / 65.);
         assert!((f32::from(marker.left() - bar.left()) - marker_offset).abs() <= 1.);
@@ -1162,7 +1170,10 @@ mod tests {
             .debug_bounds("context-usage-count-Tool definitions-~11k")
             .unwrap();
         let chat_count = vcx
-            .debug_bounds("context-usage-count-Conversation-~33k")
+            .debug_bounds("context-usage-count-Conversation-~25k")
+            .unwrap();
+        let checkpoint_count = vcx
+            .debug_bounds("context-usage-count-Snapcompact checkpoint-~8k")
             .unwrap();
         let free_count = vcx
             .debug_bounds("context-usage-count-Remaining-24k")
@@ -1172,8 +1183,10 @@ mod tests {
         assert!(chat_row.contains(&chat_count.center()));
         assert_eq!(tools_count.right(), bar.right());
         assert_eq!(chat_count.right(), bar.right());
+        assert_eq!(checkpoint_count.right(), bar.right());
         assert_eq!(free_count.right(), bar.right());
-        assert!(free_count.top() > chat_count.bottom());
+        assert!(checkpoint_count.top() > chat_count.bottom());
+        assert!(free_count.top() > checkpoint_count.bottom());
         assert_eq!(
             panel.read_with(vcx, |panel, _| panel.items.len()),
             item_count

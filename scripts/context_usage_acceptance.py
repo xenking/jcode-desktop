@@ -2,6 +2,7 @@
 """Drive Context Usage in a hidden native window backed by a private runtime."""
 
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -32,15 +33,51 @@ class ContextUsage(VERIFY.Instance):
         return super().runtime_spawn(name, command)
 
     def start_background_runtime(self, env):
+        if self.manifest["snapcompact"]:
+            self.second = "session_fox_1795279000002_snapcompact"
+            now = datetime.now(timezone.utc).isoformat()
+            sessions = self.profile / "jcode/sessions"
+            sessions.mkdir(exist_ok=True)
+            VERIFY.save(sessions / f"{self.second}.json", dict(
+                id=self.second, title="Snapcompact fixture", created_at=now, updated_at=now,
+                model="gpt-5.6-terra", provider_key="openai-compatible", working_dir=str(self.profile / "home"),
+                messages=[dict(id="saved-tail", role="user", timestamp=now,
+                               content=[dict(type="text", text="Keep the recent tail.")])],
+                compaction=dict(summary_text="Saved fixture checkpoint", covers_up_to_turn=0,
+                                original_turn_count=0, compacted_count=0, snapcompact=dict(
+                                    source="older input kept in the archive", pages=[],
+                                    index="[message 0, page 1 | user] indexed old fact\n",
+                                    decisions="A checkpoint decision kept in the outbound request.",
+                                    deferred_decisions="Archive-only decision. " * 200,
+                                    page_ranges=[], render_key="")),
+            ))
         super().start_background_runtime(env)
         first = env["JCODE_DESKTOP_CONTROL_RUNTIME_SESSION"]
-        self.second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
+        if not self.manifest["snapcompact"]:
+            self.second = json.loads(self.runtime_debug(f"create_session:{self.profile / 'home'}"))["session_id"]
         self.runtime_debug("message", "[e2e:pad] [e2e:input-tokens:11042] First session with long history.",
                            "--session", first, "--wait")
         threshold = self.context_usage(first)["meter"]["compaction_threshold_tokens"]
         self.second_total = round(threshold * .35)
-        self.runtime_debug("message", f"[e2e:input-tokens:{self.second_total}] " + "Second session. " * 150,
-                           "--session", self.second, "--wait")
+        second_prompt = f"[e2e:input-tokens:{self.second_total}] " + "Second session. " * 150
+        if self.manifest["snapcompact"]:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(10)
+                client.connect(str(self.legacy_socket))
+                subscribe = {"type": "subscribe", "id": 1, "target_session_id": self.second,
+                             "working_dir": str(self.profile / "home")}
+                client.sendall(json.dumps(subscribe).encode() + b"\n")
+                with client.makefile("rb") as stream:
+                    for line in stream:
+                        event = json.loads(line)
+                        if event.get("id") == 1 and event["type"] in ("error", "done"):
+                            break
+                    else:
+                        raise RuntimeError("Runtime closed before opening the saved checkpoint")
+                assert event["type"] == "done", event
+                self.runtime_debug("message", second_prompt, "--session", self.second, "--wait")
+        else:
+            self.runtime_debug("message", second_prompt, "--session", self.second, "--wait")
         self.first_total = 11_042
         if self.manifest["compact"]:
             self.first_total = 57_665
@@ -102,6 +139,10 @@ class ContextUsage(VERIFY.Instance):
         expected = [self.context_usage(session) for session in (first, second)]
         assert [usage["total_tokens"] for usage in expected] == [self.first_total, self.second_total], expected
         assert all(usage["meter"]["source"] == "provider_reported" for usage in expected), expected
+        if self.manifest["snapcompact"]:
+            checkpoint = next(bucket["tokens"] for bucket in expected[1]["categories"]
+                              if bucket["kind"] == "snapcompact")
+            assert checkpoint > 0, expected[1]
         requests = (self.run / "fake-requests.jsonl").read_bytes()
         before = [self.drive("state", session=s)["panel"]["loaded_transcript_items"] for s in (first, second)]
         frames = {}
@@ -124,6 +165,8 @@ class ContextUsage(VERIFY.Instance):
                                 if bucket["kind"] == "conversation")
             text = text.lower()
             required = ("context usage", "compact now", "shake tools", "conversation", "to compact")
+            if index == 1 and self.manifest["snapcompact"]:
+                required += ("snapcompact checkpoint", compact_count(checkpoint))
             seen_conversation = re.search(rf"\b{re.escape(compact_count(conversation))}\b", text)
             if (all(label in text for label in required) and seen_conversation
                     and meter_value(index) in re.sub(r"\s+", "", text)):
@@ -131,9 +174,10 @@ class ContextUsage(VERIFY.Instance):
                     "estimated breakdown", "model window", "of current context", "higher rates",
                 )), text
                 if index == 0 and not self.manifest["compact"]:
-                    if not (re.search(r"compact now\D*[0-9][0-9.\s]*%", text)
-                            and re.search(r"shake tools\s*0%", text)):
-                        return None
+                    forecast = expected[index].get("action_forecast") or {}
+                    for action, label in (("compact", "compact now"), ("shake", "shake tools")):
+                        if forecast.get(action) and not re.search(rf"{label}\D*[0-9][0-9.\s]*%", text):
+                            return None
                 return frame
             return None
 
@@ -243,6 +287,7 @@ def main(instance_type=ContextUsage):
     parser.add_argument("--width", type=int, choices=range(360, 1601), metavar="360..1600", required=True)
     parser.add_argument("--theme", choices=("neutral-light", "neutral-dark"), required=True)
     parser.add_argument("--compact", action="store_true", help="also apply Compact to the first private session")
+    parser.add_argument("--snapcompact", action="store_true", help="show an active snapcompact checkpoint in the second session")
     args = parser.parse_args()
     VERIFY.require_safe_host()
     args.run = args.run.resolve()
@@ -255,7 +300,8 @@ def main(instance_type=ContextUsage):
     manifest = dict(schema=VERIFY.SCHEMA, evidence=str(args.run), scratch=str(scratch), token=token,
                     binary=str(args.desktop_bin.resolve()), jcode_bin=str(args.jcode_bin.resolve()),
                     bridge_bin=str(args.bridge_bin.resolve()), sources=VERIFY.source_identity(),
-                    fixture="background-jobs", theme=args.theme, window_width=args.width, compact=args.compact)
+                    fixture="background-jobs", theme=args.theme, window_width=args.width, compact=args.compact,
+                    snapcompact=args.snapcompact)
     instance = instance_type(args.run, manifest)
     try:
         instance.start()
