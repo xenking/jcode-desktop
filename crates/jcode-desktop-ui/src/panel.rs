@@ -922,7 +922,7 @@ pub struct Panel {
     /// Selection scope for transcript applet cards.
     applet_selection: Entity<TextSelection>,
     /// Applet runtime generation last reflected in transcript measurements.
-    applet_generation: (u64, usize, bool),
+    applet_generation: (u64, u64, bool),
     /// Unanchored transcript applets as `(item position, instance)`, in order.
     applet_rows: Vec<(usize, String)>,
     /// Advances whenever `applet_rows` is replaced.
@@ -5473,7 +5473,7 @@ impl Panel {
         let runtime = crate::applet_runtime::get(cx);
         let generation = runtime.generation.get();
         let clean = self.clean_chat_enabled();
-        let key = (generation, self.items.len(), clean);
+        let key = (generation, self.items.revision(), clean);
         if key == self.applet_generation {
             return;
         }
@@ -5488,33 +5488,49 @@ impl Panel {
                 anchor: Anchor::ToolCall { call_id },
                 ..
             } = &mounted.instance.placement
-                && let Some(index) = self
-                    .items
-                    .iter()
-                    .position(|item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id))
             {
-                if clean {
+                if clean
+                    && let Some(index) = self.items.iter().position(
+                        |item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id),
+                    )
+                {
                     rows.push((index, id));
                 }
                 continue;
             }
             // Older snapshots only stored End. Recover the original mount, not a later update.
-            let position = *self.applet_positions.entry(id.clone()).or_insert_with(|| {
+            let position = if mounted.instance.applet == jcode_applet_types::agent::APPLET_ID {
                 let origins = receipts.get_or_insert_with(|| {
                     let mut origins = HashMap::new();
                     for (index, item) in self.items.iter().enumerate() {
                         if let Item::Tool { name, output, .. } = item
                             && name == "applet"
-                            && let Some((local, rest)) = output.trim_start().strip_prefix("Applet `").and_then(|s| s.split_once("` revision "))
+                            && let Some((local, rest)) = output
+                                .trim_start()
+                                .strip_prefix("Applet `")
+                                .and_then(|s| s.split_once("` revision "))
                             && rest.starts_with("1.")
                         {
-                            origins.entry(crate::applet_runtime::agent_instance_id(&self.session_id, local)).or_insert(index + 1);
+                            origins
+                                .entry(crate::applet_runtime::agent_instance_id(
+                                    &self.session_id,
+                                    local,
+                                ))
+                                .or_insert(index + 1);
                         }
                     }
                     origins
                 });
-                origins.get(&id).copied().unwrap_or(self.items.len())
-            });
+                let Some(&position) = origins.get(&id) else {
+                    continue;
+                };
+                position
+            } else {
+                *self
+                    .applet_positions
+                    .entry(id.clone())
+                    .or_insert(self.items.len())
+            };
             seen.insert(id.clone());
             rows.push((position, id));
         }

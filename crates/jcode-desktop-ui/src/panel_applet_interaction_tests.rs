@@ -19,6 +19,36 @@ fn snapshot(revision: u64, note: &str) -> jcode_applet_types::AgentApplets {
     }]})).unwrap()
 }
 
+fn mount_call(id: &str) -> Item {
+    Item::Tool {
+        name: "applet".into(),
+        call_id: format!("mount-{id}"),
+        input: json!({"action":"mount","instance":id}).to_string(),
+        output: format!("Applet `{id}` revision 1."),
+        done: true,
+        error: None,
+    }
+}
+
+#[gpui::test]
+fn restored_cards_outside_the_loaded_page_never_appear_at_tail(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|_,cx| {
+        let mut panel = Panel::new("session-a".into(),None,None,crate::harness::spawn_inert(),cx);
+        let mut state=snapshot(2, "");
+        let mut inline=state.instances[0].clone(); inline.id="inline".into();
+        inline.placement=serde_json::from_value(json!({"kind":"inline","session_id":"session-a","anchor":{"kind":"tool_call","call_id":"mount-inline"}})).unwrap();
+        state.instances.push(inline);
+        panel.items.push(Item::User("latest unrelated prompt".into()));
+        for instance in &state.instances {panel.applet_positions.insert(agent_instance_id("session-a", &instance.id),1);}
+        crate::applet_runtime::get(cx).sync_agent("session-a", &state);
+        for clean in [false,true] {panel.set_clean_chat(Some(clean),cx);panel.sync_applet_rows(cx);assert!(panel.applet_rows.is_empty(), "unloaded cards reappeared: {:?}",panel.applet_rows);}
+        panel.items.splice(0..0,[mount_call("review"),mount_call("inline")]);
+        panel.sync_applet_rows(cx);assert_eq!(panel.applet_rows.len(),2);assert!(panel.applet_rows.iter().all(|(i,_)| *i==1));
+        panel
+    });
+    vcx.run_until_parked();
+}
+
 #[gpui::test]
 fn old_applets_stay_at_mount_when_one_is_updated(cx: &mut gpui::TestAppContext) {
     let (_, vcx) = cx.add_window_view(|_, cx| {
@@ -75,6 +105,7 @@ fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestA
             cx,
         );
         panel.items.push(Item::User("Tasks".into()));
+        panel.items.push(mount_call("tasks"));
         panel
     });
     let snapshot: jcode_applet_types::AgentApplets = serde_json::from_value(json!({"instances": [{
@@ -164,6 +195,7 @@ fn clean_chat_paints_applet_and_answer_without_tool_log(cx: &mut gpui::TestAppCo
         );
         panel.set_clean_chat(Some(true), cx);
         panel.items.push(Item::User("Choose".into()));
+        panel.items.push(mount_call("review"));
         panel.items.push(Item::Tool {
             call_id: "decision".into(),
             name: "ask".into(),
@@ -204,6 +236,7 @@ fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppCon
             cx,
         );
         panel.items.push(Item::User("Review this".into()));
+        panel.items.push(mount_call("review"));
         panel
     });
     let id = agent_instance_id("session-a", "review");
