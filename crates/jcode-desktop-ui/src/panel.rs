@@ -4530,6 +4530,8 @@ impl Panel {
                 };
                 if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
                     self.reconcile_reconnect_response();
+                    self.flush_reasoning();
+                    self.settle_idle_output();
                     self.finish_response();
                 }
             }

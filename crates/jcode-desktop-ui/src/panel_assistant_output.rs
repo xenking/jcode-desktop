@@ -50,8 +50,6 @@ impl Panel {
         if let Some(id) = id.filter(|id| !id.is_empty())
             && self.live_assistant_output.is_none()
         {
-            // Do not attach a legacy uncorrelated suffix to a framed message.
-            self.flush_streaming();
             self.live_assistant_output = Some(LiveAssistantOutput {
                 id: id.to_owned(),
                 closed: false,
@@ -89,6 +87,16 @@ impl Panel {
             .live_assistant_output
             .as_ref()
             .is_some_and(|output| output.closed)
+        {
+            self.settle_assistant_output(AssistantOutputPhase::Update);
+        }
+    }
+
+    pub(super) fn settle_idle_output(&mut self) {
+        if self
+            .live_assistant_output
+            .as_ref()
+            .is_some_and(|output| !output.closed)
         {
             self.settle_assistant_output(AssistantOutputPhase::Update);
         }

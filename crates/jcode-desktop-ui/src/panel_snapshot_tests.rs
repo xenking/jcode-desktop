@@ -172,13 +172,9 @@ fn reconnect_history_waits_for_idle_and_never_duplicates_buffered_delta(
             cx,
         );
         idle(panel, cx);
-        assert_eq!(
-            panel.items,
-            vec![
-                Item::User("question".into()),
-                Item::Assistant("partial".into())
-            ]
-        );
+        assert_eq!(panel.items.len(), 2);
+        assert_eq!(panel.items[0], Item::User("question".into()));
+        assert_eq!(panel.items[1].assistant_text(), Some("partial"));
         panel.load_history(
             history(&[("user", "question"), ("assistant", "partial")]),
             vec![],
