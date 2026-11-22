@@ -56,6 +56,10 @@ pub(crate) fn voice_recording() -> bool {
     enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("voice-rt")
 }
 
+pub(crate) fn model_speed_picker() -> bool {
+    enabled() && std::env::var("JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER").as_deref() == Ok("model")
+}
+
 pub(crate) fn voice_soniox() -> bool {
     cfg!(debug_assertions)
         && enabled()
@@ -155,6 +159,12 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector == "side-question-promote"
         || (side_questions() && selector.starts_with("side-question-"))
         || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
+        || (model_speed_picker()
+            && (selector.starts_with("model-speed:")
+                || matches!(
+                    selector,
+                    "panel-model" | "panel-model-effort" | "panel-model-speed"
+                )))
         || (draft_session()
             && (selector.starts_with("draft-model-row:")
                 || matches!(

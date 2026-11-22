@@ -238,9 +238,8 @@ impl Panel {
             PickerKind::Model => "model",
             PickerKind::Effort => "effort",
             PickerKind::Mode => "mode",
-            PickerKind::Speed => "speed",
         };
-        let picker_trigger_focus = [PickerKind::Model, PickerKind::Effort, PickerKind::Mode, PickerKind::Speed]
+        let picker_trigger_focus = [PickerKind::Model, PickerKind::Effort, PickerKind::Mode]
             .into_iter()
             .find(|kind| self.picker_triggers[*kind as usize].is_focused(window))
             .map(picker_name);
@@ -272,6 +271,7 @@ impl Panel {
             "working_dir": self.working_dir,
             "provider": self.provider,
             "reasoning_effort": self.reasoning_effort,
+            "speed_mode": crate::fixture_control_targets::model_speed_picker().then(|| self.visible_speed()),
             "active_modes": self.mode_names(),
             "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),
             "picker": self.picker_search.as_ref().map(|(kind, _)| picker_name(*kind)),

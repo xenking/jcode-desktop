@@ -3,6 +3,7 @@ use gpui::{Context, IntoElement, ParentElement, Render, Rgba, Styled, Window, di
 use jcode_provider_core::{SpeedAvailability, SpeedMode, SpeedOption};
 
 const MODES: [SpeedMode; 3] = [SpeedMode::Standard, SpeedMode::Fast, SpeedMode::Ultrafast];
+pub(crate) const ACCELERATED: [SpeedMode; 2] = [SpeedMode::Fast, SpeedMode::Ultrafast];
 
 pub(crate) fn label(tier: SpeedMode) -> &'static str {
     match tier {
@@ -156,7 +157,7 @@ mod tests {
     }
 }
 
-fn quota(tier: SpeedMode) -> &'static str {
+pub(crate) fn quota(tier: SpeedMode) -> &'static str {
     match tier {
         SpeedMode::Standard => "Normal quota use.",
         SpeedMode::Fast => "Faster inference. May use more quota or cost more.",

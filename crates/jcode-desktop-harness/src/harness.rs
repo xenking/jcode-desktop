@@ -617,6 +617,12 @@ pub enum SessionOperation {
         serial: u64,
         mode: jcode_sdk::api::SpeedMode,
     },
+    SetModelWithSpeed {
+        model: String,
+        effort: Option<String>,
+        serial: u64,
+        mode: jcode_sdk::api::SpeedMode,
+    },
     Rename(Option<String>),
     /// Bookmark (`true`) or unbookmark. A label also becomes the title.
     SetSaved(bool, Option<String>),
@@ -1019,6 +1025,51 @@ pub fn gallery_fixture_image_id(index: usize) -> String {
     format!("img_{index:032x}")
 }
 
+pub fn composer_picker_fixture_runtime(
+    session_id: &str,
+    selection: Option<(&str, Option<String>, jcode_sdk::api::SpeedMode)>,
+) -> ApiEvent {
+    use jcode_sdk::api::{SpeedAvailability, SpeedMode, SpeedOption};
+
+    let (model, reasoning_effort, speed_mode) =
+        selection.unwrap_or(("gpt-6.2-astra", None, SpeedMode::Standard));
+    let routes: Vec<_> = ["gpt-6.2-astra", "gpt-6.2-sol"]
+        .into_iter()
+        .map(|model| jcode_sdk::ModelRouteInfo {
+            model: model.into(),
+            provider: "openai".into(),
+            api_method: "openai-oauth".into(),
+            available: true,
+            detail: String::new(),
+            usage: None,
+            speed_options: [SpeedMode::Fast, SpeedMode::Ultrafast]
+                .into_iter()
+                .filter(|mode| model == "gpt-6.2-astra" || *mode == SpeedMode::Ultrafast)
+                .map(|mode| SpeedOption {
+                    mode,
+                    availability: SpeedAvailability::Available,
+                    reason: None,
+                })
+                .collect(),
+        })
+        .collect();
+    let speed_options = routes
+        .iter()
+        .find(|route| route.model == model)
+        .map_or_else(Vec::new, |route| route.speed_options.clone());
+    ApiEvent::RuntimeInfo {
+        session_id: session_id.into(),
+        provider: Some("openai".into()),
+        model: Some(model.into()),
+        auth_method: Some("openai-oauth".into()),
+        account_label: None,
+        reasoning_effort,
+        routes,
+        speed_mode,
+        speed_options,
+    }
+}
+
 /// A bridge that answers from fixtures, so the screenshot harness can
 /// render the results screen without a daemon, an index, or a network.
 fn spawn_screenshot() -> Bridge {
@@ -1028,6 +1079,12 @@ fn spawn_screenshot() -> Bridge {
         .name("jcode-bridge-screenshot".into())
         .spawn(move || {
             let history = screenshot_history::enabled().then(screenshot_history::session);
+            let picker = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER").as_deref()
+                    == Ok("model");
+            let mut picker_model = "gpt-6.2-astra".to_owned();
+            let mut picker_effort = None;
+            let mut picker_speed = jcode_sdk::api::SpeedMode::Standard;
             let gallery = std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1")
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
                     == Ok("gallery-preload");
@@ -1053,6 +1110,68 @@ fn spawn_screenshot() -> Bridge {
                 });
             }
             while let Ok(command) = command_rx.recv() {
+                if picker {
+                    let mut speed_serial = None;
+                    let session_id = match &command {
+                        Command::SessionOperation {
+                            session_id,
+                            operation,
+                        } => match operation {
+                            SessionOperation::SetModelWithSpeed {
+                                model,
+                                effort,
+                                serial,
+                                mode,
+                            } => {
+                                picker_model = model
+                                    .split_once(':')
+                                    .map_or(model.as_str(), |(_, bare)| bare)
+                                    .into();
+                                picker_effort = effort.clone();
+                                picker_speed = *mode;
+                                speed_serial = Some(*serial);
+                                Some(session_id)
+                            }
+                            SessionOperation::SetSpeed { serial, mode } => {
+                                picker_speed = *mode;
+                                speed_serial = Some(*serial);
+                                Some(session_id)
+                            }
+                            SessionOperation::SetEffort(effort) => {
+                                picker_effort = Some(effort.clone());
+                                Some(session_id)
+                            }
+                            _ => None,
+                        },
+                        Command::SetModel { session_id, model } => {
+                            picker_model = model
+                                .split_once(':')
+                                .map_or(model.as_str(), |(_, bare)| bare)
+                                .into();
+                            picker_speed = jcode_sdk::api::SpeedMode::Standard;
+                            Some(session_id)
+                        }
+                        _ => None,
+                    };
+                    if let Some(session_id) = session_id {
+                        let event = composer_picker_fixture_runtime(
+                            session_id,
+                            Some((&picker_model, picker_effort.clone(), picker_speed)),
+                        );
+                        let _ = update_tx.send(Update::Event {
+                            session_id: session_id.clone(),
+                            event,
+                        });
+                        if let Some(serial) = speed_serial {
+                            let _ = update_tx.send(Update::SpeedSettled {
+                                session_id: session_id.clone(),
+                                serial,
+                                result: Ok(picker_speed),
+                            });
+                        }
+                        continue;
+                    }
+                }
                 if gallery && let Some(update) = gallery_fixture_reply(&command) {
                     let _ = update_tx.send(update);
                     continue;
@@ -4451,6 +4570,39 @@ fn session_worker_with_connector(
                             });
                             continue;
                         }
+                        if let SessionOperation::SetModelWithSpeed {
+                            ref model,
+                            ref effort,
+                            serial,
+                            mode,
+                        } = operation
+                        {
+                            let result = client
+                                .set_model(real_id, model)
+                                .map_err(|error| format!("Failed to switch model: {error}"))
+                                .and_then(|()| {
+                                    if let Some(effort) = effort
+                                        && let Err(error) =
+                                            client.set_reasoning_effort(real_id, effort)
+                                    {
+                                        let _ = updates.send(Update::CommandFailed {
+                                            session_id: session_id.clone(),
+                                            reason: format!(
+                                                "Failed to set reasoning effort: {error}"
+                                            ),
+                                        });
+                                    }
+                                    client
+                                        .set_speed_mode(mode)
+                                        .map_err(|error| error.to_string())
+                                });
+                            let _ = updates.send(Update::SpeedSettled {
+                                session_id: session_id.clone(),
+                                serial,
+                                result,
+                            });
+                            continue;
+                        }
                         if let SessionOperation::SetSaved(saved, label) = &operation {
                             match client.set_session_saved(real_id, *saved, label.clone()) {
                                 Ok(()) => {
@@ -4502,6 +4654,7 @@ fn session_worker_with_connector(
                             }
                             SessionOperation::SetEffort(_)
                             | SessionOperation::SetSpeed { .. }
+                            | SessionOperation::SetModelWithSpeed { .. }
                             | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }

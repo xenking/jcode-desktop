@@ -7,10 +7,24 @@ use crate::speed_icon::{self, SpeedPicker};
 pub(super) struct SessionSpeed {
     options: Vec<SpeedOption>,
     intended: SpeedMode,
-    pending: Option<(u64, SpeedMode)>,
+    pending: Option<PendingSpeed>,
     serial: u64,
     rejection: Option<(SpeedMode, String)>,
     last_response: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingSpeed {
+    serial: u64,
+    mode: SpeedMode,
+    switching_model: bool,
+}
+
+impl SessionSpeed {
+    pub(super) fn clear_options(&mut self) {
+        self.options.clear();
+        self.last_response = None;
+    }
 }
 
 impl Panel {
@@ -21,34 +35,20 @@ impl Panel {
         let kind = match std::env::var("JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER").as_deref() {
             Ok("model") => PickerKind::Model,
             Ok("effort") => PickerKind::Effort,
-            Ok("speed") => PickerKind::Speed,
             _ => return,
         };
-        let routes = ["gpt-6.2-astra", "gpt-6.2-sol"].map(|model| jcode_sdk::ModelRouteInfo {
-            model: model.into(),
-            provider: "openai".into(),
-            api_method: "openai-oauth".into(),
-            available: true,
-            detail: String::new(),
-            usage: None,
-            speed_options: Vec::new(),
-        });
-        self.provider = Some("openai".into());
-        self.model = Some(routes[0].model.clone());
+        let mut event = crate::harness::composer_picker_fixture_runtime(&self.session_id, None);
+        if let ApiEvent::RuntimeInfo {
+            reasoning_effort, ..
+        } = &mut event
+        {
+            *reasoning_effort = self.reasoning_effort.clone();
+        }
+        self.apply(&event, cx);
         let ladder = self.effort_ladder();
         self.input.update(cx, |input, cx| {
-            input.set_model_routes(Vec::new(), &routes, self.model.clone(), cx);
-            input.set_effort_state(ladder, self.reasoning_effort.clone(), cx);
+            input.set_effort_state(ladder, self.reasoning_effort.clone(), cx)
         });
-        self.update_speed(
-            SpeedMode::Fast,
-            &[SpeedMode::Fast, SpeedMode::Ultrafast].map(|mode| SpeedOption {
-                mode,
-                availability: jcode_provider_core::SpeedAvailability::Available,
-                reason: None,
-            }),
-            cx,
-        );
         self.open_picker_search(kind, cx);
         if let Some((_, input)) = &self.picker_search {
             input.update(cx, |input, cx| input.focus_next_picker_row_for_screenshot(cx));
@@ -58,7 +58,11 @@ impl Panel {
     fn intended_speed(&self) -> SpeedMode {
         self.draft_config
             .speed
-            .or(self.speed.pending.map(|(_, mode)| mode))
+            .or(self
+                .speed
+                .pending
+                .filter(|pending| !pending.switching_model)
+                .map(|pending| pending.mode))
             .unwrap_or(self.speed.intended)
     }
 
@@ -91,6 +95,18 @@ impl Panel {
         if self.is_side_document() || self.preview_state.is_some() {
             return;
         }
+        if mode != SpeedMode::Standard
+            && self
+                .speed
+                .pending
+                .is_some_and(|pending| pending.switching_model)
+        {
+            self.effort_notice(
+                "Wait for the model switch before changing speed.".into(),
+                cx,
+            );
+            return;
+        }
         if !speed_icon::offered(&self.speed.options, mode) {
             self.effort_notice(
                 format!(
@@ -109,28 +125,109 @@ impl Panel {
         }
         if self.is_pending_session() {
             self.draft_config.speed = Some(mode);
+            self.sync_open_speed_picker(cx);
             cx.notify();
         } else {
             self.send_speed(mode, cx);
         }
     }
 
+    pub(super) fn choose_model_speed(
+        &mut self,
+        choice: crate::input::ModelSpeedChoice<'_>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_side_document() || self.preview_state.is_some() {
+            return;
+        }
+        if choice.current {
+            self.choose_speed(choice.mode, cx);
+            return;
+        }
+        self.close_model_picker(cx);
+        self.composer_popover_trigger = None;
+        self.focus_pending = true;
+        if self.is_pending_session() {
+            if let Some(effort) = choice.effort {
+                self.switch_model_with_effort(choice.spec, effort, cx);
+            } else {
+                self.pick_draft_model(choice.spec, cx);
+                self.remember_draft_model(cx);
+            }
+            self.choose_speed(choice.mode, cx);
+        } else {
+            self.send_model_speed(
+                choice.spec.into(),
+                choice.effort.map(str::to_owned),
+                choice.mode,
+                cx,
+            );
+        }
+    }
+
     pub(super) fn send_speed(&mut self, mode: SpeedMode, cx: &mut Context<Self>) {
-        self.speed.serial += 1;
-        let serial = self.speed.serial;
-        self.speed.pending = Some((serial, mode));
-        self.speed.last_response = None;
-        self.speed.rejection = None;
+        let serial = self.begin_speed_request(mode, false, cx);
         self.bridge.send(Command::SessionOperation {
             session_id: self.session_id.clone(),
             operation: SessionOperation::SetSpeed { serial, mode },
         });
+    }
+
+    pub(super) fn send_model_speed(
+        &mut self,
+        model: String,
+        effort: Option<String>,
+        mode: SpeedMode,
+        cx: &mut Context<Self>,
+    ) {
+        let serial = self.begin_speed_request(mode, true, cx);
+        self.bridge.send(Command::SessionOperation {
+            session_id: self.session_id.clone(),
+            operation: SessionOperation::SetModelWithSpeed {
+                model,
+                effort,
+                serial,
+                mode,
+            },
+        });
+    }
+
+    fn begin_speed_request(
+        &mut self,
+        mode: SpeedMode,
+        switching_model: bool,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.speed.serial += 1;
+        let serial = self.speed.serial;
+        self.speed.pending = Some(PendingSpeed {
+            serial,
+            mode,
+            switching_model,
+        });
+        self.speed.last_response = None;
+        self.speed.rejection = None;
+        self.sync_open_speed_picker(cx);
         cx.notify();
+        serial
     }
 
     pub(super) fn apply_draft_speed(&mut self, requested: SpeedMode, cx: &mut Context<Self>) {
-        let safe = speed_icon::visible_mode(&self.speed.options, requested);
+        let safe = self.safe_draft_speed(requested);
         self.send_speed(safe, cx);
+        self.report_draft_speed_fallback(requested, safe, cx);
+    }
+
+    pub(super) fn safe_draft_speed(&self, requested: SpeedMode) -> SpeedMode {
+        speed_icon::visible_mode(&self.speed.options, requested)
+    }
+
+    pub(super) fn report_draft_speed_fallback(
+        &mut self,
+        requested: SpeedMode,
+        safe: SpeedMode,
+        cx: &mut Context<Self>,
+    ) {
         if safe != requested {
             self.speed.rejection = Some((
                 requested,
@@ -152,17 +249,21 @@ impl Panel {
         result: Result<SpeedMode, String>,
         cx: &mut Context<Self>,
     ) {
-        let Some((pending, mode)) = self.speed.pending else {
+        let Some(pending) = self.speed.pending else {
             return;
         };
-        if serial != pending {
+        if serial != pending.serial {
             return;
         }
         self.speed.pending = None;
+        let mode = pending.mode;
         match result {
             Ok(applied) => self.speed.intended = applied,
             Err(error) => {
-                self.effort_notice(format!("{} was not applied.", speed_icon::label(mode)), cx);
+                self.effort_notice(
+                    format!("{} was not applied: {error}", speed_icon::label(mode)),
+                    cx,
+                );
                 self.speed.rejection = Some((mode, error));
             }
         }
@@ -191,8 +292,7 @@ impl Panel {
         if self.speed.options.is_empty() {
             return;
         }
-        self.speed.options.clear();
-        self.speed.last_response = None;
+        self.speed.clear_options();
         self.sync_open_speed_picker(cx);
         self.bridge.send(Command::RefreshRuntime {
             session_id: self.session_id.clone(),
@@ -213,10 +313,22 @@ impl Panel {
     }
 
     pub(super) fn sync_open_speed_picker(&self, cx: &mut Context<Self>) {
-        if let Some((PickerKind::Speed, input)) = &self.picker_search {
-            let picker = self.speed_picker();
-            input.update(cx, |input, cx| input.set_speed_picker(picker, cx));
-        }
+        let panel = cx.weak_entity();
+        cx.defer(move |cx| {
+            let Some(panel) = panel.upgrade() else { return };
+            let panel = panel.read(cx);
+            let picker = panel.speed_picker();
+            let input = panel.input.clone();
+            let search = panel
+                .picker_search
+                .as_ref()
+                .filter(|(kind, _)| *kind == PickerKind::Model)
+                .map(|(_, search)| search.clone());
+            input.update(cx, |input, cx| input.set_speed_picker(picker.clone(), cx));
+            if let Some(search) = search {
+                search.update(cx, |search, cx| search.set_speed_picker(picker, cx));
+            }
+        });
     }
 }
 

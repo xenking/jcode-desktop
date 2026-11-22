@@ -187,7 +187,6 @@ impl Panel {
                             }))
                     }))
                     .child(self.render_model_control(model_label, effort, cx))
-                    .child(self.render_speed_control(cx))
                     .children(self.render_context_meter(cx)),
             )
             .when(!self.transcript_only && !self.is_pending_session(), |el| {
@@ -329,6 +328,9 @@ impl Panel {
         const MODEL: &str = "panel-model";
         const EFFORT: &str = "panel-model-effort";
         let joined = effort.is_some();
+        let speed = self.visible_speed();
+        let accelerated = speed != jcode_provider_core::SpeedMode::Standard;
+        let speed_width = if accelerated { 24. } else { 0. };
         let name = div()
             .debug_selector(|| "panel-model-name".into())
             .min_w_0()
@@ -339,12 +341,14 @@ impl Panel {
             .flex()
             .items_center()
             .flex_shrink_1()
-            .min_w(px(MODEL_MIN + if joined { EFFORT_MIN } else { 0. }))
+            .min_w(px(MODEL_MIN
+                + if joined { EFFORT_MIN } else { 0. }
+                + speed_width))
             .rounded_full()
             .bg(Theme::global().chip_background())
             .child(
                 crate::keyboard::popover_trigger(
-                    composer_button(MODEL, joined),
+                    composer_button(MODEL, joined || accelerated),
                     &self.picker_triggers[PickerKind::Model as usize],
                 )
                 .relative()
@@ -354,8 +358,8 @@ impl Panel {
                 ))
                 .flex_shrink_1()
                 .min_w(px(MODEL_MIN))
-                .when(joined, |el| el.pl_4().pr_1())
-                .child(if joined {
+                .when(joined || accelerated, |el| el.pl_4().pr_1())
+                .child(if joined || accelerated {
                     composer_hover_content(MODEL, 3.).child(name)
                 } else {
                     name
@@ -389,7 +393,8 @@ impl Panel {
                 .min_w(px(EFFORT_MIN))
                 .gap_1()
                 .pl_0p5()
-                .pr_2p5()
+                .when(accelerated, |el| el.pr_0p5())
+                .when(!accelerated, |el| el.pr_2p5())
                 .child(
                     composer_hover_content(EFFORT, 2.)
                         .children(mark)
@@ -402,54 +407,40 @@ impl Panel {
                     cx.stop_propagation();
                 }))
             }))
-    }
-
-    fn render_speed_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        const SPEED: &str = "panel-speed";
-        let active = self.visible_speed();
-        let panel = cx.weak_entity();
-        let ink = Theme::global().composer_secondary();
-        crate::keyboard::popover_trigger(
-            composer_pill(SPEED),
-            &self.picker_triggers[PickerKind::Speed as usize],
-        )
-        .relative()
-        .children(crate::fixture_control_targets::marker(
-            || SPEED.into(),
-            || Some(self.session_id.clone()),
-        ))
-        .flex_none()
-        .w(px(26.))
-        .px_0()
-        .justify_center()
-        .child(
-            div()
-                .debug_selector(move || format!("speed-mode-{}", crate::speed_icon::label(active)))
-                .flex()
-                .child(crate::speed_icon::render(active, BAR_ICON, ink)),
-        )
-        .tooltip(move |_, cx| {
-            let tooltip = panel.upgrade().map_or_else(String::new, |panel| {
-                panel.read(cx).speed_picker().tooltip
-            });
-            cx.new(|_| crate::speed_icon::SpeedTooltip(tooltip)).into()
-        })
-        .on_click(cx.listener(|this, _, window, cx| {
-            if this.picker_search.as_ref().is_some_and(|(kind, _)| *kind == PickerKind::Speed) {
-                this.picker_search = None;
-            } else {
-                if this.model_picker_open {
-                    this.close_model_picker(cx);
-                }
-                this.login = None;
-                this.recovery_picker_open = false;
-                this.open_picker_search(PickerKind::Speed, cx);
-            }
-            this.remember_picker_trigger(PickerKind::Speed);
-            this.focus_input(window, cx);
-            cx.stop_propagation();
-            cx.notify();
-        }))
+            .children(accelerated.then(|| {
+                let panel = cx.weak_entity();
+                composer_button("panel-model-speed", true)
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || "panel-model-speed".into(),
+                        || Some(self.session_id.clone()),
+                    ))
+                    .debug_selector(move || {
+                        format!("speed-mode-{}", crate::speed_icon::label(speed))
+                    })
+                    .flex_none()
+                    .w(px(speed_width))
+                    .px_0()
+                    .justify_center()
+                    .child(crate::speed_icon::render(
+                        speed,
+                        BAR_ICON,
+                        Theme::global().composer_secondary(),
+                    ))
+                    .tooltip(move |_, cx| {
+                        let tooltip = panel.upgrade().map_or_else(String::new, |panel| {
+                            format!(
+                                "{} Click to use Standard.",
+                                panel.read(cx).speed_picker().tooltip
+                            )
+                        });
+                        cx.new(|_| crate::speed_icon::SpeedTooltip(tooltip)).into()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.choose_speed(jcode_provider_core::SpeedMode::Standard, cx);
+                        cx.stop_propagation();
+                    }))
+            }))
     }
 
     fn remember_picker_trigger(&mut self, kind: PickerKind) {

@@ -263,6 +263,7 @@ mod tests {
             provider: provider.into(),
             api_method: method.into(),
             usage: None,
+            speed_options: Vec::new(),
         }
     }
 

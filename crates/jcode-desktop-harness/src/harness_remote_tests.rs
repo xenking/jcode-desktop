@@ -123,6 +123,17 @@ impl Server {
                         auth_method: None,
                         account_label: None,
                     },
+                    ApiRequest::SetModel { model, .. } if model == "retired-model" => {
+                        ApiEvent::Error {
+                            code: jcode_sdk::api::ErrorCode::Internal,
+                            message: "The requested model was retired".into(),
+                        }
+                    }
+                    ApiRequest::SetSpeedMode { speed_mode } => ApiEvent::SpeedModeChanged {
+                        session_id: "same-id".into(),
+                        speed_mode: *speed_mode,
+                        speed_options: Vec::new(),
+                    },
                     ApiRequest::RuntimeCommand {
                         session_id,
                         command,
@@ -460,6 +471,71 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     assert!(
         matches!(server.next(), ApiRequest::DetachSession { session_id } if session_id == "same-id")
     );
+    server.disconnect();
+}
+
+#[test]
+fn changing_speed_on_another_model_requires_a_successful_model_switch() {
+    use jcode_sdk::api::SpeedMode;
+
+    let ui_id = remote::namespace("user@desktop", "same-id");
+    let (client, server) = Server::new();
+    let (commands, rx) = channel();
+    let (tx, updates) = update_channel();
+    let worker_id = ui_id.clone();
+    let worker = std::thread::spawn(move || session_worker(worker_id, rx, tx, Some(client)));
+    wait_update(&updates, |u| matches!(u, Update::History { .. }));
+    assert!(matches!(server.next(), ApiRequest::GetHistory { .. }));
+    assert!(matches!(server.next(), ApiRequest::GetRuntimeInfo { .. }));
+
+    for (serial, model) in [(1, "retired-model"), (2, "target-model")] {
+        commands
+            .send(SessionCommand::Operation(
+                SessionOperation::SetModelWithSpeed {
+                    model: model.into(),
+                    effort: Some("high".into()),
+                    serial,
+                    mode: SpeedMode::Ultrafast,
+                },
+            ))
+            .unwrap();
+        assert!(
+            matches!(server.next(), ApiRequest::SetModel { session_id, model: sent }
+            if session_id == "same-id" && sent == model)
+        );
+        if serial == 2 {
+            assert!(
+                matches!(server.next(), ApiRequest::SetReasoningEffort { session_id, effort }
+                if session_id == "same-id" && effort == "high")
+            );
+            assert!(matches!(
+                server.next(),
+                ApiRequest::SetSpeedMode {
+                    speed_mode: SpeedMode::Ultrafast
+                }
+            ));
+        }
+        wait_update(&updates, |update| match update {
+            Update::SpeedSettled {
+                session_id,
+                serial: settled,
+                result,
+            } if *settled == serial => {
+                assert_eq!(session_id, &ui_id);
+                if serial == 1 {
+                    assert!(result.as_ref().unwrap_err().contains("retired"));
+                } else {
+                    assert_eq!(result.as_ref().unwrap(), &SpeedMode::Ultrafast);
+                }
+                true
+            }
+            _ => false,
+        });
+    }
+
+    commands.send(SessionCommand::Stop).unwrap();
+    worker.join().unwrap();
+    assert!(matches!(server.next(), ApiRequest::DetachSession { .. }));
     server.disconnect();
 }
 

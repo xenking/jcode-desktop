@@ -15,6 +15,7 @@ use gpui::{
     StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, img, point,
     prelude::*, px, relative, size,
 };
+use jcode_provider_core::SpeedMode;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
@@ -62,6 +63,8 @@ actions!(
         Right,
         SelectLeft,
         SelectRight,
+        DecreasePickerSpeed,
+        IncreasePickerSpeed,
         SelectAll,
         Home,
         End,
@@ -121,6 +124,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("PromptInput")),
         KeyBinding::new("alt-shift-left", SelectWordLeft, Some("PromptInput")),
         KeyBinding::new("alt-shift-right", SelectWordRight, Some("PromptInput")),
+        KeyBinding::new(
+            "alt-shift-left",
+            DecreasePickerSpeed,
+            Some("PromptInput && ModelPicker"),
+        ),
+        KeyBinding::new(
+            "alt-shift-right",
+            IncreasePickerSpeed,
+            Some("PromptInput && ModelPicker"),
+        ),
         KeyBinding::new("ctrl-a", SelectAll, Some("PromptInput")),
         KeyBinding::new("cmd-a", SelectAll, Some("PromptInput")),
         KeyBinding::new("super-a", SelectAll, Some("PromptInput")),
@@ -268,6 +281,7 @@ pub struct PromptInput {
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
     speed_picker: Option<crate::speed_icon::SpeedPicker>,
+    on_model_speed: Option<OnModelSpeed>,
     current_modes: Vec<String>,
     mode_catalog: crate::mode_catalog::ModeCatalog,
     /// Level picked on a model row with the effort keys, sent with the
@@ -843,6 +857,15 @@ pub(crate) struct PickerSettings {
     mode_catalog: crate::mode_catalog::ModeCatalog,
 }
 
+pub(crate) struct ModelSpeedChoice<'a> {
+    pub spec: &'a str,
+    pub effort: Option<&'static str>,
+    pub current: bool,
+    pub mode: SpeedMode,
+}
+
+type OnModelSpeed = Box<dyn Fn(ModelSpeedChoice<'_>, &mut App)>;
+
 impl PromptInput {
     pub(crate) fn composer_proof_state(&self) -> serde_json::Value {
         let bounds = self.editor_scroll.bounds();
@@ -1243,6 +1266,7 @@ impl PromptInput {
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
             speed_picker: None,
+            on_model_speed: None,
             current_modes: Vec::new(),
             mode_catalog: Default::default(),
             picker_effort: None,
@@ -1831,6 +1855,14 @@ impl PromptInput {
         self
     }
 
+    pub(crate) fn with_on_model_speed(
+        mut self,
+        change: impl Fn(ModelSpeedChoice<'_>, &mut App) + 'static,
+    ) -> Self {
+        self.on_model_speed = Some(Box::new(change));
+        self
+    }
+
     pub(crate) fn with_on_picker_outside(
         mut self,
         dismiss: impl Fn(&FocusHandle, &mut Window, &mut App) + 'static,
@@ -1923,6 +1955,27 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn set_serving_model(
+        &mut self,
+        model: Option<&str>,
+        provider: Option<&str>,
+        auth: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let spec = model.and_then(|model| {
+            let mut matches = self.model_details.iter().filter(|(_, route)| {
+                route.model == model
+                    && provider.is_none_or(|provider| route.provider == provider)
+                    && auth.is_none_or(|auth| {
+                        crate::panel::human_auth_method(&route.api_method) == auth
+                    })
+            });
+            let (spec, _) = matches.next()?;
+            matches.next().is_none().then(|| spec.clone())
+        });
+        self.set_current_model(spec.or_else(|| model.map(str::to_owned)), cx);
+    }
+
     #[cfg(test)]
     pub fn model_picker_rows(&self) -> Vec<(String, bool)> {
         self.command_suggestions()
@@ -1992,7 +2045,7 @@ impl PromptInput {
         }
         let trimmed = command_content.trim_end();
         let first = trimmed.split_whitespace().next().unwrap_or_default();
-        if self.picker_prefix == Some("/speed") {
+        if first == "/speed" {
             let query = trimmed.strip_prefix("/speed").unwrap_or_default().trim().to_ascii_lowercase();
             return self.speed_picker.iter().flat_map(|picker| {
                 picker.options.iter().filter_map(|(tier, detail)| {
@@ -2208,13 +2261,20 @@ impl PromptInput {
         }
         let raw_content = self.command_content();
         let content = raw_content.trim().to_string();
-        if self.picker_prefix == Some("/speed") {
-            if let Some(command) = self
+        if self.attachments.is_empty() && content.split_whitespace().next() == Some("/speed") {
+            if crate::speed_icon::command_tier(&content).is_some() {
+                self.submit_command(content, queued, window, cx);
+            } else if let Some(command) = self
                 .command_suggestions()
                 .get(self.command_selection)
                 .map(|row| row.value.clone())
             {
                 self.submit_command(command, queued, window, cx);
+            } else {
+                self.set_transient_notice(
+                    "Use /speed standard, /speed fast, or /speed ultrafast".into(),
+                    cx,
+                );
             }
             return;
         }
@@ -2320,8 +2380,6 @@ impl PromptInput {
                 || crate::commands::is_accounts_command(&command)
                 || crate::commands::reset_command(&command).is_some()
                 || command == "/btw"
-                || (self.picker_prefix == Some("/speed")
-                    && crate::speed_icon::command_tier(&command).is_some())
                 || crate::panel::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
@@ -3207,7 +3265,7 @@ impl PromptInput {
         self.picker_effort = None;
         self.suggestions_revision += 1;
         self.set_content(String::new(), cx);
-        if matches!(prefix, "/effort" | "/speed")
+        if prefix == "/effort"
             && let Some(index) = self
                 .command_suggestions()
                 .iter()
@@ -3226,19 +3284,8 @@ impl PromptInput {
         if self.speed_picker.as_ref() == Some(&picker) {
             return;
         }
-        let focused = (self.picker_prefix == Some("/speed"))
-            .then(|| self.command_suggestions().get(self.command_selection).map(|row| row.value.clone()))
-            .flatten();
         self.speed_picker = Some(picker);
         self.suggestions_revision += 1;
-        if self.picker_prefix == Some("/speed") {
-            let rows = self.command_suggestions();
-            self.command_selection = focused
-                .and_then(|focused| rows.iter().position(|row| row.value == focused))
-                .or_else(|| rows.iter().position(|row| row.active_choice))
-                .unwrap_or(0);
-            self.reveal_command(self.command_selection);
-        }
         cx.notify();
     }
 
@@ -4681,6 +4728,11 @@ impl Render for PromptInput {
             .flex_col()
             .key_context(if self.queue_editor {
                 "PromptInput QueueEditor"
+            } else if self.on_model_speed.is_some()
+                && self.model_stage == model_stage::ModelStage::Models
+                && self.command_content().split_whitespace().next() == Some("/model")
+            {
+                "PromptInput ModelPicker"
             } else {
                 "PromptInput"
             })
@@ -4766,7 +4818,6 @@ impl Render for PromptInput {
                                                                 Some("/mode") => {
                                                                     "No modes or skills match"
                                                                 }
-                                                                Some("/speed") => "No speeds match",
                                                                 _ => "No models match",
                                                             }),
                                                     )
@@ -4776,11 +4827,12 @@ impl Render for PromptInput {
                                                     el.child(
                                                         gpui::list(
                                                             self.command_scroll.clone(),
-                                                            move |index, _, cx| {
+                                                            move |index, window, cx| {
                                                                 input.update(cx, |input, cx| {
                                                                     input.render_command_row(
                                                                         index,
                                                                         suggestions[index].clone(),
+                                                                        window,
                                                                         cx,
                                                                     )
                                                                 })
@@ -4813,6 +4865,12 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(|this, _: &DecreasePickerSpeed, _, cx| {
+                this.step_picker_speed(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &IncreasePickerSpeed, _, cx| {
+                this.step_picker_speed(1, cx);
+            }))
             // Inside the model menu the effort keys set the highlighted
             // row's level instead of the running session's.
             .capture_action(
@@ -7651,6 +7709,7 @@ mod provider_route_spec_tests {
                         provider: (*provider).into(),
                         api_method: (*method).into(),
                         usage: None,
+                        speed_options: Vec::new(),
                     },
                 )
             })

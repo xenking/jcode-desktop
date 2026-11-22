@@ -879,20 +879,18 @@ fn draft_model_effort_and_speed_reach_the_runtime_before_the_first_prompt(cx: &m
     let panel = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
     let draft = panel.read_with(vcx, |panel, _| panel.session_id.clone());
 
-    // The picker's second step asks for an effort too. `/effort` then
-    // overrides it, as the user does.
-    vcx.simulate_input("/model gpt-5.6-sol");
-    vcx.simulate_keystrokes("enter");
-    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("speed-mode-Standard").is_none());
+    click_draft_control(vcx, "panel-model");
+    assert!(
+        vcx.debug_bounds("model-row-speed-gpt-5.6-terra-Fast-off")
+            .is_none()
+    );
+    click_draft_control(vcx, "model-row-speed-gpt-5.6-sol-Fast-off");
+    assert!(vcx.debug_bounds("speed-mode-Fast").is_some());
+    // `/effort` still changes the selected model's level without reverting speed.
     vcx.simulate_keystrokes("cmd-a backspace");
     vcx.simulate_input("/effort high");
     vcx.simulate_keystrokes("enter");
-    vcx.run_until_parked();
-    assert!(vcx.debug_bounds("speed-mode-Standard").is_some());
-    click_draft_control(vcx, "panel-speed");
-    assert!(vcx.debug_bounds("speed-picker-icon-1").is_some());
-    assert!(vcx.debug_bounds("speed-picker-icon-2").is_none());
-    vcx.simulate_keystrokes("down enter");
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("speed-mode-Fast").is_some());
     vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
@@ -936,19 +934,18 @@ fn draft_model_effort_and_speed_reach_the_runtime_before_the_first_prompt(cx: &m
     let order: Vec<&str> = sent
         .iter()
         .filter_map(|command| match command {
-            Command::SetModel { session_id, model }
-                if session_id == "ready" && model.ends_with("gpt-5.6-sol") =>
-            {
-                Some("model")
+            Command::SessionOperation {
+                session_id,
+                operation:
+                    harness::SessionOperation::SetModelWithSpeed {
+                        model,
+                        effort: Some(effort),
+                        mode: SpeedMode::Fast,
+                        ..
+                    },
+            } if session_id == "ready" && model.ends_with("gpt-5.6-sol") && effort == "high" => {
+                Some("model, effort and speed")
             }
-            Command::SessionOperation {
-                session_id,
-                operation: harness::SessionOperation::SetEffort(effort),
-            } if session_id == "ready" && effort == "high" => Some("effort"),
-            Command::SessionOperation {
-                session_id,
-                operation: harness::SessionOperation::SetSpeed { mode: SpeedMode::Fast, .. },
-            } if session_id == "ready" => Some("speed"),
             Command::Send {
                 session_id,
                 content,
@@ -959,7 +956,7 @@ fn draft_model_effort_and_speed_reach_the_runtime_before_the_first_prompt(cx: &m
         .collect();
     assert_eq!(
         order,
-        ["model", "effort", "speed", "prompt"],
+        ["model, effort and speed", "prompt"],
         "the picked settings reach the new session before its prompt"
     );
 }

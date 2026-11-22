@@ -170,7 +170,7 @@ fn model_suggestions_cache_survives_real_hover_selection(cx: &mut gpui::TestAppC
         assert!(
             vcx.debug_bounds(selector)
                 .unwrap()
-                .contains(&vcx.debug_bounds("slash-command-selected").unwrap().center())
+                .contains(&vcx.debug_bounds("picker-keyboard-focus").unwrap().center())
         );
     }
 }

@@ -1,5 +1,6 @@
 //! Cached suggestion metadata and viewport-only model/command row rendering.
 use super::*;
+use crate::speed_icon;
 
 pub(super) struct SuggestionsCache {
     content: SharedString,
@@ -144,6 +145,77 @@ impl PromptInput {
             self.picker_effort = Some(effort.to_owned());
             self.suggestions_revision += 1;
             cx.notify();
+        }
+    }
+
+    fn row_speed(&self, spec: &str) -> SpeedMode {
+        if self.current_route() == Some(spec) {
+            self.speed_picker
+                .as_ref()
+                .map_or(SpeedMode::Standard, |picker| picker.active)
+        } else {
+            SpeedMode::Standard
+        }
+    }
+
+    fn row_speed_detail(&self, spec: &str, mode: SpeedMode) -> Option<String> {
+        if self.current_route() == Some(spec) {
+            return self
+                .speed_picker
+                .as_ref()?
+                .options
+                .iter()
+                .find(|(tier, _)| *tier == mode)
+                .map(|(_, detail)| detail.clone());
+        }
+        let options = &self.model_details.get(spec)?.speed_options;
+        speed_icon::offered(options, mode).then(|| {
+            let reason = options
+                .iter()
+                .find(|option| option.mode == mode)
+                .and_then(|option| option.reason.as_deref())
+                .unwrap_or_default();
+            format!("{} {reason}", speed_icon::quota(mode))
+        })
+    }
+
+    fn choose_row_speed(&self, spec: &str, mode: SpeedMode, cx: &mut Context<Self>) {
+        if self.submission_enabled
+            && !self.queue_editor
+            && let Some(choose) = &self.on_model_speed
+        {
+            choose(
+                ModelSpeedChoice {
+                    spec,
+                    effort: self.row_effort(spec),
+                    current: self.current_route() == Some(spec),
+                    mode,
+                },
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn step_picker_speed(&self, direction: i8, cx: &mut Context<Self>) {
+        let Some(spec) = self.selected_model_row() else {
+            return;
+        };
+        let modes: Vec<_> = std::iter::once(SpeedMode::Standard)
+            .chain(
+                speed_icon::ACCELERATED
+                    .into_iter()
+                    .filter(|mode| self.row_speed_detail(&spec, *mode).is_some()),
+            )
+            .collect();
+        let current = modes
+            .iter()
+            .position(|mode| *mode == self.row_speed(&spec))
+            .unwrap_or(0);
+        if let Some(next) = current
+            .checked_add_signed(isize::from(direction))
+            .and_then(|index| modes.get(index))
+        {
+            self.choose_row_speed(&spec, *next, cx);
         }
     }
 
@@ -330,8 +402,14 @@ impl PromptInput {
         &self,
         index: usize,
         suggestion: CommandSuggestion,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let compact = self
+            .composer_bounds
+            .get()
+            .map_or(window.viewport_size().width, |bounds| bounds.size.width)
+            < px(430.);
         let is_toggle = suggestion.toggle.is_some();
         let selected = index == self.command_selection;
         let active_choice = suggestion.active_choice;
@@ -484,8 +562,8 @@ impl PromptInput {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_3()
-                    .px_3()
+                    .when(compact && model.is_some(), |row| row.gap_1().px_2())
+                    .when(!compact || model.is_none(), |row| row.gap_3().px_3())
                     .py_1p5()
                     .rounded_md()
                     .when(model.is_some() || speed.is_some() || suggestion.value.starts_with("/effort "), |row| {
@@ -522,7 +600,8 @@ impl PromptInput {
                             .min_w_0()
                             .overflow_hidden()
                             .items_center()
-                            .gap_3()
+                            .when(compact && model.is_some(), |row| row.gap_1())
+                            .when(!compact || model.is_none(), |row| row.gap_3())
                             .children(logo)
                             .children(effort_mark)
                             .children(speed.map(|tier| div().flex_none()
@@ -547,7 +626,9 @@ impl PromptInput {
                             })
                             .text_color(ink)
                             .when(selected, |label| {
-                                label.font_weight(gpui::FontWeight::SEMIBOLD)
+                                label
+                                    .debug_selector(|| "picker-keyboard-focus".into())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
                             })
                             .child(
                                 div()
@@ -589,24 +670,35 @@ impl PromptInput {
                     }))
                     .children(
                         model
-                            .filter(|_| selected)
-                            .and_then(|spec| self.render_row_efforts(index, spec, ink, cx)),
+                            .filter(|_| self.model_stage == model_stage::ModelStage::Models)
+                            .and_then(|spec| self.render_row_speeds(spec, ink, cx)),
                     )
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .flex_none()
-                            .text_color(ink)
-                            .when(active_mode, |marker| {
-                                marker
-                                    .debug_selector(move || format!("mode-picker-active-{index}"))
-                                    .child(crate::mode_catalog::ModeIcon::Check.render(12.0, ink))
-                            })
-                            .when(mode.is_none() && selected, |marker| {
-                                marker
-                                    .debug_selector(|| "slash-command-selected".into())
-                                    .child("✓")
-                            }),
+                    .children(
+                        model.filter(|_| selected).and_then(|spec| {
+                            self.render_row_efforts(index, spec, ink, compact, cx)
+                        }),
+                    )
+                    .children(
+                        (model.is_none() && !suggestion.value.starts_with("/effort ")).then(|| {
+                            div()
+                                .w(px(14.0))
+                                .flex_none()
+                                .text_color(ink)
+                                .when(active_mode, |marker| {
+                                    marker
+                                        .debug_selector(move || {
+                                            format!("mode-picker-active-{index}")
+                                        })
+                                        .child(
+                                            crate::mode_catalog::ModeIcon::Check.render(12.0, ink),
+                                        )
+                                })
+                                .when(mode.is_none() && selected, |marker| {
+                                    marker
+                                        .debug_selector(|| "slash-command-selected".into())
+                                        .child("✓")
+                                })
+                        }),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -647,6 +739,87 @@ impl PromptInput {
             .into_any_element()
     }
 
+    fn render_row_speeds(
+        &self,
+        spec: &str,
+        ink: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        self.on_model_speed.as_ref()?;
+        let active = self.row_speed(spec);
+        let model = self
+            .model_details
+            .get(spec)
+            .map_or(spec, |route| &route.model);
+        let buttons: Vec<_> = speed_icon::ACCELERATED
+            .into_iter()
+            .filter_map(|mode| {
+                let detail = self.row_speed_detail(spec, mode)?;
+                let on = active == mode;
+                let label = speed_icon::label(mode);
+                let spec = spec.to_owned();
+                let selector = format!(
+                    "model-row-speed-{model}-{label}-{}",
+                    if on { "on" } else { "off" }
+                );
+                let marker = format!("model-speed:{model}:{label}");
+                let tooltip = format!(
+                    "{label}. {detail} {} Option+Shift+←/→ changes speed.",
+                    if on { "Click to use Standard." } else { "" }
+                );
+                Some(
+                    div()
+                        .id(format!("model-row-speed:{spec}:{label}"))
+                        .relative()
+                        .children(crate::fixture_control_targets::marker(|| marker, || None))
+                        .debug_selector(move || selector.clone())
+                        .size(px(22.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .when(on, |button| {
+                            button
+                                .bg(ink.opacity(0.18))
+                                .border_1()
+                                .border_color(ink.opacity(0.55))
+                        })
+                        .hover(|button| button.bg(ink.opacity(0.25)))
+                        .cursor_pointer()
+                        .child(speed_icon::render(
+                            mode,
+                            12.,
+                            if on { ink } else { ink.opacity(0.75).into() },
+                        ))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| speed_icon::SpeedTooltip(tooltip.clone())).into()
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                let next = if this.row_speed(&spec) == mode {
+                                    SpeedMode::Standard
+                                } else {
+                                    mode
+                                };
+                                this.choose_row_speed(&spec, next, cx);
+                            }),
+                        ),
+                )
+            })
+            .collect();
+        (!buttons.is_empty()).then(|| {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_0p5()
+                .children(buttons)
+        })
+    }
+
     /// The highlighted model row's levels as a strip of drawn marks. The
     /// level the switch will use is filled; a click picks another. Enter or
     /// a click on the row then switches model and effort together.
@@ -655,6 +828,7 @@ impl PromptInput {
         index: usize,
         spec: &str,
         ink: gpui::Rgba,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let ladder = self.picker_efforts(spec);
@@ -673,7 +847,8 @@ impl PromptInput {
                 .flex()
                 .items_center()
                 .gap_1()
-                .px_1p5()
+                .when(compact, |pill| pill.px_0p5())
+                .when(!compact, |pill| pill.px_1p5())
                 .h(px(20.))
                 .rounded_full()
                 .when(on, |pill| pill.bg(ink.opacity(0.14)))
@@ -681,7 +856,11 @@ impl PromptInput {
                 .text_color(ink)
                 .cursor_pointer()
                 .children(crate::effort_icon::picker_icon(effort, 11.0))
-                .when(on, |pill| pill.child(effort_row_label(effort)))
+                .when(on && !compact, |pill| pill.child(effort_row_label(effort)))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| speed_icon::SpeedTooltip(crate::effort::tooltip(effort)))
+                        .into()
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {

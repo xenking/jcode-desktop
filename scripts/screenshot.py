@@ -36,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
-    parser.add_argument("--composer-picker", choices=("model", "effort", "speed"),
+    parser.add_argument("--composer-picker", choices=("model", "effort"),
                         help="capture the offline composer picker on either supported platform")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")

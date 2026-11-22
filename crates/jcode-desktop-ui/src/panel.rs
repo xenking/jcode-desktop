@@ -973,7 +973,7 @@ pub struct Panel {
     side_question_history: Option<side_question::HistoryView>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
-    picker_triggers: [FocusHandle; 4],
+    picker_triggers: [FocusHandle; 3],
     composer_popover_watch: Option<(FocusHandle, gpui::Subscription, gpui::Subscription)>,
     composer_popover_trigger: Option<FocusHandle>,
     focus_pending: bool,
@@ -1032,7 +1032,7 @@ impl gpui::Global for RememberedDraftModel {}
 pub(crate) fn is_draft_config_command(content: &str) -> bool {
     matches!(
         content.split_whitespace().next(),
-        Some("/model" | "/models" | "/effort" | "/mode")
+        Some("/model" | "/models" | "/effort" | "/mode" | "/speed")
     )
 }
 
@@ -1041,7 +1041,6 @@ pub(super) enum PickerKind {
     Model,
     Effort,
     Mode,
-    Speed,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1436,6 +1435,10 @@ impl Panel {
     /// Record a model picked on a draft. Nothing is sent until the session
     /// exists.
     pub(super) fn pick_draft_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        if self.draft_config.model.as_deref().or(self.model.as_deref()) != Some(model) {
+            self.draft_config.speed = None;
+            self.speed.clear_options();
+        }
         self.draft_config.model = Some(model.to_string());
         if let Some(local) = cx.try_global::<LocalDraftModels>() {
             self.sync_draft_speed(&local.routes);
@@ -1461,6 +1464,7 @@ impl Panel {
         let current = Some(model.to_owned());
         cx.defer(move |cx| input.update(cx, |input, cx| input.set_current_model(current, cx)));
         self.sync_effort_menu(cx);
+        self.sync_open_speed_picker(cx);
         cx.notify();
     }
 
@@ -1474,6 +1478,15 @@ impl Panel {
             speed,
             modes,
         } = std::mem::take(&mut self.draft_config);
+        let (model, effort, speed) = match (model, effort, speed) {
+            (Some(model), effort, Some(speed)) => {
+                let safe = self.safe_draft_speed(speed);
+                self.send_model_speed(model, effort, safe, cx);
+                self.report_draft_speed_fallback(speed, safe, cx);
+                (None, None, None)
+            }
+            config => config,
+        };
         if let Some(model) = model {
             self.bridge.send(Command::SetModel {
                 session_id: self.session_id.clone(),
@@ -2685,6 +2698,7 @@ impl Panel {
         panel.update(cx, |this, cx| {
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
+            let speed_weak = weak.clone();
             let session_image_base = this.session_image_base;
             this.input = cx.new(|cx| {
                 let mut input = PromptInput::new_with_queue_files(
@@ -2715,6 +2729,10 @@ impl Panel {
                 .with_empty_submit()
                 .with_standalone_btw()
                 .with_example_prompts()
+                .with_on_model_speed(move |choice, app| {
+                    let _ =
+                        speed_weak.update(app, |panel, cx| panel.choose_model_speed(choice, cx));
+                })
                 .with_ghost_completions({
                     let weak = change_weak.clone();
                     move |app| {
@@ -2766,6 +2784,7 @@ impl Panel {
                     handled
                 });
                 input.set_session_image_base(session_image_base, cx);
+                input.set_speed_picker(this.speed_picker(), cx);
                 input
             });
             Self::observe_draft_images(&this.input, cx);
@@ -2923,6 +2942,10 @@ impl Panel {
             return self.handle_preview_command(content, cx);
         }
         let trimmed = content.trim();
+        if let Some(mode) = crate::speed_icon::command_tier(trimmed) {
+            self.choose_speed(mode, cx);
+            return true;
+        }
         if self.session_deferred() && trimmed.split_whitespace().next() == Some("/mode") {
             self.select_draft_mode(trimmed["/mode".len()..].trim(), cx);
             return true;
@@ -3320,22 +3343,18 @@ impl Panel {
     pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
         self.swarm_list_open = false;
         self.select_background_job(None, cx);
-        let settings = (kind != PickerKind::Speed).then(|| self.input.read(cx).picker_settings());
-        let models = if kind != PickerKind::Speed {
-            self.available_models.clone()
-        } else {
-            Vec::new()
-        };
+        let settings = self.input.read(cx).picker_settings();
+        let models = self.available_models.clone();
         let deferred = self.session_deferred();
         let submit = cx.weak_entity();
         let cancel = cx.weak_entity();
         let outside = cx.weak_entity();
+        let speed = cx.weak_entity();
         let search = cx.new(|cx| {
             let placeholder = match kind {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
                 PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
-                PickerKind::Speed => "Inference speed",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {
@@ -3353,11 +3372,6 @@ impl Panel {
                         if content.starts_with("/model ") || content.starts_with("/effort ") {
                             panel.handle_slash_command(&content, cx);
                         }
-                        if kind == PickerKind::Speed
-                            && let Some(tier) = crate::speed_icon::command_tier(&content)
-                        {
-                            panel.choose_speed(tier, cx);
-                        }
                         panel.picker_search = None;
                         panel.model_picker_open = false;
                         panel.composer_popover_trigger = None;
@@ -3365,6 +3379,9 @@ impl Panel {
                         cx.notify();
                     });
                 }
+            })
+            .with_on_model_speed(move |choice, app| {
+                let _ = speed.update(app, |panel, cx| panel.choose_model_speed(choice, cx));
             })
             .with_on_overlay_cancel(move |app| {
                 if let Some(panel) = cancel.upgrade() {
@@ -3384,19 +3401,14 @@ impl Panel {
                     panel.dismiss_composer_popover(focus, true, window, cx);
                 });
             });
-            if let Some(settings) = settings {
-                input.apply_picker_settings(settings, cx);
-            }
+            input.apply_picker_settings(settings, cx);
             input.set_pending_session(deferred, cx);
-            if kind == PickerKind::Speed {
-                input.set_speed_picker(self.speed_picker(), cx);
-            }
+            input.set_speed_picker(self.speed_picker(), cx);
             input.start_picker_search(
                 match kind {
                     PickerKind::Model => "/model",
                     PickerKind::Effort => "/effort",
                     PickerKind::Mode => "/mode",
-                    PickerKind::Speed => "/speed",
                 },
                 models,
                 cx,
@@ -4647,9 +4659,6 @@ impl Panel {
                     self.model = model.clone();
                     self.auth_method = None;
                     self.account_label = None;
-                    self.input.update(cx, |input, cx| {
-                        input.set_current_model(self.model.clone(), cx)
-                    });
                 }
                 // The daemon's resolved credential is authoritative, including
                 // an OAuth<->API key switch that keeps the same model id.
@@ -4672,6 +4681,18 @@ impl Panel {
                     self.invalidate_context_meter();
                     self.refresh_context_usage(cx);
                     self.invalidate_speed_route(cx);
+                    let update = |input: &mut PromptInput, cx: &mut Context<PromptInput>| {
+                        input.set_serving_model(
+                            self.model.as_deref(),
+                            self.provider.as_deref(),
+                            self.auth_method.as_deref(),
+                            cx,
+                        );
+                    };
+                    self.input.update(cx, update);
+                    if let Some((PickerKind::Model, search)) = &self.picker_search {
+                        search.update(cx, update);
+                    }
                 }
                 self.sync_effort_menu(cx);
             }
@@ -4707,9 +4728,35 @@ impl Panel {
                 }
                 let models = available_model_names(routes);
                 self.available_models = models.clone();
-                self.input.update(cx, |input, cx| {
-                    input.set_model_routes(models, routes, self.model.clone(), cx);
-                });
+                let current = self
+                    .model
+                    .as_ref()
+                    .and_then(|model| {
+                        let mut matching = routes.iter().filter(|route| {
+                            route.available
+                                && route.model == *model
+                                && self
+                                    .provider
+                                    .as_ref()
+                                    .is_none_or(|provider| route.provider == *provider)
+                                && self.auth_method.as_ref().is_none_or(|auth| {
+                                    human_auth_method(&route.api_method) == *auth
+                                })
+                        });
+                        let route = matching.next()?;
+                        matching
+                            .next()
+                            .is_none()
+                            .then(|| crate::input::model_menu::route_spec(route))
+                    })
+                    .or_else(|| self.model.clone());
+                let update = |input: &mut PromptInput, cx: &mut Context<PromptInput>| {
+                    input.set_model_routes(models.clone(), routes, current.clone(), cx);
+                };
+                self.input.update(cx, update);
+                if let Some((PickerKind::Model, search)) = &self.picker_search {
+                    search.update(cx, update);
+                }
                 self.sync_effort_menu(cx);
                 self.update_speed(*speed_mode, speed_options, cx);
             }
@@ -8067,7 +8114,7 @@ fn auth_method_for_model(
 
 /// `oauth`, `api_key`, or a route id such as `claude-oauth`, phrased for the
 /// account label.
-fn human_auth_method(method: &str) -> String {
+pub(crate) fn human_auth_method(method: &str) -> String {
     let method = method.to_lowercase();
     if method.contains("oauth") {
         "oauth".to_string()

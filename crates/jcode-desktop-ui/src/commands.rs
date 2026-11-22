@@ -109,6 +109,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Set reasoning effort (none/minimal/low/medium/high/xhigh/max)",
     ),
     RegisteredCommand::public("/fast", "Toggle fast mode"),
+    RegisteredCommand::public(
+        "/speed",
+        "Set this chat's speed: standard, fast, or ultrafast",
+    ),
     RegisteredCommand::public("/transport", "Show/change connection transport"),
     RegisteredCommand::public("/alignment", "Show/change default text alignment"),
     RegisteredCommand::public(

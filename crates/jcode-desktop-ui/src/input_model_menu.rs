@@ -12,6 +12,7 @@ pub(super) struct ModelDetails {
     pub provider: String,
     pub api_method: String,
     pub usage: Option<ModelUsage>,
+    pub speed_options: Vec<jcode_provider_core::SpeedOption>,
 }
 
 /// Route identity: everything that decides its spec and recommendation.
@@ -68,6 +69,7 @@ pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
             provider: route.provider.clone(),
             api_method: route.api_method.clone(),
             usage: route.usage.clone(),
+            speed_options: route.speed_options.clone(),
         };
         match details.get(&spec) {
             Some(existing)
@@ -116,9 +118,11 @@ pub(super) fn current_spec<'a>(
         .iter()
         .find(|model| model.as_str() == current)
         .or_else(|| {
-            models
+            let mut matches = models
                 .iter()
-                .find(|model| details.get(*model).is_some_and(|d| d.model == current))
+                .filter(|model| details.get(*model).is_some_and(|d| d.model == current));
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
         })
         .map(String::as_str)
 }
@@ -985,6 +989,7 @@ mod tests {
                     provider: String::new(),
                     api_method: String::new(),
                     usage: Some(usage),
+                    speed_options: Vec::new(),
                 },
             )
         })
@@ -1195,6 +1200,7 @@ mod grouping_performance_tests {
                         provider: format!("Provider {}", i % group_count),
                         api_method: "openai-oauth".into(),
                         usage: None,
+                        speed_options: Vec::new(),
                     },
                 )
             })
