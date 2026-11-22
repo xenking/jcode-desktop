@@ -84,7 +84,10 @@ fn side_question_enter_paints_in_a_chat_started_from_the_welcome_composer(
 fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::TestAppContext) {
     use harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
     let saved_question = "Why did we remove the retry loop? Explain what happens to failed writes, how the handler responds after a timeout, and which component decides whether another attempt is safe.";
-    let saved_answer = "**Saved answer A**\n\n".repeat(60);
+    let saved_answer = format!(
+        "> **Saved answer A**\n\n{}",
+        "Continue reading.\n\n".repeat(60)
+    );
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -93,9 +96,12 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
         workspace.push_test_panel("parent", cx);
         workspace
     });
-    vcx.update(|window, cx| {
-        workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx))
+    let window = vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("Do not overwrite".into()));
+        window.window_handle()
     });
+    vcx.simulate_window_resize(window, gpui::size(px(390.), px(730.)));
     vcx.run_until_parked();
     while commands.try_recv().is_ok() {}
 
@@ -176,13 +182,37 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
     let question = vcx
         .debug_bounds("side-question-current-prompt")
         .expect("current question must be rendered when reopened");
-    assert!(turns.contains(&question.center()), "open at the question, not the end of a long answer");
+    assert!(
+        turns.contains(&question.center()),
+        "open at the question, not the end of a long answer: {turns:?} vs {question:?}"
+    );
+    assert!(
+        question.size.height > px(40.),
+        "the question wraps at narrow widths"
+    );
+    assert!(
+        vcx.debug_bounds("md-quote").is_some(),
+        "render the saved Markdown quote"
+    );
+    let clipboard = |vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| item.text())
+    };
+    assert_eq!(clipboard(vcx).as_deref(), Some("Do not overwrite"));
+    let copy = vcx.debug_bounds("side-question-copy").unwrap();
+    assert!(
+        copy.bottom() <= turns.top(),
+        "actions belong above the answer"
+    );
+    vcx.simulate_click(copy.center(), Default::default());
+    assert_eq!(clipboard(vcx).as_deref(), Some(saved_answer.as_str()));
+    vcx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("Again".into())));
+    vcx.simulate_keystrokes("space");
+    assert_eq!(clipboard(vcx).as_deref(), Some(saved_answer.as_str()));
+    assert!(commands.try_recv().is_err());
     workspace.read_with(vcx, |workspace, cx| {
         let panel = workspace.slots[0].panel.read(cx);
-        assert_eq!(
-            panel.side_question_card_opt().unwrap().answer,
-            saved_answer
-        );
+        assert_eq!(panel.side_question_card_opt().unwrap().answer, saved_answer);
         assert_eq!(
             panel.input.read(cx).snapshot().content,
             "Keep my main draft"
@@ -193,11 +223,36 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
         .expect("follow-up field");
     vcx.simulate_click(field.center(), Default::default());
     vcx.simulate_input("btw");
-    vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("shift-enter");
+    vcx.simulate_input("a literal follow-up");
+    assert!(
+        vcx.debug_bounds("side-question-follow-up")
+            .unwrap()
+            .size
+            .height
+            > field.size.height
+    );
+    let turns_before = vcx.debug_bounds("side-question-turns").unwrap();
+    let question_before = vcx.debug_bounds("side-question-current-prompt").unwrap();
+    let start = vcx.debug_bounds("side-question-resize").unwrap().center();
+    let end = gpui::point(start.x, start.y - px(80.));
+    vcx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
+    vcx.simulate_mouse_move(end, gpui::MouseButton::Left, Default::default());
+    vcx.simulate_mouse_up(end, gpui::MouseButton::Left, Default::default());
+    vcx.run_until_parked();
+    let turns_after = vcx.debug_bounds("side-question-turns").unwrap();
+    let question_after = vcx.debug_bounds("side-question-current-prompt").unwrap();
+    assert!(turns_after.size.height > turns_before.size.height);
+    assert_eq!(
+        question_before.top() - turns_before.top(),
+        question_after.top() - turns_after.top()
+    );
+    vcx.simulate_input("!");
+    vcx.simulate_keystrokes("enter enter");
     vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::ContinueSideQuestion { session_id, question })
-        if session_id == "btw-a" && question == "btw")
+        if session_id == "btw-a" && question == "btw\na literal follow-up!")
     );
     assert!(commands.try_recv().is_err());
     workspace.read_with(vcx, |workspace, cx| {
@@ -224,6 +279,140 @@ fn turn_done(session_id: &str) -> jcode_sdk::ApiEvent {
         session_id: session_id.into(),
         pending_soft_interrupts: None,
     }
+}
+
+#[gpui::test]
+fn side_question_wheel_stays_in_the_card_even_at_both_edges(cx: &mut gpui::TestAppContext) {
+    let (bridge, _) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("source", cx);
+        workspace.push_test_panel("other", cx);
+        workspace.active = 0;
+        workspace.slots[0].panel.update(cx, |panel, cx| {
+            panel.items.clear();
+            panel.items.extend((0..80).map(|i| {
+                crate::panel::Item::Assistant(format!("Parent transcript paragraph {i}"))
+            }));
+            cx.notify();
+        });
+        workspace
+    });
+    vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+    let apply = |vcx: &mut gpui::VisualTestContext, update| {
+        workspace.update(vcx, |workspace, cx| workspace.apply(update, cx));
+        vcx.run_until_parked();
+    };
+    apply(
+        vcx,
+        Update::SideQuestionStarted {
+            parent_session_id: "source".into(),
+            session: super::super::tests::session_info("btw-child", None),
+            question: "Where does the retry take place?".into(),
+        },
+    );
+    let stream = |vcx: &mut gpui::VisualTestContext, paragraphs: usize| {
+        apply(
+            vcx,
+            Update::Event {
+                session_id: "btw-child".into(),
+                event: text_delta("btw-child", &"**Answer paragraph**.\n\n".repeat(paragraphs)),
+            },
+        );
+    };
+    stream(vcx, 60);
+    let turns = vcx.debug_bounds("side-question-turns").unwrap();
+    let card = vcx.debug_bounds("side-question-card").unwrap();
+    let prompt_offset = |vcx: &mut gpui::VisualTestContext| {
+        vcx.debug_bounds("side-question-current-prompt")
+            .unwrap()
+            .top()
+            - turns.top()
+    };
+    let top = prompt_offset(vcx);
+    assert!(top >= px(0.));
+    let outer = |vcx: &mut gpui::VisualTestContext| {
+        workspace.read_with(vcx, |w, cx| {
+            (
+                w.active_row,
+                w.active,
+                w.slots[0].panel.read(cx).test_scroll_offset_y(),
+            )
+        })
+    };
+    let outer_before = outer(vcx);
+    let at = turns.center();
+    let wheel = |vcx: &mut gpui::VisualTestContext, position, delta, touch_phase| {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta,
+            modifiers: Default::default(),
+            touch_phase,
+        });
+        vcx.background_executor
+            .advance_clock(Duration::from_millis(160));
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+    };
+    use gpui::{ScrollDelta, TouchPhase};
+    let touch = |vcx: &mut gpui::VisualTestContext, dx, dy, phase| {
+        wheel(
+            vcx,
+            at,
+            ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
+            phase,
+        );
+    };
+    touch(vcx, 0., 400., TouchPhase::Started);
+    touch(vcx, 450., 400., TouchPhase::Moved);
+    touch(vcx, 0., 0., TouchPhase::Ended);
+    assert_eq!(prompt_offset(vcx), top);
+    assert_eq!(
+        outer(vcx),
+        outer_before,
+        "top edge must not move the parent"
+    );
+    wheel(
+        vcx,
+        at,
+        ScrollDelta::Lines(gpui::point(0., -3.)),
+        TouchPhase::Moved,
+    );
+    let reading_offset = prompt_offset(vcx);
+    assert!(reading_offset < top, "the wheel moves the side answer");
+    stream(vcx, 10);
+    assert_eq!(
+        prompt_offset(vcx),
+        reading_offset,
+        "streaming leaves the reader in place"
+    );
+    touch(vcx, 0., -9000., TouchPhase::Started);
+    let bottom = prompt_offset(vcx);
+    assert!(bottom < reading_offset);
+    for phase in [TouchPhase::Moved, TouchPhase::Ended] {
+        touch(vcx, -500., -600., phase);
+        assert_eq!(prompt_offset(vcx), bottom);
+        assert_eq!(
+            outer(vcx),
+            outer_before,
+            "bottom edge must not move the parent"
+        );
+        assert_eq!(vcx.debug_bounds("side-question-card").unwrap(), card);
+    }
+    let parent = vcx.debug_bounds("composer-dock").unwrap();
+    let outside = gpui::point(card.center().x, parent.top() - px(8.));
+    wheel(
+        vcx,
+        outside,
+        ScrollDelta::Lines(gpui::point(0., 10.)),
+        TouchPhase::Moved,
+    );
+    assert_ne!(
+        outer(vcx),
+        outer_before,
+        "the underlying transcript can scroll outside the card"
+    );
 }
 
 #[gpui::test]

@@ -5,9 +5,13 @@
 //! source session is never touched. That keeps the parent's prompt cache and
 //! transcript intact. The card can continue the same fork or open it as a
 //! full chat. Dismiss leaves the fork on disk for `/btw` history.
+use super::ask::{CardActionTooltip, embedded_reply_frame};
 use super::*;
 use crate::harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
+use crate::input::VerticalResize;
 use jcode_sdk::{ApiEvent, SessionInfo};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -36,13 +40,22 @@ pub(crate) struct SideQuestionCard {
     previous: Vec<SideQuestionTurn>,
     editor: Entity<PromptInput>,
     scroll: gpui::ScrollHandle,
+    reveal_question: Rc<Cell<bool>>,
+    resize: VerticalResize,
+    selection: Entity<TextSelection>,
+    error: Option<String>,
     /// Kept so the answer can be promoted without another session list read.
     pub session: SessionInfo,
     pub identity: Option<ApiEvent>,
 }
 
 impl SideQuestionCard {
-    fn new(session: SessionInfo, question: String, editor: Entity<PromptInput>) -> Self {
+    fn new(
+        session: SessionInfo,
+        question: String,
+        editor: Entity<PromptInput>,
+        cx: &mut Context<Panel>,
+    ) -> Self {
         Self {
             child_session_id: session.session_id.clone(),
             question,
@@ -52,6 +65,10 @@ impl SideQuestionCard {
             previous: Vec::new(),
             editor,
             scroll: gpui::ScrollHandle::new(),
+            reveal_question: Rc::default(),
+            resize: VerticalResize::default(),
+            selection: cx.new(TextSelection::new),
+            error: None,
             session,
             identity: None,
         }
@@ -132,6 +149,7 @@ impl Panel {
             )
             .without_command_completion()
             .text_only()
+            .without_chrome()
             .with_compact_padding()
         })
     }
@@ -153,8 +171,9 @@ impl Panel {
             answer: std::mem::take(&mut card.answer),
         });
         card.reasoning.clear();
+        card.error = None;
         card.status = SideQuestionStatus::Working;
-        card.scroll.scroll_to_bottom();
+        card.reveal_question.set(true);
         let editor = card.editor.clone();
         cx.defer(move |cx| {
             editor.update(cx, |editor, cx| editor.set_submission_enabled(false, cx))
@@ -200,7 +219,12 @@ impl Panel {
         if !matches!(self.side_question_history, Some(HistoryView::Ready(_))) {
             return;
         }
-        if self.side_question_child() == Some(session_id) {
+        if let Some(card) = self
+            .side_question
+            .as_ref()
+            .filter(|card| card.child_session_id == session_id)
+        {
+            card.reveal_question.set(true);
             self.side_question_history = None;
             cx.notify();
             return;
@@ -244,6 +268,7 @@ impl Panel {
                     session,
                     last.question,
                     Self::create_side_question_editor(cx),
+                    cx,
                 );
                 card.previous = turns;
                 card.answer = last.answer;
@@ -252,7 +277,7 @@ impl Panel {
                 } else {
                     SideQuestionStatus::Done
                 };
-                card.scroll.scroll_to_bottom();
+                card.reveal_question.set(!card.previous.is_empty());
                 self.show_side_question(card, cx);
             }
             Err(error) => {
@@ -270,9 +295,8 @@ impl Panel {
     ) {
         let editor = Self::create_side_question_editor(cx);
         editor.update(cx, |editor, cx| editor.set_submission_enabled(false, cx));
-        self.show_side_question(SideQuestionCard::new(session, question, editor), cx);
-        self.stick_to_bottom = true;
-        self.transcript_list.scroll_to_end();
+        let card = SideQuestionCard::new(session, question, editor, cx);
+        self.show_side_question(card, cx);
     }
 
     fn show_side_question(&mut self, card: SideQuestionCard, cx: &mut Context<Self>) {
@@ -322,21 +346,10 @@ impl Panel {
                 card.reasoning.push_str(text);
                 changed = true;
             }
-            ApiEvent::TurnStopped { message, .. } if card.is_working() => {
-                if !message.trim().is_empty() {
-                    if !card.answer.trim().is_empty() {
-                        card.answer.push_str("\n\n");
-                    }
-                    card.answer.push_str(message);
-                }
-                card.status = SideQuestionStatus::Failed;
-                changed = true;
-            }
-            ApiEvent::Error { message, .. } if card.is_working() => {
-                if !card.answer.trim().is_empty() {
-                    card.answer.push_str("\n\n");
-                }
-                card.answer.push_str(message);
+            ApiEvent::TurnStopped { message, .. } | ApiEvent::Error { message, .. }
+                if card.is_working() =>
+            {
+                card.error = (!message.trim().is_empty()).then(|| message.clone());
                 card.status = SideQuestionStatus::Failed;
                 changed = true;
             }
@@ -375,160 +388,223 @@ impl Panel {
 
     pub(super) fn render_side_question_card(
         &self,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         if let Some(history) = &self.side_question_history {
-            return Some(self.render_side_question_history(history, cx));
+            return Some(self.render_side_question_history(history, window, cx));
         }
         let card = self.side_question.as_ref()?;
         let theme = Theme::global();
         let (model, effort) = card.model_and_effort();
         let status = match card.status {
-            SideQuestionStatus::Working => "thinking…",
-            SideQuestionStatus::Done => "done",
-            SideQuestionStatus::Failed => "failed",
+            SideQuestionStatus::Working => "Thinking…",
+            SideQuestionStatus::Done => "Done",
+            SideQuestionStatus::Failed => "Failed",
         };
-        let mut body = div()
-            .id("side-question-card")
-            .debug_selector(|| "side-question-card".into())
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .min_w_0()
-            .mx_2()
-            .p_3()
-            .rounded_xl()
-            .border_1()
-            .border_color(theme.ACCENT_DIM)
-            .bg(theme.TOOL_BG)
-            .text_size(px(13.))
-            .text_color(theme.TEXT)
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme.ACCENT)
-                            .child("Side question"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(status),
-                    )
-                    .children(model.map(|model| {
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(match effort {
-                                Some(effort) => format!("{model} · {effort}"),
-                                None => model.to_string(),
-                            })
-                    })),
-            );
-        let answer = match card.answer.trim() {
-            "" if card.is_working() => "Thinking…",
-            "" => "No answer saved.",
-            _ => &card.answer,
-        };
-        body = body.child(
+        let height = window.viewport_size().height;
+        let default_height = px((f32::from(height) * 0.32).clamp(56., 220.));
+        // Leave room for the follow-up and the main composer when docked.
+        let height_bounds = default_height..=(height * 0.55).max(default_height);
+        let header =
             div()
-                .id("side-question-turns")
-                .debug_selector(|| "side-question-turns".into())
-                .max_h(px(220.))
-                .overflow_y_scroll()
-                .track_scroll(&card.scroll)
                 .flex()
-                .flex_col()
-                .gap_3()
-                .children(
-                    card.previous
-                        .iter()
-                        .map(|turn| side_turn(&turn.question, &turn.answer, false)),
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_size(px(12.))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.ACCENT)
+                                .child("Side question"),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.TEXT_DIM)
+                                .child(status),
+                        )
+                        .children(model.map(|model| {
+                            div().min_w_0().truncate().text_color(theme.TEXT_DIM).child(
+                                match effort {
+                                    Some(effort) => format!("{model} · {effort}"),
+                                    None => model.to_string(),
+                                },
+                            )
+                        })),
                 )
-                .child(side_turn(&card.question, answer, true)),
-        );
-        body = body.child(
-            div()
-                .id("side-question-follow-up")
-                .debug_selector(|| "side-question-follow-up".into())
-                .relative()
-                .children(crate::fixture_control_targets::marker(
-                    || "side-question-follow-up".into(),
-                    || Some(self.session_id.clone()),
-                ))
-                .child(card.editor.clone()),
-        );
-        Some(
-            body.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        side_button("side-question-history-open", "History")
-                            .children(crate::fixture_control_targets::marker(
-                                || "side-question-history-open".into(),
-                                || Some(self.session_id.clone()),
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_side_question_history(cx);
-                                this.return_side_question_focus(window, cx);
-                            })),
-                    )
-                    .child(
-                        side_button("side-question-dismiss", "Dismiss")
-                            .children(crate::fixture_control_targets::marker(
-                                || "side-question-dismiss".into(),
-                                || Some(self.session_id.clone()),
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(child) = this.dismiss_side_question(cx) {
-                                    this.bridge
-                                        .send(Command::DismissSideQuestion { session_id: child });
-                                    this.return_side_question_focus(window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        side_button("side-question-promote", "Open in sidechat")
-                            .bg(theme.ACCENT_DIM)
-                            .text_color(theme.TEXT)
-                            .children(crate::fixture_control_targets::marker(
-                                || "side-question-promote".into(),
-                                || Some(self.session_id.clone()),
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let Some(session) = this
-                                    .side_question_card_opt()
-                                    .map(|card| card.session.clone())
-                                else {
-                                    return;
-                                };
+                .child(
+                    self.side_icon(SideAction::History, true)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_side_question_history(cx);
+                            this.return_side_question_focus(window, cx);
+                        })),
+                )
+                .child(
+                    self.side_icon(SideAction::Copy, !card.answer.trim().is_empty())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(card) = &this.side_question
+                                && !card.answer.trim().is_empty()
+                            {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    card.answer.clone(),
+                                ));
+                            }
+                        })),
+                )
+                .child(
+                    self.side_icon(SideAction::Promote, true)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(card) = &this.side_question {
                                 window.dispatch_action(
                                     Box::new(crate::ui_actions::PromoteSideQuestion {
                                         source: cx.entity().entity_id(),
-                                        session,
+                                        session: card.session.clone(),
                                     }),
                                     cx,
                                 );
-                            })),
-                    ),
-            )
-            .into_any_element(),
+                            }
+                        })),
+                )
+                .child(
+                    self.side_icon(SideAction::Dismiss, true)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(child) = this.dismiss_side_question(cx) {
+                                this.bridge
+                                    .send(Command::DismissSideQuestion { session_id: child });
+                                this.return_side_question_focus(window, cx);
+                            }
+                        })),
+                );
+        let turns = div()
+            .id("side-question-turns")
+            .debug_selector(|| "side-question-turns".into())
+            .max_h(card.resize.height(height_bounds.clone()))
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .gap_3()
+            .pr_2()
+            .children(card.previous.iter().enumerate().map(|(index, turn)| {
+                side_turn(&turn.question, &turn.answer, index, false, card, window, cx)
+            }))
+            .child(side_turn(
+                &card.question,
+                &card.answer,
+                card.previous.len(),
+                true,
+                card,
+                window,
+                cx,
+            ));
+        let reveal = card.reveal_question.clone();
+        let scroll = card.scroll.clone();
+        let latest = card.previous.len();
+        let entity = cx.entity().entity_id();
+
+        Some(
+            side_card("side-question-card")
+                .child(card.resize.handle(
+                    "side-question-resize",
+                    "side-question-resize",
+                    &card.scroll,
+                    height_bounds,
+                    cx,
+                ))
+                .child(header)
+                .child(
+                    div()
+                        .relative()
+                        .child(crate::transcript_scroll::tracked_vertical(
+                            turns,
+                            &card.scroll,
+                        ))
+                        .child(crate::scrollbar::vertical(
+                            &card.scroll,
+                            "side-question-scrollbar",
+                        ))
+                        .when(reveal.get(), |el| {
+                            // GPUI's scroll-to-item needs a measured viewport. Run it once
+                            // after the scroll surface has prepainted, not on answer deltas.
+                            el.child(
+                                gpui::canvas(
+                                    |_, _, _| (),
+                                    move |_, _, _, cx| {
+                                        if reveal.replace(false) {
+                                            scroll.scroll_to_top_of_item(latest);
+                                            cx.defer(move |cx| cx.notify(entity));
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .id("side-question-follow-up")
+                        .debug_selector(|| "side-question-follow-up".into())
+                        .relative()
+                        .flex()
+                        .children(crate::fixture_control_targets::marker(
+                            || "side-question-follow-up".into(),
+                            || Some(self.session_id.clone()),
+                        ))
+                        .child(embedded_reply_frame(&card.editor, false, window, cx)),
+                )
+                .into_any_element(),
         )
+    }
+
+    fn side_icon(&self, action: SideAction, enabled: bool) -> gpui::Stateful<gpui::Div> {
+        let (id, title, icon) = action.presentation();
+        let theme = Theme::global();
+        let button = div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .relative()
+            .flex_none()
+            .size(px(23.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .tooltip(move |_, cx| cx.new(|_| CardActionTooltip(title)).into())
+            .children(crate::fixture_control_targets::marker(
+                || id.into(),
+                || Some(self.session_id.clone()),
+            ))
+            .child(gpui::svg().data(icon).size(px(14.)).text_color(if enabled {
+                theme.TEXT_DIM
+            } else {
+                theme.TEXT_FAINT
+            }));
+        if enabled {
+            crate::keyboard::button(button)
+                .role(gpui::Role::Button)
+                .aria_label(title)
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.QUOTE_BG))
+        } else {
+            button
+        }
     }
 
     fn render_side_question_history(
         &self,
         history: &HistoryView,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -542,52 +618,45 @@ impl Panel {
             HistoryView::Ready(topics) if topics.is_empty() => div()
                 .child("No side questions yet. Type /btw followed by a question to start one.")
                 .into_any_element(),
-            HistoryView::Ready(topics) => div()
-                .id("side-question-topics")
-                .max_h(px(200.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .children(topics.iter().enumerate().map(|(index, topic)| {
-                    let session_id = topic.session_id.clone();
-                    div()
-                        .id(("side-question-topic", index))
-                        .debug_selector(move || format!("side-question-topic-{index}"))
-                        .relative()
-                        .children(crate::fixture_control_targets::marker(
-                            || format!("side-question-topic-{index}"),
-                            || Some(self.session_id.clone()),
+            HistoryView::Ready(topics) => crate::transcript_scroll::vertical(
+                div()
+                    .id("side-question-topics")
+                    .max_h(window.viewport_size().height * 0.4)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(topics.iter().enumerate().map(|(index, topic)| {
+                        let session_id = topic.session_id.clone();
+                        crate::keyboard::button(
+                            div()
+                                .id(("side-question-topic", index))
+                                .debug_selector(move || format!("side-question-topic-{index}"))
+                                .relative()
+                                .children(crate::fixture_control_targets::marker(
+                                    || format!("side-question-topic-{index}"),
+                                    || Some(self.session_id.clone()),
+                                ))
+                                .px_3()
+                                .py_1()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .bg(theme.QUOTE_BG)
+                                .hover(|el| el.bg(theme.ACCENT_DIM))
+                                .role(gpui::Role::Button)
+                                .aria_label(topic.question.clone())
+                                .child(div().min_w_0().truncate().child(topic.question.clone())),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.open_saved_side_question(&session_id, cx);
+                                this.return_side_question_focus(window, cx);
+                            },
                         ))
-                        .px_3()
-                        .py_1()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .bg(theme.QUOTE_BG)
-                        .hover(|el| el.bg(theme.ACCENT_DIM))
-                        .child(div().min_w_0().truncate().child(topic.question.clone()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_saved_side_question(&session_id, cx);
-                        }))
-                }))
-                .into_any_element(),
+                    })),
+            )
+            .into_any_element(),
         };
-        div()
-            .id("side-question-history")
-            .debug_selector(|| "side-question-history".into())
-            .flex_none()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .gap_2()
-            .mx_2()
-            .p_3()
-            .rounded_xl()
-            .border_1()
-            .border_color(theme.ACCENT_DIM)
-            .bg(theme.TOOL_BG)
-            .text_size(px(13.))
-            .text_color(theme.TEXT)
+        side_card("side-question-history")
             .child(
                 div()
                     .flex()
@@ -599,11 +668,7 @@ impl Panel {
                             .child("Side question history"),
                     )
                     .child(
-                        side_button("side-question-history-close", "Close")
-                            .children(crate::fixture_control_targets::marker(
-                                || "side-question-history-close".into(),
-                                || Some(self.session_id.clone()),
-                            ))
+                        self.side_icon(SideAction::CloseHistory, true)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.side_question_history = None;
                                 this.return_side_question_focus(window, cx);
@@ -616,35 +681,124 @@ impl Panel {
     }
 }
 
-fn side_turn(question: &str, answer: &str, current: bool) -> gpui::Div {
+fn side_card(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    let theme = Theme::global();
     div()
-        .min_w_0()
+        .id(id)
+        .debug_selector(move || id.into())
+        .occlude()
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .flex_none()
         .flex()
         .flex_col()
+        .min_w_0()
         .gap_1()
+        .mx_2()
+        .px_2()
+        .pb_2()
+        .when(id == "side-question-history", |el| el.pt_2())
+        .rounded_xl()
+        .border_1()
+        .border_color(theme.INPUT_BORDER)
+        .bg(theme.TOOL_BG)
+        .text_size(px(14.))
+        .text_color(theme.TEXT)
+}
+
+fn side_turn(
+    question: &str,
+    answer: &str,
+    index: usize,
+    current: bool,
+    card: &SideQuestionCard,
+    window: &Window,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    let theme = Theme::global();
+    let error = current.then_some(card.error.as_ref()).flatten();
+    div()
+        .id(("side-question-turn", index))
+        .w_full()
+        .min_w_0()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap_2()
         .child(
             div()
                 .when(current, |el| {
                     el.debug_selector(|| "side-question-current-prompt".into())
                 })
-                .text_color(Theme::global().TEXT_DIM)
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .rounded_lg()
+                .bg(theme.QUOTE_BG)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.TEXT)
                 .child(question.to_string()),
         )
-        .child(div().child(answer.to_string()))
+        .when(!answer.trim().is_empty(), |el| {
+            el.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_none()
+                    .font_family(theme.FONT_AI)
+                    .child(markdown::render(answer, index, &card.selection, window, cx)),
+            )
+        })
+        .when(answer.trim().is_empty() && error.is_none(), |el| {
+            el.child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child(if current && card.is_working() {
+                        "Waiting for an answer…"
+                    } else {
+                        "No answer saved."
+                    }),
+            )
+        })
+        .children(error.map(|message| div().text_color(theme.ERROR).child(message.clone())))
 }
 
-fn side_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .relative()
-        .px_3()
-        .py_1()
-        .rounded_full()
-        .cursor_pointer()
-        .bg(theme.QUOTE_BG)
-        .text_color(theme.TEXT_DIM)
-        .hover(|el| el.bg(theme.ACCENT_DIM))
-        .child(label)
+#[derive(Clone, Copy)]
+enum SideAction {
+    History,
+    Copy,
+    Promote,
+    Dismiss,
+    CloseHistory,
+}
+
+impl SideAction {
+    fn presentation(self) -> (&'static str, &'static str, &'static [u8]) {
+        match self {
+            Self::History => (
+                "side-question-history-open",
+                "History",
+                include_bytes!("../../../assets/icons/history.svg"),
+            ),
+            Self::Copy => (
+                "side-question-copy",
+                "Copy answer",
+                include_bytes!("../../../assets/icons/copy.svg"),
+            ),
+            Self::Promote => (
+                "side-question-promote",
+                "Open in sidechat",
+                include_bytes!("../../../assets/icons/arrow-right.svg"),
+            ),
+            Self::Dismiss => (
+                "side-question-dismiss",
+                "Dismiss",
+                include_bytes!("../../../assets/icons/close.svg"),
+            ),
+            Self::CloseHistory => (
+                "side-question-history-close",
+                "Close history",
+                include_bytes!("../../../assets/icons/close.svg"),
+            ),
+        }
+    }
 }

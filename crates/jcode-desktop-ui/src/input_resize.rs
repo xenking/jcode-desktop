@@ -1,8 +1,14 @@
 use super::*;
-use gpui::DispatchPhase;
+use gpui::{DispatchPhase, ScrollHandle, canvas};
+use std::cell::Cell;
+use std::ops::RangeInclusive;
+use std::rc::Rc;
 
-#[derive(Default)]
-pub(super) struct EditorResize {
+#[derive(Clone, Default)]
+pub(crate) struct VerticalResize(Rc<Cell<ResizeState>>);
+
+#[derive(Clone, Copy, Default)]
+struct ResizeState {
     height: Option<Pixels>,
     drag: Option<ResizeDrag>,
 }
@@ -11,6 +17,121 @@ pub(super) struct EditorResize {
 struct ResizeDrag {
     y: Pixels,
     height: Pixels,
+}
+
+impl VerticalResize {
+    pub(crate) fn height(&self, bounds: RangeInclusive<Pixels>) -> Pixels {
+        self.0
+            .get()
+            .height
+            .unwrap_or(*bounds.start())
+            .clamp(*bounds.start(), *bounds.end())
+    }
+
+    fn set_height(&self, height: Pixels, bounds: RangeInclusive<Pixels>) {
+        let height = height.clamp(*bounds.start(), *bounds.end());
+        let mut state = self.0.get();
+        state.height = (height > *bounds.start()).then_some(height);
+        self.0.set(state);
+    }
+
+    pub(crate) fn handle<T: 'static>(
+        &self,
+        id: &'static str,
+        control_id: &'static str,
+        scroll: &ScrollHandle,
+        bounds: RangeInclusive<Pixels>,
+        cx: &Context<T>,
+    ) -> impl IntoElement {
+        let owner = cx.entity().entity_id();
+        let resize = self.clone();
+        let pressed = self.clone();
+        let scroll = scroll.clone();
+        div()
+            .relative()
+            .flex()
+            .justify_center()
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        let moving = resize.clone();
+                        let bounds = bounds.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Capture {
+                                return;
+                            }
+                            let mut state = moving.0.get();
+                            if let Some(drag) = state.drag {
+                                if event.dragging() {
+                                    moving.set_height(
+                                        drag.height + drag.y - event.position.y,
+                                        bounds.clone(),
+                                    );
+                                    cx.notify(owner);
+                                } else {
+                                    state.drag = None;
+                                    moving.0.set(state);
+                                }
+                                cx.stop_propagation();
+                            }
+                        });
+                        let released = resize.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Capture || event.button != MouseButton::Left
+                            {
+                                return;
+                            }
+                            let mut state = released.0.get();
+                            if state.drag.take().is_some() {
+                                released.0.set(state);
+                                cx.stop_propagation();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .w(px(60.))
+                    .h(px(9.))
+                    .relative()
+                    .children(crate::fixture_control_targets::marker(
+                        || control_id.into(),
+                        || None,
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor(CursorStyle::ResizeUpDown)
+                    .child(
+                        div()
+                            .w(px(32.))
+                            .h(px(3.))
+                            .rounded_full()
+                            .bg(Theme::global().TEXT_FAINT),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        let mut state = pressed.0.get();
+                        if event.click_count == 2 {
+                            state = ResizeState::default();
+                        } else {
+                            state.drag = Some(ResizeDrag {
+                                y: event.position.y,
+                                height: scroll.bounds().size.height,
+                            });
+                        }
+                        pressed.0.set(state);
+                        cx.notify(owner);
+                    }),
+            )
+    }
 }
 
 impl PromptInput {
@@ -24,14 +145,12 @@ impl PromptInput {
     }
 
     pub(super) fn editor_height(&self, window: &Window) -> Pixels {
-        let automatic = self.automatic_editor_height(window);
-        self.editor_resize.height.map_or(automatic, |height| {
-            height.clamp(automatic, self.editor_height_limit(window))
-        })
+        self.editor_resize.height(self.editor_height_bounds(window))
     }
 
-    fn editor_height_limit(&self, window: &Window) -> Pixels {
-        (window.viewport_size().height * 0.7).max(self.automatic_editor_height(window))
+    fn editor_height_bounds(&self, window: &Window) -> RangeInclusive<Pixels> {
+        let automatic = self.automatic_editor_height(window);
+        automatic..=(window.viewport_size().height * 0.7).max(automatic)
     }
 
     pub(super) fn can_resize_editor(&self, window: &Window) -> bool {
@@ -45,9 +164,8 @@ impl PromptInput {
     }
 
     fn set_editor_height(&mut self, height: Pixels, window: &Window, cx: &mut Context<Self>) {
-        let automatic = self.automatic_editor_height(window);
-        let height = height.clamp(automatic, self.editor_height_limit(window));
-        self.editor_resize.height = (height > automatic).then_some(height);
+        self.editor_resize
+            .set_height(height, self.editor_height_bounds(window));
         cx.notify();
     }
 
@@ -77,98 +195,22 @@ impl PromptInput {
         }
     }
 
-    pub(super) fn render_editor_resize(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let input = cx.entity().downgrade();
+    pub(super) fn render_editor_resize(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         div()
             .absolute()
             .top_0()
             .left_0()
             .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                gpui::canvas(
-                    |_, _, _| (),
-                    move |_, (), window, _| {
-                        let moving = input.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                            if phase != DispatchPhase::Capture {
-                                return;
-                            }
-                            let Some(entity) = moving.upgrade() else {
-                                return;
-                            };
-                            if let Some(drag) = entity.read(cx).editor_resize.drag {
-                                entity.update(cx, |input, cx| {
-                                    if event.dragging() {
-                                        input.set_editor_height(
-                                            drag.height + drag.y - event.position.y,
-                                            window,
-                                            cx,
-                                        );
-                                    } else {
-                                        input.editor_resize.drag = None;
-                                    }
-                                });
-                                cx.stop_propagation();
-                            }
-                        });
-                        let released = input.clone();
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if phase != DispatchPhase::Capture || event.button != MouseButton::Left
-                            {
-                                return;
-                            }
-                            if let Some(entity) = released.upgrade()
-                                && entity.read(cx).editor_resize.drag.is_some()
-                            {
-                                entity.update(cx, |input, _| input.editor_resize.drag = None);
-                                cx.stop_propagation();
-                            }
-                        });
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
-            .child(
-                div()
-                    .id("prompt-resize-handle")
-                    .debug_selector(|| "prompt-resize-handle".into())
-                    .w(px(60.))
-                    .h(px(9.))
-                    .relative()
-                    .children(crate::fixture_control_targets::marker(
-                        || "composer:resize".into(),
-                        || None,
-                    ))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor(CursorStyle::ResizeUpDown)
-                    .child(
-                        div()
-                            .w(px(32.))
-                            .h(px(3.))
-                            .rounded_full()
-                            .bg(Theme::global().TEXT_FAINT),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            if event.click_count == 2 {
-                                this.editor_resize = EditorResize::default();
-                            } else {
-                                this.editor_resize.drag = Some(ResizeDrag {
-                                    y: event.position.y,
-                                    height: this.editor_scroll.bounds().size.height,
-                                });
-                            }
-                            cx.notify();
-                        }),
-                    ),
-            )
+            .child(self.editor_resize.handle(
+                "prompt-resize-handle",
+                "composer:resize",
+                &self.editor_scroll,
+                self.editor_height_bounds(window),
+                cx,
+            ))
     }
 }

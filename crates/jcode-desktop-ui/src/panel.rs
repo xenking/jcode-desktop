@@ -7230,7 +7230,7 @@ impl Render for Panel {
                                 .flex_col()
                                 .gap_2()
                                 .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                .children(self.render_composer_cards(cx))
+                                .children(self.render_composer_cards(window, cx))
                                 .child(self.render_composer(window, cx))
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
@@ -7447,7 +7447,7 @@ impl Render for Panel {
                                     .flex_col()
                                     .gap_2()
                                     .when(self.has_visible_queued_prompts(), |el| el.gap_0())
-                                    .children(self.render_composer_cards(cx))
+                                    .children(self.render_composer_cards(window, cx))
                                     .child(self.render_composer(window, cx))
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),

@@ -6,9 +6,9 @@ use jcode_sdk::{AskAnswer, AskQuestion, AskResponse};
 
 const COMMENT_ICON: &[u8] = include_bytes!("../../../assets/icons/comment.svg");
 
-struct AskActionTooltip(&'static str);
+pub(super) struct CardActionTooltip(pub(super) &'static str);
 
-impl gpui::Render for AskActionTooltip {
+impl gpui::Render for CardActionTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
         div()
@@ -395,7 +395,12 @@ struct AskToolInput {
 const ASK_CONNECTION_CHANGED: &str =
     "The connection changed. Your answer is retained here and was not resent.";
 
-fn ask_editor(input: &Entity<PromptInput>, selected: bool, window: &Window, cx: &App) -> gpui::Div {
+pub(super) fn embedded_reply_frame(
+    input: &Entity<PromptInput>,
+    selected: bool,
+    window: &Window,
+    cx: &App,
+) -> gpui::Div {
     let theme = Theme::global();
     let focused = input.read(cx).focus_handle.is_focused(window);
     div()
@@ -1261,7 +1266,7 @@ impl Panel {
                                     theme.INPUT_BORDER
                                 })
                                 .hover(|el| el.bg(theme.ACCENT_DIM))
-                                .tooltip(|_, cx| cx.new(|_| AskActionTooltip("Comment")).into())
+                                .tooltip(|_, cx| cx.new(|_| CardActionTooltip("Comment")).into())
                                 .child(gpui::svg().data(COMMENT_ICON).size(px(14.)).text_color(
                                     if has_comment {
                                         theme.ACCENT
@@ -1340,7 +1345,7 @@ impl Panel {
                                     .flex()
                                     .items_center()
                                     .gap_1()
-                                    .child(ask_editor(input, selected, window, cx))
+                                    .child(embedded_reply_frame(input, selected, window, cx))
                                     .child(self.render_ask_microphone(q, Some(o), cx)),
                             )
                         }),
@@ -1359,7 +1364,7 @@ impl Panel {
                                 .flex()
                                 .items_center()
                                 .gap_1()
-                                .child(ask_editor(input, own_selected, window, cx))
+                                .child(embedded_reply_frame(input, own_selected, window, cx))
                                 .child(self.render_ask_microphone(q, None, cx)),
                         ),
                 );

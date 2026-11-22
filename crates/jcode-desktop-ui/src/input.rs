@@ -45,6 +45,7 @@ pub(crate) use model_stage::parse_model_pick;
 mod paste_preview;
 #[path = "input_resize.rs"]
 mod resize;
+pub(crate) use resize::VerticalResize;
 
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
@@ -280,7 +281,7 @@ pub struct PromptInput {
     command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
     editor_wheel_gesture: std::cell::Cell<bool>,
-    editor_resize: resize::EditorResize,
+    editor_resize: VerticalResize,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>, bool)>,
     submission_enabled: bool,
     host_handles_submission: bool,
@@ -5020,7 +5021,9 @@ impl Render for PromptInput {
                             ),
                     ),
             )
-            .when(show_resize, |el| el.child(self.render_editor_resize(cx)))
+            .when(show_resize, |el| {
+                el.child(self.render_editor_resize(window, cx))
+            })
     }
 }
 

@@ -460,10 +460,11 @@ impl Panel {
 
     pub(super) fn render_composer_cards(
         &self,
+        window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl Iterator<Item = gpui::AnyElement> {
+    ) -> impl Iterator<Item = gpui::AnyElement> + use<> {
         [
-            self.render_side_question_card(cx),
+            self.render_side_question_card(window, cx),
             self.render_prompt_queue(cx),
             self.render_voice_pending(),
         ]
@@ -575,7 +576,7 @@ impl Panel {
                                 self.has_visible_queued_prompts() && self.ask_card.is_none(),
                                 |el| el.gap_0(),
                             )
-                            .children(self.render_composer_cards(cx))
+                            .children(self.render_composer_cards(window, cx))
                             .child(self.render_composer(window, cx))
                             .when(self.ask_card.is_none(), |el| {
                                 el.child(startup::input_marker(input_bounds))
