@@ -4,14 +4,24 @@ use std::time::Duration;
 
 pub(crate) struct Feed {
     pub snapshot: Option<Snapshot>,
+    focus_wake: async_channel::Sender<()>,
     _poll: Option<Task<()>>,
 }
 
 impl Feed {
     fn new(cx: &mut Context<Self>) -> Self {
+        let (focus_wake, focus_changes) = async_channel::bounded(1);
         let poll = (!cfg!(test) && !crate::harness::screenshot_mode()).then(|| {
             cx.spawn(async move |this, cx| {
                 loop {
+                    if !cx.update(|app| app.active_window().is_some()) {
+                        // The HUD is not visible. Keep its last good data and
+                        // wait for workspace activation instead of doing I/O.
+                        if focus_changes.recv().await.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     let snapshot = cx
                         .background_executor()
                         .spawn(async { fetch_snapshot(&default_base_url()) })
@@ -27,7 +37,13 @@ impl Feed {
                     {
                         break;
                     }
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    futures_lite::future::race(
+                        async {
+                            let _ = focus_changes.recv().await;
+                        },
+                        cx.background_executor().timer(Duration::from_secs(2)),
+                    )
+                    .await;
                 }
             })
         });
@@ -53,6 +69,7 @@ impl Feed {
         };
         Self {
             snapshot,
+            focus_wake,
             _poll: poll,
         }
     }
@@ -60,6 +77,12 @@ impl Feed {
 
 struct Shared(Entity<Feed>);
 impl Global for Shared {}
+
+pub(crate) fn window_activation_changed(cx: &App) {
+    if let Some(shared) = cx.try_global::<Shared>() {
+        let _ = shared.0.read(cx).focus_wake.try_send(());
+    }
+}
 
 pub(crate) fn get(cx: &mut App) -> Entity<Feed> {
     if !cx.has_global::<Shared>() {

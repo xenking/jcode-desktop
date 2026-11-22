@@ -349,6 +349,7 @@ pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
     RefreshSessions,
+    SetCatalogForeground(bool),
     /// Search every stored session's titles and transcripts. Answers with
     /// `Update::SessionSearch` carrying the same `generation`.
     SearchSessions {
@@ -1675,18 +1676,17 @@ fn run_with_transports(
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let edit_home = jcode_home();
-    let mut edit_stamp = edit_home
-        .as_deref()
-        .and_then(crate::edit_stats_watch::stamp);
-    let mut next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+    let mut edit_stamp = None;
+    let mut next_edit_check = None;
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
     let mut watched_sessions = HashSet::new();
 
     loop {
-        if std::time::Instant::now() >= next_edit_check {
-            next_edit_check = std::time::Instant::now() + Duration::from_secs(2);
+        let now = std::time::Instant::now();
+        if next_edit_check.is_some_and(|deadline| now >= deadline) {
+            next_edit_check = Some(now + Duration::from_secs(2));
             if let Some(current) = edit_home
                 .as_deref()
                 .and_then(crate::edit_stats_watch::stamp)
@@ -1705,8 +1705,10 @@ fn run_with_transports(
                 }
             }
         }
-        let timeout = next_edit_check.saturating_duration_since(std::time::Instant::now());
-        let command = match commands.recv_timeout(timeout) {
+        let command = match match next_edit_check {
+            Some(deadline) => commands.recv_timeout(deadline.saturating_duration_since(now)),
+            None => commands.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+        } {
             Ok(command) => command,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1715,6 +1717,11 @@ fn run_with_transports(
             Command::Shutdown => break,
             Command::RefreshSessions => {
                 refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
+            }
+            Command::SetCatalogForeground(focused) => {
+                // Preserve the previous stamp so edits made while hidden are
+                // noticed immediately on activation, without scanning in the background.
+                next_edit_check = focused.then(std::time::Instant::now);
             }
             Command::SearchSessions { query, generation } => {
                 search::spawn_search(updates.clone(), query, generation)
@@ -2501,7 +2508,7 @@ fn refresh_sessions(
                 let mut sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
                 jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
                 jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
-                eprintln!(
+                log::debug!(
                     "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
                     started.elapsed().as_secs_f64() * 1_000.0,
                     sessions.len()
@@ -2514,7 +2521,7 @@ fn refresh_sessions(
                 match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
                     Ok(sessions) => sessions,
                     Err(error) => {
-                        eprintln!(
+                        log::debug!(
                             "jcode desktop: session list failed after {:.1}ms: {error}",
                             started.elapsed().as_secs_f64() * 1_000.0
                         );
@@ -2524,7 +2531,7 @@ fn refresh_sessions(
             let mut sessions = merge_persisted_sessions(listed, home.as_deref());
             jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
             jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
-            eprintln!(
+            log::debug!(
                 "jcode desktop: session list completed in {:.1}ms ({} sessions)",
                 started.elapsed().as_secs_f64() * 1_000.0,
                 sessions.len()

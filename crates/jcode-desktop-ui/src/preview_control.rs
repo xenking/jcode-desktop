@@ -61,6 +61,7 @@ mod unix {
     use super::*;
     use std::{
         io::{self, Read, Write},
+        net::Shutdown,
         os::unix::{
             fs::{DirBuilderExt, MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
@@ -82,6 +83,7 @@ mod unix {
         path: PathBuf,
         identity: (u64, u64),
         stop: Arc<AtomicBool>,
+        stop_accept: UnixStream,
         thread: Option<thread::JoinHandle<()>>,
     }
 
@@ -162,17 +164,21 @@ mod unix {
             let listener = UnixListener::bind(&path)?;
             let meta = std::fs::symlink_metadata(&path)?;
             let stop = Arc::new(AtomicBool::new(false));
+            let (stop_accept, closing) = UnixStream::pair()?;
             let mut server = Self {
                 path,
                 identity: (meta.dev(), meta.ino()),
                 stop: stop.clone(),
+                stop_accept,
                 thread: None,
             };
             std::fs::set_permissions(&server.path, std::fs::Permissions::from_mode(0o600))?;
             listener.set_nonblocking(true)?;
             let (tx, rx) = async_channel::bounded(8);
             server.thread = Some(thread::spawn(move || {
-                while !stop.load(Ordering::Acquire) {
+                while !stop.load(Ordering::Acquire)
+                    && crate::unix_listener_ready::wait(&listener, &closing).unwrap_or(false)
+                {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             let result = handle(&mut stream, &tx, &stop);
@@ -184,8 +190,13 @@ mod unix {
                                 );
                             }
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(10))
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            continue;
                         }
                         Err(_) => break,
                     }
@@ -198,6 +209,7 @@ mod unix {
     impl Drop for Server {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
+            let _ = self.stop_accept.shutdown(Shutdown::Write);
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
             }
@@ -214,6 +226,7 @@ mod unix {
         tx: &async_channel::Sender<Pending>,
         stop: &AtomicBool,
     ) -> io::Result<()> {
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
         stream.set_write_timeout(Some(Duration::from_millis(100)))?;
         let deadline = Instant::now() + TIMEOUT;

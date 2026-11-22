@@ -8,6 +8,7 @@ mod unix {
     };
     use std::{
         io::{self, Read, Write},
+        net::Shutdown,
         os::unix::{
             fs::{DirBuilderExt, MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
@@ -33,6 +34,7 @@ mod unix {
         path: PathBuf,
         identity: (u64, u64),
         stop: Arc<AtomicBool>,
+        stop_accept: UnixStream,
         thread: Option<thread::JoinHandle<()>>,
     }
 
@@ -71,12 +73,15 @@ mod unix {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             let meta = std::fs::symlink_metadata(&path)?;
             listener.set_nonblocking(true)?;
+            let (stop_accept, closing) = UnixStream::pair()?;
             let stop = Arc::new(AtomicBool::new(false));
             let worker_stop = stop.clone();
             let waiters = Arc::new(AtomicUsize::new(0));
             let (tx, rx) = async_channel::bounded(8);
             let thread = thread::spawn(move || {
-                while !worker_stop.load(Ordering::Acquire) {
+                while !worker_stop.load(Ordering::Acquire)
+                    && crate::unix_listener_ready::wait(&listener, &closing).unwrap_or(false)
+                {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             if let Err(e) = handle(&mut stream, &tx, &worker_stop, &waiters) {
@@ -91,8 +96,13 @@ mod unix {
                                 );
                             }
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(10))
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            continue;
                         }
                         Err(_) => break,
                     }
@@ -103,6 +113,7 @@ mod unix {
                     path,
                     identity: (meta.dev(), meta.ino()),
                     stop,
+                    stop_accept,
                     thread: Some(thread),
                 },
                 rx,
@@ -365,6 +376,7 @@ mod unix {
     impl Drop for Server {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
+            let _ = self.stop_accept.shutdown(Shutdown::Write);
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
             }

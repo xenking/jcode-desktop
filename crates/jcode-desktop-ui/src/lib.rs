@@ -59,6 +59,8 @@ mod test_input;
 mod tool_icon;
 mod transcript_scroll;
 mod ui_actions;
+#[cfg(unix)]
+mod unix_listener_ready;
 pub mod update_entry;
 mod update_notes;
 mod updates;

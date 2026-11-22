@@ -187,6 +187,8 @@ class Instance:
         layout_line = 'layout_mode = "normal"\n' if self.manifest["fixture"] in ("openrig-live-split", "gallery-navigation") else ""
         (self.profile / "desktop.toml").write_text(f'[appearance]\n{theme_line}{layout_line}reduce_motion = {reduce_motion}\n[workspace]\ncoaching_hints = false\n')
         env = environment(self.profile, self.control)
+        if self.manifest.get("persist_restart_manifest"):
+            env["JCODE_DESKTOP_RESTART_DIR"] = str(self.profile / "restart")
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = self.manifest["fixture"]
         env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         if self.manifest.get("window_width"):
@@ -1656,6 +1658,7 @@ def launch(args):
                 "sources": sources, "build": command, "fixture": args.fixture, "theme": args.theme,
                 "fullscreen_layout": args.fullscreen_layout,
                 "no_sidebar": args.no_sidebar,
+                "persist_restart_manifest": args.persist_restart_manifest,
                 "window_width": args.window_width,
                 "queued": max(args.queued, 2 if args.queue_edit else 0),
                 "queue_edit": args.queue_edit,
@@ -1702,6 +1705,8 @@ def main():
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",
                                help="render the tabbar fixture with the sidebar closed")
+            child.add_argument("--persist-restart-manifest", action="store_true",
+                               help="exercise real restart manifests in the private profile")
             child.add_argument("--window-width", type=int, choices=range(360, 1601), metavar="360..1600",
                                help="set the hidden native window's initial width in points")
             child.add_argument("--jcode-bin", type=Path)

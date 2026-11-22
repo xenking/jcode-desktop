@@ -117,6 +117,8 @@ use crate::updates;
 pub(crate) mod recovery;
 #[path = "workspace_restart.rs"]
 pub(crate) mod restart;
+#[path = "workspace_housekeeping.rs"]
+mod housekeeping;
 
 #[cfg(test)]
 #[path = "closing_navigation_tests.rs"]
@@ -1016,10 +1018,14 @@ impl Workspace {
             }
         });
 
-        // Account snapshots and cross-process session reconciliation are both
-        // slow-changing data and only need a low-frequency housekeeping wake.
         let housekeeping_bridge = bridge.clone();
         let session_refresh_interval = crate::config::get().session_refresh_interval();
+        let window_handle = window.window_handle();
+        let (focus_wake, focus_changes) = async_channel::bounded(1);
+        let initially_focused = window.is_window_active();
+        if initially_focused {
+            housekeeping_bridge.send(Command::SetCatalogForeground(true));
+        }
         // Streaming markers are local files, so only poll them for a real
         // local daemon, never in tests or offline screenshot fixtures.
         let poll_daemon_running = !cfg!(test) && !harness::screenshot_mode();
@@ -1027,15 +1033,21 @@ impl Workspace {
         // hot-reloaded UI fix an older, still-running host process.
         crate::memory::disable_transparent_huge_pages();
         let housekeeping_task = cx.spawn(async move |this, cx| {
-            let mut last_session_refresh = Instant::now();
-            // The first catalog read queues cached legacy edit statistics.
-            // Pick those up promptly, then resume the configured idle cadence.
-            let mut next_session_refresh = session_refresh_interval.min(Duration::from_secs(2));
+            let mut catalog = housekeeping::CatalogRefresh::new(Instant::now(), session_refresh_interval);
+            let mut focused = initially_focused;
             let mut last_update_state = updates::current();
             let mut last_release_state = updates::release_status();
             let mut last_check_visible = updates::user_check_visible();
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let delay = if focused { housekeeping::FOREGROUND_TICK } else { housekeeping::BACKGROUND_TICK };
+                let activated = futures_lite::future::race(
+                    async { focus_changes.recv().await.is_ok() },
+                    async { cx.background_executor().timer(delay).await; false },
+                ).await;
+                let Ok(is_active) = window_handle.update(cx, |_, window, _| window.is_window_active()) else {
+                    break;
+                };
+                focused = is_active;
                 if crate::memory::claim_trim_slot() {
                     cx.background_executor()
                         .spawn(async { crate::memory::trim() })
@@ -1055,7 +1067,7 @@ impl Workspace {
                         break;
                     }
                 }
-                if poll_daemon_running {
+                if focused && poll_daemon_running {
                     let running = cx
                         .background_executor()
                         .spawn(async { daemon_running_sessions() })
@@ -1070,10 +1082,8 @@ impl Workspace {
                     }
                 }
                 let accounts = accounts_feed.latest();
-                if last_session_refresh.elapsed() >= next_session_refresh {
+                if catalog.due(Instant::now(), focused, activated) {
                     housekeeping_bridge.send(Command::RefreshSessions);
-                    last_session_refresh = Instant::now();
-                    next_session_refresh = session_refresh_interval;
                 }
                 let Some(accounts) = accounts else {
                     continue;
@@ -1134,9 +1144,13 @@ impl Workspace {
             global_voice: Default::default(),
             voice_key: Default::default(),
             last_voice_chat: None,
-            _voice_activation: Some(cx.observe_window_activation(window, |this, window, cx| {
-                this.global_voice.set_active(window.is_window_active());
-                if !window.is_window_active() {
+            _voice_activation: Some(cx.observe_window_activation(window, move |this, window, cx| {
+                let active = window.is_window_active();
+                let _ = focus_wake.try_send(());
+                crate::openrig_feed::window_activation_changed(cx);
+                this.bridge.send(Command::SetCatalogForeground(active));
+                this.global_voice.set_active(active);
+                if !active {
                     if this.voice_key.is_down() {
                         this.end_voice_hold(&EndVoiceHold, window, cx);
                     }

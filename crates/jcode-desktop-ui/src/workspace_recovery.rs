@@ -317,9 +317,12 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
     let writer = workspace
         .read(app)
         .snapshot(window, app)
-        .and_then(|snapshot| Writer::begin(path, snapshot));
-    let writer = match writer {
-        Ok(writer) => writer,
+        .and_then(|snapshot| {
+            let key = serde_json::to_value(&snapshot)?;
+            Ok((Writer::begin(path, snapshot)?, key))
+        });
+    let (writer, initial_key) = match writer {
+        Ok(writer_and_key) => writer_and_key,
         Err(error) => {
             eprintln!("desktop crash checkpoint unavailable: {error:#}");
             return;
@@ -366,6 +369,7 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
     let workspace = workspace.downgrade();
     let window = window.window_handle();
     app.spawn(async move |cx| {
+        let mut last = (std::time::Instant::now(), initial_key);
         loop {
             cx.background_executor().timer(CHECKPOINT_INTERVAL).await;
             let snapshot = window.update(cx, |_, window, app| {
@@ -377,12 +381,29 @@ fn install_at_path(workspace: &Entity<Workspace>, window: &Window, app: &mut App
                 break;
             };
             let captured_at = now_ms();
+            let sample_time = std::time::Instant::now();
             let writer = writer.clone();
-            match cx
+            let (updated, result) = cx
                 .background_executor()
-                .spawn(async move { writer.save(snapshot, captured_at) })
-                .await
-            {
+                .spawn(async move {
+                    let result = (|| {
+                        let key = serde_json::to_value(&snapshot)?;
+                        if super::housekeeping::should_checkpoint(
+                            sample_time.duration_since(last.0),
+                            key != last.1,
+                        ) {
+                            if !writer.save(snapshot, captured_at)? {
+                                return Ok(false);
+                            }
+                            last = (sample_time, key);
+                        }
+                        anyhow::Ok(true)
+                    })();
+                    (last, result)
+                })
+                .await;
+            last = updated;
+            match result {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(error) => eprintln!("desktop crash checkpoint failed: {error:#}"),

@@ -7,7 +7,7 @@
 //! relaunches each window with `--restore-state=<file>`. Transcripts reload
 //! from the server, so a restart reclaims memory without losing chats,
 //! drafts, queued prompts, or layout.
-use super::{Workspace, WorkspaceSnapshot};
+use super::{LaunchSnapshot, Workspace, WorkspaceSnapshot};
 use gpui::{App, Entity, Window};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,6 +23,9 @@ use std::{
 pub(crate) use crate::restart_spawn::{NO_SERVER_FLAG, WORKER_FLAG, detach};
 const RESTORE_FLAG: &str = "--restore-state=";
 const MANIFEST_INTERVAL: Duration = Duration::from_secs(1);
+const INACTIVE_INTERVAL: Duration = Duration::from_secs(10);
+const DEBOUNCE: Duration = Duration::from_millis(750);
+const MAX_DEBOUNCE: Duration = Duration::from_secs(3);
 /// Launch flags that described how a window was first opened, not what it
 /// shows now. A restored window must not adopt a held voice key, reopen a
 /// requested session over its snapshot, or insist on a private process.
@@ -98,33 +101,119 @@ fn strip_transient(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+#[derive(Default)]
+struct ManifestWriter {
+    last: Option<(serde_json::Value, LaunchSnapshot)>,
+    pending: Option<PendingManifest>,
+}
+
+struct PendingManifest {
+    content: (serde_json::Value, LaunchSnapshot),
+    first_change: Instant,
+    last_change: Instant,
+}
+
+impl ManifestWriter {
+    fn observe(
+        &mut self,
+        now: Instant,
+        mut snapshot: WorkspaceSnapshot,
+        launch: LaunchSnapshot,
+    ) -> serde_json::Result<bool> {
+        for slot in &mut snapshot.slots {
+            if slot.panel.stick_to_bottom && slot.panel.side_document.is_none() {
+                // Restore follows the tail, so its current pixel offset is transient.
+                slot.panel.scroll_x = 0.0;
+                slot.panel.scroll_y = 0.0;
+            }
+            clear_terminal_handle(&mut slot.panel);
+        }
+        // The snapshot structs also contain #[serde(skip)] runtime fields.
+        // Compare the persisted value, not those fields or JSON object order.
+        let content = (serde_json::to_value(snapshot)?, launch);
+        if self.last.as_ref() == Some(&content) {
+            self.pending = None;
+            return Ok(false);
+        }
+        let pending = match self.pending.as_mut() {
+            Some(pending) => pending,
+            None => {
+                self.pending = Some(PendingManifest {
+                    content,
+                    first_change: now,
+                    last_change: now,
+                });
+                return Ok(self.last.is_none());
+            }
+        };
+        if pending.content != content {
+            pending.content = content;
+            pending.last_change = now;
+        }
+        Ok(self.last.is_none()
+            || now.duration_since(pending.last_change) >= DEBOUNCE
+            || now.duration_since(pending.first_change) >= MAX_DEBOUNCE)
+    }
+
+    fn save_pending(&mut self, path: &Path, window: u64) -> anyhow::Result<()> {
+        let Some(pending) = self.pending.as_ref() else {
+            return Ok(());
+        };
+        let (snapshot, launch) = &pending.content;
+        let manifest = Manifest {
+            pid: std::process::id(),
+            window,
+            updated_at_ms: now_ms(),
+            args: launch.args.clone(),
+            env: launch.env.clone(),
+            snapshot: snapshot.clone(),
+        };
+        write_atomic(path, &serde_json::to_vec(&manifest)?)?;
+        self.last = self.pending.take().map(|pending| pending.content);
+        Ok(())
+    }
+}
+
 /// Keep this window's manifest current. The loop holds only weak handles, so
 /// a hot reload retires it and the next generation's loop takes over the same
 /// file. A closed window removes its manifest.
-pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut App) {
-    // Offline screenshots never write restart state, except the live update
-    // acceptance test, which isolates JCODE_DESKTOP_RESTART_DIR and restarts.
-    let live_update_test = std::env::var_os("JCODE_DESKTOP_LIVE_UPDATE_TEST").is_some()
-        && std::env::var_os("JCODE_DESKTOP_RESTART_DIR").is_some();
-    if cfg!(test) || (crate::harness::screenshot_mode() && !live_update_test) {
+pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &mut App) {
+    // Fixtures only persist to an explicitly isolated directory.
+    let isolated_fixture = std::env::var_os("JCODE_DESKTOP_RESTART_DIR").is_some()
+        && (std::env::var_os("JCODE_DESKTOP_LIVE_UPDATE_TEST").is_some()
+            || std::env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1"));
+    if cfg!(test) || (crate::harness::screenshot_mode() && !isolated_fixture) {
         return;
     }
     let Some(dir) = manifests_dir() else { return };
     let window_id = window.window_handle().window_id().as_u64();
     let path = dir.join(format!("{}-{window_id}.json", std::process::id()));
-    let workspace = workspace.downgrade();
     let handle = window.window_handle();
+    let (focus_wake, focus_changes) = async_channel::bounded(1);
+    let activation = workspace.update(app, |_, cx| {
+        let focus_wake = focus_wake.clone();
+        cx.observe_window_activation(window, move |_, _, _| {
+            let _ = focus_wake.try_send(());
+        })
+    });
+    let closing = app.on_window_closed(move |_, window| {
+        if window == handle.window_id() {
+            let _ = focus_wake.try_send(());
+        }
+    });
+    let workspace = workspace.downgrade();
     app.spawn(async move |cx| {
-        let mut last: Option<Vec<u8>> = None;
+        let (_activation, _closing) = (activation, closing);
+        let mut writer = ManifestWriter::default();
         loop {
             let captured = handle.update(cx, |_, window, app| {
                 let workspace = workspace.upgrade()?;
                 let workspace = workspace.read(app);
                 let snapshot = workspace.snapshot(window, app).ok()?;
-                let launch = super::LaunchSnapshot::from(&workspace.launch);
-                Some((snapshot, launch))
+                let launch = LaunchSnapshot::from(&workspace.launch);
+                Some((snapshot, launch, window.is_window_active()))
             });
-            let (snapshot, launch) = match captured {
+            let (snapshot, launch, focused) = match captured {
                 Ok(Some(captured)) => captured,
                 // A newer UI generation replaced this workspace.
                 Ok(None) => break,
@@ -133,33 +222,37 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut 
                     break;
                 }
             };
-            let manifest = Manifest {
-                pid: std::process::id(),
-                window: window_id,
-                updated_at_ms: now_ms(),
-                args: launch.args,
-                env: launch.env,
-                snapshot: serde_json::to_value(&snapshot).unwrap_or_default(),
-            };
-            // Compare without the timestamp so idle windows never touch disk.
-            let key = serde_json::to_vec(&(&manifest.args, &manifest.env, &manifest.snapshot))
-                .unwrap_or_default();
-            if last.as_ref() != Some(&key) {
-                let path = path.clone();
-                let written = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let bytes = serde_json::to_vec(&manifest)?;
-                        write_atomic(&path, &bytes)?;
+            let output = path.clone();
+            let (next_writer, result) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = (|| {
+                        if writer.observe(Instant::now(), snapshot, launch)? {
+                            writer.save_pending(&output, window_id)?;
+                        }
                         anyhow::Ok(())
-                    })
-                    .await;
-                match written {
-                    Ok(()) => last = Some(key),
-                    Err(error) => eprintln!("restart manifest write failed: {error:#}"),
-                }
+                    })();
+                    (writer, result)
+                })
+                .await;
+            writer = next_writer;
+            if let Err(error) = result {
+                eprintln!("restart manifest write failed: {error:#}");
             }
-            cx.background_executor().timer(MANIFEST_INTERVAL).await;
+            let delay = if focused || writer.pending.is_some() {
+                MANIFEST_INTERVAL
+            } else {
+                INACTIVE_INTERVAL
+            };
+            futures_lite::future::race(
+                async {
+                    let _ = focus_changes.recv().await;
+                },
+                async {
+                    cx.background_executor().timer(delay).await;
+                },
+            )
+            .await;
         }
     })
     .detach();
@@ -185,16 +278,20 @@ pub(crate) fn take_restore_state(window: &Window, app: &App) -> Option<Workspace
 fn decode_restore(bytes: &[u8]) -> Option<WorkspaceSnapshot> {
     let mut snapshot = WorkspaceSnapshot::decode(bytes).ok()?;
     for slot in &mut snapshot.slots {
-        // PTYs belonged to the stopped process. Reopen in the same directory.
-        if slot.panel.terminal_resource_id.take().is_some() {
-            slot.panel.session_id = "terminal".into();
-        }
-        slot.panel.terminal_output_cursor = None;
+        clear_terminal_handle(&mut slot.panel);
     }
     if let Some(launch) = snapshot.launch.as_mut() {
         launch.args = strip_transient(&launch.args);
     }
     Some(snapshot)
+}
+
+fn clear_terminal_handle(panel: &mut crate::panel::PanelSnapshot) {
+    // PTYs belonged to the stopped process. Reopen in the same directory.
+    if panel.terminal_resource_id.take().is_some() {
+        panel.session_id = "terminal".into();
+    }
+    panel.terminal_output_cursor = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +685,74 @@ pub fn run_worker(args: impl IntoIterator<Item = OsString>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_snapshot() -> WorkspaceSnapshot {
+        decode_restore(br#"{"format_version":1,"slots":[{"panel":{"session_id":"x","title":"t","draft":{"content":"hello","selection_start":0,"selection_end":0,"selection_reversed":false,"history":[],"history_index":null,"live_draft":"","attachments":[]},"scroll_x":0,"scroll_y":0,"stick_to_bottom":true},"row":0,"width_fraction":0.5}],"active":0,"active_row":0,"row_focus":[null,null,null,null],"camera_x":[0,0,0,0],"camera_target":[0,0,0,0],"overview":false,"hints_overlay":false,"focus":"Workspace"}"#).unwrap()
+    }
+
+    #[test]
+    fn restart_manifest_ignores_follow_tail_offsets_but_preserves_manual_scroll_and_drafts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.json");
+        let mut writer = ManifestWriter::default();
+        let launch = LaunchSnapshot::default();
+        let mut snapshot = test_snapshot();
+        let start = Instant::now();
+        assert!(
+            writer
+                .observe(start, snapshot.clone(), launch.clone())
+                .unwrap()
+        );
+        writer.save_pending(&path, 1).unwrap();
+        let first = fs::read(&path).unwrap();
+        let mut rewrites = 0;
+        for second in 1..=60 {
+            snapshot.slots[0].panel.scroll_y = second as f32;
+            if writer
+                .observe(
+                    start + Duration::from_secs(second),
+                    snapshot.clone(),
+                    launch.clone(),
+                )
+                .unwrap()
+            {
+                writer.save_pending(&path, 1).unwrap();
+                rewrites += 1;
+            }
+        }
+        eprintln!(
+            "automatic tail follow: {rewrites} restart manifest rewrites per simulated minute"
+        );
+        assert_eq!(rewrites, 0);
+        assert_eq!(fs::read(&path).unwrap(), first);
+        snapshot.slots[0].panel.stick_to_bottom = false;
+        let edit = start + Duration::from_secs(61);
+        snapshot.slots[0].panel.draft.content = "first".into();
+        assert!(
+            !writer
+                .observe(edit, snapshot.clone(), launch.clone())
+                .unwrap()
+        );
+        snapshot.slots[0].panel.draft.content = "keep this".into();
+        assert!(
+            !writer
+                .observe(edit + DEBOUNCE / 2, snapshot.clone(), launch.clone())
+                .unwrap()
+        );
+        assert_eq!(fs::read(&path).unwrap(), first);
+        assert!(
+            writer
+                .observe(edit + DEBOUNCE * 2, snapshot, launch)
+                .unwrap()
+        );
+        writer.save_pending(&path, 1).unwrap();
+        let saved: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.snapshot["slots"][0]["panel"]["scroll_y"], 60.0);
+        assert_eq!(
+            saved.snapshot["slots"][0]["panel"]["draft"]["content"],
+            "keep this"
+        );
+    }
 
     #[test]
     fn restored_launch_drops_transient_flags() {

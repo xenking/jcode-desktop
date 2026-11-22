@@ -3613,6 +3613,7 @@ dependencies = [
 name = "jcode-config-types"
 version = "0.1.0"
 dependencies = [
+ "jcode-message-types",
  "serde",
  "serde_json",
 ]
@@ -3682,6 +3683,7 @@ dependencies = [
  "jcode-sdk",
  "jcode-session-types",
  "libc",
+ "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3731,6 +3733,7 @@ dependencies = [
  "base64",
  "chrono",
  "flate2",
+ "futures-lite",
  "gpui",
  "gpui-thinking-orbs",
  "gpui_platform",
@@ -3976,11 +3979,11 @@ dependencies = [
  "jcode-usage-types",
  "rand 0.9.5",
  "reqwest 0.12.28",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tokio",
  "webpki-roots 1.0.9",
  "zstd",
@@ -4140,6 +4143,7 @@ name = "jcode-task-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "jcode-message-types",
  "serde",
  "serde_json",
 ]

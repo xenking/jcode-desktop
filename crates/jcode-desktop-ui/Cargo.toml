@@ -47,6 +47,7 @@ tempfile = "3"
 libc = { version = "0.2", features = ["extra_traits"] }
 arboard = "3"
 async-channel = "2"
+futures-lite = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.git", rev = "3726ccbffe0e8032361eb9668694b24f77858060", default-features = false, features = ["scene"] }
