@@ -92,6 +92,12 @@ fn marked_answer(entry: &DecisionQuestion, answered: bool) -> String {
     if !answered {
         return entry.answer.clone();
     }
+    if matches!(
+        entry.answer.as_str(),
+        "(no answer)" | "unanswered (user skipped)"
+    ) {
+        return "Unanswered (user skipped)".into();
+    }
     let mut parts = Vec::new();
     let mut start = 0;
     let mut depth = 0usize;

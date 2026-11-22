@@ -22,6 +22,40 @@ impl gpui::Render for CardActionTooltip {
     }
 }
 
+fn ask_action(
+    id: &'static str,
+    label: &'static str,
+    icon: &'static [u8],
+    primary: bool,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let theme = Theme::global();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .when(enabled, crate::keyboard::button)
+        .flex_none()
+        .size(px(26.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(if primary {
+            theme.ACCENT_DIM
+        } else {
+            theme.TOOL_BG
+        })
+        .when(enabled, |el| {
+            el.cursor_pointer().hover(|el| el.bg(theme.ACCENT_DIM))
+        })
+        .tooltip(move |_, cx| cx.new(|_| CardActionTooltip(label)).into())
+        .child(gpui::svg().data(icon).size(px(16.)).text_color(if enabled {
+            theme.TEXT
+        } else {
+            theme.TEXT_FAINT
+        }))
+}
+
 /// Completed asks remain readable in the transcript, including after history reload.
 pub(super) fn result_text(input: &str, output: &str, error: Option<&str>) -> String {
     let result = error
@@ -287,10 +321,6 @@ impl AskCard {
         if self.other[q].is_some() && !self.questions[q].multi_select {
             self.chosen[q].clear();
         }
-    }
-
-    pub fn complete(&self) -> bool {
-        (0..self.questions.len()).all(|q| !self.chosen[q].is_empty() || self.other[q].is_some())
     }
 
     pub fn response(&self) -> AskResponse {
@@ -793,7 +823,7 @@ impl Panel {
             card.switch_tab(card.cursor_question + 1);
             window.focus(&self.focus_handle, cx);
             cx.notify();
-        } else if card.complete() {
+        } else {
             let response = card.response_with_images(cx);
             self.answer_ask(response, cx);
         }
@@ -1003,6 +1033,53 @@ impl Panel {
         }
     }
 
+    fn render_ask_nav(card: &AskCard, cx: &mut Context<Self>) -> gpui::Div {
+        let last_tab = card.cursor_question + 1 >= card.tab_count();
+        let enabled = !card.submitting();
+        let (id, label, icon): (_, _, &[u8]) = if last_tab {
+            (
+                "ask-submit",
+                if enabled { "Submit" } else { "Sending…" },
+                include_bytes!("../../../assets/icons/arrow-right-to-line.svg"),
+            )
+        } else {
+            (
+                "ask-next",
+                "Next",
+                include_bytes!("../../../assets/icons/arrow-right.svg"),
+            )
+        };
+        div()
+            .flex_none()
+            .flex()
+            .gap_1()
+            .when(card.cursor_question > 0, |el| {
+                el.child(
+                    ask_action(
+                        "ask-back",
+                        "Back",
+                        include_bytes!("../../../assets/icons/arrow-left.svg"),
+                        false,
+                        enabled,
+                    )
+                    .when(enabled, |el| {
+                        el.on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(card) = this.ask_card.as_mut() {
+                                card.switch_tab(card.cursor_question.saturating_sub(1));
+                                window.focus(&this.focus_handle, cx);
+                                cx.notify();
+                            }
+                        }))
+                    }),
+                )
+            })
+            .child(
+                ask_action(id, label, icon, true, enabled).when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| this.advance_ask(window, cx)))
+                }),
+            )
+    }
+
     pub(super) fn render_ask_card(
         &self,
         window: &mut Window,
@@ -1050,6 +1127,8 @@ impl Panel {
         let mut tabs = div()
             .id("ask-tabs")
             .debug_selector(|| "ask-tabs".into())
+            .flex_1()
+            .min_w_0()
             .flex()
             .flex_wrap()
             .gap_1();
@@ -1125,7 +1204,23 @@ impl Panel {
                     })),
             );
         }
-        body = body.child(tabs);
+        let enabled = !card.submitting();
+        body = body.child(
+            div().flex().items_start().gap_1().child(tabs).child(
+                ask_action(
+                    "ask-decline",
+                    "Discard",
+                    include_bytes!("../../../assets/icons/close.svg"),
+                    false,
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, _, cx| {
+                        this.answer_ask(AskResponse::declined(), cx);
+                    }))
+                }),
+            ),
+        );
         let mut questions = div()
             .id("ask-scroll")
             .debug_selector(|| "ask-scroll".into())
@@ -1133,7 +1228,10 @@ impl Panel {
             .flex_col()
             .gap_2()
             .min_w_0()
-            .max_h(px((f32::from(window.viewport_size().height) * 0.4).max(60.)));
+            .max_h(px(
+                (f32::from(window.viewport_size().height) * 0.4 - 32.).max(60.)
+            ));
+        let mut reply = None;
         for (q, question) in card
             .questions
             .iter()
@@ -1353,20 +1451,17 @@ impl Panel {
             }
             if let Some(input) = card.other_inputs.get(q) {
                 let own_selected = card.other[q].is_some();
-                block = block.child(
+                reply = Some(
                     div()
-                        .id(("ask-other", q))
-                        .debug_selector(move || format!("ask-other-{q}"))
-                        .px_2()
-                        .child(
-                            div()
-                                .debug_selector(move || format!("ask-other-editor-{q}"))
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(embedded_reply_frame(input, own_selected, window, cx))
-                                .child(self.render_ask_microphone(q, None, cx)),
-                        ),
+                        .debug_selector(move || format!("ask-other-editor-{q}"))
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(embedded_reply_frame(input, own_selected, window, cx))
+                        .child(self.render_ask_microphone(q, None, cx))
+                        .into_any_element(),
                 );
             }
             questions = questions.child(block);
@@ -1383,21 +1478,24 @@ impl Panel {
                 if let Some(other) = answer.other {
                     values.push(other);
                 }
-                let text = if values.is_empty() {
-                    "Not answered".to_string()
+                let unanswered = values.is_empty();
+                let text = if unanswered {
+                    "Unanswered".to_string()
                 } else {
                     values.join(", ")
                 };
-                let mut summary = div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(format!("{}. {}", q + 1, question.question))
-                    .child(div().text_color(theme.TEXT_DIM).child(text));
+                let mut details = vec![
+                    div()
+                        .when(unanswered, |el| {
+                            el.debug_selector(move || format!("ask-review-unanswered-{q}"))
+                        })
+                        .text_color(theme.TEXT_DIM)
+                        .child(text),
+                ];
                 for &o in &card.chosen[q] {
                     let comment = card.comments[q][o].trim();
                     if !comment.is_empty() {
-                        summary = summary.child(
+                        details.push(
                             div()
                                 .debug_selector(move || format!("ask-review-comment-{q}-{o}"))
                                 .text_color(theme.TEXT_DIM)
@@ -1405,7 +1503,26 @@ impl Panel {
                         );
                     }
                 }
-                review = review.child(summary);
+                if q + 1 == card.questions.len() {
+                    reply = details.pop().map(|detail| {
+                        div()
+                            .id("ask-review-tail")
+                            .flex_1()
+                            .min_w_0()
+                            .max_h(px(72.))
+                            .overflow_y_scroll()
+                            .child(detail)
+                            .into_any_element()
+                    });
+                }
+                review = review.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(format!("{}. {}", q + 1, question.question))
+                        .children(details),
+                );
             }
             questions = questions.child(review);
         }
@@ -1430,53 +1547,21 @@ impl Panel {
                     el.child(div().absolute().inset_0().occlude())
                 }),
         );
-        let complete = card.complete();
-        let last_tab = card.cursor_question + 1 >= card.tab_count();
         Some(
             body.child(
                 div()
+                    .id("ask-reply-row")
+                    .debug_selector(|| "ask-reply-row".into())
+                    .relative()
                     .flex()
-                    .gap_2()
+                    .items_center()
                     .justify_end()
-                    .child(
-                        crate::keyboard::button(div().id("ask-decline"))
-                            .debug_selector(|| "ask-decline".into())
-                            .px_3()
-                            .py_1()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .text_color(theme.TEXT_DIM)
-                            .hover(|el| el.bg(theme.QUOTE_BG))
-                            .child("Decline")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.answer_ask(AskResponse::default(), cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("ask-submit")
-                            .when(complete || !last_tab, crate::keyboard::button)
-                            .debug_selector(|| "ask-submit".into())
-                            .px_3()
-                            .py_1()
-                            .rounded_full()
-                            .when(complete || !last_tab, |el| {
-                                el.cursor_pointer()
-                                    .bg(theme.ACCENT_DIM)
-                                    .text_color(theme.TEXT)
-                            })
-                            .when(!complete && last_tab, |el| el.text_color(theme.TEXT_FAINT))
-                            .child(if card.submitting() {
-                                "Sending…"
-                            } else if !last_tab {
-                                "Next"
-                            } else {
-                                "Submit"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.advance_ask(window, cx)),
-                            ),
-                    ),
+                    .gap_1()
+                    .children(reply)
+                    .child(Self::render_ask_nav(card, cx))
+                    .when(card.submitting(), |el| {
+                        el.child(div().absolute().inset_0().occlude())
+                    }),
             )
             .into_any_element(),
         )
@@ -1540,7 +1625,7 @@ mod tests {
         card.toggle(0, 0);
         card.toggle(0, 1);
         assert_eq!(card.chosen[0], vec![1]);
-        assert!(!card.complete());
+        assert_eq!(card.response().answers.unwrap()[1], AskAnswer::default());
         card.toggle(1, 1);
         card.toggle(1, 0);
         card.set_other(1, " extra ");
@@ -1550,7 +1635,6 @@ mod tests {
         assert_eq!(answers[1].other.as_deref(), Some("extra"));
         card.set_other(0, "mine");
         assert!(card.chosen[0].is_empty());
-        assert!(card.complete());
     }
 
     /// The wire frame the Desktop harness emits for the real `ask` call a model
@@ -2068,6 +2152,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ask_can_submit_after_skipping_a_question(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(1, cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.focus(&panel.read(cx).input_focus_handle(cx), cx));
+        let mut value: serde_json::Value = serde_json::from_str(REAL_ASK_REQUEST).unwrap();
+        let second = value["questions"][0].clone();
+        value["questions"].as_array_mut().unwrap().push(second);
+        let event = serde_json::from_value(value).unwrap();
+        panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("1 enter enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-review").is_some());
+        let submit = vcx.debug_bounds("ask-submit").unwrap();
+        let back = vcx.debug_bounds("ask-back").unwrap();
+        assert!((back.center().y - submit.center().y).abs() <= px(1.));
+        assert!(back.right() <= submit.left());
+        vcx.simulate_click(back.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("ask-question-1").is_some());
+        let next = vcx.debug_bounds("ask-next").unwrap();
+        let input = vcx.debug_bounds("ask-other-editor-1").unwrap();
+        let back = vcx.debug_bounds("ask-back").unwrap();
+        assert!((back.center().y - input.center().y).abs() <= px(1.));
+        assert!(input.right() <= back.left() && back.right() <= next.left());
+        vcx.simulate_click(next.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let submit = vcx.debug_bounds("ask-submit").unwrap();
+        let unanswered = vcx.debug_bounds("ask-review-unanswered-1");
+        vcx.simulate_click(submit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_iter().any(|command| matches!(command,
+                Command::AskResponse { response, .. }
+                if response.answers == Some(vec![AskAnswer {
+                    selected: vec!["Postgres".into()],
+                    ..Default::default()
+                }, AskAnswer::default()])
+            )),
+            "submit must preserve the skipped question without selecting a default"
+        );
+        let unanswered = unanswered.expect("review labels the skipped question");
+        assert!((unanswered.center().y - submit.center().y).abs() <= px(1.));
+    }
+
+    #[gpui::test]
     fn large_card_scrolls_without_moving_footer(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -2104,7 +2246,10 @@ mod tests {
         panel.update(vcx, |panel, cx| panel.apply(&event, cx));
         vcx.run_until_parked();
         let viewport = vcx.debug_bounds("ask-scroll").unwrap();
-        let footer = vcx.debug_bounds("ask-submit").unwrap();
+        let footer = vcx.debug_bounds("ask-next").unwrap();
+        let input = vcx.debug_bounds("ask-other-editor-0").unwrap();
+        assert!((input.center().y - footer.center().y).abs() <= px(1.));
+        assert!(input.right() <= footer.left());
         let description = vcx.debug_bounds("ask-description-0-0").unwrap();
         let question = vcx.debug_bounds("ask-question-0").unwrap();
         let label = vcx.debug_bounds("ask-label-0-0").unwrap();
@@ -2151,13 +2296,10 @@ mod tests {
             transcript_before,
             "wheel over ask must not scroll transcript"
         );
-        let last = vcx.debug_bounds("ask-other-0").unwrap();
-        assert!(
-            last.top() >= viewport.top() && last.bottom() <= viewport.bottom() + px(1.),
-            "last question must be reachable: {last:?}, {viewport:?}"
-        );
+        assert_eq!(vcx.debug_bounds("ask-other-editor-0"), Some(input));
+        assert!(input.top() >= viewport.bottom());
         assert_eq!(
-            vcx.debug_bounds("ask-submit"),
+            vcx.debug_bounds("ask-next"),
             Some(footer),
             "footer must remain fixed"
         );
@@ -2220,10 +2362,13 @@ mod tests {
         let panel = workspace
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
-        let input = serde_json::json!({"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]});
+        let input = serde_json::json!({"questions":[
+            {"question":"Which?","options":[{"label":"A"},{"label":"B"}]},
+            {"question":"Where?","options":[{"label":"Here (Recommended)"},{"label":"There"}]}
+        ]});
         let history: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
             {"role":"user","content":"Choose"},
-            {"role":"tool","content":"1. Which? -> B (comment: reason)","tool":{"id":"ask-1","name":"ask","input":input}}
+            {"role":"tool","content":"User answers:\n1. Which? -> B (comment: reason)\n2. Where? -> unanswered (user skipped)\n","tool":{"id":"ask-1","name":"ask","input":input}}
         ])).unwrap();
         let image = jcode_sdk::RenderedImage {
             session_image: None,
@@ -2259,6 +2404,11 @@ mod tests {
         assert!(
             vcx.debug_bounds("decision-detail").is_some(),
             "reopened history must render ask result"
+        );
+        assert!(
+            vcx.debug_bounds("decision-answer-Unanswered (user skipped)")
+                .is_some(),
+            "history must show the skipped answer, not the recommended option"
         );
         panel.read_with(vcx, |panel, _| {
             let indices = panel.session_image_indices();
@@ -2466,6 +2616,14 @@ mod tests {
             vcx.run_until_parked();
         }
         let decline = vcx.debug_bounds("ask-decline").unwrap();
+        let tabs = vcx.debug_bounds("ask-tabs").unwrap();
+        let card = vcx.debug_bounds("ask-card").unwrap();
+        assert!(decline.top() < tabs.bottom() && decline.bottom() <= tabs.bottom() + px(1.));
+        assert!(card.right() - decline.right() <= px(12.));
+        assert!(
+            decline.size.width <= px(28.),
+            "the discard control is an icon"
+        );
         vcx.simulate_click(decline.center(), gpui::Modifiers::default());
         assert!(
             commands.try_iter().any(|command| matches!(command,
@@ -2639,9 +2797,10 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let submit = vcx.debug_bounds("ask-submit").unwrap().center();
-        vcx.simulate_click(submit, gpui::Modifiers::default());
+        let next = vcx.debug_bounds("ask-next").unwrap().center();
+        vcx.simulate_click(next, gpui::Modifiers::default());
         vcx.run_until_parked();
+        let submit = vcx.debug_bounds("ask-submit").unwrap().center();
         vcx.simulate_click(submit, gpui::Modifiers::default());
         vcx.run_until_parked();
         let response = commands
@@ -3298,7 +3457,7 @@ mod tests {
             "questions have their own scroll area"
         );
         assert!(
-            vcx.debug_bounds("ask-other-0").is_some(),
+            vcx.debug_bounds("ask-other-editor-0").is_some(),
             "free answers are always offered"
         );
         for selector in ["ask-option-0-0", "ask-option-0-1", "ask-option-0-2"] {
