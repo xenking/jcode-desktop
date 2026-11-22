@@ -2,6 +2,10 @@
 
 **Yes for interoperability. No new UI framework for Jcode-only screens.** Jcode already renders declarative native applets. A2UI adds a portable contract with external agents and a compact authoring format with reusable macros. Start with one interactive card in chat. Do not embed CopilotKit, add a second GPUI dependency, or ship a Python interpreter.
 
+## Result in this PR
+
+`root = GreetingButton("Say hello", "greet", "world")` went through the published TS Express compiler on Bun, a JS macro expander, A2UI v1 JSON, and a clickable element on Desktop's pinned GPUI. A simulated click produced exactly one `greet` action. The outgoing action and incoming surface both passed the upstream JSON schemas. [Reproduce the round trip](../../spike/a2ui-gpui/README.md). No installed Desktop or live agent session was modified. This proves the protocol boundary, not the finished UX.
+
 ## What to reuse
 
 | Candidate | Decision | Evidence |

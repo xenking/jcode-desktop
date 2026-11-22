@@ -1,0 +1,10 @@
+{
+  "name": "a2ui-express-demo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@a2ui/agent": "0.1.0",
+    "@a2ui/web_core": "0.15.0",
+    "zod": "3.25.76"
+  }
+}
