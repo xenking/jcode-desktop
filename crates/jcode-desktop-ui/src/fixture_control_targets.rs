@@ -132,6 +132,10 @@ pub(crate) fn marker(
 
 pub(crate) fn is_selector(selector: &str) -> bool {
     selector == "swarm-status"
+        || matches!(
+            selector,
+            "clean-chat-on" | "clean-chat-off" | "hover:clean-chat-on" | "hover:clean-chat-off"
+        )
         || selector == "transcript-activity"
         || selector.starts_with("session-status-")
         || selector == "openrig-section-menu"
@@ -235,6 +239,8 @@ pub(crate) fn dispatch(selector: &str, session: &str, window: &mut Window, cx: &
         "hover:panel-openrig"
     } else if selector == "hover:panel-context-meter" {
         "panel-context-meter"
+    } else if matches!(selector, "hover:clean-chat-on" | "hover:clean-chat-off") {
+        selector.strip_prefix("hover:").unwrap()
     } else if matches!(selector, "composer:resize-drag" | "composer:resize-reset") {
         "composer:resize"
     } else if matches!(

@@ -1643,11 +1643,10 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-todo-card").is_none());
         let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
-        let clean_chat = vcx.debug_bounds("clean-chat-toggle").unwrap();
         assert_eq!(
-            prompt.top() - clean_chat.bottom(),
+            prompt.top(),
             px(8.),
-            "no-todo prompt keeps a gap below the chat toggle"
+            "without a pinned todo the transcript starts at the normal panel inset"
         );
         assert_eq!(prompt.top(), vcx.debug_bounds("transcript").unwrap().top());
     }

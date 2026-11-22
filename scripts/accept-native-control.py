@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise native control through a private, hidden offline Desktop process."""
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -24,8 +25,42 @@ def request(path, action):
                 raise
 
 
-def main():
-    binary = Path(sys.argv[1]).resolve()
+def verify_clean_chat(endpoint, target, root, theme, width, default):
+    def native(action, **args):
+        response = request(endpoint, {"action": action, "target": target, **args})
+        assert response["status"] == "ok", response
+        return response["result"]
+
+    def click(selector):
+        native("click", selector=selector, allow_user_window=True)
+
+    capture = Path(os.environ.get("JCODE_DESKTOP_CLEAN_CHAT_CAPTURE_DIR", root))
+    capture.mkdir(parents=True, exist_ok=True)
+    draft = "Unsent clean chat fixture draft"
+    native("set_composer", text=draft, allow_user_window=True)
+
+    def selector(clean):
+        return "clean-chat-on" if clean else "clean-chat-off"
+
+    def observe(name, clean):
+        click(f"hover:{selector(clean)}")
+        panel = native("state")["panel"]
+        assert panel["composer"] == draft and panel["composer_focus"], panel["composer"]
+        time.sleep(0.75)
+        png = capture / f"clean-chat-{theme}-{width}-{name}.png"
+        native("render", selector=None, path=str(png))
+        assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), png
+        return panel["scroll_fixture"]["viewport_y"]
+
+    top = observe("default", default)
+    click(selector(default))
+    assert observe("click", not default) == top
+    native("press_key", key="fixture:ctrl-shift-j", allow_user_window=True)
+    assert observe("shortcut", default) == top
+    print(f"private Desktop Clean chat {theme}/{width}: default, click, Ctrl+Shift+J, draft and viewport passed")
+
+
+def run(binary, clean_chat=None):
     with tempfile.TemporaryDirectory(prefix="jdc-e2e-", dir="/tmp") as root:
         root = Path(root)
         for name in ("home", "runtime", "config", "cache", "data", "state", "jcode", "tmp"):
@@ -35,6 +70,7 @@ def main():
             "XDG_RUNTIME_DIR": str(root / "runtime"), "XDG_CONFIG_HOME": str(root / "config"),
             "XDG_CACHE_HOME": str(root / "cache"), "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"), "JCODE_HOME": str(root / "jcode"),
+            "JCODE_TEST_SESSION": "1",
             "TMPDIR": str(root / "tmp"), "JCODE_DESKTOP_SCREENSHOT": "1",
             "JCODE_DESKTOP_CONTROL_TEST": "1", "JCODE_DESKTOP_CONTROL_DIR": str(root / "control"),
             "JCODE_DESKTOP_STATE": str(root / "desktop-state"), "LANG": "C.UTF-8",
@@ -43,6 +79,16 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = "ask"
         if "--background" in sys.argv[2:]:
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
+        if clean_chat:
+            theme, width, default = clean_chat
+            config = root / "settings.toml"
+            config.write_text(
+                f'[appearance]\ntheme = "{theme}"\n'
+                f'[display]\nclean_chat_default = {str(default).lower()}\n'
+            )
+            env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="transcript-scroll",
+                       JCODE_DESKTOP_CONTROL_WINDOW_WIDTH=str(width),
+                       JCODE_DESKTOP_CONFIG=str(config))
         with open(root / "stderr", "w+") as log:
             proc = subprocess.Popen([str(binary), "--single-panel", "--new-process", "--no-hot-reload"], env=env, stdout=log, stderr=log)
             try:
@@ -67,6 +113,9 @@ def main():
                 state = request(endpoint, {"action": "state", "target": target})
                 assert state["status"] == "ok", state
                 assert state["result"]["panel"]["session_id"] == target["session_id"]
+                if clean_chat:
+                    verify_clean_chat(endpoint, target, root, *clean_chat)
+                    return
                 if "--background" in sys.argv[2:]:
                     opened = request(endpoint, {"action": "open_session", "session_id": "swarm-fixture-0", "destination": {"background_panel": {"window_id": window}}})
                     assert opened["status"] == "ok", opened
@@ -179,4 +228,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    binary = Path(sys.argv[1]).resolve()
+    if "--clean-chat" in sys.argv[2:]:
+        for case in (("neutral-dark", 360, False), ("neutral-light", 800, True)):
+            run(binary, case)
+    else:
+        run(binary)

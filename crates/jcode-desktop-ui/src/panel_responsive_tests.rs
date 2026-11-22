@@ -189,6 +189,12 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
+            let clean_chat = vcx.debug_bounds("clean-chat-toggle").unwrap();
+            let trailing = vcx.debug_bounds("composer-trailing").unwrap();
+            assert!(clean_chat.top() >= input.bottom());
+            assert!(clean_chat.left() >= footer.left() && clean_chat.right() <= trailing.left());
+            assert_eq!(clean_chat.size.height, px(22.));
+            assert_eq!(clean_chat.size.width, clean_chat.size.height);
             // A fresh panel has no effort yet, so the model pill is the one
             // identity control every width must keep.
             for selector in ["panel-model"] {

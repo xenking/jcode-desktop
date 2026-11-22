@@ -71,21 +71,6 @@ pub(super) struct PendingApproval {
     pub description: String,
 }
 
-struct Tooltip(&'static str);
-
-impl gpui::Render for Tooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .rounded_md()
-            .px_2()
-            .py_1()
-            .bg(Theme::global().TOOL_BG)
-            .text_color(Theme::global().TEXT)
-            .text_size(px(11.))
-            .child(self.0)
-    }
-}
-
 impl Panel {
     pub(super) fn clean_chat_with_display(&self, display: &crate::config::DisplayConfig) -> bool {
         self.clean_chat_override
@@ -109,62 +94,76 @@ impl Panel {
         self.set_clean_chat(Some(!self.clean_chat_enabled()), cx);
     }
 
-    pub(super) fn render_clean_chat_toggle(
-        &self,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    pub(super) fn render_clean_chat_toggle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
-        let tooltip = if enabled {
-            "Show full transcript (Ctrl+Shift+J)"
-        } else {
-            "Show only the conversation (Ctrl+Shift+J)"
-        };
-        div()
-            .flex_none()
-            .flex()
-            .justify_end()
-            .px_3()
-            .pt_2()
-            .child(
-                crate::keyboard::button(
-                    div()
-                        .id("clean-chat-toggle")
-                        .debug_selector(|| "clean-chat-toggle".into())
-                        .relative()
-                        .rounded_full()
-                        .px_2()
-                        .py_0p5()
-                        .text_size(px(11.))
-                        .bg(if enabled {
-                            theme.ACCENT_DIM
-                        } else {
-                            theme.HEADER_BG
-                        })
-                        .text_color(if enabled {
-                            theme.ACCENT
-                        } else {
-                            theme.TEXT_DIM
-                        })
-                        .hover(|el| el.text_color(theme.TEXT))
-                        .cursor_pointer()
-                        .child(if enabled {
-                            "Clean chat · On"
-                        } else {
-                            "Clean chat"
-                        }),
-                )
-                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                })
-                .on_click(cx.listener(|panel, _, _, cx| {
-                    panel.toggle_clean_chat(cx);
-                    cx.stop_propagation();
-                }))
-                .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip)).into()),
+        let enabled = self.clean_chat_enabled();
+        let (tooltip, toggled, color) = if enabled {
+            (
+                "Clean chat: On (Ctrl+Shift+J)",
+                gpui::Toggled::True,
+                theme.ACCENT,
             )
-            .into_any_element()
+        } else {
+            (
+                "Clean chat: Off (Ctrl+Shift+J)",
+                gpui::Toggled::False,
+                theme.composer_secondary(),
+            )
+        };
+        const ID: &str = "clean-chat-toggle";
+        crate::keyboard::button(
+            div()
+                .id(ID)
+                .debug_selector(|| ID.into())
+                .relative()
+                .flex_none()
+                .size(px(composer::TAB_HEIGHT))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_1()
+                .border_color(if enabled { theme.ACCENT } else { gpui::rgba(0) })
+                .bg(if enabled {
+                    theme.ACCENT_DIM
+                } else {
+                    theme.chip_background()
+                })
+                .hover(|el| el.bg(theme.chip_active_background()))
+                .cursor_pointer()
+                .role(gpui::Role::Switch)
+                .aria_label("Clean chat")
+                .aria_description("Show only the conversation")
+                .aria_keyshortcuts("Control+Shift+J")
+                .aria_toggled(toggled)
+                .children(crate::fixture_control_targets::marker(
+                    || {
+                        if enabled {
+                            "clean-chat-on"
+                        } else {
+                            "clean-chat-off"
+                        }
+                        .into()
+                    },
+                    || Some(self.session_id.clone()),
+                ))
+                .child(
+                    gpui::svg()
+                        .data(include_bytes!("../../../assets/icons/comment.svg") as &'static [u8])
+                        .text_color(color)
+                        .size(px(composer::BAR_ICON)),
+                ),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(|panel, _, _, cx| {
+            panel.toggle_clean_chat(cx);
+            cx.stop_propagation();
+        }))
+        .tooltip(move |_, cx| cx.new(|_| usage::MeterTooltip(tooltip.into())).into())
+        .into_any_element()
     }
 
     pub(super) fn render_chat_blockers(

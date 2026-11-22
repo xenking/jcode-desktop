@@ -7473,9 +7473,6 @@ impl Render for Panel {
                     .truncate()
                     .child(label)
             }))
-            .when(!self.transcript_only && !self.is_pending_session(), |el| {
-                el.child(self.render_clean_chat_toggle(clean_chat, cx))
-            })
             .children(self.render_chat_blockers(active_error, window, cx))
             .children(publish_tracker)
             .children(self.render_rewind_hint())

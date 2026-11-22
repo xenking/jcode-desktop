@@ -189,6 +189,9 @@ impl Panel {
                     .child(self.render_model_control(model_label, effort, cx))
                     .children(self.render_context_meter(cx)),
             )
+            .when(!self.transcript_only && !self.is_pending_session(), |el| {
+                el.child(self.render_clean_chat_toggle(cx))
+            })
             .child(
                 div()
                     .debug_selector(|| "composer-trailing".into())
