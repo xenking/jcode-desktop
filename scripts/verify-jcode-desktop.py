@@ -264,12 +264,14 @@ class Instance:
                        JCODE_DESKTOP_CONTROL_SWARM_WORKTREE=str(worker),
                        JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="expandable")
             modes = []
-        if self.manifest["fixture"] in ("background-jobs", "swarm-dm"):
+        if self.manifest["fixture"] in ("background-jobs", "swarm-dm", "side-question-history"):
             self.start_background_runtime(env)
             modes = []
-        if self.manifest["fixture"] == "swarm-dm":
+        if self.manifest["fixture"] in ("swarm-dm", "side-question-history"):
             env.update(JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT="empty",
                        JCODE_DESKTOP_SCREENSHOT_HIDE_BETA="1")
+        if self.manifest["fixture"] == "side-question-history":
+            env["JCODE_DESKTOP_CONTROL_SIDE_QUESTIONS"] = "1"
         if self.manifest.get("queued"):
             env["JCODE_DESKTOP_SCREENSHOT_QUEUED"] = str(self.manifest["queued"])
         if self.manifest.get("queue_edit"):
@@ -310,7 +312,7 @@ class Instance:
                         state = self.native({"action": "state", "target": self.target})
                     fixture = self.manifest["fixture"]
                     if (state["panel"].get("visible_transcript_items")
-                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "swarm-dm", "voice-rt")
+                            or fixture in ("empty", "mode-picker", "draft-session", "background-jobs", "swarm-dm", "side-question-history", "voice-rt")
                             or (fixture in ("openrig", "openrig-live", "openrig-live-split")
                                 and len(panels) == (2 if fixture == "openrig-live-split" else 1))
                             or (fixture == "tabbar" and state["navigation"]["visible_panels"] == 12)):
@@ -414,6 +416,8 @@ class Instance:
             return self.draft_session_journey()
         if name == "side-question":
             return self.side_question_journey()
+        if name == "side-question-history":
+            return self.side_question_history_journey()
         if name == "composer-arrows":
             return self.composer_arrows_journey()
         if name == "composer-advanced":
@@ -690,9 +694,9 @@ class Instance:
         self.screenshot("side-question-before.png")
         self.drive("set_composer", {"text": "/btw"})
         self.drive("press_key", {"key": "fixture:enter"})
-        if self.drive("state")["panel"]["composer"] != "/btw":
-            raise RuntimeError("bare /btw did not retain the draft")
-        self.screenshot("side-question-usage.png")
+        self.runtime_wait(lambda: self.drive("state")["panel"]["fixture_side_questions"]["history"] == [],
+                          "bare /btw to show empty history")
+        self.screenshot("side-question-empty.png")
         self.drive("set_composer", {"text": f"/btw {question}"})
         self.drive("press_key", {"key": "fixture:enter"})
         expected = {"question": question, "answer": "The retry policy uses a short backoff.", "working": False}
@@ -713,6 +717,109 @@ class Instance:
         proof = {"passed": True, "scope": "native Enter with an offline side question reply",
                  "source_status": after["panel"]["status"], "card": expected, "screenshot": photo}
         save(self.run / "side-question-proof.json", proof)
+        return proof
+
+    def side_question_history_journey(self):
+        if self.manifest["fixture"] != "side-question-history":
+            raise RuntimeError("side-question-history requires the private runtime fixture")
+        parent = self.target["session_id"]
+        ordinary = "btw this is an ordinary message"
+        first, follow, second = "Topic A verification", "Follow up A verification", "Topic B verification"
+        draft = "Keep this main draft unsent"
+        provider_log = self.run / "fake-requests.jsonl"
+
+        def requests():
+            return [json.loads(line) for line in provider_log.read_text().splitlines()] if provider_log.exists() else []
+
+        def prompts():
+            return [next(message["content"] for message in reversed(req["messages"])
+                         if message["role"] == "user"
+                         and not str(message["content"]).startswith("<system-reminder>"))
+                    for req in requests()]
+
+        def panel():
+            return self.drive("state")["panel"]
+
+        def side():
+            return panel()["fixture_side_questions"]
+
+        def enter():
+            self.drive("press_key", {"key": "fixture:enter"})
+
+        def click(selector):
+            self.drive("click", {"selector": selector})
+
+        def submit(text):
+            self.drive("set_composer", {"text": text})
+            enter()
+
+        def answered(last_question):
+            def check():
+                state = side()
+                card = state["card"]
+                return (card if state["history"] is None and card and not card["working"]
+                        and card["turns"][-1]["question"] == last_question
+                        and card["turns"][-1]["answer"] else None)
+            return self.runtime_wait(check, f"saved answer for {last_question}")
+
+        self.runtime_wait(lambda: panel()["model"], "visible parent runtime")
+        submit(ordinary)
+        baseline = self.runtime_wait(lambda: (p if len(p["loaded_transcript_items"]) >= 2
+                                              and p["status"] == "idle" else None)
+                                     if (p := panel()) else None, "ordinary parent conversation")
+        submit("/btw")
+        self.runtime_wait(lambda: side()["history"] == [], "empty parent history")
+        assert len(requests()) == 1, "bare /btw contacted the provider"
+        submit(f"/btw {first}")
+        topic_a = answered(first)
+        self.drive("set_composer", {"text": draft})
+        click("side-question-follow-up")
+        self.drive("press_key", {"key": f"fixture:follow-up-text:{follow}"})
+        enter()
+        enter()
+        continued = answered(follow)
+        assert continued["session_id"] == topic_a["session_id"]
+        assert [turn["question"] for turn in continued["turns"]] == [first, follow]
+        assert panel()["composer"] == draft
+        assert panel()["loaded_transcript_items"] == baseline["loaded_transcript_items"]
+        click("side-question-dismiss")
+        assert panel()["composer_focus"], "dismiss did not return focus to the main composer"
+        submit(f"/btw {second}")
+        topic_b = answered(second)
+        assert topic_b["session_id"] != topic_a["session_id"], "new topic reused the old child"
+        click("side-question-dismiss")
+
+        self.runtime_stop(self.api_bridge)
+        self.runtime_stop(self.daemon)
+        self.api_socket.unlink(missing_ok=True)
+        self.legacy_socket.unlink(missing_ok=True)
+        self.start_background_daemon()
+        submit("btw")
+        topics = self.runtime_wait(lambda: h if isinstance(h := side()["history"], list) and len(h) == 2 else None,
+                                   "two persisted side questions after daemon and bridge restart")
+        assert {item["session_id"] for item in topics} == {topic_a["session_id"], topic_b["session_id"]}
+        assert {item["question"] for item in topics} == {first, second}
+        self.drive("set_composer", {"text": draft})
+        history_frame = self.screenshot("side-question-history-before.png")
+        index = next(i for i, item in enumerate(topics) if item["session_id"] == topic_a["session_id"])
+        click(f"side-question-topic-{index}")
+        reopened = answered(follow)
+        assert reopened == continued
+        after = self.drive("state")
+        assert after["panel"]["composer"] == draft
+        assert after["panel"]["loaded_transcript_items"] == baseline["loaded_transcript_items"]
+        assert [p["session"] for row in after["navigation"]["rows"] for p in row["panels"]] == [parent]
+        wire = prompts()
+        assert len(wire) == 4 and all(expected in json.dumps(actual)
+                                      for expected, actual in zip((ordinary, first, follow, second), wire)), wire
+        follow_wire = json.dumps(requests()[2]["messages"])
+        assert first in follow_wire and topic_a["turns"][0]["answer"] in follow_wire
+        assert first not in json.dumps(requests()[3]["messages"]), "new topic inherited side question A"
+        save(self.run / "side-question-history-after.json", after)
+        proof = {"passed": True, "parent": parent, "topics": topics, "continued": reopened,
+                 "model_requests": len(wire), "history": history_frame,
+                 "answer": self.screenshot("side-question-history-after.png")}
+        save(self.run / "side-question-history-proof.json", proof)
         return proof
 
     def draft_session_journey(self):
@@ -990,7 +1097,10 @@ class Instance:
                        FAKE_LOG=str(self.run / "fake-requests.jsonl"),
                        FAKE_CONTROL_DIR=str(self.profile), FAKE_PORT_FILE=str(self.profile / "fake-port"),
                        JCODE_SOCKET=str(self.legacy_socket), JCODE_API_SOCKET=str(self.api_socket))
-        (self.profile / "jcode/config.toml").write_text("[server]\nmobile_push = false\n")
+        config = "[server]\nmobile_push = false\n"
+        if self.manifest["fixture"] == "side-question-history":
+            config += "[features]\nmemory = false\n"
+        (self.profile / "jcode/config.toml").write_text(config)
         self.runtime_cli = [self.manifest["jcode_bin"], "--no-update", "--no-selfdev"]
         provider = REPO.parent / "jcode/scripts/fake_openai_server.py"
         self.runtime_spawn("fake-provider", [sys.executable, str(provider), "0"])
@@ -1423,7 +1533,7 @@ def launch(args):
         raise RuntimeError("--fullscreen-layout requires --fixture tabbar")
     if args.no_sidebar and args.fixture != "tabbar":
         raise RuntimeError("--no-sidebar requires --fixture tabbar")
-    if args.fixture in ("background-jobs", "swarm-dm") and not all(
+    if args.fixture in ("background-jobs", "swarm-dm", "side-question-history") and not all(
         path and path.is_file() and os.access(path, os.X_OK) for path in (args.jcode_bin, args.bridge_bin)
     ):
         raise RuntimeError(f"{args.fixture} requires --jcode-bin and --bridge-bin from the sibling checkout")
@@ -1508,7 +1618,7 @@ def main():
         if command == "launch":
             child.add_argument("--theme", choices=("neutral-dark", "neutral-light"),
                                help="override the theme in this private profile")
-            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
+            child.add_argument("--fixture", choices=("all", "empty", "expandable", "ask", "swarm-worktree", "image-prompt", "gallery-preload", "gallery-navigation", "compaction", "orb-todos", "tabbar", "tab-statuses", "sidebar-todos", "mode-picker", "transcript-scroll", "draft-session", "background-tasks", "background-jobs", "swarm-dm", "side-question-history", "cache-card", "resume-preview", "voice-rt", "openrig", "openrig-live", "openrig-live-split"), default="expandable")
             child.add_argument("--fullscreen-layout", action="store_true",
                                help="render the tabbar fixture without traffic-light insets, without entering a macOS Space")
             child.add_argument("--no-sidebar", action="store_true",
@@ -1524,7 +1634,7 @@ def main():
             child.add_argument("--lifetime", type=int, choices=range(30, 3601), default=900, metavar="30..3600")
         elif command == "drive":
             group = child.add_mutually_exclusive_group(required=True)
-            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "composer-footer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "resume-preview", "swarm-dm", *SWARM_JOURNEYS))
+            group.add_argument("--journey", choices=("tools", "background-tasks", "background-jobs", "composer", "composer-arrows", "composer-advanced", "composer-footer", "search", "compaction", "tab-statuses", "mode-picker", "transcript-scroll", "draft-session", "side-question", "side-question-history", "resume-preview", "swarm-dm", *SWARM_JOURNEYS))
             group.add_argument("--action", choices=ACTIONS)
             child.add_argument("--params", default="{}", help="JSON action parameters, routing is supplied by helper")
             child.add_argument("--session", help="another already-open private session ID")

@@ -225,6 +225,7 @@ pub struct PromptInput {
     preview_remove_focus: FocusHandle,
     preview_panel_bounds: paste_preview::MeasuredBounds,
     file_attachments_enabled: bool,
+    text_only: bool,
     queue_editor: bool,
     #[allow(clippy::type_complexity)]
     on_submit: Box<
@@ -248,6 +249,7 @@ pub struct PromptInput {
     /// A standalone picker owns plain query text rather than a slash command.
     picker_prefix: Option<&'static str>,
     command_completion: bool,
+    standalone_btw: bool,
     command_menu_closed: Option<(SharedString, CommandMenuClose)>,
     command_selection_explicit: Option<String>,
     command_selection: usize,
@@ -530,7 +532,7 @@ fn accepted_command_submission(
     (suggestion.toggle.is_none() && suggestion.action.is_none()).then(|| suggestion.value.clone())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubmissionKind {
     Message,
     Command,
@@ -1214,6 +1216,7 @@ impl PromptInput {
             preview_remove_focus: cx.focus_handle(),
             preview_panel_bounds: Default::default(),
             file_attachments_enabled: true,
+            text_only: false,
             queue_editor: false,
             on_submit: Box::new(on_submit),
             on_change: None,
@@ -1223,6 +1226,7 @@ impl PromptInput {
             command_skills: Vec::new(),
             picker_prefix: None,
             command_completion: true,
+            standalone_btw: false,
             command_menu_closed: None,
             command_selection_explicit: None,
             command_selection: 0,
@@ -1786,6 +1790,16 @@ impl PromptInput {
         self
     }
 
+    pub(crate) fn with_standalone_btw(mut self) -> Self {
+        self.standalone_btw = true;
+        self
+    }
+
+    pub(crate) fn text_only(mut self) -> Self {
+        self.text_only = true;
+        self
+    }
+
     pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
@@ -2182,6 +2196,15 @@ impl PromptInput {
         }
         let raw_content = self.command_content();
         let content = raw_content.trim().to_string();
+        if self.standalone_btw
+            && !queued
+            && self.picker_prefix.is_none()
+            && self.attachments.is_empty()
+            && self.content.trim() == "btw"
+        {
+            self.dispatch_submission(SubmissionKind::Command, content, false, window, cx);
+            return;
+        }
         if content.is_empty() && self.attachments.is_empty() {
             if self.empty_submit && !queued {
                 (self.on_submit)(
@@ -2274,6 +2297,7 @@ impl PromptInput {
             && !(crate::commands::is_resume_command(&command)
                 || crate::commands::is_accounts_command(&command)
                 || crate::commands::reset_command(&command).is_some()
+                || command == "/btw"
                 || crate::panel::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
@@ -2535,6 +2559,12 @@ impl PromptInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.text_only {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                self.replace_text_in_range(None, &text, window, cx);
+            }
+            return;
+        }
         match crate::clipboard_image::read_paste() {
             Ok(crate::clipboard_image::ClipboardContent::Files(paths)) => {
                 self.attach_pasted_files(&paths, window, cx);
@@ -7024,6 +7054,51 @@ mod tests {
         window
             .update(cx, |input, _, _| assert!(input.content.is_empty()))
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn standalone_btw_opens_history_only_for_normal_composer_submit(cx: &mut TestAppContext) {
+        let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = submitted.clone();
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            PromptInput::new_with_queue_files(cx, "test", move |kind, text, images, _, queued, _, _| {
+                seen.lock().unwrap().push((kind, text, images.len(), queued));
+            }).with_standalone_btw()
+        });
+        vcx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.simulate_input("btw");
+        vcx.simulate_keystrokes("enter");
+        vcx.simulate_input("btw this matters");
+        vcx.simulate_keystrokes("enter");
+        vcx.simulate_input("btw");
+        vcx.simulate_keystrokes("ctrl-enter");
+        vcx.simulate_input("btw");
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| assert!(input.control_submit(window, cx)));
+        });
+        vcx.simulate_input("btw");
+        input.update(vcx, |input, _| {
+            input.attachments.push(Attachment {
+                label: "fixture".into(),
+                payload: AttachmentPayload::Image {
+                    media_type: "image/png".into(),
+                    encoded: "cG5n".into(),
+                    preview: preview_image("image/png", Vec::new()).unwrap(),
+                },
+            });
+        });
+        vcx.simulate_keystrokes("enter");
+        use SubmissionKind::{Command, Message};
+        assert_eq!(submitted.lock().unwrap().as_slice(), &[
+            (Command, "btw".into(), 0, false),
+            (Message, "btw this matters".into(), 0, false),
+            (Message, "btw".into(), 0, true),
+            (Message, "btw".into(), 0, false),
+            (Message, "btw".into(), 1, false),
+        ]);
     }
 
     #[gpui::test]

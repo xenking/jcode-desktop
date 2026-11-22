@@ -2663,6 +2663,32 @@ impl Workspace {
                     });
                 }
             }
+            Update::SideQuestionHistory {
+                parent_session_id,
+                request_id,
+                result,
+            } => {
+                if let Some(slot) = self.slots.iter().find(|slot| {
+                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
+                }) {
+                    slot.panel.update(cx, |panel, cx| {
+                        panel.load_side_question_history(request_id, result, cx)
+                    });
+                }
+            }
+            Update::SideQuestionOpened {
+                parent_session_id,
+                request_id,
+                result,
+            } => {
+                if let Some(slot) = self.slots.iter().find(|slot| {
+                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
+                }) {
+                    slot.panel.update(cx, |panel, cx| {
+                        panel.load_saved_side_question(request_id, result, cx)
+                    });
+                }
+            }
             Update::History {
                 session_id,
                 messages,

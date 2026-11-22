@@ -86,6 +86,8 @@ mod search;
 #[cfg(unix)]
 #[path = "harness_private_routes.rs"]
 mod private_routes;
+#[path = "harness_side_questions.rs"]
+mod side_questions;
 mod tab_wait;
 
 /// Test whether an ID belongs to a remote namespace, even if malformed.
@@ -110,6 +112,24 @@ const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 /// side question reads. Sent as a hidden system reminder, never as transcript
 /// text.
 const SIDE_QUESTION_REMINDER: &str = "This turn is a side question about the conversation above. Answer briefly and directly from that context. Do not call tools, do not edit files, and do not start a task.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SideQuestionTopic {
+    pub session_id: String,
+    pub question: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SideQuestionTurn {
+    pub question: String,
+    pub answer: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SideQuestionThread {
+    pub session: SessionInfo,
+    pub turns: Vec<SideQuestionTurn>,
+}
 
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
@@ -163,6 +183,16 @@ pub enum Update {
         parent_session_id: String,
         session: SessionInfo,
         question: String,
+    },
+    SideQuestionHistory {
+        parent_session_id: String,
+        request_id: u64,
+        result: Result<Vec<SideQuestionTopic>, String>,
+    },
+    SideQuestionOpened {
+        parent_session_id: String,
+        request_id: u64,
+        result: Result<SideQuestionThread, String>,
     },
     /// History fetched for a session after attach.
     History {
@@ -454,6 +484,19 @@ pub enum Command {
         session_id: String,
         question: String,
     },
+    ListSideQuestions {
+        parent_session_id: String,
+        request_id: u64,
+    },
+    OpenSideQuestion {
+        parent_session_id: String,
+        session_id: String,
+        request_id: u64,
+    },
+    ContinueSideQuestion {
+        session_id: String,
+        question: String,
+    },
     /// Drop the connection to a dismissed side-question fork. The archived
     /// session stays on disk.
     DismissSideQuestion {
@@ -605,6 +648,10 @@ enum SessionCommand {
     CancelQueuedPrompt(String),
     /// Send a side question with its steering hidden from the transcript.
     SendSideQuestion {
+        question: String,
+        legacy_archive: bool,
+    },
+    ContinueSideQuestion {
         question: String,
     },
     Cancel,
@@ -1050,6 +1097,17 @@ fn spawn_screenshot() -> Bridge {
                                     event,
                                 });
                             }
+                            continue;
+                        }
+                        Command::ListSideQuestions {
+                            parent_session_id,
+                            request_id,
+                        } => {
+                            let _ = update_tx.send(Update::SideQuestionHistory {
+                                parent_session_id: parent_session_id.clone(),
+                                request_id: *request_id,
+                                result: Ok(Vec::new()),
+                            });
                             continue;
                         }
                         _ => {}
@@ -1624,6 +1682,7 @@ fn run_with_transports(
                 question,
             } => {
                 let child_id = session.session_id.clone();
+                let legacy_archive = session.archived;
                 let _ = updates.send(Update::SideQuestionStarted {
                     parent_session_id,
                     session,
@@ -1631,7 +1690,7 @@ fn run_with_transports(
                 });
                 let worker =
                     spawn_attached_session_worker(child_id.clone(), client, &updates, &transports);
-                let _ = worker.send(SessionCommand::SendSideQuestion { question });
+                let _ = worker.send(SessionCommand::SendSideQuestion { question, legacy_archive });
                 if let Some(old) = workers.insert(child_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
                 }
@@ -2024,6 +2083,52 @@ fn run_with_transports(
                         question,
                         internal: internal.clone(),
                     },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ListSideQuestions {
+                parent_session_id,
+                request_id,
+            } => {
+                let (updates, transports) = (updates.clone(), transports.clone());
+                std::thread::spawn(move || {
+                    let result =
+                        side_questions::read(&transports, &parent_session_id, |client, parent| {
+                            side_questions::list(client, parent)
+                        });
+                    let _ = updates.send(Update::SideQuestionHistory {
+                        parent_session_id,
+                        request_id,
+                        result,
+                    });
+                });
+            }
+            Command::OpenSideQuestion {
+                parent_session_id,
+                session_id,
+                request_id,
+            } => {
+                let (updates, transports) = (updates.clone(), transports.clone());
+                std::thread::spawn(move || {
+                    let result =
+                        side_questions::read(&transports, &parent_session_id, |client, parent| {
+                            side_questions::open(client, parent, &session_id)
+                        });
+                    let _ = updates.send(Update::SideQuestionOpened {
+                        parent_session_id,
+                        request_id,
+                        result,
+                    });
+                });
+            }
+            Command::ContinueSideQuestion {
+                session_id,
+                question,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ContinueSideQuestion { question },
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -3884,12 +3989,17 @@ fn session_worker_with_connector(
                             _detach.set_processing(true);
                         }
                     }
-                    SessionCommand::SendSideQuestion { question } => {
+                    SessionCommand::SendSideQuestion { question, legacy_archive } => {
                         recovery.supersede();
-                        // A side question is not a conversation of its own yet:
-                        // keep the fork out of the session list until the user
-                        // promotes it. `real_id` is the id this connection uses.
-                        let _ = client.archive_session(real_id);
+                        // New runtimes create marked, hidden forks atomically.
+                        // Only older runtimes need the compatibility archive.
+                        if legacy_archive && let Err(error) = client.archive_session(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Could not hide the side question: {error}"),
+                            });
+                            continue;
+                        }
                         // The child fork inherits the full agent prompt, tools
                         // included. Steer it to answer from the conversation
                         // without starting work, and keep that steer hidden so
@@ -3910,6 +4020,35 @@ fn session_worker_with_connector(
                                 let _ = updates.send(Update::CommandFailed {
                                     session_id: session_id.clone(),
                                     reason: format!("Could not ask the side question: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::ContinueSideQuestion { question } => {
+                        recovery.supersede();
+                        let result = if turn_active {
+                            Err(jcode_sdk::Error::new(
+                                jcode_sdk::ErrorKind::InvalidOption,
+                                "This side question is already answering.",
+                            ))
+                        } else {
+                            client.send_message_with_reminder(
+                                real_id,
+                                &question,
+                                Vec::new(),
+                                Some(SIDE_QUESTION_REMINDER),
+                                None,
+                            )
+                        };
+                        match result {
+                            Ok(()) => {
+                                turn_active = true;
+                                _detach.set_processing(true);
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Could not send the follow-up: {error}"),
                                 });
                             }
                         }
@@ -4003,13 +4142,19 @@ fn session_worker_with_connector(
                     }
                     SessionCommand::SideQuestion { question, internal } => {
                         let fork = (|| -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {
-                            let session = client.fork_session(real_id)?;
+                            let legacy_archive = !client.supports(jcode_sdk::SIDE_QUESTIONS_CAPABILITY);
+                            let child_id = if legacy_archive {
+                                client.fork_session(real_id)?.session_id
+                            } else {
+                                client.fork_side_question(real_id)?.session_id
+                            };
                             let child_address = remote::SessionAddress {
                                 host: address.host.clone(),
-                                session_id: session.session_id.clone(),
+                                session_id: child_id,
                             };
                             let child = connector(&child_address)?;
-                            child.attach_session(&session.session_id)?;
+                            let mut session = child.attach_session(&child_address.session_id)?;
+                            session.archived = legacy_archive;
                             Ok((address.session_info(session), child))
                         })();
                         match fork {

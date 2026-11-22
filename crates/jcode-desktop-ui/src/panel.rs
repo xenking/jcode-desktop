@@ -929,6 +929,7 @@ pub struct Panel {
     pending_ask_draft: Option<ask::AskDraft>,
     /// `/btw` answer streaming from a hidden fork of this conversation.
     side_question: Option<side_question::SideQuestionCard>,
+    side_question_history: Option<side_question::HistoryView>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
     picker_triggers: [FocusHandle; 3],
@@ -1810,6 +1811,7 @@ impl Panel {
             queue_edit_anchor: gpui::ScrollAnchor::for_handle(queue_items_scroll),
             pending_ask_draft: None,
             side_question: None,
+            side_question_history: None,
             model_picker_open: false,
             picker_search: None,
             picker_triggers: std::array::from_fn(|_| cx.focus_handle()),
@@ -2645,6 +2647,7 @@ impl Panel {
                     },
                 )
                 .with_empty_submit()
+                .with_standalone_btw()
                 .with_example_prompts()
                 .with_ghost_completions({
                     let weak = change_weak.clone();

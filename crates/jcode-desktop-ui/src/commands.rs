@@ -56,7 +56,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/todo", "Alias for /todos"),
     RegisteredCommand::public("/splitview", "Mirror the current chat in the side panel"),
     RegisteredCommand::public("/split-view", "Alias for /splitview"),
-    RegisteredCommand::public("/btw", "Ask a side question here, answered in a card"),
+    RegisteredCommand::public(
+        "/btw",
+        "Browse side questions (or type just btw); add a question to start a new topic",
+    ),
     RegisteredCommand::public("/ssh", "Connect to a remote machine using system SSH"),
     RegisteredCommand::public("/git", "Show git status for the session working directory"),
     RegisteredCommand::public("/colors", "List or change Desktop color themes"),

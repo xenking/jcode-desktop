@@ -111,6 +111,28 @@ pub(super) fn handle_window_request(
             Ok(index) => index,
             Err(response) => return response,
         };
+        if let Some(text) = key.strip_prefix("follow-up-text:")
+            && crate::fixture_control_targets::side_questions()
+        {
+            let Some(editor) = workspace.read(cx).slots[index]
+                .panel
+                .read(cx)
+                .side_question_test_editor()
+            else {
+                return error(
+                    "selector_not_visible",
+                    "side question follow-up is not open",
+                );
+            };
+            if !editor.read(cx).focus_handle.is_focused(window) {
+                return error(
+                    "selector_not_focused",
+                    "side question follow-up must have native focus",
+                );
+            }
+            editor.update(cx, |input, cx| input.recall_prompt(text, Vec::new(), cx));
+            return ok(json!({"key": "follow-up-text"}));
+        }
         if key == "seed-composer-image"
             && crate::fixture_control_targets::transcript_scroll_fixture()
         {

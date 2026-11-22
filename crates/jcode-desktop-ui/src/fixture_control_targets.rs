@@ -37,6 +37,12 @@ pub(crate) fn draft_session() -> bool {
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("draft-session")
 }
 
+pub(crate) fn side_questions() -> bool {
+    draft_session()
+        || (enabled()
+            && std::env::var("JCODE_DESKTOP_CONTROL_SIDE_QUESTIONS").as_deref() == Ok("1"))
+}
+
 pub(crate) fn background_tasks() -> bool {
     enabled()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("background-tasks")
@@ -143,6 +149,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || selector.starts_with("background-job:")
         || selector.starts_with("agent-message:")
         || selector == "side-question-promote"
+        || (side_questions() && selector.starts_with("side-question-"))
         || ((voice_recording() || voice_soniox()) && selector == "composer.voice")
         || (draft_session()
             && (selector.starts_with("draft-model-row:")

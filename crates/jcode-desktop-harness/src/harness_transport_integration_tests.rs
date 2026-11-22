@@ -45,6 +45,14 @@ impl Fixture {
     }
 
     fn with_queue(queue: bool) -> Self {
+        let mut capabilities = vec!["runtime_commands"];
+        if queue {
+            capabilities.push("queued_prompts");
+        }
+        Self::with_capabilities(capabilities)
+    }
+
+    fn with_capabilities(capabilities: Vec<&'static str>) -> Self {
         let (connections_tx, connections) = channel();
         let (requests_tx, requests) = channel();
         let (closed_tx, closed) = channel();
@@ -57,6 +65,7 @@ impl Fixture {
                 .unwrap();
             let requests = requests_tx.clone();
             let closed = closed_tx.clone();
+            let capabilities = capabilities.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(server.try_clone().unwrap());
                 let mut writer = server;
@@ -66,11 +75,7 @@ impl Fixture {
                             runtime_identity: None,
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "pool-integration-test".into(),
-                            capabilities: if queue {
-                                vec!["runtime_commands".into(), "queued_prompts".into()]
-                            } else {
-                                vec!["runtime_commands".into()]
-                            },
+                            capabilities: capabilities.iter().map(|cap| (*cap).into()).collect(),
                         },
                         ApiRequest::Ping => ApiEvent::Pong,
                         ApiRequest::CreateSession { .. } => ApiEvent::Attached {
@@ -109,6 +114,20 @@ impl Fixture {
                         },
                         ApiRequest::ForkSession { .. } => ApiEvent::SessionForked {
                             session: session(&format!("fork-{index}")),
+                        },
+                        ApiRequest::ListSideQuestions { parent_session_id } => ApiEvent::SideQuestions {
+                            topics: vec![serde_json::from_value(serde_json::json!({
+                                "session_id": "btw-a", "parent_session_id": parent_session_id,
+                                "created_at_ms": 3, "message_start": 42, "question_preview": "Topic A"
+                            })).unwrap()],
+                        },
+                        ApiRequest::GetSideQuestionHistory { session_id } => ApiEvent::History {
+                            session_id: session_id.clone(),
+                            messages: serde_json::from_value(serde_json::json!([
+                                {"role":"user","content":"Topic A"},
+                                {"role":"assistant","content":"Saved answer A"},
+                            ])).unwrap(),
+                            images: vec![],
                         },
                         _ => ApiEvent::Ok,
                     };
@@ -353,6 +372,119 @@ fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
     commands.send(Command::Shutdown).unwrap();
     bridge.join().unwrap();
     drop((parent_socket, child_socket));
+}
+
+#[test]
+fn side_question_history_on_an_older_bridge_never_falls_back_to_the_catalog() {
+    let fixture = Fixture::new();
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    let parent_session_id = remote::namespace("older-bridge", "parent");
+    commands
+        .send(Command::ListSideQuestions {
+            parent_session_id: parent_session_id.clone(),
+            request_id: 17,
+        })
+        .unwrap();
+    let received = until(&updates, |update| {
+        matches!(update, Update::SideQuestionHistory { request_id: 17, .. })
+    });
+    assert!(matches!(received, Update::SideQuestionHistory {
+        parent_session_id: parent, result: Err(error), ..
+    } if parent == parent_session_id && error.contains("requires an updated runtime and bridge")));
+    assert!(
+        fixture.requests.try_recv().is_err(),
+        "must not list, attach or send"
+    );
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
+}
+
+#[test]
+fn side_question_history_reads_an_unattached_child_then_continues_the_same_id() {
+    let fixture = Fixture::with_capabilities(vec![jcode_sdk::SIDE_QUESTIONS_CAPABILITY]);
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    let parent = remote::namespace("btw-host", "parent");
+    let child = remote::namespace("btw-host", "btw-a");
+    commands
+        .send(Command::ListSideQuestions {
+            parent_session_id: parent.clone(),
+            request_id: 1,
+        })
+        .unwrap();
+    assert!(
+        matches!(until(&updates, |update| matches!(update, Update::SideQuestionHistory { .. })),
+        Update::SideQuestionHistory { result: Ok(topics), .. }
+            if topics.len() == 1 && topics[0].session_id == child && topics[0].question == "Topic A")
+    );
+    commands
+        .send(Command::OpenSideQuestion {
+            parent_session_id: parent,
+            session_id: child.clone(),
+            request_id: 2,
+        })
+        .unwrap();
+    assert!(
+        matches!(until(&updates, |update| matches!(update, Update::SideQuestionOpened { .. })),
+        Update::SideQuestionOpened { result: Ok(thread), .. }
+            if thread.session.session_id == child && thread.turns.len() == 1
+                && thread.turns[0].answer == "Saved answer A")
+    );
+    let reads: Vec<_> = fixture
+        .requests
+        .try_iter()
+        .map(|(_, request)| request)
+        .collect();
+    assert!(
+        reads.iter().all(|request| matches!(request,
+            ApiRequest::ListSideQuestions { parent_session_id } if parent_session_id == "parent"
+        ) || matches!(request,
+            ApiRequest::GetSideQuestionHistory { session_id } if session_id == "btw-a"
+        )),
+        "reading an existing topic must not attach or send: {reads:?}"
+    );
+    assert!(
+        reads
+            .iter()
+            .any(|request| matches!(request, ApiRequest::GetSideQuestionHistory { .. }))
+    );
+    commands
+        .send(Command::ContinueSideQuestion {
+            session_id: child,
+            question: "Continue A".into(),
+        })
+        .unwrap();
+    let mut attached = false;
+    loop {
+        match fixture
+            .requests
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .1
+        {
+            ApiRequest::AttachSession { session_id } => {
+                assert_eq!(session_id, "btw-a");
+                attached = true;
+            }
+            ApiRequest::SendMessage {
+                session_id,
+                content,
+                ..
+            } => {
+                assert!(attached);
+                assert_eq!(
+                    (session_id.as_str(), content.as_str()),
+                    ("btw-a", "Continue A")
+                );
+                break;
+            }
+            ApiRequest::ForkSession { .. }
+            | ApiRequest::ForkSideQuestion { .. }
+            | ApiRequest::ArchiveSession { .. } => panic!("follow-up must not fork or archive"),
+            _ => {}
+        }
+    }
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
 }
 
 #[test]

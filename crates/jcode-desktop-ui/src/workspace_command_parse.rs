@@ -6,6 +6,7 @@ pub(crate) enum WorkspaceCommand {
     Fork(Option<String>),
     /// `/btw <question>`: answer in a side card, never in a new tab.
     SideQuestion(String),
+    SideQuestionHistory,
     Machines(Option<String>),
     Remote(String),
     ServerReload,
@@ -33,7 +34,7 @@ pub(crate) fn parse(content: &str) -> Option<WorkspaceCommand> {
     Some(match name {
         "/observe" => Observe(tail.into()),
         "/splitview" | "/split-view" => Mirror(tail.into()),
-        "/btw" if tail.is_empty() => Invalid("Usage: /btw <side question>"),
+        "/btw" | "btw" if tail.is_empty() => SideQuestionHistory,
         "/btw" => SideQuestion(tail.into()),
         "/fork" | "/split" => Fork((!tail.is_empty()).then(|| tail.into())),
         "/ssh" => Machines((!tail.is_empty()).then(|| tail.into())),
@@ -109,8 +110,28 @@ mod tests {
             parse("/quit now"),
             Some(WorkspaceCommand::Invalid(_))
         ));
-        assert!(matches!(parse("/btw"), Some(WorkspaceCommand::Invalid(_))));
         assert_eq!(parse("/transfer"), Some(WorkspaceCommand::Transfer));
+    }
+
+    #[test]
+    fn side_question_commands_do_not_capture_conversation_text() {
+        assert_eq!(parse(" /btw \n"), parse("btw"));
+        assert!(parse("btw").is_some());
+        assert!(!matches!(parse("/btw"), Some(WorkspaceCommand::Invalid(_))));
+        assert_eq!(
+            parse("/btw\twhy?"),
+            Some(WorkspaceCommand::SideQuestion("why?".into()))
+        );
+        for text in [
+            "btw why?",
+            "hey btw",
+            "quote /btw",
+            "`btw`",
+            "BTW",
+            "/btwice",
+        ] {
+            assert_eq!(parse(text), None, "{text}");
+        }
     }
     #[test]
     fn every_requested_name_is_owned() {

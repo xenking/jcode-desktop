@@ -201,6 +201,9 @@ impl Workspace {
                     source.update(cx, |panel, cx| panel.workspace_command_notice("A side question requires a connected conversation with history. The original session is unchanged.", cx));
                 }
             }
+            WorkspaceCommand::SideQuestionHistory => {
+                source.update(cx, |panel, cx| panel.open_side_question_history(cx));
+            }
             WorkspaceCommand::Transfer => {
                 if source.read(cx).can_fork() {
                     self.bridge.send(Command::Transfer {

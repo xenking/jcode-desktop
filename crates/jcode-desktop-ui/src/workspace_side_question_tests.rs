@@ -31,20 +31,28 @@ fn side_question_enter_paints_in_a_chat_started_from_the_welcome_composer(
         vcx.simulate_input("/btw");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
-        panel.read_with(vcx, |panel, cx| {
-            let state = panel.input.read(cx);
-            assert_eq!(state.snapshot().content, "/btw");
-            assert_eq!(
-                state.transient_notice(),
-                Some("Usage: /btw <side question>")
+        let Ok(Command::ListSideQuestions {
+            parent_session_id,
+            request_id,
+        }) = commands.try_recv()
+        else {
+            panic!("bare /btw must only request its parent's side questions");
+        };
+        assert_eq!(parent_session_id, "source");
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::SideQuestionHistory {
+                    parent_session_id,
+                    request_id,
+                    result: Ok(Vec::new()),
+                },
+                cx,
             );
         });
-        assert!(vcx.debug_bounds("composer-notice").is_some());
-        assert!(
-            commands.try_recv().is_err(),
-            "bare command must not reach the bridge"
-        );
-        vcx.simulate_input(" what is the retry policy?");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("side-question-history").is_some());
+        assert!(commands.try_recv().is_err());
+        vcx.simulate_input("/btw what is the retry policy?");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("composer-notice").is_none());
@@ -70,6 +78,124 @@ fn side_question_enter_paints_in_a_chat_started_from_the_welcome_composer(
             "card must paint while {status}"
         );
     }
+}
+
+#[gpui::test]
+fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::TestAppContext) {
+    use harness::{SideQuestionThread, SideQuestionTopic, SideQuestionTurn};
+    cx.update(crate::bind_workspace_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("parent", cx);
+        workspace
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx))
+    });
+    vcx.run_until_parked();
+    while commands.try_recv().is_ok() {}
+
+    vcx.simulate_input("btw");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let Ok(Command::ListSideQuestions {
+        parent_session_id,
+        request_id,
+    }) = commands.try_recv()
+    else {
+        panic!("standalone btw must only read the side history");
+    };
+    assert_eq!(parent_session_id, "parent");
+    workspace.update(vcx, |workspace, cx| {
+        workspace.apply(
+            Update::SideQuestionHistory {
+                parent_session_id: "parent".into(),
+                request_id,
+                result: Ok(vec![
+                    SideQuestionTopic {
+                        session_id: "btw-b".into(),
+                        question: "Topic B".into(),
+                    },
+                    SideQuestionTopic {
+                        session_id: "btw-a".into(),
+                        question: "Topic A".into(),
+                    },
+                ]),
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    vcx.simulate_input("Keep my main draft");
+    let topic_a = vcx
+        .debug_bounds("side-question-topic-1")
+        .expect("history row");
+    vcx.simulate_click(topic_a.center(), Default::default());
+    vcx.run_until_parked();
+    let Ok(Command::OpenSideQuestion {
+        parent_session_id,
+        session_id,
+        request_id,
+    }) = commands.try_recv()
+    else {
+        panic!("opening a topic must only read its saved answer");
+    };
+    assert_eq!(
+        (parent_session_id.as_str(), session_id.as_str()),
+        ("parent", "btw-a")
+    );
+    assert!(commands.try_recv().is_err());
+    workspace.update(vcx, |workspace, cx| {
+        workspace.apply(
+            Update::SideQuestionOpened {
+                parent_session_id,
+                request_id,
+                result: Ok(SideQuestionThread {
+                    session: super::super::tests::session_info("btw-a", None),
+                    turns: vec![SideQuestionTurn {
+                        question: "Topic A".into(),
+                        answer: "Saved answer A".into(),
+                    }],
+                }),
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |workspace, cx| {
+        let panel = workspace.slots[0].panel.read(cx);
+        assert_eq!(
+            panel.side_question_card_opt().unwrap().answer,
+            "Saved answer A"
+        );
+        assert_eq!(
+            panel.input.read(cx).snapshot().content,
+            "Keep my main draft"
+        );
+    });
+    let field = vcx
+        .debug_bounds("side-question-follow-up")
+        .expect("follow-up field");
+    vcx.simulate_click(field.center(), Default::default());
+    vcx.simulate_input("btw");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::ContinueSideQuestion { session_id, question })
+        if session_id == "btw-a" && question == "btw")
+    );
+    assert!(commands.try_recv().is_err());
+    workspace.read_with(vcx, |workspace, cx| {
+        assert_eq!(workspace.slots.len(), 1);
+        let panel = workspace.slots[0].panel.read(cx);
+        assert!(panel.items.is_empty());
+        assert_eq!(
+            panel.input.read(cx).snapshot().content,
+            "Keep my main draft"
+        );
+    });
 }
 
 fn text_delta(session_id: &str, text: &str) -> jcode_sdk::ApiEvent {
