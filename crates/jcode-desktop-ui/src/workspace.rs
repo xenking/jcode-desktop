@@ -9337,8 +9337,10 @@ impl Workspace {
             let label = if self.folder_picker_sets_default {
                 default_directory::compact_path_in(&path.to_string_lossy(), home.clone())
             } else {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
+                path.strip_prefix(&directory)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.display().to_string())
                     .unwrap_or_else(|| path.display().to_string())
             };
             let sets_default = self.folder_picker_sets_default;
@@ -9430,6 +9432,7 @@ impl Workspace {
             .when(!inline, |el| {
                 el.absolute()
                     .inset_0()
+                    .occlude()
                     .items_center()
                     .justify_center()
                     .bg(gpui::rgba(0x000000cc))
@@ -10433,7 +10436,12 @@ fn ranked_folder_matches_for_sessions(
             .working_dir
             .as_deref()
             .map(PathBuf::from)
-            .filter(|path| path.is_dir() && !contains_dot_directory(path, base))
+            .filter(|path| {
+                path != base
+                    && path.starts_with(base)
+                    && !contains_dot_directory(path, base)
+                    && path.is_dir()
+            })
         else {
             continue;
         };
@@ -13782,6 +13790,89 @@ mod tests {
             openai_row.origin.y < jcode_row.origin.y,
             "available accounts should be listed above expired ones"
         );
+    }
+
+    #[gpui::test]
+    fn folder_picker_wheel_scrolls_back_up_over_an_empty_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..60 {
+            std::fs::create_dir(root.path().join(format!("dir_{index:02}"))).unwrap();
+        }
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("empty", cx);
+            workspace
+        });
+        workspace.update_in(vcx, |workspace, window, cx| {
+            workspace.open_folder(&OpenFolder, window, cx);
+            workspace.browse_to(root.path().to_path_buf(), cx);
+        });
+        vcx.run_until_parked();
+        let list = vcx.debug_bounds("folder-picker-list").unwrap();
+        assert!(vcx.debug_bounds("folder-picker-entry-59").is_some());
+        let parent_top = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("folder-picker-parent").unwrap().top()
+        };
+        let wheel = |cx: &mut gpui::VisualTestContext, lines| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: list.center(),
+                delta: gpui::ScrollDelta::Lines(gpui::point(0.0, lines)),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+        };
+        let top = parent_top(vcx);
+        wheel(vcx, -6.0);
+        let scrolled = parent_top(vcx);
+        assert!(scrolled < top, "wheel down should move the folder rows");
+        wheel(vcx, 3.0);
+        assert!(
+            parent_top(vcx) > scrolled,
+            "wheel up should scroll the folder rows back"
+        );
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 0));
+    }
+
+    #[gpui::test]
+    fn folder_picker_shows_only_local_children_and_nested_recents(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("browse");
+        let child = base.join("child");
+        let nested = child.join("nested");
+        let outside = root.path().join("browse-other");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update_in(vcx, |workspace, window, cx| {
+            for (id, path) in [("nested", &nested), ("self", &base), ("outside", &outside)] {
+                let mut session = session_info(id, None);
+                session.working_dir = Some(path.to_string_lossy().into_owned());
+                workspace.sessions.push(session);
+            }
+            workspace.open_folder(&OpenFolder, window, cx);
+            workspace.browse_to(base.clone(), cx);
+        });
+        vcx.run_until_parked();
+        let first = vcx
+            .debug_bounds("folder-picker-entry-0")
+            .expect("nested recent");
+        assert!(
+            vcx.debug_bounds("folder-picker-entry-1").is_some(),
+            "direct child is listed"
+        );
+        assert!(
+            vcx.debug_bounds("folder-picker-entry-2").is_none(),
+            "neither the current folder nor an unrelated session folder belongs in the list"
+        );
+        vcx.simulate_click(first.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(workspace.folder_picker_dir.as_deref(), Some(nested.as_path()));
+        });
     }
 
     #[gpui::test]
