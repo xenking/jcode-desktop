@@ -15,6 +15,7 @@ use gpui::{
     StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, img, point,
     prelude::*, px, relative, size,
 };
+use jcode_desktop_ui_core::ime_geometry::ImeGeometry;
 use jcode_provider_core::SpeedMode;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
@@ -203,6 +204,7 @@ pub struct PromptInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
+    ime_geometry: Option<ImeGeometry>,
     last_layout_revision: u64,
     vertical_caret: Option<VerticalCaret>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -1216,6 +1218,7 @@ impl PromptInput {
             selection_reversed: false,
             marked_range: None,
             last_layout: None,
+            ime_geometry: None,
             last_layout_revision: 0,
             vertical_caret: None,
             last_bounds: None,
@@ -4111,15 +4114,23 @@ impl EntityInputHandler for PromptInput {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
-        let range = self.range_from_utf16(&range_utf16);
-        let line_height = self.painted_line_height(window);
-        let start = last_layout.position_for_index(range.start, line_height)?;
-        let end = last_layout.position_for_index(range.end, line_height)?;
-        Some(Bounds::from_corners(
-            bounds.origin + start,
-            point(bounds.left() + end.x, bounds.top() + end.y + line_height),
-        ))
+        let geometry = self.ime_geometry.as_ref()?;
+        let chips = self.chip_ranges();
+        let display_text = if chips.is_empty() {
+            self.content.clone()
+        } else {
+            crate::image_chip::mask_markers(
+                &self.content,
+                chips.into_iter().map(|(_, range)| range),
+            )
+            .into()
+        };
+        geometry.bounds_for_range(
+            display_text,
+            self.range_from_utf16(&range_utf16),
+            bounds.origin,
+            window,
+        )
     }
 
     fn character_index_for_point(
@@ -4143,6 +4154,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
+    ime_geometry: ImeGeometry,
     line: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
@@ -4390,13 +4402,19 @@ impl Element for TextElement {
         );
 
         let font_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = window.line_height();
+        let ime_geometry = ImeGeometry::new(
+            style.font(),
+            font_size,
+            line_height,
+            Some(bounds.size.width),
+        );
         let line = PromptLayout::new(
             window
                 .text_system()
                 .shape_text(shaped.into(), font_size, &runs, Some(wrap_width), None)
                 .expect("prompt text should shape"),
         );
-        let line_height = window.line_height();
         let target = input.caret_position(&line, line_height).unwrap_or_default();
         let mut visual_line_count = line.visual_line_count();
         if let Some(full) = placeholder_full.filter(|full| !full.is_empty()) {
@@ -4495,6 +4513,7 @@ impl Element for TextElement {
             )
         };
         PrepaintState {
+            ime_geometry,
             line: Some(line),
             cursor,
             selection,
@@ -4604,6 +4623,7 @@ impl Element for TextElement {
                 input.revealed_caret = Some(caret_key);
             }
             input.last_layout = Some(line);
+            input.ime_geometry = Some(prepaint.ime_geometry.clone());
             input.last_layout_revision = input.control_revision;
             input.last_bounds = Some(prepaint.text_bounds);
             input.last_line_height = Some(window.line_height());
@@ -6046,6 +6066,50 @@ mod tests {
                         cx,
                     );
                 }
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn composer_ime_bounds_follow_preedit_without_paint(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        handle
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "测😀", window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                let anchor = input.bounds_for_range(3..3, bounds, window, cx).unwrap();
+                let mut widths = Vec::new();
+                // macOS queries the rect synchronously within the same frame.
+                for marked in ["q", "qishi", "q"] {
+                    let end = marked.len();
+                    input.replace_and_mark_text_in_range(None, marked, Some(end..end), window, cx);
+                    let rect = input
+                        .bounds_for_range(3..3 + end, bounds, window, cx)
+                        .expect("preedit must have bounds before the next paint");
+                    assert_eq!(rect.origin, anchor.origin);
+                    assert_eq!(rect.size.height, anchor.size.height);
+                    widths.push(rect.size.width);
+                }
+                assert!(widths[0] > px(0.));
+                assert!(widths[1] > widths[0]);
+                assert_eq!(widths[2], widths[0]);
+
+                let marked = "界\n中文";
+                input.replace_and_mark_text_in_range(None, marked, None, window, cx);
+                let first_line = input.bounds_for_range(3..6, bounds, window, cx).unwrap();
+                assert_eq!(
+                    first_line,
+                    input.bounds_for_range(3..4, bounds, window, cx).unwrap()
+                );
+                let second_line = input.bounds_for_range(5..6, bounds, window, cx).unwrap();
+                assert_eq!(second_line.top(), first_line.bottom());
+                input.replace_text_in_range(None, "其实", window, cx);
+                assert_eq!(input.content.as_ref(), "测😀其实");
             })
             .unwrap();
     }
