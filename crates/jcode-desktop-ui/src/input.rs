@@ -3241,6 +3241,19 @@ impl PromptInput {
         cx.notify();
     }
 
+    pub(crate) fn focus_next_picker_row_for_screenshot(&mut self, cx: &mut Context<Self>) {
+        let rows = self.command_suggestions();
+        let Some(index) = rows.iter().position(|row| row.active_choice) else {
+            return;
+        };
+        if let Some(next) = rows.get(index + 1) {
+            self.command_selection = index + 1;
+            self.command_selection_explicit = Some(next.value.clone());
+            self.reveal_command(self.command_selection);
+            cx.notify();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn open_model_menu(&mut self, fallback_models: Vec<String>, cx: &mut Context<Self>) {
         // Offline/reconnected inputs may not have received route metadata yet.

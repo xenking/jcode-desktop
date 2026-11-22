@@ -56,7 +56,7 @@ impl SpeedPicker {
         let selected = options.iter().find(|option| option.mode == requested);
         let active = visible_mode(options, requested);
         let available = active == requested;
-        let mut tooltip = format!("Speed: {}. {}", label(active), quota(active));
+        let mut tooltip = format!("Speed for this chat: {}. {}", label(active), quota(active));
         if !available {
             tooltip.push_str(&format!(" Requested {} is unavailable.", label(requested)));
             if let Some(reason) = selected.and_then(|option| option.reason.as_deref()) {

@@ -50,6 +50,9 @@ impl Panel {
             cx,
         );
         self.open_picker_search(kind, cx);
+        if let Some((_, input)) = &self.picker_search {
+            input.update(cx, |input, cx| input.focus_next_picker_row_for_screenshot(cx));
+        }
     }
 
     fn intended_speed(&self) -> SpeedMode {
