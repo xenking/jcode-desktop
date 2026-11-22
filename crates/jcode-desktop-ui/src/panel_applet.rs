@@ -135,6 +135,7 @@ impl Panel {
             compact,
             &selection,
             emit,
+            None,
             window,
             cx,
         )

@@ -20,6 +20,78 @@ fn snapshot(revision: u64, note: &str) -> jcode_applet_types::AgentApplets {
 }
 
 #[gpui::test]
+fn session_tasks_follow_todo_events_without_applet_revision(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "session-a".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.items.push(Item::User("Tasks".into()));
+        panel
+    });
+    let snapshot: jcode_applet_types::AgentApplets = serde_json::from_value(json!({"instances": [{
+        "id": "tasks", "applet": "jcode.agent",
+        "placement": {"kind": "inline", "session_id": "server", "anchor": {"kind": "end"}},
+        "document": {"revision": 1, "title": "Tasks", "view": {"type": "session_tasks", "title": "Tasks"}}
+    }]})).unwrap();
+    let id = agent_instance_id("session-a", "tasks");
+    vcx.update(|_, cx| assert!(crate::applet_runtime::get(cx).sync_agent("session-a", &snapshot)));
+    panel.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    assert!(
+        vcx.debug_bounds("applet-progress-0 / 0 completed")
+            .is_some()
+    );
+    for (call, output, row, progress) in [
+        (
+            "one",
+            r#"[{"content":"Alpha","status":"pending"}]"#,
+            "applet-table-row-Alpha|pending",
+            "applet-progress-0 / 1 completed",
+        ),
+        (
+            "two",
+            r#"[{"content":"Beta","status":"completed"},{"content":"Gamma","status":"pending"}]"#,
+            "applet-table-row-Beta|completed",
+            "applet-progress-1 / 2 completed",
+        ),
+    ] {
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &jcode_sdk::ApiEvent::ToolDone {
+                    session_id: "session-a".into(),
+                    call_id: call.into(),
+                    name: "todo".into(),
+                    output: output.into(),
+                    error: None,
+                },
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds(row).is_some(), "missing {row}");
+        assert!(vcx.debug_bounds(progress).is_some(), "missing {progress}");
+        vcx.update(|_, cx| {
+            assert_eq!(
+                crate::applet_runtime::get(cx)
+                    .host
+                    .borrow()
+                    .instance(&id)
+                    .unwrap()
+                    .instance
+                    .document
+                    .revision,
+                1
+            )
+        });
+    }
+    assert!(vcx.debug_bounds("applet-table-row-Alpha|pending").is_none());
+}
+
+#[gpui::test]
 fn transcript_applet_keeps_draft_and_routes_real_click(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {

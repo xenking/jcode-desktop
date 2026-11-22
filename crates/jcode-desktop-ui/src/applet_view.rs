@@ -47,6 +47,13 @@ pub(crate) struct RenderCx<'a> {
     /// Capabilities the applet declared AND the user granted. Nodes that
     /// need an ungranted capability render a placeholder instead.
     pub granted: &'a [jcode_applet_types::Capability],
+    pub session_tasks: Option<&'a SessionTasks>,
+}
+
+pub(crate) struct SessionTasks {
+    pub rows: Vec<Vec<String>>,
+    pub completed: usize,
+    pub total: usize,
 }
 
 fn space(value: Space, compact: bool) -> Pixels {
@@ -429,6 +436,52 @@ fn node(
             }
             grid.into_any_element()
         }
+        NodeKind::SessionTasks { title } => {
+            let Some(tasks) = cx.session_tasks else {
+                return div()
+                    .text_color(theme.TEXT_DIM)
+                    .child("Session tasks are unavailable in this placement.")
+                    .into_any_element();
+            };
+            let progress = Node::new(NodeKind::Progress {
+                value: Some(if tasks.total == 0 {
+                    0.0
+                } else {
+                    tasks.completed as f32 / tasks.total as f32
+                }),
+                label: Some(format!("{} / {} completed", tasks.completed, tasks.total)),
+            });
+            let table = Node::new(NodeKind::Table {
+                columns: vec!["Task".into(), "Status".into()],
+                rows: tasks.rows.clone(),
+            });
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(title.clone()))
+                .child(node(
+                    cx,
+                    &progress,
+                    &format!("{path}.progress"),
+                    window,
+                    app,
+                ))
+                .when(tasks.total == 0, |el| {
+                    el.child(div().text_color(theme.TEXT_DIM).child("No tasks yet."))
+                })
+                .when(tasks.total > 0, |el| {
+                    el.child(node(cx, &table, &format!("{path}.table"), window, app))
+                })
+                .when(tasks.total > tasks.rows.len(), |el| {
+                    el.child(format!(
+                        "Showing {} of {} tasks",
+                        tasks.rows.len(),
+                        tasks.total
+                    ))
+                })
+                .into_any_element()
+        }
         NodeKind::Table { columns, rows } => {
             let cell = |text: String, header: bool| {
                 div()
@@ -457,8 +510,10 @@ fn node(
                         .children(columns.iter().map(|c| cell(c.clone(), true))),
                 );
             for (index, row) in rows.iter().enumerate() {
+                let selector = format!("applet-table-row-{}", row.join("|"));
                 table = table.child(
                     div()
+                        .debug_selector(move || selector.clone())
                         .flex()
                         .flex_row()
                         .when(index % 2 == 0, |el| el.bg(theme.TABLE_STRIPE))
@@ -474,8 +529,10 @@ fn node(
                 .flex_col()
                 .gap_1()
                 .when_some(label.as_ref(), |el, label| {
+                    let selector = format!("applet-progress-{label}");
                     el.child(
                         div()
+                            .debug_selector(move || selector.clone())
                             .text_size(px(11.))
                             .text_color(theme.TEXT_DIM)
                             .child(label.clone()),

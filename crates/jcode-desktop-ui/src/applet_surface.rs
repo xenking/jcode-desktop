@@ -54,6 +54,7 @@ pub(crate) fn render_document(
     compact: bool,
     selection: &Entity<TextSelection>,
     emit: applet_view::Emit,
+    session_tasks: Option<(&str, &applet_view::SessionTasks)>,
     window: &mut Window,
     app: &mut App,
 ) -> Option<AnyElement> {
@@ -71,6 +72,11 @@ pub(crate) fn render_document(
         selection,
         emit,
         compact,
+        session_tasks: session_tasks.and_then(|(session, tasks)| {
+            (matches!(&mounted.instance.scope, jcode_applet_types::Scope::Session { session_id } if session_id == session)
+                && matches!(&mounted.instance.placement, jcode_applet_types::Placement::Inline { session_id, .. } if session_id == session))
+                .then_some(tasks)
+        }),
     };
     let element = applet_view::render(&render_cx, window, app);
     *crate::applet_runtime::get(app).assets.borrow_mut() = assets.into_inner();
@@ -87,6 +93,17 @@ pub(crate) fn card(
     window: &mut Window,
     app: &mut App,
 ) -> Option<AnyElement> {
+    card_with_tasks(instance, chrome, selection, None, window, app)
+}
+
+pub(crate) fn card_with_tasks(
+    instance: &str,
+    chrome: bool,
+    selection: &Entity<TextSelection>,
+    session_tasks: Option<(&str, &applet_view::SessionTasks)>,
+    window: &mut Window,
+    app: &mut App,
+) -> Option<AnyElement> {
     let theme = Theme::global();
     let mounted = crate::applet_runtime::get(app)
         .host
@@ -98,6 +115,7 @@ pub(crate) fn card(
         true,
         selection,
         emitter(instance.to_owned()),
+        session_tasks,
         window,
         app,
     )?;

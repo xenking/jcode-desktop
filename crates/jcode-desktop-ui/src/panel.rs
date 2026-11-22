@@ -3285,6 +3285,18 @@ impl Panel {
         })
     }
 
+    fn applet_session_tasks(&self) -> crate::applet_view::SessionTasks {
+        let payload = self.latest_todo_payload().unwrap_or_default();
+        let total = payload.todos.len();
+        let completed = payload.todos.iter()
+            .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+            .count();
+        let rows = payload.todos.into_iter().take(100)
+            .map(|todo| vec![todo.content, todo.status])
+            .collect();
+        crate::applet_view::SessionTasks { rows, completed, total }
+    }
+
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
         if self.is_side_document() {
             return;
@@ -5656,7 +5668,10 @@ impl Panel {
         match item {
             Item::Applet(instance) => {
                 let selection = self.applet_selection.clone();
-                crate::applet_surface::card(instance, true, &selection, window, cx)
+                crate::applet_surface::card_with_tasks(
+                    instance, true, &selection,
+                    Some((&self.session_id, &self.applet_session_tasks())), window, cx,
+                )
                     .unwrap_or_else(|| div().into_any_element())
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
@@ -6218,10 +6233,11 @@ impl Panel {
                                 cx,
                             ))
                         } else if let Some(instance) = applet_instance {
-                            crate::applet_surface::card(
+                            crate::applet_surface::card_with_tasks(
                                 &instance,
                                 true,
                                 &self.applet_selection,
+                                Some((&self.session_id, &self.applet_session_tasks())),
                                 window,
                                 cx,
                             )
