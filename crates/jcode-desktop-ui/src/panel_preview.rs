@@ -42,6 +42,8 @@ impl Panel {
         self.history_loaded = true;
         self.apply(
             &ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: self.session_id.clone(),
                 provider: Some("openai".into()),
                 model: Some("preview-model".into()),
@@ -49,6 +51,7 @@ impl Panel {
                 auth_method: None,
                 account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    speed_options: Vec::new(),
                     usage: None,
                     model: "preview-model".into(),
                     provider: "openai".into(),

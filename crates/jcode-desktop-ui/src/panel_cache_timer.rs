@@ -214,6 +214,7 @@ impl Panel {
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_EFFORT_MENU").as_deref() == Ok("1") {
             self.open_picker_search(PickerKind::Effort, cx);
         }
+        self.apply_speed_picker_fixture(cx);
         cx.notify();
     }
 }

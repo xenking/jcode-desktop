@@ -342,6 +342,7 @@ impl PromptInput {
         };
         let model = suggestion.value.strip_prefix("/model ");
         let mode = suggestion.value.strip_prefix("/mode ");
+        let speed = crate::speed_icon::command_tier(&suggestion.value);
         let draft_target = crate::fixture_control_targets::draft_session().then(|| {
             model
                 .map(|spec| self.model_details.get(spec).map_or(spec, |route| route.model.as_str()))
@@ -439,7 +440,9 @@ impl PromptInput {
                 })
             });
         let stage_row = suggestion.action.is_some() && model.is_none();
-        let label = match (model, suggestion.value.strip_prefix("/effort ")) {
+        let label = if let Some(speed) = speed {
+            crate::speed_icon::label(speed).into()
+        } else { match (model, suggestion.value.strip_prefix("/effort ")) {
             (Some(model), _) => model_menu::pretty_title(model, &self.model_details),
             // Effort rows keep the level name beside the drawn mark: a
             // picker has no hover to hide it in.
@@ -454,7 +457,8 @@ impl PromptInput {
                     }
                 },
             ),
-        };
+        }};
+        let speed_tooltip = speed.and(suggestion.detail.clone());
         div()
             .w_full()
             .flex_none()
@@ -484,7 +488,7 @@ impl PromptInput {
                     .px_3()
                     .py_1p5()
                     .rounded_md()
-                    .when(model.is_some() || suggestion.value.starts_with("/effort "), |row| {
+                    .when(model.is_some() || speed.is_some() || suggestion.value.starts_with("/effort "), |row| {
                         row.border_1().border_color(match (active_choice, selected) {
                             (true, true) => Theme::global().BG.into(),
                             (true, false) => Theme::global().TEXT.into(),
@@ -502,6 +506,9 @@ impl PromptInput {
                     .text_size(px(12.0))
                     .text_color(ink)
                     .cursor_pointer()
+                    .when_some(speed_tooltip, |row, detail| {
+                        row.tooltip(move |_, cx| cx.new(|_| crate::speed_icon::SpeedTooltip(detail.clone())).into())
+                    })
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if this.command_selection != index {
                             this.command_selection = index;
@@ -518,6 +525,9 @@ impl PromptInput {
                             .gap_3()
                             .children(logo)
                             .children(effort_mark)
+                            .children(speed.map(|tier| div().flex_none()
+                                .debug_selector(move || format!("speed-picker-icon-{index}"))
+                                .child(crate::speed_icon::render(tier, 14., ink))))
                             .children(
                                 mode_icon.map(|icon| {
                                     div()
@@ -530,7 +540,7 @@ impl PromptInput {
                                         .child(icon.render(16.0, ink))
                                 }),
                             )
-                            .font_family(if model.is_some() || stage_row {
+                            .font_family(if model.is_some() || speed.is_some() || stage_row {
                                 Theme::global().FONT_UI
                             } else {
                                 Theme::global().FONT_MONO

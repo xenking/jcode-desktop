@@ -18,6 +18,7 @@ mod diff_review_content;
 mod diff_view;
 mod effort;
 mod effort_icon;
+mod speed_icon;
 mod example_prompts;
 mod fixture_control_targets;
 mod fps_counter;

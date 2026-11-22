@@ -122,6 +122,8 @@ mod socket_tests {
                             images: vec![],
                         },
                         ApiRequest::GetRuntimeInfo { .. } => ApiEvent::RuntimeInfo {
+                            speed_mode: Default::default(),
+                            speed_options: Vec::new(),
                             session_id: "s1".into(),
                             provider: None,
                             model: None,

@@ -187,6 +187,7 @@ impl Panel {
                             }))
                     }))
                     .child(self.render_model_control(model_label, effort, cx))
+                    .child(self.render_speed_control(cx))
                     .children(self.render_context_meter(cx)),
             )
             .when(!self.transcript_only && !self.is_pending_session(), |el| {
@@ -401,6 +402,54 @@ impl Panel {
                     cx.stop_propagation();
                 }))
             }))
+    }
+
+    fn render_speed_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        const SPEED: &str = "panel-speed";
+        let active = self.visible_speed();
+        let panel = cx.weak_entity();
+        let ink = Theme::global().composer_secondary();
+        crate::keyboard::popover_trigger(
+            composer_pill(SPEED),
+            &self.picker_triggers[PickerKind::Speed as usize],
+        )
+        .relative()
+        .children(crate::fixture_control_targets::marker(
+            || SPEED.into(),
+            || Some(self.session_id.clone()),
+        ))
+        .flex_none()
+        .w(px(26.))
+        .px_0()
+        .justify_center()
+        .child(
+            div()
+                .debug_selector(move || format!("speed-mode-{}", crate::speed_icon::label(active)))
+                .flex()
+                .child(crate::speed_icon::render(active, BAR_ICON, ink)),
+        )
+        .tooltip(move |_, cx| {
+            let tooltip = panel.upgrade().map_or_else(String::new, |panel| {
+                panel.read(cx).speed_picker().tooltip
+            });
+            cx.new(|_| crate::speed_icon::SpeedTooltip(tooltip)).into()
+        })
+        .on_click(cx.listener(|this, _, window, cx| {
+            if this.picker_search.as_ref().is_some_and(|(kind, _)| *kind == PickerKind::Speed) {
+                this.picker_search = None;
+            } else {
+                if this.model_picker_open {
+                    this.close_model_picker(cx);
+                }
+                this.login = None;
+                this.recovery_picker_open = false;
+                this.open_picker_search(PickerKind::Speed, cx);
+            }
+            this.remember_picker_trigger(PickerKind::Speed);
+            this.focus_input(window, cx);
+            cx.stop_propagation();
+            cx.notify();
+        }))
     }
 
     fn remember_picker_trigger(&mut self, kind: PickerKind) {

@@ -238,8 +238,9 @@ impl Panel {
             PickerKind::Model => "model",
             PickerKind::Effort => "effort",
             PickerKind::Mode => "mode",
+            PickerKind::Speed => "speed",
         };
-        let picker_trigger_focus = [PickerKind::Model, PickerKind::Effort, PickerKind::Mode]
+        let picker_trigger_focus = [PickerKind::Model, PickerKind::Effort, PickerKind::Mode, PickerKind::Speed]
             .into_iter()
             .find(|kind| self.picker_triggers[*kind as usize].is_focused(window))
             .map(picker_name);

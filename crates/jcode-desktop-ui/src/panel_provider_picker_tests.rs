@@ -17,6 +17,7 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
             input.set_content("valuable draft".into(), cx)
         });
         let route = |model: &str, method: &str| jcode_sdk::ModelRouteInfo {
+            speed_options: Vec::new(),
             model: model.into(),
             provider: String::new(),
             api_method: method.into(),
@@ -26,6 +27,8 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
         };
         panel.apply(
             &ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: "session-a".into(),
                 provider: Some("openai".into()),
                 model: Some("gpt-5.6-sol".into()),
@@ -182,6 +185,7 @@ fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppCon
     });
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     let route = |model: &str, provider: &str, method: &str| jcode_sdk::ModelRouteInfo {
+        speed_options: Vec::new(),
         model: model.into(),
         provider: provider.into(),
         api_method: method.into(),
@@ -190,6 +194,8 @@ fn picker_switches_there_and_back_and_marks_row_states(cx: &mut gpui::TestAppCon
         usage: None,
     };
     let runtime = |provider: &str, model: &str, auth: &str, routes| ApiEvent::RuntimeInfo {
+        speed_mode: Default::default(),
+        speed_options: Vec::new(),
         session_id: "session-a".into(),
         provider: Some(provider.into()),
         model: Some(model.into()),

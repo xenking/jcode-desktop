@@ -82,7 +82,7 @@ pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
 }
 
 /// Use the same routing policy as the daemon and TUI, never infer auth from a label.
-fn route_spec(route: &ModelRouteInfo) -> String {
+pub(crate) fn route_spec(route: &ModelRouteInfo) -> String {
     use jcode_provider_core::{ModelRoute, RouteSelection, explicit_model_provider_prefix};
     let bare = explicit_model_provider_prefix(&route.model)
         .map_or(route.model.as_str(), |(_, _, bare)| bare);
@@ -94,6 +94,7 @@ fn route_spec(route: &ModelRouteInfo) -> String {
         detail: route.detail.clone(),
         cheapness: None,
         usage: route.usage.clone(),
+        speed_options: Vec::new(),
     });
     let spec = selection.routed_model_spec();
     selection.model.clear();
@@ -688,6 +689,7 @@ mod tests {
 
     fn route(model: &str, method: &str, count: u64) -> ModelRouteInfo {
         ModelRouteInfo {
+            speed_options: Vec::new(),
             model: model.into(),
             provider: "OpenAI".into(),
             api_method: method.into(),

@@ -352,6 +352,8 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
     source.update(vcx, |panel, cx| {
         panel.apply(
             &jcode_sdk::ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: "unified-model-picker".into(),
                 provider: Some("openai".into()),
                 model: Some("test".into()),
@@ -359,6 +361,7 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
                 auth_method: None,
                 account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    speed_options: Vec::new(),
                     model: "test".into(),
                     provider: "openai".into(),
                     api_method: "openai-api-key".into(),

@@ -285,6 +285,11 @@ pub enum Update {
         effort: String,
         error: Option<String>,
     },
+    SpeedSettled {
+        session_id: String,
+        serial: u64,
+        result: Result<jcode_sdk::api::SpeedMode, String>,
+    },
     /// Reply to `Command::TodoState`. `None` when the runtime cannot serve
     /// todo state (an older bridge) or the read failed.
     TodoState {
@@ -608,6 +613,10 @@ pub enum SessionOperation {
     Clear,
     Compact,
     SetEffort(String),
+    SetSpeed {
+        serial: u64,
+        mode: jcode_sdk::api::SpeedMode,
+    },
     Rename(Option<String>),
     /// Bookmark (`true`) or unbookmark. A label also becomes the title.
     SetSaved(bool, Option<String>),
@@ -1029,6 +1038,7 @@ fn spawn_screenshot() -> Bridge {
                 let routes = ["gpt-5.6-terra", "gpt-5.6-sol"]
                     .into_iter()
                     .map(|model| jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         model: model.into(),
                         provider: "openai".into(),
                         api_method: "openai-api".into(),
@@ -3656,6 +3666,8 @@ fn session_worker_with_connector(
             let _ = updates.send(Update::Event {
                 session_id: session_id.clone(),
                 event: ApiEvent::RuntimeInfo {
+                    speed_mode: info.speed_mode,
+                    speed_options: info.speed_options,
                     session_id: session_id.clone(),
                     provider: info.provider,
                     model: info.model,
@@ -3769,6 +3781,8 @@ fn session_worker_with_connector(
                             let _ = updates.send(Update::Event {
                                 session_id: session_id.clone(),
                                 event: ApiEvent::RuntimeInfo {
+                                    speed_mode: info.speed_mode,
+                                    speed_options: info.speed_options,
                                     session_id: session_id.clone(),
                                     provider: info.provider,
                                     model: info.model,
@@ -4428,6 +4442,15 @@ fn session_worker_with_connector(
                             });
                             continue;
                         }
+                        if let SessionOperation::SetSpeed { serial, mode } = operation {
+                            let result = client.set_speed_mode(mode).map_err(|error| error.to_string());
+                            let _ = updates.send(Update::SpeedSettled {
+                                session_id: session_id.clone(),
+                                serial,
+                                result,
+                            });
+                            continue;
+                        }
                         if let SessionOperation::SetSaved(saved, label) = &operation {
                             match client.set_session_saved(real_id, *saved, label.clone()) {
                                 Ok(()) => {
@@ -4477,7 +4500,9 @@ fn session_worker_with_connector(
                                 });
                                 Ok(())
                             }
-                            SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
+                            SessionOperation::SetEffort(_)
+                            | SessionOperation::SetSpeed { .. }
+                            | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }
                             SessionOperation::AppletAction {
@@ -4839,6 +4864,8 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ModelInfo { session_id, .. }
         | ApiEvent::Models { session_id, .. }
         | ApiEvent::RuntimeInfo { session_id, .. }
+        | ApiEvent::SpeedModeChanged { session_id, .. }
+        | ApiEvent::SpeedModeReported { session_id, .. }
         | ApiEvent::FileContent { session_id, .. }
         | ApiEvent::Files { session_id, .. }
         | ApiEvent::TextMatches { session_id, .. }
@@ -4914,6 +4941,8 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::ModelInfo { session_id, .. }
         | ApiEvent::Models { session_id, .. }
         | ApiEvent::RuntimeInfo { session_id, .. }
+        | ApiEvent::SpeedModeChanged { session_id, .. }
+        | ApiEvent::SpeedModeReported { session_id, .. }
         | ApiEvent::FileContent { session_id, .. }
         | ApiEvent::Files { session_id, .. }
         | ApiEvent::TextMatches { session_id, .. }
@@ -5259,6 +5288,8 @@ mod tests {
         Update::Event {
             session_id: session.into(),
             event: ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: session.into(),
                 provider: None,
                 model: Some(model),
@@ -5505,6 +5536,8 @@ mod tests {
         let runtime = |session: &str, model: &str| Update::Event {
             session_id: session.into(),
             event: ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: session.into(),
                 provider: None,
                 model: Some(model.into()),
@@ -6086,6 +6119,25 @@ mod tests {
         };
         assert_eq!(event_session_id(&event), Some("other-session"));
         assert_ne!(event_session_id(&event), Some("this-session"));
+    }
+
+    #[test]
+    fn speed_events_keep_the_remote_session_namespace_and_witness() {
+        use jcode_sdk::api::SpeedMode;
+
+        let remote_id = remote::namespace("user@desktop", "shared-id");
+        let address = remote::SessionAddress::parse(&remote_id).unwrap();
+        let event = ApiEvent::SpeedModeReported {
+            session_id: "shared-id".into(),
+            requested: Some(SpeedMode::Fast),
+            actual: SpeedMode::Standard,
+        };
+        assert_eq!(event_session_id(&event), Some("shared-id"));
+        assert!(matches!(namespace_event(event, &address), ApiEvent::SpeedModeReported {
+            session_id,
+            requested: Some(SpeedMode::Fast),
+            actual: SpeedMode::Standard,
+        } if session_id == remote_id));
     }
 
     #[test]

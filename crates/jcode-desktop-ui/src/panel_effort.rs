@@ -363,6 +363,8 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::RuntimeInfo {
+                    speed_mode: Default::default(),
+                    speed_options: Vec::new(),
                     session_id: "session-a".into(),
                     provider: Some("openai".into()),
                     model: Some("gpt-6.1-sol".into()),
@@ -370,6 +372,7 @@ mod tests {
                     auth_method: None,
                     account_label: None,
                     routes: vec![jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         model: "claude-opus-5-5".into(),
                         provider: "anthropic".into(),
                         api_method: "claude-oauth".into(),

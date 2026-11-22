@@ -36,6 +36,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
+    parser.add_argument("--composer-picker", choices=("model", "effort", "speed"),
+                        help="capture the offline composer picker on either supported platform")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")
     parser.add_argument("--rig-hud-click", action="store_true", help="click the OpenRig HUD and capture its selected inspector")
@@ -456,7 +458,7 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    native_fleet = (sys.platform == "darwin" and (args.rig_hud or args.transcript in ("openrig", "openrig-inspector"))
+    native_fleet = (sys.platform == "darwin" and (args.composer_picker or args.rig_hud or args.transcript in ("openrig", "openrig-inspector"))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
     if args.openrig_attention and not (native_fleet and args.transcript == "openrig"):
@@ -482,6 +484,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.composer_picker:
+            env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_SCREENSHOT_BAR="high",
+                       JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER=args.composer_picker)
         if args.rig_hud:
             env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
         if args.rig_hud_click:

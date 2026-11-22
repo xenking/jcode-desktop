@@ -2978,6 +2978,11 @@ impl Workspace {
                     }
                 }
             }
+            Update::SpeedSettled { session_id, serial, result } => {
+                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.read(cx).session_id == session_id) {
+                    slot.panel.update(cx, |panel, cx| panel.speed_settled(serial, result, cx));
+                }
+            }
             Update::AskAttachment {
                 session_id,
                 attachment_id,
@@ -10818,6 +10823,8 @@ mod tests {
                 Update::Event {
                     session_id: "same-id".into(),
                     event: jcode_sdk::ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: "same-id".into(),
                         provider: None,
                         model: None,

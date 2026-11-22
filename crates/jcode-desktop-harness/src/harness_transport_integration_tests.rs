@@ -96,6 +96,8 @@ impl Fixture {
                             prompts: vec![],
                         },
                         ApiRequest::GetRuntimeInfo { session_id } => ApiEvent::RuntimeInfo {
+                            speed_mode: Default::default(),
+                            speed_options: Vec::new(),
                             session_id: session_id.clone(),
                             provider: None,
                             model: None,

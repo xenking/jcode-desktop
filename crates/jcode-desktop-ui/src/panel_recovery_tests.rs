@@ -367,6 +367,8 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
         });
         panel.apply(
             &ApiEvent::RuntimeInfo {
+                speed_mode: Default::default(),
+                speed_options: Vec::new(),
                 session_id: "session-a".into(),
                 provider: None,
                 model: None,
@@ -375,6 +377,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                 account_label: None,
                 routes: vec![
                     jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         usage: None,
                         model: "openai:test".into(),
                         provider: "openai".into(),
@@ -383,6 +386,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                         detail: String::new(),
                     },
                     jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         usage: None,
                         model: "unavailable".into(),
                         provider: "openai".into(),

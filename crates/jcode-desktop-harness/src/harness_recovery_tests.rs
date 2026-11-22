@@ -8,6 +8,8 @@ fn recovery_event(session: &str) -> ApiEvent {
 
 fn recovery_fence(worker: &Worker) {
     worker.event(ApiEvent::RuntimeInfo {
+        speed_mode: Default::default(),
+        speed_options: Vec::new(),
         session_id: "s1".into(),
         provider: None,
         model: None,

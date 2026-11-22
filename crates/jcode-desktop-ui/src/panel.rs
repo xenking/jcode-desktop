@@ -162,6 +162,8 @@ pub(crate) use swarm_indicator::OpenSwarmWorker;
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+#[path = "panel_speed.rs"]
+mod speed;
 #[path = "panel_mode.rs"]
 mod mode_switch;
 // One disclosure model for every truncated line: tool titles, errors, output,
@@ -860,6 +862,7 @@ pub struct Panel {
     draft_session: DraftSession,
     /// Model and effort picked on a draft, applied once its session exists.
     draft_config: DraftConfig,
+    speed: speed::SessionSpeed,
     history_loaded: bool,
     history_paging: Option<history_paging::HistoryPaging>,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
@@ -947,7 +950,7 @@ pub struct Panel {
     side_question_history: Option<side_question::HistoryView>,
     model_picker_open: bool,
     picker_search: Option<(PickerKind, Entity<PromptInput>)>,
-    picker_triggers: [FocusHandle; 3],
+    picker_triggers: [FocusHandle; 4],
     composer_popover_watch: Option<(FocusHandle, gpui::Subscription, gpui::Subscription)>,
     composer_popover_trigger: Option<FocusHandle>,
     focus_pending: bool,
@@ -967,13 +970,18 @@ pub struct Panel {
 pub(crate) struct DraftConfig {
     model: Option<String>,
     effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speed: Option<jcode_provider_core::SpeedMode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     modes: Vec<String>,
 }
 
 impl DraftConfig {
     fn is_empty(&self) -> bool {
-        self.model.is_none() && self.effort.is_none() && self.modes.is_empty()
+        self.model.is_none()
+            && self.effort.is_none()
+            && self.speed.is_none()
+            && self.modes.is_empty()
     }
 }
 
@@ -1010,6 +1018,7 @@ pub(super) enum PickerKind {
     Model,
     Effort,
     Mode,
+    Speed,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -1366,6 +1375,10 @@ impl Panel {
         if self.draft_config.model.is_none() && current.is_some() {
             self.model = current;
         }
+        if cx.try_global::<LocalDraftModels>().is_some() {
+            self.sync_draft_speed(&routes);
+            self.sync_open_speed_picker(cx);
+        }
         let models = available_model_names(&routes);
         self.available_models = models.clone();
         let panel = cx.weak_entity();
@@ -1374,7 +1387,7 @@ impl Panel {
                 if !panel.session_deferred() {
                     return;
                 }
-                let current = panel.model.clone();
+                let current = panel.draft_config.model.clone().or_else(|| panel.model.clone());
                 panel.input.update(cx, |input, cx| {
                     input.set_model_routes(models, &routes, current, cx);
                 });
@@ -1401,6 +1414,9 @@ impl Panel {
     /// exists.
     pub(super) fn pick_draft_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.draft_config.model = Some(model.to_string());
+        if let Some(local) = cx.try_global::<LocalDraftModels>() {
+            self.sync_draft_speed(&local.routes);
+        }
         if self
             .draft_config
             .effort
@@ -1419,7 +1435,7 @@ impl Panel {
         self.model = Some(shown.to_string());
         // Deferred: `/model` runs inside the composer's own submit callback.
         let input = self.input.clone();
-        let current = self.model.clone();
+        let current = Some(model.to_owned());
         cx.defer(move |cx| input.update(cx, |input, cx| input.set_current_model(current, cx)));
         self.sync_effort_menu(cx);
         cx.notify();
@@ -1432,6 +1448,7 @@ impl Panel {
         let DraftConfig {
             model,
             effort,
+            speed,
             modes,
         } = std::mem::take(&mut self.draft_config);
         if let Some(model) = model {
@@ -1443,6 +1460,9 @@ impl Panel {
         if let Some(effort) = effort {
             self.reasoning_effort = None;
             self.request_effort_on(&ladder, &effort, cx);
+        }
+        if let Some(speed) = speed {
+            self.apply_draft_speed(speed, cx);
         }
         for mode in modes {
             self.bridge.send(Command::RuntimeCommand {
@@ -1789,6 +1809,7 @@ impl Panel {
             awaiting_persisted: false,
             draft_session: DraftSession::Requested,
             draft_config: DraftConfig::default(),
+            speed: speed::SessionSpeed::default(),
             expanded_regions,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
@@ -2759,6 +2780,7 @@ impl Panel {
                             _ => None,
                         };
                         jcode_sdk::ModelRouteInfo {
+                            speed_options: Vec::new(),
                             api_method: format!("{provider}-api-key"),
                             model,
                             provider,
@@ -2770,6 +2792,8 @@ impl Panel {
                     .collect();
                 this.apply(
                     &ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: this.session_id.clone(),
                         provider: Some("openai".into()),
                         model: Some("openai:atlas-01".into()),
@@ -3261,8 +3285,12 @@ impl Panel {
     pub(super) fn open_picker_search(&mut self, kind: PickerKind, cx: &mut Context<Self>) {
         self.swarm_list_open = false;
         self.select_background_job(None, cx);
-        let settings = self.input.read(cx).picker_settings();
-        let models = self.available_models.clone();
+        let settings = (kind != PickerKind::Speed).then(|| self.input.read(cx).picker_settings());
+        let models = if kind != PickerKind::Speed {
+            self.available_models.clone()
+        } else {
+            Vec::new()
+        };
         let deferred = self.session_deferred();
         let submit = cx.weak_entity();
         let cancel = cx.weak_entity();
@@ -3272,6 +3300,7 @@ impl Panel {
                 PickerKind::Model => "Search models…",
                 PickerKind::Effort => "Search effort…",
                 PickerKind::Mode => "Search modes and skills • Tab toggles • Enter closes",
+                PickerKind::Speed => "Inference speed",
             };
             let mut input = PromptInput::new(cx, placeholder, move |content, _, _, app| {
                 if let Some(panel) = submit.upgrade() {
@@ -3288,6 +3317,11 @@ impl Panel {
                         }
                         if content.starts_with("/model ") || content.starts_with("/effort ") {
                             panel.handle_slash_command(&content, cx);
+                        }
+                        if kind == PickerKind::Speed
+                            && let Some(tier) = crate::speed_icon::command_tier(&content)
+                        {
+                            panel.choose_speed(tier, cx);
                         }
                         panel.picker_search = None;
                         panel.model_picker_open = false;
@@ -3315,13 +3349,19 @@ impl Panel {
                     panel.dismiss_composer_popover(focus, true, window, cx);
                 });
             });
-            input.apply_picker_settings(settings, cx);
+            if let Some(settings) = settings {
+                input.apply_picker_settings(settings, cx);
+            }
             input.set_pending_session(deferred, cx);
+            if kind == PickerKind::Speed {
+                input.set_speed_picker(self.speed_picker(), cx);
+            }
             input.start_picker_search(
                 match kind {
                     PickerKind::Model => "/model",
                     PickerKind::Effort => "/effort",
                     PickerKind::Mode => "/mode",
+                    PickerKind::Speed => "/speed",
                 },
                 models,
                 cx,
@@ -4596,6 +4636,7 @@ impl Panel {
                 {
                     self.invalidate_context_meter();
                     self.refresh_context_usage(cx);
+                    self.invalidate_speed_route(cx);
                 }
                 self.sync_effort_menu(cx);
             }
@@ -4606,6 +4647,8 @@ impl Panel {
                 auth_method,
                 account_label,
                 routes,
+                speed_mode,
+                speed_options,
                 ..
             } => {
                 if provider.is_some() {
@@ -4633,6 +4676,13 @@ impl Panel {
                     input.set_model_routes(models, routes, self.model.clone(), cx);
                 });
                 self.sync_effort_menu(cx);
+                self.update_speed(*speed_mode, speed_options, cx);
+            }
+            ApiEvent::SpeedModeChanged { speed_mode, speed_options, .. } => {
+                self.update_speed(*speed_mode, speed_options, cx);
+            }
+            ApiEvent::SpeedModeReported { requested, actual, .. } => {
+                self.record_speed_report(*requested, *actual, cx);
             }
             ApiEvent::TokenUsage {
                 input,
@@ -10219,6 +10269,7 @@ mod tests {
 
     fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
         jcode_sdk::ModelRouteInfo {
+            speed_options: Vec::new(),
             usage: None,
             model: model.into(),
             provider: "openai".into(),
@@ -10281,6 +10332,8 @@ mod tests {
                 unavailable.available = false;
                 panel.apply(
                     &ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
@@ -10339,6 +10392,8 @@ mod tests {
             panel.update(cx, |panel, cx| {
                 panel.apply(
                     &ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: "session-a".into(),
                         provider: Some("Claude".into()),
                         model: Some("claude-opus-5-5".into()),
@@ -11432,12 +11487,15 @@ mod tests {
                 assert_eq!(panel.status_line(), "Ready");
                 panel.apply(
                     &ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         auth_method: None,
                         account_label: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
+                            speed_options: Vec::new(),
                             usage: None,
                             model: "gpt-5.6-sol".into(),
                             provider: "openai".into(),
@@ -12285,6 +12343,8 @@ mod tests {
             panel.as_ref().unwrap().update(cx, |panel, cx| {
                 panel.apply(
                     &ApiEvent::RuntimeInfo {
+                        speed_mode: Default::default(),
+                        speed_options: Vec::new(),
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),

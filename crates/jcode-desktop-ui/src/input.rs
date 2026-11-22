@@ -266,6 +266,7 @@ pub struct PromptInput {
     /// Levels the serving model accepts, for the `/effort` menu.
     effort_ladder: Vec<&'static str>,
     current_effort: Option<String>,
+    speed_picker: Option<crate::speed_icon::SpeedPicker>,
     current_modes: Vec<String>,
     mode_catalog: crate::mode_catalog::ModeCatalog,
     /// Level picked on a model row with the effort keys, sent with the
@@ -1240,6 +1241,7 @@ impl PromptInput {
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
             current_effort: None,
+            speed_picker: None,
             current_modes: Vec::new(),
             mode_catalog: Default::default(),
             picker_effort: None,
@@ -1987,9 +1989,26 @@ impl PromptInput {
         if !command_content.starts_with('/') || command_content.contains(['\n', '\r']) {
             return Vec::new();
         }
-        let now = model_menu::now_unix_secs();
         let trimmed = command_content.trim_end();
         let first = trimmed.split_whitespace().next().unwrap_or_default();
+        if self.picker_prefix == Some("/speed") {
+            let query = trimmed.strip_prefix("/speed").unwrap_or_default().trim().to_ascii_lowercase();
+            return self.speed_picker.iter().flat_map(|picker| {
+                picker.options.iter().filter_map(|(tier, detail)| {
+                    let value = crate::speed_icon::command_value(*tier);
+                    value.trim_start_matches("/speed ").contains(&query).then(|| CommandSuggestion {
+                        value,
+                        help: String::new(),
+                        active_choice: *tier == picker.active,
+                        detail: Some(detail.clone()),
+                        header: None,
+                        toggle: None,
+                        action: None,
+                    })
+                })
+            }).collect();
+        }
+        let now = model_menu::now_unix_secs();
         if first == "/mode" {
             let modes = mode_suggestions(
                 trimmed,
@@ -2188,6 +2207,16 @@ impl PromptInput {
         }
         let raw_content = self.command_content();
         let content = raw_content.trim().to_string();
+        if self.picker_prefix == Some("/speed") {
+            if let Some(command) = self
+                .command_suggestions()
+                .get(self.command_selection)
+                .map(|row| row.value.clone())
+            {
+                self.submit_command(command, queued, window, cx);
+            }
+            return;
+        }
         if self.standalone_btw
             && !queued
             && self.picker_prefix.is_none()
@@ -2290,6 +2319,8 @@ impl PromptInput {
                 || crate::commands::is_accounts_command(&command)
                 || crate::commands::reset_command(&command).is_some()
                 || command == "/btw"
+                || (self.picker_prefix == Some("/speed")
+                    && crate::speed_icon::command_tier(&command).is_some())
                 || crate::panel::is_draft_config_command(&command))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
@@ -3175,7 +3206,7 @@ impl PromptInput {
         self.picker_effort = None;
         self.suggestions_revision += 1;
         self.set_content(String::new(), cx);
-        if prefix == "/effort"
+        if matches!(prefix, "/effort" | "/speed")
             && let Some(index) = self
                 .command_suggestions()
                 .iter()
@@ -3184,6 +3215,30 @@ impl PromptInput {
             self.command_selection = index;
             self.reveal_command(index);
         }
+    }
+
+    pub(crate) fn set_speed_picker(
+        &mut self,
+        picker: crate::speed_icon::SpeedPicker,
+        cx: &mut Context<Self>,
+    ) {
+        if self.speed_picker.as_ref() == Some(&picker) {
+            return;
+        }
+        let focused = (self.picker_prefix == Some("/speed"))
+            .then(|| self.command_suggestions().get(self.command_selection).map(|row| row.value.clone()))
+            .flatten();
+        self.speed_picker = Some(picker);
+        self.suggestions_revision += 1;
+        if self.picker_prefix == Some("/speed") {
+            let rows = self.command_suggestions();
+            self.command_selection = focused
+                .and_then(|focused| rows.iter().position(|row| row.value == focused))
+                .or_else(|| rows.iter().position(|row| row.active_choice))
+                .unwrap_or(0);
+            self.reveal_command(self.command_selection);
+        }
+        cx.notify();
     }
 
     #[cfg(test)]
@@ -4697,6 +4752,7 @@ impl Render for PromptInput {
                                                                 Some("/mode") => {
                                                                     "No modes or skills match"
                                                                 }
+                                                                Some("/speed") => "No speeds match",
                                                                 _ => "No models match",
                                                             }),
                                                     )
@@ -6693,6 +6749,7 @@ mod tests {
         let window = input_window(cx);
         let routes: Vec<_> = (1..=5)
             .map(|n| jcode_sdk::ModelRouteInfo {
+                speed_options: Vec::new(),
                 model: format!("atlas-{n}"),
                 provider: "OpenAI".into(),
                 api_method: "openai-api-key".into(),
@@ -6766,6 +6823,7 @@ mod tests {
                 .map(|n| {
                     let model = format!("atlas-{n}");
                     jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         usage: Some(jcode_sdk::ModelUsage {
                             count: if model == favored { 99 } else { n },
                             ..Default::default()
@@ -6804,6 +6862,7 @@ mod tests {
     fn model_usage_ranking_preserves_the_highlighted_choice_on_refresh(cx: &mut TestAppContext) {
         let window = input_window(cx);
         let route = |model: &str, count| jcode_sdk::ModelRouteInfo {
+            speed_options: Vec::new(),
             model: model.into(),
             provider: "openai".into(),
             api_method: "oauth".into(),

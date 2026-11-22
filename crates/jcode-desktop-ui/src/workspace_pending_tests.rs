@@ -711,6 +711,7 @@ fn opening_the_model_picker_on_a_first_draft_does_not_create_a_session(
             Update::DraftModels {
                 current: Some("gpt-5.6-terra".into()),
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    speed_options: Vec::new(),
                     model: "gpt-5.6-terra".into(),
                     provider: "openai".into(),
                     api_method: "openai-api".into(),
@@ -847,38 +848,31 @@ fn typing_a_runtime_command_does_not_create_an_empty_session(cx: &mut gpui::Test
     );
 }
 
-/// Setting effort and model is how a new session usually starts. Neither may
-/// register the session: both wait for the first prompt and reach the runtime
-/// ahead of it.
 #[gpui::test]
-fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::TestAppContext) {
+fn draft_model_effort_and_speed_reach_the_runtime_before_the_first_prompt(cx: &mut gpui::TestAppContext) {
+    use jcode_provider_core::{SpeedAvailability, SpeedMode, SpeedOption};
+
     let (workspace, vcx, commands) = setup(cx);
-    // An earlier session reported the model catalog, as any used app has.
     workspace.update(vcx, |w, cx| {
-        w.slots[0].panel.update(cx, |panel, cx| {
-            panel.apply(
-                &jcode_sdk::ApiEvent::RuntimeInfo {
-                    session_id: "existing".into(),
-                    provider: Some("openai".into()),
-                    model: Some("openai:gpt-5.6-terra".into()),
-                    reasoning_effort: None,
-                    auth_method: None,
-                    account_label: None,
-                    routes: ["gpt-5.6-terra", "gpt-5.6-sol"]
-                        .into_iter()
-                        .map(|model| jcode_sdk::ModelRouteInfo {
-                            usage: None,
-                            model: model.into(),
-                            provider: "openai".into(),
-                            api_method: "openai".into(),
-                            available: true,
-                            detail: String::new(),
-                        })
-                        .collect(),
-                },
-                cx,
-            )
-        })
+        w.apply(Update::DraftModels {
+            current: Some("gpt-5.6-terra".into()),
+            routes: ["gpt-5.6-terra", "gpt-5.6-sol"]
+                .into_iter()
+                .map(|model| jcode_sdk::ModelRouteInfo {
+                    speed_options: if model == "gpt-5.6-sol" {
+                        vec![SpeedOption { mode: SpeedMode::Fast, availability: SpeedAvailability::Available, reason: None }]
+                    } else {
+                        Vec::new()
+                    },
+                    usage: None,
+                    model: model.into(),
+                    provider: "openai".into(),
+                    api_method: "openai".into(),
+                    available: true,
+                    detail: String::new(),
+                })
+                .collect(),
+        }, cx);
     });
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
@@ -894,11 +888,18 @@ fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::T
     vcx.simulate_input("/effort high");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("speed-mode-Standard").is_some());
+    click_draft_control(vcx, "panel-speed");
+    assert!(vcx.debug_bounds("speed-picker-icon-1").is_some());
+    assert!(vcx.debug_bounds("speed-picker-icon-2").is_none());
+    vcx.simulate_keystrokes("down enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("speed-mode-Fast").is_some());
     vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.toggle_model_picker(window, cx)));
     vcx.run_until_parked();
     assert!(
         commands.try_recv().is_err(),
-        "choosing effort or model must not register a session"
+        "choosing effort, model or speed must not register a session"
     );
     panel.read_with(vcx, |panel, _| {
         assert!(panel.session_deferred());
@@ -944,6 +945,10 @@ fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::T
                 session_id,
                 operation: harness::SessionOperation::SetEffort(effort),
             } if session_id == "ready" && effort == "high" => Some("effort"),
+            Command::SessionOperation {
+                session_id,
+                operation: harness::SessionOperation::SetSpeed { mode: SpeedMode::Fast, .. },
+            } if session_id == "ready" => Some("speed"),
             Command::Send {
                 session_id,
                 content,
@@ -954,8 +959,8 @@ fn effort_and_model_picked_on_a_draft_wait_for_the_first_prompt(cx: &mut gpui::T
         .collect();
     assert_eq!(
         order,
-        ["model", "effort", "prompt"],
-        "the picked model and effort reach the new session before its prompt"
+        ["model", "effort", "speed", "prompt"],
+        "the picked settings reach the new session before its prompt"
     );
 }
 
@@ -975,6 +980,7 @@ fn fable_draft(
                 routes: ["claude-opus-5-5", "claude-fable-5-2"]
                     .into_iter()
                     .map(|model| jcode_sdk::ModelRouteInfo {
+                        speed_options: Vec::new(),
                         model: model.into(),
                         provider: "claude".into(),
                         api_method: "claude-oauth".into(),

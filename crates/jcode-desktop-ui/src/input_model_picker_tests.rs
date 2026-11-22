@@ -16,6 +16,7 @@ impl Render for Fixture {
 fn routes(count: usize) -> Vec<jcode_sdk::ModelRouteInfo> {
     (0..count)
         .map(|index| jcode_sdk::ModelRouteInfo {
+            speed_options: Vec::new(),
             model: format!("atlas-{index:04}"),
             provider: "OpenAI".into(),
             api_method: "openai-api-key".into(),
@@ -308,6 +309,7 @@ fn headers_show_quota_and_the_highlighted_row_offers_effort(cx: &mut gpui::TestA
     input.update_in(vcx, |input, window, cx| {
         window.focus(&input.focus_handle, cx);
         let route = jcode_sdk::ModelRouteInfo {
+            speed_options: Vec::new(),
             model: "gpt-5.6-sol".into(),
             provider: "OpenAI".into(),
             api_method: "openai-oauth".into(),
