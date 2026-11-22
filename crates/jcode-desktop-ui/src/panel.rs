@@ -786,6 +786,7 @@ pub struct Panel {
     image_pane_focus: FocusHandle,
     image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
+    image_preview_focus_pending: bool,
     pending_history_image: Option<String>,
     history_image_requests: std::cell::RefCell<HashMap<String, image_preview::HistoryImageLoad>>,
     image_preview_dimensions: Option<(u32, u32)>,
@@ -1704,6 +1705,7 @@ impl Panel {
             image_pane_focus: cx.focus_handle().tab_stop(true),
             image_pane_stacked: false,
             image_preview: None,
+            image_preview_focus_pending: false,
             pending_history_image: None,
             history_image_requests: std::cell::RefCell::new(HashMap::new()),
             image_preview_dimensions: None,
@@ -6454,6 +6456,12 @@ impl Render for Panel {
             } else {
                 self.focus_input(window, cx);
             }
+        }
+        if std::mem::take(&mut self.image_preview_focus_pending)
+            && self.image_preview.is_some()
+            && self.owns_keyboard_focus(window, cx)
+        {
+            self.focus_handle.focus(window, cx);
         }
         if !self.tool_detail_motion.is_empty() {
             let now = Instant::now();

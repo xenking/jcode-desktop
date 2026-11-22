@@ -104,7 +104,11 @@ def main():
         older = check("historical-row-opens-its-image")
         assert older["preview_label"] == f"[#img_{0:032x}]" and older["selected"] == 8, older
         key("escape")
-        click("gallery:thumb:8")
+        history_closed = check("historical-preview-escape")
+        assert not history_closed["preview"] and history_closed["draft"] == draft, history_closed
+        click("gallery:thumb:7")
+        refocused = check("refocused-thumbnail")
+        assert refocused["focused"] and refocused["selected"] == 7, refocused
         key("escape")
         closed = check("gallery-escape")
         assert not closed["open"] and closed["composer_focus"] and closed["draft"] == draft, closed

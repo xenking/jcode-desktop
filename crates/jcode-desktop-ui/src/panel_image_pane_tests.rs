@@ -455,6 +455,40 @@ fn image_pane_leaves_room_for_the_picture_with_a_full_metadata_list(
 }
 
 #[gpui::test]
+fn historical_gallery_image_takes_keyboard_focus_when_its_bytes_arrive(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = setup(cx);
+    let id = "img_0123456789abcdef0123456789abcdef";
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.session_image_gallery.receive(Ok(serde_json::json!([{
+                "image_id": id,
+                "message_index": 0,
+                "media_type": "image/png",
+            }])
+            .to_string()));
+            panel.focus_input(window, cx);
+            cx.notify();
+        });
+    });
+    vcx.run_until_parked();
+    click(vcx, "panel-images");
+    click(vcx, "session-gallery-image-0");
+    assert!(vcx.debug_bounds("image-preview-full").is_none());
+    panel.update(vcx, |panel, cx| {
+        panel.load_history_image(id.into(), Ok(fixture("historical.png").data), cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_some());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("image-preview-full").is_none());
+    assert!(vcx.debug_bounds("session-image-pane").is_some());
+    assert_draft(&panel, vcx);
+}
+
+#[gpui::test]
 fn image_pane_follows_incoming_images_only_without_explicit_selection(
     cx: &mut gpui::TestAppContext,
 ) {

@@ -252,6 +252,7 @@ impl Panel {
         if open && let Some(image) = selected.or_else(|| stored.clone()) {
             self.image_preview_dimensions = crate::image_modal::dimensions(&image.data);
             self.image_preview = Some(image);
+            self.image_preview_focus_pending = true;
             self.image_preview_zoom = 1.0;
             self.image_preview_scroll = gpui::ScrollHandle::new();
             self.image_preview_drag = None;
@@ -270,6 +271,7 @@ impl Panel {
     pub(super) fn close_image_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_history_image = None;
         self.image_preview = None;
+        self.image_preview_focus_pending = false;
         self.image_preview_drag = None;
         self.focus_input(window, cx);
         cx.notify();
