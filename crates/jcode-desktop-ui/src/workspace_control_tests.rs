@@ -55,7 +55,27 @@ fn state_returns_visible_applet_without_adding_it_to_history(cx: &mut gpui::Test
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.push_test_panel("session-a", cx);
-        w.slots[0].panel.update(cx, |p, _| p.control_test_tool());
+        w.slots[0].panel.update(cx, |p, cx| {
+            p.apply(
+                &jcode_sdk::api::ApiEvent::ToolStart {
+                    session_id: "session-a".into(),
+                    call_id: "mount-call".into(),
+                    name: "applet".into(),
+                },
+                cx,
+            );
+            p.apply(
+                &jcode_sdk::api::ApiEvent::ToolDone {
+                    session_id: "session-a".into(),
+                    call_id: "mount-call".into(),
+                    name: "applet".into(),
+                    output: "Applet `review` revision 1.".into(),
+                    error: None,
+                    codemode: None,
+                },
+                cx,
+            );
+        });
         let applets = serde_json::from_value(serde_json::json!({"instances": [{
             "id": "review", "applet": "jcode.agent",
             "placement": {"kind": "inline", "session_id": "session-a", "anchor": {"kind": "end"}},

@@ -5540,6 +5540,9 @@ impl Panel {
             self.applet_positions.retain(|id, _| seen.contains(id));
         }
         rows.sort_by_key(|(position, _)| *position);
+        if rows.is_empty() && self.applet_rows.is_empty() {
+            return;
+        }
         // Any card change (mount, patch, close) can change row heights.
         self.transcript_measurements.dirty = true;
         self.applet_rows = rows;
