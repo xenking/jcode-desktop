@@ -522,14 +522,13 @@ fn history_scrolls_beneath_floating_composer(cx: &mut gpui::TestAppContext) {
         viewport.bottom() >= input.bottom() - px(1.),
         "the transcript viewport extends beneath the composer: {viewport:?} {input:?}"
     );
-    // At the live end the last row's content clears the composer entirely.
-    // The row itself carries the dock height as bottom padding.
+    // At the live end the last row's content clears the entire dock, including
+    // the veil that blocks clicks. The scroll gutter is outside the card.
     let last = vcx.debug_bounds("transcript-row-79").unwrap();
-    let pad = panel.read_with(vcx, |panel, _| panel.transcript_end_pad);
-    assert!(pad > 0.0, "the last row reserves the composer's height");
+    let dock = vcx.debug_bounds("composer-dock").unwrap();
     assert!(
-        last.bottom() - px(pad) <= input.top(),
-        "{last:?} minus {pad} must clear {input:?}"
+        dock.top() - last.bottom() >= px(TRANSCRIPT_BOTTOM_GAP - 0.5),
+        "{last:?} must clear {dock:?}"
     );
     assert!(panel.read_with(vcx, |panel, _| panel.transcript_end_visible));
     assert!(vcx.debug_bounds("jump-to-latest").is_none());

@@ -594,9 +594,9 @@ impl Panel {
                 gpui::canvas(
                     |_, _, _| (),
                     move |bounds, _, _, cx| {
-                        // Measure after paint. The fade is see-through, so
-                        // only the solid part below it reserves list space.
-                        let height = (f32::from(bounds.size.height) - DOCK_FADE).max(0.).round();
+                        // The fade also intercepts clicks. Keep the transcript
+                        // tail above the entire dock, not just the solid part.
+                        let height = f32::from(bounds.size.height).round();
                         let panel = panel.clone();
                         cx.defer(move |cx| {
                             let Some(entity) = panel.upgrade() else {

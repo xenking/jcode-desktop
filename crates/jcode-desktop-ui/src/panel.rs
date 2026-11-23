@@ -7737,11 +7737,6 @@ impl Render for Panel {
                                     .when(highlighted, |el| el.rounded_lg().bg(Theme::global().ACCENT.opacity(0.14)))
                                     .px_3()
                                     .pt(px(top_padding))
-                                    .pb(if rewind_inset > px(0.) {
-                                        px(0.)
-                                    } else {
-                                        px(end_pad)
-                                    })
                                     .map(|el| match display.alignment {
                                         crate::config::TextAlignment::Left => el.text_left(),
                                         crate::config::TextAlignment::Center => el.text_center(),
@@ -7781,12 +7776,6 @@ impl Render for Panel {
                                             }
                                         },
                                     )
-                                    .when(row_index + 1 == row_count, |el| {
-                                        el.child(latest::end_marker(
-                                            row_end_visible.clone(),
-                                            end_list.clone(),
-                                        ))
-                                    })
                                     .child(prompt::visibility_marker(
                                         row_index,
                                         prompt::is_pinnable_prompt(item),
@@ -7798,17 +7787,23 @@ impl Render for Panel {
                                 } else {
                                     padded.into_any_element()
                                 };
-                                if rewind_inset > px(0.)
-                                    && (row_index == 0 || row_index + 1 == row_count)
-                                {
+                                let last = row_index + 1 == row_count;
+                                if last || (row_index == 0 && rewind_inset > px(0.)) {
                                     div()
+                                        .relative()
                                         .pt(if row_index == 0 { rewind_inset } else { px(0.) })
-                                        .pb(if row_index + 1 == row_count {
+                                        .pb(if last {
                                             rewind_inset + px(end_pad)
                                         } else {
                                             px(0.)
                                         })
                                         .child(rendered)
+                                        .when(last, |el| {
+                                            el.child(latest::end_marker(
+                                                row_end_visible.clone(),
+                                                end_list.clone(),
+                                            ))
+                                        })
                                         .into_any_element()
                                 } else {
                                     rendered

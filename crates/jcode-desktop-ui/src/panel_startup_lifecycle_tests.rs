@@ -164,6 +164,11 @@ fn resumed_transcript_keeps_cards_clear_of_the_composer_footer(cx: &mut gpui::Te
         let footer = vcx.debug_bounds("panel-meta").unwrap();
         let input = vcx.debug_bounds("prompt-input").unwrap();
         assert!(last_row.bottom() <= viewport.bottom() + px(1.));
+        let dock = vcx.debug_bounds("composer-dock").unwrap();
+        assert!(
+            dock.top() - last_row.bottom() >= px(8.),
+            "last card must clear even the veil that intercepts clicks: {last_row:?}, {dock:?}"
+        );
         let tabs = vcx.debug_bounds("composer-tabs").unwrap();
         assert!(
             tabs.top() - last_row.bottom() >= px(8.),
