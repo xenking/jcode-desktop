@@ -126,13 +126,12 @@ impl Panel {
     /// Every kind of growth at the tail glides: streamed text wrapping onto a
     /// new line, a tool card appearing, tool input or output filling in, the
     /// activity row, response stats. Only jumps larger than a few screens
-    /// (history restores, reconnect recovery) snap. `_structural` is kept for
-    /// callers. Row insertions are no longer a reason to jump.
+    /// (history restores, reconnect recovery) snap.
     pub(super) fn follow_transcript_tail(
         &mut self,
         snap: bool,
-        _structural: bool,
         header: u64,
+        now: Instant,
         window: &mut Window,
     ) {
         let bounds = self.transcript_list.viewport_bounds();
@@ -155,14 +154,13 @@ impl Panel {
             // have. The next frame resumes holding from there.
             self.transcript_list.scroll_to_end();
             if self.tail_live() {
-                self.tail_glide.live_at = Some(Instant::now());
+                self.tail_glide.live_at = Some(now);
             }
             window.request_animation_frame();
             return;
         }
         let max = f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0);
         let listed = -f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y);
-        let now = Instant::now();
         if self.tail_live() {
             self.tail_glide.live_at = Some(now);
         }
@@ -275,6 +273,18 @@ impl Panel {
 }
 
 #[cfg(test)]
+fn frame(vcx: &mut gpui::VisualTestContext) {
+    frame_after(vcx, Duration::from_millis(8));
+}
+
+#[cfg(test)]
+fn frame_after(vcx: &mut gpui::VisualTestContext, elapsed: Duration) {
+    vcx.executor().advance_clock(elapsed);
+    vcx.update(|window, cx| window.simulate_next_frame(cx));
+    vcx.run_until_parked();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -346,12 +356,6 @@ mod tests {
             panel.transcript_list.max_offset_for_scrollbar().y
                 + panel.transcript_list.scroll_px_offset_for_scrollbar().y,
         )
-    }
-
-    fn frame(vcx: &mut gpui::VisualTestContext) {
-        vcx.update(|window, cx| window.simulate_next_frame(cx));
-        vcx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(8));
     }
 
     #[gpui::test]
@@ -518,7 +522,7 @@ mod tests {
         }
         let offset =
             |panel: &Panel| -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-        let mut previous = panel.read_with(vcx, |panel, _| offset(panel));
+        let mut previous = panel.read_with(vcx, |panel, _| (offset(panel), gap(panel)));
         let mut glided = false;
         // Fast agent loop: tool calls, their input, results, and more text,
         // a new structural row every few frames.
@@ -554,17 +558,18 @@ mod tests {
                     };
                     panel.apply(&event, cx);
                 });
-                frame(vcx);
+                let elapsed = if (n + step) % 4 == 0 { 48 } else { 8 };
+                frame_after(vcx, Duration::from_millis(elapsed));
                 let (now, gap_now) = panel.read_with(vcx, |panel, _| {
                     assert!(panel.stick_to_bottom, "still following");
                     (offset(panel), gap(panel))
                 });
                 assert!(
-                    now + 0.5 >= previous,
-                    "never scrolls backwards: {previous} -> {now}"
+                    now + 0.5 >= previous.0,
+                    "tool={n} step={step}, offset/gap {previous:?} -> ({now}, {gap_now})"
                 );
                 glided |= gap_now > 1.0;
-                previous = now;
+                previous = (now, gap_now);
             }
         }
         assert!(glided, "tail growth was eased, not snapped");
@@ -580,12 +585,6 @@ mod tests {
 #[cfg(test)]
 mod pinned_header_tests {
     use super::*;
-
-    fn frame(vcx: &mut gpui::VisualTestContext) {
-        vcx.update(|window, cx| window.simulate_next_frame(cx));
-        vcx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(8));
-    }
 
     /// A todo call adds or grows the pinned card above the transcript, which
     /// shortens the viewport. That is not new content at the tail: the last

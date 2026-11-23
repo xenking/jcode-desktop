@@ -313,7 +313,7 @@ mod panel_tests {
                 window.simulate_next_frame(cx);
             });
             vcx.run_until_parked();
-            std::thread::sleep(std::time::Duration::from_millis(8));
+            vcx.executor().advance_clock(Duration::from_millis(8));
         }
     }
 

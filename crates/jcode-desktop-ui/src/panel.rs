@@ -5159,7 +5159,7 @@ impl Panel {
             || self.preview_state.is_some()
             || cx.reduce_motion()
             || crate::config::get().appearance.reduce_motion;
-        let now = Instant::now();
+        let now = cx.background_executor().now();
         let text = self.text_reveal.tick(&self.streaming_text, now, instant);
         let reasoning = self
             .reasoning_reveal
@@ -7580,7 +7580,12 @@ impl Render for Panel {
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
             // Ease wrapped-line growth of live text instead of jumping a line.
-            self.follow_transcript_tail(instant_motion, row_count_changed, tail_header, window);
+            self.follow_transcript_tail(
+                instant_motion,
+                tail_header,
+                cx.background_executor().now(),
+                window,
+            );
         } else {
             self.tail_glide.reset();
         }
@@ -9478,6 +9483,9 @@ fn compact_clock() -> gpui::Div {
     div()
         .debug_selector(|| "tool-elapsed".into())
         .flex_none()
+        .flex()
+        .items_center()
+        .whitespace_nowrap()
         .text_size(px(11.0))
         .text_color(Theme::global().TEXT_FAINT)
 }

@@ -184,7 +184,7 @@ mod tests {
         assert!(vcx.debug_bounds("tool-summary").is_none());
         assert!(vcx.debug_bounds("tool-type-icon").is_some());
         assert!(vcx.debug_bounds("tool-icon-running").is_some());
-        assert!(vcx.debug_bounds("tool-elapsed").is_some());
+        let clock = vcx.debug_bounds("tool-elapsed").unwrap();
         panel.read_with(vcx, |panel, _| {
             assert!(matches!(&panel.items[0], Item::Reasoning(text) if text == "Check first."));
             assert!(
@@ -211,6 +211,10 @@ mod tests {
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("tool-summary").is_some());
+            assert_eq!(
+                vcx.debug_bounds("tool-header").unwrap().size.height,
+                header.size.height
+            );
             panel.read_with(vcx, |panel, _| {
                 assert_eq!(panel.items.len(), 2, "deltas update the same row");
                 let Item::Tool { input, done, .. } = &panel.items[1] else {
@@ -263,7 +267,14 @@ mod tests {
             assert!(start.is_some() && finish.is_some());
             assert!(panel.tool_durations.contains_key("early"));
         });
-        assert!(vcx.debug_bounds("tool-elapsed").is_some());
+        assert_eq!(
+            vcx.debug_bounds("tool-elapsed").unwrap().size.height,
+            clock.size.height
+        );
+        assert_eq!(
+            vcx.debug_bounds("tool-header").unwrap().size.height,
+            header.size.height
+        );
         panel.update(vcx, |panel, cx| {
             panel.expanded_regions.insert("early".into());
             cx.notify();
