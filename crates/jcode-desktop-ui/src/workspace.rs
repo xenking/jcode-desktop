@@ -12894,7 +12894,14 @@ mod tests {
                 assert!(gutter.top() >= directory.bottom());
                 assert!(gutter.top() >= machines.bottom());
                 assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
-                assert_eq!(gutter.top(), machines.bottom());
+                if view == SidebarView::Sessions {
+                    let catalog = vcx.debug_bounds("sidebar-session-catalog-controls").unwrap();
+                    assert_eq!(catalog.top(), machines.bottom());
+                    assert_eq!(gutter.top(), catalog.bottom());
+                } else {
+                    assert!(vcx.debug_bounds("sidebar-session-catalog-controls").is_none());
+                    assert_eq!(gutter.top(), machines.bottom());
+                }
                 assert_eq!(gutter.top(), body.top());
                 assert_eq!(gutter.bottom(), body.bottom());
                 let outset = if mode == crate::config::LayoutMode::FolderTabs {

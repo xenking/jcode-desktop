@@ -595,6 +595,8 @@ mod tests {
         vcx.run_until_parked();
         let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
         let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+        let catalog = vcx.debug_bounds("sidebar-session-catalog-controls").unwrap();
+        assert_eq!(catalog.bottom(), body.top());
         let header = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
         vcx.run_until_parked();
@@ -637,8 +639,10 @@ mod tests {
             assert_eq!(current_body.size.width, body.size.width);
             if expected == SidebarView::Sessions {
                 assert_eq!(current_body, body);
+                assert_eq!(vcx.debug_bounds("sidebar-session-catalog-controls"), Some(catalog));
             } else {
-                assert_eq!(current_body.top(), body.top());
+                assert!(vcx.debug_bounds("sidebar-session-catalog-controls").is_none());
+                assert_eq!(current_body.top(), catalog.top());
             }
             // One unified sidebar: no Swarm/Worktrees mode switch in any view.
             assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());

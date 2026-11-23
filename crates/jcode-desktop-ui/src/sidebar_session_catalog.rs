@@ -96,6 +96,7 @@ impl Workspace {
         let theme = Theme::global();
         let selected = self.session_catalog;
         div()
+            .debug_selector(move || format!("{surface}-session-catalog-controls"))
             .flex_none()
             .min_w_0()
             .flex()
