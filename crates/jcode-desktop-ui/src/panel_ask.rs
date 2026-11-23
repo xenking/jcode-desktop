@@ -138,6 +138,24 @@ pub(crate) struct AskCard {
     attempt_id: Option<u64>,
     pub submit_error: Option<String>,
     scroll: gpui::ScrollHandle,
+    /// What each option label last painted, so tests can compare the wrapped
+    /// lines with the box the layout gave them.
+    #[cfg(test)]
+    label_layouts: LabelLayouts,
+}
+
+/// Test access to what each option label painted.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct LabelLayouts(
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<(usize, usize), gpui::TextLayout>>>,
+);
+
+#[cfg(test)]
+impl std::fmt::Debug for LabelLayouts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LabelLayouts")
+    }
 }
 
 impl AskCard {
@@ -169,6 +187,8 @@ impl AskCard {
             attempt_id: None,
             submit_error: None,
             scroll: gpui::ScrollHandle::new(),
+            #[cfg(test)]
+            label_layouts: Default::default(),
         }
     }
 
@@ -1335,21 +1355,38 @@ impl Panel {
                     .cursor_pointer()
                     .when(!selected, |el| el.hover(|el| el.bg(theme.INPUT_BG)))
                     .child(
+                        // The label is a stretched block, like the description
+                        // under it, with the indicator and the comment button
+                        // pinned in its margins. As a shrinking flex item the
+                        // installed app laid it out as one line yet painted it
+                        // one letter per line; the description, a stretched
+                        // block in the same row, never broke that way.
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                            .relative()
                             .min_w_0()
-                            .child(mark)
+                            .min_h(px(26.))
+                            .pl(px(26.))
+                            .pr(px(34.))
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .child(mark.absolute().left_0().top(px(4.)))
                             .child(
                                 div()
-                                    .flex_1()
                                     .min_w_0()
                                     .debug_selector(move || format!("ask-label-{q}-{o}"))
-                                    .child(if o < 9 {
-                                        format!("{}. {}", o + 1, option.label)
-                                    } else {
-                                        option.label.clone()
+                                    .child({
+                                        let text = gpui::StyledText::new(if o < 9 {
+                                            format!("{}. {}", o + 1, option.label)
+                                        } else {
+                                            option.label.clone()
+                                        });
+                                        #[cfg(test)]
+                                        card.label_layouts
+                                            .0
+                                            .borrow_mut()
+                                            .insert((q, o), text.layout().clone());
+                                        text
                                     }),
                             )
                             .child(
@@ -1357,7 +1394,9 @@ impl Panel {
                                     div().id(("ask-comment-button", q * 16 + o)),
                                 )
                                 .debug_selector(move || format!("ask-comment-button-{q}-{o}"))
-                                .flex_none()
+                                .absolute()
+                                .top_0()
+                                .right_0()
                                 .size(px(26.))
                                 .flex()
                                 .items_center()
@@ -1792,6 +1831,86 @@ mod tests {
                 "{selector}: label was {before:?}, now {label:?}; description {description:?}"
             );
         }
+    }
+
+    /// Every option label paints the lines the layout made room for. The
+    /// installed app laid a label out as one line and then painted it one
+    /// letter per line over the descriptions below.
+    fn assert_labels_paint_inside_their_rows(
+        panel: &Entity<Panel>,
+        vcx: &mut gpui::VisualTestContext,
+        stage: &str,
+    ) {
+        let options = panel.read_with(vcx, |panel, _| {
+            let card = panel.ask_card.as_ref().unwrap();
+            card.questions[card.cursor_question].options.len()
+        });
+        let q = panel.read_with(vcx, |panel, _| {
+            panel.ask_card.as_ref().unwrap().cursor_question
+        });
+        for o in 0..options {
+            let selector: &'static str = format!("ask-label-{q}-{o}").leak();
+            let bounds = vcx.debug_bounds(selector).unwrap();
+            let (lines, line_height, text) = panel.read_with(vcx, |panel, _| {
+                let card = panel.ask_card.as_ref().unwrap();
+                let layouts = card.label_layouts.0.borrow();
+                let layout = &layouts[&(q, o)];
+                let wrapped = layout.wrapped_text();
+                (wrapped.lines().count(), layout.line_height(), wrapped)
+            });
+            assert!(
+                line_height * lines as f32 <= bounds.size.height + px(1.),
+                "{stage}: label {o} paints {lines} lines into {bounds:?}: {text:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn option_labels_paint_the_lines_they_were_laid_out_for(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.simulate_resize(gpui::size(px(120.), px(800.)));
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        // The ask from the report: one question, three long descriptions.
+        let event = serde_json::from_value(serde_json::json!({
+            "ev": "ask_request", "session_id": "session-a", "request_id": "ask-htpc",
+            "tool_call_id": "toolu_htpc", "questions": [{
+                "header": "Очистка", "multi_select": false, "allow_other": true,
+                "question": "Какой из проверенных наборов удалить с root HTPC?",
+                "options": [
+                    {"label": "Очистить root (Recommended)", "description": "Освободить около 2,2 ГиБ на root: неиспользуемый Docker-образ node:22, кэш пакетов APT и два неполных rollout-снимка SQLite без манифеста. Сохранить три полных отката, действующие сервисы, видеозаписи и все данные SSD."},
+                    {"label": "Только Docker и APT", "description": "Удалить только неиспользуемый Docker-образ node:22 и кэш загрузок APT. Около 1 ГиБ, все бэкапы остаются."},
+                    {"label": "Ничего не удалять", "description": "Ничего не удалять. На SSD свободно около 388 ГиБ, пригодных для безопасного удаления копий не нашёл."}
+                ]
+            }]
+        }))
+        .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.test_settled_conversation(1, cx);
+            panel.apply(&event, cx);
+        });
+        vcx.run_until_parked();
+        assert_labels_paint_inside_their_rows(&panel, vcx, "shown");
+
+        for width in [260., 520., 900., 640.] {
+            vcx.simulate_resize(gpui::size(px(width), px(800.)));
+            vcx.run_until_parked();
+            assert_labels_paint_inside_their_rows(&panel, vcx, &format!("width {width}"));
+        }
+        let first = vcx.debug_bounds("ask-label-0-0").unwrap().center();
+        vcx.simulate_click(first, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_labels_paint_inside_their_rows(&panel, vcx, "selected");
+        let second = vcx.debug_bounds("ask-label-0-1").unwrap().center();
+        vcx.simulate_mouse_move(second, None, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_labels_paint_inside_their_rows(&panel, vcx, "hovered");
     }
 
     #[gpui::test]
