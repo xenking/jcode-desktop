@@ -2708,7 +2708,7 @@ impl PromptInput {
             }
             return;
         }
-        match crate::clipboard_image::read_paste() {
+        match crate::clipboard_image::read_paste(cx) {
             Ok(crate::clipboard_image::ClipboardContent::Files(paths)) => {
                 self.attach_pasted_files(&paths, window, cx);
                 return;

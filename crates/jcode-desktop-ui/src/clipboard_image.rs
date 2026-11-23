@@ -18,12 +18,22 @@ fn classify_paste(
     Ok(image()?.map_or(ClipboardContent::Empty, ClipboardContent::Image))
 }
 
-pub(crate) fn read_paste() -> Result<ClipboardContent, String> {
+pub(crate) fn read_paste(_cx: &gpui::App) -> Result<ClipboardContent, String> {
+    #[cfg(test)]
+    if let Some(reader) = _cx.try_global::<TestPasteReader>() {
+        return (reader.0)();
+    }
     let files = arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.get().file_list())
         .unwrap_or_default();
     classify_paste(files, read)
 }
+
+#[cfg(test)]
+pub(crate) struct TestPasteReader(pub fn() -> Result<ClipboardContent, String>);
+
+#[cfg(test)]
+impl gpui::Global for TestPasteReader {}
 
 #[cfg(test)]
 mod paste_tests {

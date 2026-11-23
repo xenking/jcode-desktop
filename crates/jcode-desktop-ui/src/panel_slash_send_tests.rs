@@ -28,7 +28,11 @@ fn composer(
 fn assert_literal(cx: &mut TestAppContext, text: &str, paste: bool, escape: bool) {
     let (vcx, commands) = composer(cx);
     if paste {
-        vcx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.into())));
+        vcx.update(|_, cx| {
+            use crate::clipboard_image::{ClipboardContent, TestPasteReader};
+            cx.set_global(TestPasteReader(|| Ok(ClipboardContent::Empty)));
+            cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
+        });
         vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-v"
         } else {
