@@ -121,10 +121,27 @@ fn startup_draft_accepts_typing_before_connection_and_promotes_in_place(
         "history does not replay the queue"
     );
     vcx.simulate_input("after connection");
+    assert_eq!(
+        input.read_with(vcx, |input, _| input.content.to_string()),
+        "after connection"
+    );
     vcx.simulate_keystrokes("enter");
-    assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { content, .. })
-        if content == "after connection")
+    vcx.run_until_parked();
+    let sent: Vec<_> = commands
+        .try_iter()
+        .filter_map(|command| match command {
+            Command::Send { session_id, content, .. } => Some((session_id, content)),
+            Command::ReadTodoSnapshot { .. } | Command::ReadContextBreakdown { .. } => None,
+            other => panic!(
+                "unexpected command after startup attachment: {:?}",
+                std::mem::discriminant(&other)
+            ),
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [("session-ready".to_owned(), "after connection".to_owned())],
+        "the same composer sends once into the promoted session"
     );
 }
 
