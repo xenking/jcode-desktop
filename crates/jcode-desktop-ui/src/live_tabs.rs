@@ -42,10 +42,13 @@ fn fit_tabs(entries: &mut Vec<TabEntry>, selected: usize, available: f32) -> Vec
         .iter()
         .filter(|(_, _, position)| *position == 0)
         .count();
-    let group_space = groups as f32 * group_label_width(available, groups)
-        + groups.saturating_sub(1) as f32
-            * TAB_GROUP_GAP.min(available / (groups.max(1) as f32 * 4.0));
-    let capacity = |width: f32| ((width - group_space) / MIN_TAB_EXPOSURE).floor() as usize;
+    let capacity = |width: f32| {
+        let width = width.max(0.0);
+        let group_space = groups as f32 * group_label_width(width, groups)
+            + groups.saturating_sub(1) as f32
+                * TAB_GROUP_GAP.min(width / (groups.max(1) as f32 * 4.0));
+        ((width - group_space) / MIN_TAB_EXPOSURE).floor() as usize
+    };
     if entries.len() <= capacity(available).max(1) {
         return Vec::new();
     }
@@ -2498,7 +2501,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_all_remain_visible_during_resize_and_keyboard_navigation(
+    fn live_tabs_remain_reachable_during_resize_and_keyboard_navigation(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(crate::bind_workspace_keys);
@@ -2568,13 +2571,13 @@ mod tests {
             });
             vcx.run_until_parked();
             let track = vcx.debug_bounds("live-session-tabs").unwrap();
-            // Crowded folders retain exposed edges inside the centered group.
+            let mut hidden = Vec::new();
             for index in 0..12 {
-                let tab = vcx
-                    .debug_bounds(Box::leak(
-                        format!("live-session-tab-{index}").into_boxed_str(),
-                    ))
-                    .unwrap();
+                let Some(tab) = vcx.debug_bounds(format!("live-session-tab-{index}").leak()) else {
+                    hidden.push(index);
+                    continue;
+                };
+                // Crowded folders retain exposed edges inside the centered group.
                 assert!(tab.left() >= track.left());
                 assert!(
                     tab.right() <= track.right() + px(1.),
@@ -2613,6 +2616,36 @@ mod tests {
                 assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], 11);
                 assert_eq!(workspace.test_coach().trace("new_panel").slow_paths, 0);
             });
+            if width > 480. {
+                assert!(hidden.is_empty(), "window={width} hid tabs {hidden:?}");
+            }
+            if let Some(trigger) = vcx.debug_bounds("tab-overflow") {
+                assert!(!hidden.is_empty());
+                vcx.simulate_click(trigger.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+                for index in 0..12 {
+                    assert_eq!(
+                        vcx.debug_bounds(format!("tab-overflow-item-{index}").leak())
+                            .is_some(),
+                        hidden.contains(&index),
+                        "window={width} overflow availability for session {index}"
+                    );
+                }
+                let index = hidden[0];
+                let item = vcx
+                    .debug_bounds(format!("tab-overflow-item-{index}").leak())
+                    .unwrap();
+                vcx.simulate_click(item.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+                assert_eq!(workspace.read_with(vcx, |w, _| w.active), index);
+                assert!(vcx.debug_bounds(format!("live-session-tab-{index}").leak()).is_some());
+                assert!(vcx.debug_bounds("tab-overflow-menu").is_none());
+                vcx.simulate_keystrokes("super-p");
+                vcx.run_until_parked();
+                assert_eq!(workspace.read_with(vcx, |w, _| w.active), 11);
+            } else {
+                assert!(hidden.is_empty(), "tabs {hidden:?} are unreachable");
+            }
         }
     }
 

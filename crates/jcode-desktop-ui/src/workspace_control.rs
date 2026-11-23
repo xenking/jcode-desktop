@@ -170,6 +170,7 @@ pub(super) fn handle_window_request(
                 | "alt-shift-down"
                 | "alt-shift-left"
                 | "alt-shift-right"
+                | "super-shift-j"
                 | crate::panel::shortcuts::CLEAN_CHAT_CHORD
         ) {
             return error("unsupported_key", "unknown fixture key");
