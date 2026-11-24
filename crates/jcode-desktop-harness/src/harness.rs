@@ -252,6 +252,18 @@ pub enum Update {
         attempt_id: u64,
         result: Result<(), AskResponseError>,
     },
+    /// The daemon accepted or refused the answer to a routing gate. A
+    /// refusal usually means another client answered first.
+    RoutingGateAnswerSettled {
+        session_id: String,
+        gate_id: String,
+        result: Result<(), String>,
+    },
+    /// The text reply to a routing intent, or why it failed.
+    RoutingIntentReply {
+        session_id: String,
+        result: Result<String, String>,
+    },
     CommandFailed {
         session_id: String,
         reason: String,
@@ -489,6 +501,17 @@ pub enum Command {
         attempt_id: u64,
         response: jcode_sdk::AskResponse,
     },
+    /// Answer a routing spending-limit gate.
+    RoutingGateAnswer {
+        session_id: String,
+        gate_id: String,
+        choice: jcode_sdk::RoutingGateChoice,
+    },
+    /// Set or read a routing intent for the session.
+    RoutingIntent {
+        session_id: String,
+        action: jcode_sdk::RoutingIntentAction,
+    },
     Fork {
         session_id: String,
     },
@@ -697,6 +720,11 @@ enum SessionCommand {
         attempt_id: u64,
         response: jcode_sdk::AskResponse,
     },
+    RoutingGateAnswer {
+        gate_id: String,
+        choice: jcode_sdk::RoutingGateChoice,
+    },
+    RoutingIntent(jcode_sdk::RoutingIntentAction),
     Fork,
     ForkWithPrompt {
         prompt: String,
@@ -1452,7 +1480,7 @@ pub fn controlled_runtime_socket() -> Option<std::path::PathBuf> {
     (socket.parent() == Some(home.as_path()) && socket.is_absolute()).then_some(socket)
 }
 
-fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
+pub(crate) fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     if let Some(socket) = controlled_runtime_socket() {
         return JcodeClient::connect(ConnectOptions {
             socket_path: Some(socket),
@@ -2108,6 +2136,38 @@ fn run_with_transports(
                         request_id,
                         attempt_id,
                         result: Err(AskResponseError::ConnectionChanged),
+                    });
+                }
+            }
+            Command::RoutingGateAnswer {
+                session_id,
+                gate_id,
+                choice,
+            } => {
+                let sent = workers.get(&session_id).is_some_and(|worker| {
+                    worker
+                        .send(SessionCommand::RoutingGateAnswer {
+                            gate_id: gate_id.clone(),
+                            choice,
+                        })
+                        .is_ok()
+                });
+                if !sent {
+                    let _ = updates.send(Update::RoutingGateAnswerSettled {
+                        session_id,
+                        gate_id,
+                        result: Err("The session is not connected.".into()),
+                    });
+                }
+            }
+            Command::RoutingIntent { session_id, action } => {
+                let sent = workers.get(&session_id).is_some_and(|worker| {
+                    worker.send(SessionCommand::RoutingIntent(action)).is_ok()
+                });
+                if !sent {
+                    let _ = updates.send(Update::RoutingIntentReply {
+                        session_id,
+                        result: Err("The session is not connected.".into()),
                     });
                 }
             }
@@ -4600,6 +4660,25 @@ fn session_worker_with_connector(
                             result,
                         });
                     }
+                    SessionCommand::RoutingGateAnswer { gate_id, choice } => {
+                        let result = client
+                            .answer_routing_gate(real_id, &gate_id, choice)
+                            .map_err(|error| error.message);
+                        let _ = updates.send(Update::RoutingGateAnswerSettled {
+                            session_id: session_id.clone(),
+                            gate_id,
+                            result,
+                        });
+                    }
+                    SessionCommand::RoutingIntent(action) => {
+                        let result = client
+                            .routing_intent(real_id, action)
+                            .map_err(|error| error.message);
+                        let _ = updates.send(Update::RoutingIntentReply {
+                            session_id: session_id.clone(),
+                            result,
+                        });
+                    }
                     SessionCommand::BackgroundTool => {
                         if let Err(error) = client.background_tool(real_id) {
                             let _ = updates.send(Update::CommandFailed {
@@ -5235,6 +5314,9 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::SwarmWorkerNotice { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
+        | ApiEvent::RoutingDecision { session_id, .. }
+        | ApiEvent::RoutingGate { session_id, .. }
+        | ApiEvent::RoutingGateClosed { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
         | ApiEvent::SwarmStatus { session_id, .. }
@@ -5314,6 +5396,9 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::SwarmWorkerNotice { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
+        | ApiEvent::RoutingDecision { session_id, .. }
+        | ApiEvent::RoutingGate { session_id, .. }
+        | ApiEvent::RoutingGateClosed { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
         | ApiEvent::SessionStatus { session_id, .. }
         | ApiEvent::ConnectionPhase { session_id, .. }

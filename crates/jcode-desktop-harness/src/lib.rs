@@ -13,6 +13,8 @@ pub mod managed_cloud_parity;
 pub mod paired;
 pub mod platform;
 pub mod remote_targets;
+pub mod routing;
+pub mod routing_rows;
 mod runtime_generation;
 pub mod swarm_status;
 pub mod swarm_usage;
