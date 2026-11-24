@@ -12,6 +12,7 @@ pub(super) fn conversation_item(item: &Item) -> bool {
         Item::Applet(_) => true,
         Item::Tool { name, done, .. } => name == "ask" && *done,
         Item::AgentMessage { message, .. } => agent_message::is_external(message),
+        Item::SideQuestion(_) => true,
         Item::Reasoning(_)
         | Item::BackgroundTask { .. }
         | Item::Todos(_)

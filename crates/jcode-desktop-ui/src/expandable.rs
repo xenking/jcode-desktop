@@ -145,7 +145,10 @@ pub(crate) fn all_regions(items: &[Item]) -> HashSet<String> {
                 keys.insert(call_id.clone());
             }
             Item::AgentMessage { message, .. } if super::agent_message::is_external(message) => {}
-            Item::Error(_) | Item::RuntimeError { .. } | Item::AgentMessage { .. } => {
+            Item::Error(_)
+            | Item::RuntimeError { .. }
+            | Item::AgentMessage { .. }
+            | Item::SideQuestion(_) => {
                 keys.insert(key::details(index));
             }
             Item::Stopped(_) | Item::CacheMiss(_) => {

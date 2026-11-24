@@ -156,6 +156,8 @@ mod fork_prompt;
 mod rig_hud;
 #[path = "panel_side_question.rs"]
 mod side_question;
+#[path = "panel_side_question_inline.rs"]
+mod side_question_inline;
 #[path = "panel_session_status.rs"]
 mod session_status;
 #[path = "panel_swarm_card.rs"]
@@ -409,6 +411,7 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp_ms: Option<i64>,
     },
+    SideQuestion(Box<side_question_inline::InlineQuestion>),
     ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
@@ -1684,7 +1687,9 @@ impl Panel {
         let expanded_regions =
             if tool_card_fixture && fixture.as_deref() == Some("tool-cards-details") {
                 HashSet::from(["fixture-codemode-multi".into(), "codemode-calls:fixture-codemode-multi".into()])
-            } else if crate::harness::screenshot_mode() && expandable::screenshot_expanded() {
+            } else if crate::harness::screenshot_mode()
+                && (expandable::screenshot_expanded() || fixture.as_deref() == Some("btw-clean-expanded"))
+            {
                 expandable::all_regions(&items)
             } else {
                 HashSet::new()
@@ -1849,7 +1854,7 @@ impl Panel {
             rewind_selection: None,
             transcript_list,
             clean_chat_override: match fixture.as_deref().filter(|_| crate::harness::screenshot_mode()) {
-                Some("external-dm-clean") => Some(true),
+                Some("external-dm-clean" | "btw-clean" | "btw-clean-expanded") => Some(true),
                 Some("external-dm") => Some(false),
                 _ => None,
             },
@@ -5768,6 +5773,9 @@ impl Panel {
                 rows.push(applet_row(ordinal, instance));
             }
             let mut source = TranscriptRowSource::Settled(index);
+            if !clean_chat && matches!(item, Item::SideQuestion(_)) {
+                continue;
+            }
             if clean_chat {
                 if !clean_chat::conversation_item(item)
                     && !matches!(item, Item::Tool { name, input, output, call_id, done: true, error }
@@ -6205,6 +6213,9 @@ impl Panel {
                 window,
                 cx,
             ),
+            Item::SideQuestion(question) => {
+                self.render_inline_side_question(index, question, window, cx)
+            }
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
             // Never truncate it: there is deliberately no disclosure control.
@@ -7722,7 +7733,7 @@ impl Render for Panel {
                                 let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
                                     && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
-                                    || matches!(item, Item::ResponseStats(_) | Item::AgentMessage { .. })
+                                    || matches!(item, Item::ResponseStats(_) | Item::AgentMessage { .. } | Item::SideQuestion(_))
                                     || matches!(item, Item::Tool { .. }) && follows_tool
                                 {
                                     2.0
@@ -8415,6 +8426,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         } if name == "ask" => Some("you"),
         Item::Assistant(_) | Item::AssistantOutput { .. } => Some("jcode"),
         Item::AgentMessage { .. }
+        | Item::SideQuestion(_)
         | Item::Image(_)
         | Item::ResponseStats(_)
         | Item::Reasoning(_)
@@ -13174,6 +13186,9 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     }
     if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("external-dm" | "external-dm-clean")) {
         return agent_message::screenshot_fixture();
+    }
+    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("btw-clean" | "btw-clean-expanded")) {
+        return side_question_inline::screenshot_fixture();
     }
     if crate::harness::screenshot_mode()
         && matches!(

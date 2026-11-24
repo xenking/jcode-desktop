@@ -47,6 +47,7 @@ pub(crate) struct SideQuestionCard {
     scroll: gpui::ScrollHandle,
     selection: Entity<TextSelection>,
     error: Option<String>,
+    tracked_in_transcript: bool,
     /// Kept so the answer can be promoted without another session list read.
     pub session: SessionInfo,
     pub identity: Option<ApiEvent>,
@@ -70,6 +71,7 @@ impl SideQuestionCard {
             scroll: gpui::ScrollHandle::new(),
             selection: cx.new(TextSelection::new),
             error: None,
+            tracked_in_transcript: false,
             session,
             identity: None,
         }
@@ -157,6 +159,7 @@ impl Panel {
 
     fn continue_side_question(&mut self, question: String, cx: &mut Context<Self>) {
         let question = question.trim();
+        let clean_chat = self.clean_chat_enabled();
         let Some(card) = self
             .side_question
             .as_mut()
@@ -174,6 +177,7 @@ impl Panel {
         card.reasoning.clear();
         card.error = None;
         card.status = SideQuestionStatus::Working;
+        card.tracked_in_transcript = clean_chat;
         card.scroll.set_offset(Default::default());
         let editor = card.editor.clone();
         cx.defer(move |cx| {
@@ -183,6 +187,10 @@ impl Panel {
             session_id: card.child_session_id.clone(),
             question: question.to_string(),
         });
+        if clean_chat {
+            let child_session_id = card.child_session_id.clone();
+            self.record_inline_side_question(&child_session_id, question);
+        }
         cx.notify();
     }
 
@@ -295,13 +303,17 @@ impl Panel {
     ) {
         let editor = Self::create_side_question_editor(cx);
         editor.update(cx, |editor, cx| editor.set_submission_enabled(false, cx));
-        let card = SideQuestionCard::new(session, question, editor, cx);
+        let mut card = SideQuestionCard::new(session, question, editor, cx);
+        if self.clean_chat_enabled() {
+            card.tracked_in_transcript = true;
+            self.record_inline_side_question(&card.child_session_id, &card.question);
+        }
         self.show_side_question(card, cx);
     }
 
     fn show_side_question(&mut self, card: SideQuestionCard, cx: &mut Context<Self>) {
         self.side_question_resize.end_drag();
-        if let Some(previous) = self.side_question.take() {
+        if let Some(previous) = self.take_side_question(cx) {
             self.bridge.send(Command::DismissSideQuestion {
                 session_id: previous.child_session_id,
             });
@@ -361,6 +373,10 @@ impl Panel {
             _ => {}
         }
         if changed {
+            if card.tracked_in_transcript {
+                side_question_inline::apply_event(&mut self.items, &card.child_session_id, event);
+                self.transcript_measurements.dirty = true;
+            }
             if was_working && !card.is_working() {
                 card.editor
                     .update(cx, |editor, cx| editor.set_submission_enabled(true, cx));
@@ -376,6 +392,13 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Option<SideQuestionCard> {
         let card = self.side_question.take();
+        if let Some(card) = card
+            .as_ref()
+            .filter(|card| card.tracked_in_transcript && card.is_working())
+        {
+            side_question_inline::close(&mut self.items, &card.child_session_id);
+            self.transcript_measurements.dirty = true;
+        }
         if card.is_some() {
             cx.notify();
         }
@@ -397,6 +420,9 @@ impl Panel {
             return Some(self.render_side_question_history(history, window, cx));
         }
         let card = self.side_question.as_ref()?;
+        if self.clean_chat_enabled() && card.tracked_in_transcript {
+            return None;
+        }
         let theme = Theme::global();
         let (model, effort) = card.model_and_effort();
         let status = match card.status {
