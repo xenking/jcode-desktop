@@ -283,7 +283,7 @@ impl Marks {
                 view.into_any_element()
             }
             None => {
-                let view = cx.new(|_| crate::panel::cache_timer::CachePill::new(value, panel));
+                let view = cx.new(|cx| crate::panel::cache_timer::CachePill::new(value, panel, cx));
                 self.cache = Some(view.clone());
                 view.into_any_element()
             }

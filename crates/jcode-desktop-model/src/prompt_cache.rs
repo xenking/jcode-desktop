@@ -1,6 +1,67 @@
-//! Cache accounting for distinct completed model requests.
+//! Retention and accounting for distinct completed model requests.
 
 use std::collections::HashSet;
+
+pub const SHORT_COUNTDOWN_MAX_SECS: u64 = 20 * 60;
+
+/// A provider's retention window and how long is left of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheFacts {
+    pub ttl_secs: u64,
+    pub remaining_secs: u64,
+    pub written_ago_secs: u64,
+    /// The provider documents this as a retention estimate, not an expiry.
+    pub is_estimate: bool,
+    pub cached_tokens: Option<u64>,
+}
+
+impl CacheFacts {
+    pub fn new(
+        ttl_secs: u64,
+        is_estimate: bool,
+        touched_ms: i64,
+        now_ms: i64,
+        cached_tokens: Option<u64>,
+    ) -> Self {
+        let written_ago_secs = now_ms.saturating_sub(touched_ms).max(0) as u64 / 1000;
+        Self {
+            ttl_secs,
+            remaining_secs: ttl_secs.saturating_sub(written_ago_secs),
+            written_ago_secs,
+            is_estimate,
+            cached_tokens,
+        }
+    }
+
+    pub fn after(self, elapsed_secs: u64) -> Self {
+        Self {
+            remaining_secs: self.remaining_secs.saturating_sub(elapsed_secs),
+            written_ago_secs: self.written_ago_secs.saturating_add(elapsed_secs),
+            ..self
+        }
+    }
+
+    pub fn is_cold(&self) -> bool {
+        self.remaining_secs == 0
+    }
+
+    /// `Some(0)` means the window is open but close enough to warn.
+    pub fn secs_until_warning(&self) -> Option<u64> {
+        if self.is_estimate || self.is_cold() {
+            return None;
+        }
+        let boundary = if self.ttl_secs > SHORT_COUNTDOWN_MAX_SECS {
+            SHORT_COUNTDOWN_MAX_SECS - 1
+        } else {
+            (self.ttl_secs / 10).max(60)
+        };
+        Some(self.remaining_secs.saturating_sub(boundary))
+    }
+
+    pub fn expiring_soon(&self) -> bool {
+        self.secs_until_warning() == Some(0)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tokens {
@@ -71,6 +132,32 @@ impl Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_retention_warns_only_below_twenty_minutes() {
+        let cache = CacheFacts::new(3600, false, 0, 40 * 60_000, None);
+        assert_eq!(cache.secs_until_warning(), Some(1));
+        assert!(!cache.expiring_soon());
+        assert!(cache.after(1).expiring_soon());
+        assert!(cache.after(8 * 60).expiring_soon());
+        assert!(cache.after(20 * 60).is_cold());
+        assert!(!cache.after(20 * 60).expiring_soon());
+    }
+
+    #[test]
+    fn five_minute_retention_warns_in_its_last_minute() {
+        let cache = CacheFacts::new(300, false, 0, 239_000, None);
+        assert!(!cache.expiring_soon());
+        assert!(cache.after(1).expiring_soon());
+        assert!(!cache.after(61).expiring_soon());
+    }
+
+    #[test]
+    fn estimates_have_no_warning_window() {
+        let cache = CacheFacts::new(3600, true, 0, 48 * 60_000, None);
+        assert_eq!(cache.remaining_secs, 12 * 60);
+        assert_eq!(cache.secs_until_warning(), None);
+    }
 
     #[test]
     fn distinct_calls_are_weighted_by_prompt_size_and_redelivery_is_ignored() {

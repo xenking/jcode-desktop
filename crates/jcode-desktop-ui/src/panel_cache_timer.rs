@@ -1,61 +1,60 @@
 //! Prompt-cache status for the composer bar: a short retention countdown or
 //! the latest completed request's cache hit rate.
 use super::*;
-use std::cell::Cell;
-use std::rc::Rc;
+use jcode_desktop_model::prompt_cache::{CacheFacts, SHORT_COUNTDOWN_MAX_SECS};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Repaint rate while the window is open. Minute granularity means a coarse
-/// tick is enough; the pill is a leaf view, so this never rebuilds the panel.
+/// Once the countdown is visible, only the leaf view repaints.
 const TICK: Duration = Duration::from_secs(15);
 
-fn shows_countdown(ttl_secs: Option<u64>) -> bool {
-    ttl_secs.is_some_and(|secs| secs <= 20 * 60)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CachePillValue {
+    short_countdown: bool,
+    retention: Option<CacheFacts>,
+    hit_rate: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum CachePillValue {
+enum CacheMetric {
     Countdown(Option<CacheFacts>),
     HitRate(Option<f32>),
 }
 
 impl CachePillValue {
-    fn label(self) -> String {
-        match self {
-            Self::Countdown(Some(facts)) => label(facts.remaining_secs),
-            Self::HitRate(Some(percent)) => format!("{percent:.0}%"),
-            Self::Countdown(None) | Self::HitRate(None) => "–".into(),
+    fn metric(self) -> CacheMetric {
+        if self.short_countdown || self.retention.is_some_and(|facts| facts.expiring_soon()) {
+            CacheMetric::Countdown(self.retention)
+        } else {
+            CacheMetric::HitRate(self.hit_rate)
+        }
+    }
+
+    fn next_refresh(self) -> Option<Duration> {
+        let facts = self.retention?;
+        match self.metric() {
+            CacheMetric::Countdown(_) if !facts.is_cold() => {
+                let until_change = facts
+                    .secs_until_warning()
+                    .filter(|&secs| secs != 0)
+                    .unwrap_or(facts.remaining_secs);
+                Some(TICK.min(Duration::from_secs(until_change)))
+            }
+            CacheMetric::Countdown(_) => None,
+            CacheMetric::HitRate(_) => facts.secs_until_warning().map(Duration::from_secs),
         }
     }
 }
 
-/// A provider's retention window and how long is left of it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CacheFacts {
-    pub ttl_secs: u64,
-    pub remaining_secs: u64,
-    /// How long ago the last request touched the cache.
-    pub written_ago_secs: u64,
-    /// The provider documents this as a retention estimate, not an expiry.
-    pub is_estimate: bool,
-    pub cached_tokens: Option<u64>,
-}
-
-impl CacheFacts {
-    /// How long before expiry the pill turns warm. Scales with the TTL the way
-    /// the TUI's warning window does, so a 1-hour cache warns for minutes and a
-    /// 5-minute cache for a minute.
-    pub(super) fn warn_window_secs(&self) -> u64 {
-        (self.ttl_secs / 10).clamp(60, 600)
-    }
-
-    pub(super) fn is_cold(&self) -> bool {
-        self.remaining_secs == 0
-    }
-
-    /// Warm but close enough to expiry to warn.
-    pub(super) fn expiring_soon(&self) -> bool {
-        !self.is_estimate && !self.is_cold() && self.remaining_secs <= self.warn_window_secs()
+impl CacheMetric {
+    fn label(self) -> String {
+        match self {
+            Self::Countdown(Some(facts)) if facts.expiring_soon() => {
+                format!("{} left", label(facts.remaining_secs))
+            }
+            Self::Countdown(Some(facts)) => label(facts.remaining_secs),
+            Self::HitRate(Some(percent)) => format!("{percent:.0}%"),
+            Self::Countdown(None) | Self::HitRate(None) => "–".into(),
+        }
     }
 }
 
@@ -78,25 +77,6 @@ pub(super) fn span(secs: u64) -> String {
         format!("{}m", secs / 60)
     } else {
         format!("{}s", secs)
-    }
-}
-
-/// Build the facts from the newest cache touch. Split out from the panel so
-/// the arithmetic is testable without a transcript.
-pub(crate) fn facts(
-    ttl_secs: u64,
-    is_estimate: bool,
-    touched_ms: i64,
-    now_ms: i64,
-    cached_tokens: Option<u64>,
-) -> CacheFacts {
-    let written_ago_secs = now_ms.saturating_sub(touched_ms).max(0) as u64 / 1000;
-    CacheFacts {
-        ttl_secs,
-        remaining_secs: ttl_secs.saturating_sub(written_ago_secs),
-        written_ago_secs,
-        is_estimate,
-        cached_tokens,
     }
 }
 
@@ -138,15 +118,15 @@ impl Panel {
         Some((provider, ttl))
     }
 
-    /// The latest reported cache touch, including restored turns, estimates expiry.
+    /// Match the popover's latest request route once telemetry is available.
+    /// Without it, restored turns and in-flight usage can still seed retention.
     pub(super) fn cache_facts(&self) -> Option<CacheFacts> {
+        if self.cache_telemetry.has_requests() {
+            return self.cache_telemetry.retention(self);
+        }
         let (provider, ttl_secs) = self.cache_retention()?;
-        self.countdown_facts(provider, ttl_secs)
-    }
-
-    fn countdown_facts(&self, provider: &str, ttl_secs: u64) -> Option<CacheFacts> {
         let (touched_ms, cached_tokens) = self.last_cache_touch()?;
-        Some(facts(
+        Some(CacheFacts::new(
             ttl_secs,
             jcode_base::provider::cache_ttl_is_estimate(provider),
             touched_ms,
@@ -156,16 +136,14 @@ impl Panel {
     }
 
     fn cache_pill_value(&self) -> Option<CachePillValue> {
-        let retention = self.cache_retention();
-        if let Some((provider, ttl)) = retention
-            && shows_countdown(Some(ttl))
-        {
-            return Some(CachePillValue::Countdown(
-                self.countdown_facts(provider, ttl),
-            ));
-        }
-        (retention.is_some() || self.cache_telemetry.has_requests())
-            .then(|| CachePillValue::HitRate(self.cache_telemetry.last_hit_rate()))
+        let retention = self.cache_facts();
+        let ttl = retention.map(|facts| facts.ttl_secs);
+        let known_ttl = ttl.or_else(|| self.cache_retention().map(|(_, ttl)| ttl));
+        (known_ttl.is_some() || self.cache_telemetry.has_requests()).then(|| CachePillValue {
+            short_countdown: known_ttl.is_some_and(|ttl| ttl <= SHORT_COUNTDOWN_MAX_SECS),
+            retention,
+            hit_rate: self.cache_telemetry.last_hit_rate(),
+        })
     }
 
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -231,78 +209,80 @@ pub(super) fn tone(facts: &CacheFacts, theme: &Theme) -> gpui::Rgba {
     }
 }
 
-/// The countdown as a leaf view: one 15s tick while the window is open, none
-/// once it has lapsed, so an idle panel is not repainted for a static label.
+/// A leaf view that wakes at the warning boundary, then ticks only while
+/// displaying a live countdown.
 pub(crate) struct CachePill {
     value: CachePillValue,
     panel: gpui::WeakEntity<Panel>,
     anchor: Instant,
-    tick_pending: Rc<Cell<bool>>,
+    tick: Option<Task<()>>,
 }
 
 impl CachePill {
-    pub(crate) fn new(value: CachePillValue, panel: gpui::WeakEntity<Panel>) -> Self {
+    pub(crate) fn new(
+        value: CachePillValue,
+        panel: gpui::WeakEntity<Panel>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             value,
             panel,
-            anchor: Instant::now(),
-            tick_pending: Rc::default(),
+            anchor: cx.background_executor().now(),
+            tick: None,
         }
     }
 
     pub(crate) fn set(&mut self, value: CachePillValue, cx: &mut Context<Self>) {
         if self.value != value {
             self.value = value;
-            self.anchor = Instant::now();
+            self.anchor = cx.background_executor().now();
+            self.tick = None;
             cx.notify();
         }
     }
 
-    pub(super) fn caption(&self) -> &'static str {
-        match self.value {
-            CachePillValue::Countdown(_) => "Footer: time left before cache expiry",
-            CachePillValue::HitRate(_) => "Footer: % of last prompt read from cache",
+    pub(super) fn caption(&self, now: Instant) -> &'static str {
+        match self.live(now).metric() {
+            CacheMetric::Countdown(_) => "Footer: time left before cache expiry",
+            CacheMetric::HitRate(_) => "Footer: % of last prompt read from cache",
         }
     }
 
-    fn live(&self) -> CachePillValue {
-        let CachePillValue::Countdown(Some(facts)) = self.value else {
-            return self.value;
-        };
-        let elapsed = self.anchor.elapsed().as_secs();
-        CachePillValue::Countdown(Some(CacheFacts {
-            remaining_secs: facts.remaining_secs.saturating_sub(elapsed),
-            written_ago_secs: facts.written_ago_secs.saturating_add(elapsed),
-            ..facts
-        }))
+    pub(super) fn retention(&self, now: Instant) -> Option<CacheFacts> {
+        self.live(now).retention
+    }
+
+    fn live(&self, now: Instant) -> CachePillValue {
+        let elapsed = now.saturating_duration_since(self.anchor).as_secs();
+        CachePillValue {
+            retention: self.value.retention.map(|facts| facts.after(elapsed)),
+            ..self.value
+        }
     }
 }
 
 impl Render for CachePill {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("CachePill");
-        let value = self.live();
-        if matches!(value, CachePillValue::Countdown(Some(facts)) if !facts.is_cold())
-            && !self.tick_pending.replace(true)
+        let value = self.live(cx.background_executor().now());
+        if self.tick.is_none()
+            && let Some(delay) = value.next_refresh()
         {
-            let pending = self.tick_pending.clone();
-            let id = cx.entity_id();
-            let weak = cx.entity().downgrade();
-            cx.spawn(async move |_, cx| {
-                cx.background_executor().timer(TICK).await;
-                pending.set(false);
-                if weak.upgrade().is_some() {
-                    cx.update(|cx| cx.notify(id));
-                }
-            })
-            .detach();
+            self.tick = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(delay).await;
+                let _ = this.update(cx, |pill, cx| {
+                    pill.tick = None;
+                    cx.notify();
+                });
+            }));
         }
+        let metric = value.metric();
         let theme = Theme::global();
         let panel = self.panel.clone();
         let pill = cx.entity().downgrade();
         use crate::swarm_glyph::Icon;
-        let (icon, ink) = match value {
-            CachePillValue::Countdown(Some(facts)) => (
+        let (icon, ink) = match metric {
+            CacheMetric::Countdown(Some(facts)) => (
                 if facts.is_cold() {
                     Icon::Snowflake
                 } else {
@@ -310,9 +290,10 @@ impl Render for CachePill {
                 },
                 tone(&facts, theme),
             ),
-            CachePillValue::HitRate(Some(_)) => (Icon::Timer, theme.TEXT_DIM),
+            CacheMetric::HitRate(Some(_)) => (Icon::Timer, theme.TEXT_DIM),
             _ => (Icon::Timer, theme.TEXT_FAINT),
         };
+        let label = metric.label();
         super::composer::composer_pill("panel-cache")
             .relative()
             .flex_none()
@@ -330,8 +311,8 @@ impl Render for CachePill {
             )
             .child(
                 div()
-                    .debug_selector(|| "panel-cache-label".into())
-                    .child(value.label()),
+                    .debug_selector(|| format!("panel-cache-label-{label}"))
+                    .child(label),
             )
             .children(crate::fixture_control_targets::marker(
                 || "hover:panel-cache".into(),
@@ -410,12 +391,81 @@ mod tests {
         assert_eq!(label(0), "cold");
     }
 
-    #[test]
-    fn only_known_retention_through_twenty_minutes_shows_a_countdown() {
-        assert!(shows_countdown(Some(1199)));
-        assert!(shows_countdown(Some(1200)));
-        assert!(!shows_countdown(Some(1201)));
-        assert!(!shows_countdown(None));
+    #[gpui::test]
+    fn one_hour_cache_warns_at_twelve_minutes_even_with_a_high_hit_rate(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, _| {
+            panel.provider = Some("anthropic".into());
+            panel.model = Some("claude-opus-5-5".into());
+            assert_eq!(panel.cache_retention().unwrap().1, 3600);
+            panel.cache_telemetry.observe_at(
+                &ApiEvent::RequestUsage {
+                    session_id: panel.session_id.clone(),
+                    request_id: "warm-claude".into(),
+                    provider: "anthropic".into(),
+                    model: "claude-opus-5-5".into(),
+                    input: Some(2000),
+                    output: None,
+                    cache_read_input: Some(98_000),
+                    cache_creation_input: Some(0),
+                },
+                now_ms() - 48 * 60_000,
+            );
+            assert_eq!(panel.cache_telemetry.last_hit_rate(), Some(98.0));
+            assert_eq!(
+                panel.cache_pill_value().unwrap().metric().label(),
+                "12m left"
+            );
+            let facts = panel.cache_facts().unwrap();
+            assert_eq!(facts.written_ago_secs, 48 * 60);
+            assert_eq!(tone(&facts, Theme::global()), Theme::global().WARN);
+        });
+    }
+
+    #[gpui::test]
+    fn cache_pill_repaints_at_warning_and_expiry_without_input(cx: &mut gpui::TestAppContext) {
+        for (ttl, remaining, before, warning, after) in [
+            (
+                3600,
+                1200,
+                "panel-cache-label-98%",
+                "panel-cache-label-20m left",
+                "panel-cache-label-98%",
+            ),
+            (
+                300,
+                61,
+                "panel-cache-label-2m",
+                "panel-cache-label-1m left",
+                "panel-cache-label-cold",
+            ),
+        ] {
+            let (_, vcx) = cx.add_window_view(|_, cx| {
+                let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+                let value = CachePillValue {
+                    short_countdown: ttl == 300,
+                    retention: Some(CacheFacts::new(
+                        ttl,
+                        false,
+                        0,
+                        (ttl - remaining) as i64 * 1000,
+                        None,
+                    )),
+                    hit_rate: Some(98.0),
+                };
+                CachePill::new(value, panel.downgrade(), cx)
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(before).is_some(), "missing {before}");
+            vcx.executor().advance_clock(Duration::from_secs(1));
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(warning).is_some(), "missing {warning}");
+            vcx.executor().advance_clock(Duration::from_secs(remaining));
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds(after).is_some(), "missing {after}");
+        }
     }
 
     #[gpui::test]
@@ -426,14 +476,14 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply_bar_fixture("high", cx);
             assert_eq!(
-                panel.cache_pill_value(),
-                Some(CachePillValue::HitRate(None))
+                panel.cache_pill_value().map(CachePillValue::metric),
+                Some(CacheMetric::HitRate(None))
             );
-            panel.apply_cache_card_fixture(cx);
-            assert_eq!(panel.cache_pill_value().unwrap().label(), "83%");
+            panel.apply_cache_card_fixture(false, cx);
+            assert_eq!(panel.cache_pill_value().unwrap().metric().label(), "83%");
 
             panel.provider = Some("openai".into());
-            assert_eq!(panel.cache_pill_value().unwrap().label(), "83%");
+            assert_eq!(panel.cache_pill_value().unwrap().metric().label(), "83%");
             for (request_id, read, expected) in [
                 ("openai-warm", Some(60), "60%"),
                 ("openai-cold", Some(0), "0%"),
@@ -452,7 +502,7 @@ mod tests {
                     },
                     cx,
                 );
-                assert_eq!(panel.cache_pill_value().unwrap().label(), expected);
+                assert_eq!(panel.cache_pill_value().unwrap().metric().label(), expected);
             }
         });
     }
@@ -467,7 +517,7 @@ mod tests {
 
     #[test]
     fn facts_count_down_from_the_last_touch() {
-        let warm = facts(
+        let warm = CacheFacts::new(
             3600,
             false,
             1_000_000,
@@ -477,30 +527,14 @@ mod tests {
         assert_eq!(warm.remaining_secs, 3600 - 47 * 60);
         assert_eq!(warm.written_ago_secs, 47 * 60);
         assert!(!warm.is_cold());
-        assert!(!warm.expiring_soon(), "47m left is not a warning");
+        assert!(
+            warm.expiring_soon(),
+            "47m since last use leaves 13m and warns"
+        );
 
-        let cold = facts(300, false, 0, 600_000, None);
+        let cold = CacheFacts::new(300, false, 0, 600_000, None);
         assert!(cold.is_cold());
         assert_eq!(label(cold.remaining_secs), "cold");
-    }
-
-    #[test]
-    fn the_warn_window_scales_with_the_retention() {
-        let short = facts(300, false, 0, 0, None);
-        assert_eq!(short.warn_window_secs(), 60);
-        let long = facts(3600, false, 0, 0, None);
-        assert_eq!(long.warn_window_secs(), 360);
-        let at_five_minutes = facts(3600, false, 0, 55 * 60_000, None);
-        assert!(at_five_minutes.expiring_soon());
-    }
-
-    /// An estimated retention must never claim a hard warning: the provider
-    /// may evict earlier or later than the number.
-    #[test]
-    fn estimates_do_not_warn() {
-        let estimate = facts(600, true, 0, 9 * 60_000, None);
-        assert!(estimate.remaining_secs > 0);
-        assert!(!estimate.expiring_soon());
     }
 
     #[test]
@@ -535,7 +569,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(
-            vcx.debug_bounds("panel-cache-label").is_some(),
+            vcx.debug_bounds("panel-cache-label-3m").is_some(),
             "a known retention with a cache touch earns a countdown"
         );
         // The word "cache" is a drawn timer, the same size as the other bar
@@ -544,10 +578,12 @@ mod tests {
         let icon = vcx
             .debug_bounds("panel-cache-icon-timer")
             .expect("timer icon");
-        let text = vcx.debug_bounds("panel-cache-label").unwrap();
+        let text = vcx.debug_bounds("panel-cache-label-3m").unwrap();
         assert!(icon.left() >= pill.left() && icon.right() <= text.left());
         assert_eq!(icon.size.width, px(super::super::composer::BAR_ICON));
-        let shown = panel.read_with(vcx, |panel, _| panel.cache_pill_value().unwrap().label());
+        let shown = panel.read_with(vcx, |panel, _| {
+            panel.cache_pill_value().unwrap().metric().label()
+        });
         assert_eq!(shown, "3m");
         let facts = panel
             .read_with(vcx, |panel, _| panel.cache_facts())
@@ -563,7 +599,7 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-cache-label").is_none());
+        assert!(vcx.debug_bounds("panel-cache").is_none());
         assert!(
             panel
                 .read_with(vcx, |panel, _| panel.cache_facts())

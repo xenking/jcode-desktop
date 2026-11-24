@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--composer-picker", choices=("model", "effort", "context"),
                         help="capture the offline composer picker on either supported platform")
+    parser.add_argument("--cache-warning", action="store_true",
+                        help="show a 1-hour Claude cache with 12 minutes left and a 98%% hit rate")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--rig-hud", action="store_true", help="capture the OpenRig HUD hover card")
     parser.add_argument("--rig-hud-click", action="store_true", help="click the OpenRig HUD and capture its selected inspector")
@@ -462,7 +464,8 @@ def main():
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     if args.markdown_file and not args.markdown_file.is_file():
         parser.error("--markdown-file must be a readable file")
-    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.rig_hud or args.transcript in (
+    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.cache_warning
+                        or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                         "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
                         "btw-clean", "btw-clean-expanded",
@@ -495,6 +498,9 @@ def main():
         if args.composer_picker:
             env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_SCREENSHOT_BAR="high",
                        JCODE_DESKTOP_SCREENSHOT_COMPOSER_PICKER=args.composer_picker)
+        if args.cache_warning:
+            env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_SCREENSHOT_BAR="high",
+                       JCODE_DESKTOP_SCREENSHOT_CACHE_CARD="warning", JCODE_DESKTOP_CONTROL_TEST="1")
         if args.rig_hud:
             env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
         if args.rig_hud_click:

@@ -1,6 +1,6 @@
 //! The composer pill's prompt-cache hover card.
 use super::{cache_miss::CacheMissNotice, cache_timer, usage, *};
-use jcode_desktop_model::prompt_cache::{Tokens, Usage};
+use jcode_desktop_model::prompt_cache::{CacheFacts, Tokens, Usage};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Default)]
@@ -16,7 +16,7 @@ impl CacheTelemetry {
         self.observe_at(event, cache_timer::now_ms());
     }
 
-    fn observe_at(&mut self, event: &ApiEvent, at_ms: i64) {
+    pub(super) fn observe_at(&mut self, event: &ApiEvent, at_ms: i64) {
         if let ApiEvent::RequestUsage {
             request_id,
             provider,
@@ -54,22 +54,33 @@ impl CacheTelemetry {
         self.misses.record(notice);
     }
 
-    fn retention(&self) -> Option<cache_timer::CacheFacts> {
+    pub(super) fn retention(&self, panel: &Panel) -> Option<CacheFacts> {
         let route = self.route.as_ref()?;
         let (provider, model) = route;
-        let (at_ms, tokens) = *self.touches.get(route)?;
-        Some(cache_timer::facts(
+        let completed = self
+            .touches
+            .get(route)
+            .map(|&(at, tokens)| (at, Some(tokens)));
+        let live = (panel.provider.as_deref() == Some(provider.as_str())
+            && panel.model.as_deref() == Some(model.as_str()))
+        .then(|| panel.response_stats.cache_touch())
+        .flatten();
+        let (at_ms, tokens) = completed
+            .into_iter()
+            .chain(live)
+            .max_by_key(|&(at, _)| at)?;
+        Some(CacheFacts::new(
             jcode_base::provider::cache_ttl_for_provider_model(provider, Some(model))?,
             jcode_base::provider::cache_ttl_is_estimate(provider),
             at_ms,
             cache_timer::now_ms(),
-            Some(tokens),
+            tokens,
         ))
     }
 }
 
 impl Panel {
-    pub(crate) fn apply_cache_card_fixture(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn apply_cache_card_fixture(&mut self, warning: bool, cx: &mut Context<Self>) {
         let provider = self.provider.clone().unwrap_or_else(|| "anthropic".into());
         let model = self
             .model
@@ -87,7 +98,11 @@ impl Panel {
                         8_600,
                         Some((306_000, "prefix_changed", true)),
                     ),
-                    (92_000, 12_000, 7_000, None),
+                    if warning {
+                        (98_000, 0, 2_000, None)
+                    } else {
+                        (92_000, 12_000, 7_000, None)
+                    },
                 ])
                 .enumerate()
         {
@@ -125,7 +140,7 @@ impl Panel {
             }
         }
         if let Some(touch) = self.cache_telemetry.touches.get_mut(&(provider, model)) {
-            touch.0 = cache_timer::now_ms() - 12 * 60_000;
+            touch.0 = cache_timer::now_ms() - if warning { 48 } else { 12 } * 60_000;
         }
     }
 }
@@ -185,6 +200,8 @@ impl Render for CacheTooltip {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
+        let pill = self.pill.upgrade().map(|pill| pill.read(cx));
+        let now = cx.background_executor().now();
         let theme = Theme::global();
         usage::meter_card(theme)
             .debug_selector(|| "panel-cache-tooltip".into())
@@ -196,8 +213,8 @@ impl Render for CacheTooltip {
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
-            .children(self.pill.upgrade().map(|pill| {
-                usage::meter_detail(pill.read(cx).caption().into(), theme)
+            .children(pill.map(|pill| {
+                usage::meter_detail(pill.caption(now).into(), theme)
                     .debug_selector(|| "panel-cache-footer-metric".into())
             }))
             .child(usage_row(
@@ -215,11 +232,7 @@ impl Render for CacheTooltip {
                 theme,
             ))
             .child(retention_row(
-                if telemetry.has_requests() {
-                    telemetry.retention()
-                } else {
-                    panel.cache_facts()
-                },
+                pill.map_or_else(|| panel.cache_facts(), |pill| pill.retention(now)),
                 theme,
             ))
             .child(render_misses(&telemetry.misses, theme))
@@ -300,7 +313,7 @@ fn cache_color(percent: f32, theme: &Theme) -> gpui::Rgba {
     }
 }
 
-fn retention_row(facts: Option<cache_timer::CacheFacts>, theme: &Theme) -> gpui::Div {
+fn retention_row(facts: Option<CacheFacts>, theme: &Theme) -> gpui::Div {
     let (value, bar, detail) = facts.map_or_else(
         || (NOT_REPORTED.into(), None, None),
         |facts| {
@@ -493,7 +506,7 @@ mod tests {
         }
         assert!(vcx.debug_bounds("panel-cache-session-bar").is_none());
 
-        panel.update(vcx, |panel, cx| panel.apply_cache_card_fixture(cx));
+        panel.update(vcx, |panel, cx| panel.apply_cache_card_fixture(false, cx));
         vcx.run_until_parked();
         for selector in [
             "panel-cache-tooltip",
