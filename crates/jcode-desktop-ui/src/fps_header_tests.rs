@@ -64,9 +64,9 @@ fn tab_row_starts_after_window_controls_and_reclaims_fps_space(cx: &mut gpui::Te
         let track = vcx.debug_bounds("live-session-tabs").unwrap();
         assert_eq!(workspace_one.left(), track.left());
         if cfg!(target_os = "macos") && !fullscreen {
-            let next = vcx.debug_bounds("tab-next-workspace-slot").unwrap();
+            let files = vcx.debug_bounds("workspace-files-toggle").unwrap();
             let caption = vcx.debug_bounds("macos-caption-drag").unwrap();
-            assert!(next.left() - track.right() >= px(16.0));
+            assert!(files.left() - track.right() >= px(16.0));
             assert!(caption.contains(&gpui::point(track.right() + px(8.0), track.center().y)));
         }
         assert!(track.left() >= row.left() + px(inset));

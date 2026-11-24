@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 const DEFAULT_WIDTH: f32 = 280.0;
-pub(super) const TAB_WIDTH: f32 = 32.0;
 
 gpui::actions!(workspace, [ToggleFiles]);
 
@@ -618,7 +617,7 @@ impl Workspace {
         .occlude()
         .text_color(Theme::global().TEXT_DIM)
         .hover(|el| {
-            el.bg(Theme::global().PANEL_BG)
+            el.bg(Theme::global().TEXT.opacity(0.10))
                 .text_color(Theme::global().TEXT)
         })
         .tooltip(move |_, cx| {

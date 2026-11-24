@@ -1,6 +1,7 @@
 //! Labeled live-session folder tabs, independent of the sidebar's navigation.
 use super::*;
 use crate::panel::folder_session_title;
+use gpui::Div;
 
 /// Canvas air beneath the rounded tabs keeps them detached from the sheets.
 const TAB_FLOAT_GAP: f32 = 4.0;
@@ -16,17 +17,20 @@ const TAB_OVERFLOW_WIDTH: f32 = 56.0;
 const MIN_TAB_EXPOSURE: f32 = 16.0;
 /// Compact windows and hidden sidebars need a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
-const TAB_NEW_WIDTH: f32 = 40.0;
-/// Pointer route to the next workspace, beside the new-session plus.
-const TAB_NEXT_WORKSPACE_WIDTH: f32 = 40.0;
-/// Right edge reserved past the new-session button: Jcode's own close-window
-/// pill, or on Windows the native minimize, maximize and close buttons, which
-/// make a second close button redundant.
-const TAB_CLOSE_WIDTH: f32 = if crate::window_caption::enabled() {
+const TAB_ACTION_GAP: f32 = 3.0;
+const TAB_ACTION_SLOT: f32 = TAB_HEIGHT + TAB_ACTION_GAP;
+const TAB_CAPTION_WIDTH: f32 = if crate::window_caption::enabled() {
     crate::window_caption::BUTTONS_WIDTH
 } else {
-    40.0
+    0.0
 };
+const TAB_ACTIONS_WIDTH: f32 = TAB_ACTION_SLOT
+    + TAB_HEIGHT
+    + if crate::window_caption::enabled() {
+        TAB_CAPTION_WIDTH
+    } else {
+        TAB_ACTION_SLOT
+    };
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
 
@@ -98,15 +102,28 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + 8.0
             + TAB_MENU_WIDTH
             + if fps_enabled() { TAB_STATUS_WIDTH } else { 0.0 }
-            + TAB_NEW_WIDTH
-            + TAB_NEXT_WORKSPACE_WIDTH
-            + TAB_CLOSE_WIDTH
+            + TAB_ACTIONS_WIDTH
+            + TAB_ACTION_SLOT
             + 64.0
 }
 
 /// Build metadata lives at the bottom, leaving the header to navigation.
 pub(super) fn version_header_width(_tab_budget: f32) -> f32 {
     0.0
+}
+
+fn tab_action_button(id: &'static str) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .size(px(TAB_HEIGHT))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .cursor_pointer()
+        .occlude()
 }
 
 fn group_label_width(available: f32, group_count: usize) -> f32 {
@@ -560,7 +577,7 @@ impl Workspace {
         )
     }
 
-    fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let target = self.next_workspace_row();
         let accent = Theme::global().workspace_accent(target);
         let shortcut = if cfg!(target_os = "macos") {
@@ -570,51 +587,30 @@ impl Workspace {
         };
         let tooltip: gpui::SharedString =
             format!("Go to workspace {} ({shortcut})", target + 1).into();
-        div()
-            .debug_selector(|| "tab-next-workspace-slot".into())
-            .absolute()
-            .right(px(TAB_CLOSE_WIDTH + TAB_NEW_WIDTH))
-            .top_0()
-            .w(px(TAB_NEXT_WORKSPACE_WIDTH))
-            .h(px(TAB_HEIGHT))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .id("tab-next-workspace")
-                    .debug_selector(|| "tab-next-workspace".into())
-                    .h(px(22.0))
-                    .px(px(7.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .rounded_full()
-                    .bg(accent.opacity(0.12))
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(accent)
-                    .cursor_pointer()
-                    .occlude()
-                    .hover(move |el| el.bg(accent.opacity(0.26)))
-                    .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            window.prevent_default();
-                            // Pointer route: coach the Super+J/K shortcut.
-                            this.missed("focus_up_down", cx);
-                            let row = this.next_workspace_row();
-                            this.overview = false;
-                            this.overview_progress.set(0.0, Instant::now());
-                            this.switch_row_animated(row, window, cx);
-                            cx.notify();
-                        }),
-                    )
-                    .child(div().text_size(px(10.0)).child("↓"))
-                    .child((target + 1).to_string()),
+        tab_action_button("tab-next-workspace")
+            .gap(px(2.0))
+            .bg(accent.opacity(0.12))
+            .text_size(px(11.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(accent)
+            .hover(move |el| el.bg(accent.opacity(0.26)))
+            .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    window.prevent_default();
+                    // Pointer route: coach the Super+J/K shortcut.
+                    this.missed("focus_up_down", cx);
+                    let row = this.next_workspace_row();
+                    this.overview = false;
+                    this.overview_progress.set(0.0, Instant::now());
+                    this.switch_row_animated(row, window, cx);
+                    cx.notify();
+                }),
             )
+            .child(div().text_size(px(10.0)).child("↓"))
+            .child((target + 1).to_string())
     }
 }
 
@@ -780,12 +776,13 @@ impl Workspace {
             } else {
                 0.0
             };
-        let files_toggle_width = if self.files_pane.open {
-            0.0
-        } else {
-            super::files::TAB_WIDTH
-        };
-        let controls_width = TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH + files_toggle_width;
+        let show_files_toggle = !self.files_pane.open;
+        let controls_width = TAB_ACTIONS_WIDTH
+            + if show_files_toggle {
+                TAB_ACTION_SLOT
+            } else {
+                0.0
+            };
         let drag_width = if windowed_macos {
             TAB_WINDOW_DRAG_WIDTH
         } else {
@@ -1299,33 +1296,43 @@ impl Workspace {
             .child(tabs)
             .children(coach_chip)
             .children(overflow)
-            .when(!self.files_pane.open, |bar| {
-                bar.child(self.files_button(
-                    "workspace-files-toggle", "Show Files", "▤",
-                    |workspace, window, cx| workspace.toggle_files(&super::files::ToggleFiles, window, cx),
-                    cx,
-                ).absolute().top_0().right(px(TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH)))
+            .child(self.render_tab_actions(show_files_toggle, cx))
+            .into_any_element()
+    }
+
+    fn render_tab_actions(&self, show_files_toggle: bool, cx: &mut Context<Self>) -> Div {
+        div()
+            .absolute()
+            .top_0()
+            .right(px(TAB_CAPTION_WIDTH))
+            .flex()
+            .items_center()
+            .gap(px(TAB_ACTION_GAP))
+            .when(show_files_toggle, |row| {
+                row.child(
+                    self.files_button(
+                        "workspace-files-toggle",
+                        "Show Files",
+                        "▤",
+                        |workspace, window, cx| {
+                            workspace.toggle_files(&super::files::ToggleFiles, window, cx)
+                        },
+                        cx,
+                    )
+                    .size(px(TAB_HEIGHT)),
+                )
             })
             .child(self.render_next_workspace_button(cx))
             .child(
-                div()
-                    .id("tab-new-session")
-                    .debug_selector(|| "tab-new-session".into())
-                    .children(crate::fixture_control_targets::marker(|| "tab-new-session".into(), || None))
-                    .absolute()
-                    .right(px(TAB_CLOSE_WIDTH))
-                    .top_0()
-                    .size(px(TAB_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
+                tab_action_button("tab-new-session")
+                    .children(crate::fixture_control_targets::marker(
+                        || "tab-new-session".into(),
+                        || None,
+                    ))
                     .text_size(px(20.0))
                     .text_color(Theme::global().TEXT_DIM)
-                    .cursor_pointer()
-                    .occlude()
                     .hover(|el| {
-                        el.bg(Theme::global().PANEL_BG)
+                        el.bg(Theme::global().TEXT.opacity(0.10))
                             .text_color(Theme::global().TEXT)
                     })
                     .tooltip(|_, cx| {
@@ -1351,23 +1358,11 @@ impl Workspace {
             )
             .when(!crate::window_caption::enabled(), |el| {
                 el.child(
-                    div()
-                        .id("tab-close-window")
-                        .debug_selector(|| "tab-close-window".into())
-                        .absolute()
-                        .right_0()
-                        .top_0()
-                        .size(px(TAB_HEIGHT))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_md()
+                    tab_action_button("tab-close-window")
                         .text_size(px(20.0))
                         .text_color(Theme::global().TEXT_DIM)
-                        .cursor_pointer()
-                        .occlude()
                         .hover(|el| {
-                            el.bg(Theme::global().ERROR_BG)
+                            el.bg(Theme::global().ERROR.opacity(0.16))
                                 .text_color(Theme::global().ERROR)
                         })
                         .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
@@ -1389,7 +1384,6 @@ impl Workspace {
                         .child("×"),
                 )
             })
-            .into_any_element()
     }
 }
 
@@ -1459,10 +1453,21 @@ mod tests {
             let close = vcx.debug_bounds("tab-close-window").unwrap();
             let plus = vcx.debug_bounds("tab-new-session").unwrap();
             let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
-            assert!(tabs.right() <= plus.left());
-            assert!(plus.right() < close.left());
+            let files = vcx.debug_bounds("workspace-files-toggle").unwrap();
+            let next = vcx.debug_bounds("tab-next-workspace").unwrap();
+            let actions = [files, next, plus, close];
+            assert!(tabs.right() <= files.left());
+            for action in actions {
+                assert_eq!(action.size, gpui::size(px(28.), px(28.)));
+                assert_eq!(action.top(), plus.top());
+            }
+            let gaps = [
+                next.left() - files.right(),
+                plus.left() - next.right(),
+                close.left() - plus.right(),
+            ];
+            assert_eq!(gaps, [px(3.); 3]);
             assert!(close.right() <= px(width));
-            assert_eq!(close.size, gpui::size(px(TAB_HEIGHT), px(TAB_HEIGHT)));
             vcx.simulate_click(close.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
@@ -2665,7 +2670,7 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(420.0), px(700.0)));
         vcx.run_until_parked();
         let trigger = vcx.debug_bounds("tab-overflow").unwrap();
-        assert!(trigger.right() <= vcx.debug_bounds("tab-next-workspace-slot").unwrap().left());
+        assert!(trigger.right() <= vcx.debug_bounds("workspace-files-toggle").unwrap().left());
         assert!(vcx.debug_bounds("workspace-tab-group-label-0").is_some());
         assert!(vcx.debug_bounds("workspace-tab-group-label-1").is_some());
         let hidden = workspace.read_with(vcx, |w, _| {
