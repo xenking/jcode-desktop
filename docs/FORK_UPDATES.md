@@ -15,9 +15,10 @@ cache, and Apple Development signing identity. The daemon waits for every turn
 to finish before reloading or replacing Desktop. The app reopens on success.
 Inspect a failed or interrupted install with `jcode rollout --status`.
 
-Rollout needs at least 30 GiB free, and packaging may require more. Keep the
-same Apple signing identity for subsequent updates so macOS privacy grants
-carry forward. Paired Desktop bundles do not load a Sparkle feed or use its keys.
+Rollout needs at least 30 GiB free, and packaging may require more. The Desktop
+updater reports a space shortage without deleting build caches. Keep the same
+Apple signing identity for subsequent updates so macOS privacy grants carry
+forward. Paired Desktop bundles do not load a Sparkle feed or use its keys.
 
 Legacy installs need one normal `jcode rollout` to receive the paired updater
 and its companion daemon. Do not pass `--now` if active turns must finish.

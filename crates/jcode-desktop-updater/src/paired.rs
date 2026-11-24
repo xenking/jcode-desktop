@@ -70,6 +70,7 @@ fn command(cli: &Path) -> Result<Command> {
         .args(["--no-update", "rollout"])
         .env("PATH", std::env::join_paths(paths)?)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("JCODE_BUILD_RECLAIM", "")
         .env_remove("JCODE_SESSION_ID")
         .stdin(Stdio::null());
     Ok(command)
@@ -158,6 +159,14 @@ pub fn progress(preview: &Preview) -> Result<Progress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_reports_low_disk_without_reclaiming_caches() {
+        let command = command(Path::new("jcode")).unwrap();
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "JCODE_BUILD_RECLAIM" && value.is_some_and(|value| value.is_empty())
+        }));
+    }
 
     #[test]
     fn reviewed_subprocess_uses_only_the_confirmed_refs_without_force() {
