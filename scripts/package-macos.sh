@@ -152,16 +152,29 @@ rm -rf "$OUT/icon.iconset"
 
 # Use the hardened runtime without broad exceptions. The explicit empty
 # entitlement set makes accidental privilege additions visible in review and in
-# verify-macos-package.sh. Ad-hoc signing remains available for local builds.
+# verify-macos-package.sh.
+# macOS keys privacy grants (Accessibility, Screen Recording) to the signing
+# identity. An ad-hoc signature changes with every build, so each update would
+# silently drop those grants. Without an explicit identity, local builds use the
+# keychain's Apple Development certificate, which stays the same across builds,
+# and fall back to ad-hoc only when none exists. APPLE_SIGNING_IDENTITY=- forces
+# ad-hoc.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  APPLE_SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null |
+    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*"$/\1/p' | head -1)"
+fi
 IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
-SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY")
-if [[ "$IDENTITY" != "-" ]]; then SIGN_ARGS+=(--timestamp); fi
+echo "package-macos: signing identity ${IDENTITY}" >&2
+# A secure timestamp needs Apple's server and only matters for notarized
+# Developer ID builds, so local identities sign without one.
+TIMESTAMP=()
+if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then TIMESTAMP=(--timestamp); fi
+SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" ${TIMESTAMP[@]+"${TIMESTAMP[@]}"})
 # Sparkle's helper services need their own entitlements. Preserve those while
 # re-signing every nested bundle with the host application's identity, then
 # seal the framework. Avoid codesign --deep for signing because it can hide a
 # malformed or incompletely signed nested bundle.
-NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY")
-if [[ "$IDENTITY" != "-" ]]; then NESTED_SIGN_ARGS+=(--timestamp); fi
+NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY" ${TIMESTAMP[@]+"${TIMESTAMP[@]}"})
 # Autoupdate is a standalone Mach-O binary inside the framework rather than a
 # bundle, so sealing Sparkle.framework does not replace its upstream signature.
 # Sign it explicitly before the bundles that contain and seal it.
@@ -202,7 +215,7 @@ hdiutil create -volname "Jcode" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG" >
 rm -rf "$DMG_ROOT"
 
 if [[ "$IDENTITY" != "-" ]]; then
-  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+  codesign --force ${TIMESTAMP[@]+"${TIMESTAMP[@]}"} --sign "$IDENTITY" "$DMG"
 fi
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   notarize "$DMG"
