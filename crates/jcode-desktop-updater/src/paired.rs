@@ -164,7 +164,7 @@ struct Intent {
     reviewed: bool,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Progress {
     InProgress,
     Completed,
@@ -177,7 +177,11 @@ pub fn progress(preview: &Preview) -> Result<Progress> {
         Duration::from_secs(35),
         "Couldn't read rollout status",
     )?;
-    let status: Status = serde_json::from_slice(&raw)?;
+    progress_from_status(preview, &raw)
+}
+
+fn progress_from_status(preview: &Preview, raw: &[u8]) -> Result<Progress> {
+    let status: Status = serde_json::from_slice(raw)?;
     let intent = status.intent.context("No submitted update was found")?;
     if !intent.reviewed
         || intent.cli_sha.as_deref() != Some(&preview.cli.target_sha)
@@ -221,8 +225,7 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn reviewed_subprocess_uses_only_the_confirmed_refs_without_force() {
+    fn preview() -> Preview {
         let change = |sha: &str| Change {
             installed_version: "v1.0.0".into(),
             installed_sha: "1".repeat(40),
@@ -231,12 +234,17 @@ mod tests {
             commits: 1,
             subjects: vec!["Fix a bug".into()],
         };
-        let preview = Preview {
+        Preview {
             cli: change("a"),
             desktop: change("b"),
             free_gib: 60,
             minimum_gib: 30,
-        };
+        }
+    }
+
+    #[test]
+    fn reviewed_subprocess_uses_only_the_confirmed_refs_without_force() {
+        let preview = preview();
         let args = apply_args(&preview);
         assert_eq!(
             args,
@@ -248,5 +256,29 @@ mod tests {
                 &"b".repeat(40)
             ]
         );
+    }
+
+    #[test]
+    fn drain_status_keeps_session_reasons_and_offers_recovery_actions() {
+        let preview = preview();
+        let mut status = serde_json::json!({
+            "phase": "draining",
+            "intent": {"cli_sha":preview.cli.target_sha,"desktop":preview.desktop.target_sha,"reviewed":true},
+            "blockers": [
+                {"session_id":"session_raccoon_1","phase":"ask_blocked","reason":"waiting for user answer, checkpointable on interruption"},
+                {"session_id":"session_turkey_2","phase":"admitted","reason":"turn owns admission or publication lease"}
+            ]
+        });
+        let progress = |status: &serde_json::Value| {
+            format!("{:?}", progress_from_status(&preview, &serde_json::to_vec(status).unwrap()).unwrap())
+        };
+        let draining = progress(&status);
+        assert!(draining.contains("raccoon is waiting for your answer"), "{draining}");
+        assert!(draining.contains("turkey has an active turn"), "{draining}");
+        status["phase"] = "rolled_back".into();
+        let failed = progress(&status);
+        for text in ["turkey has an active turn", "Install now", "Retry when idle", "Cancel"] {
+            assert!(failed.contains(text), "Missing {text}: {failed}");
+        }
     }
 }
