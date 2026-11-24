@@ -228,3 +228,105 @@ fn voice_release_does_not_restore_a_closed_window(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(cx.windows().len(), 1);
 }
+
+#[gpui::test]
+fn placement_survives_debounce_close_and_reopen(cx: &mut TestAppContext) {
+    use gpui::point;
+    use jcode_desktop_model::window_placement::{Placement, Presentation, Rect};
+    use std::time::Duration;
+
+    let state = tempfile::tempdir().unwrap();
+    let path = state.path().join("window-placement-workspace.json");
+    let rect = Rect {
+        x: 173.,
+        y: 197.,
+        width: 800.,
+        height: 650.,
+    };
+    let first = cx.update(|cx| {
+        window_placement::install(state.path().to_owned(), cx);
+        Placement {
+            rect,
+            presentation: Presentation::Windowed,
+            display_uuid: Some(cx.primary_display().unwrap().uuid().unwrap().to_string()),
+        }
+        .save(&path)
+        .unwrap();
+        open_host_window(LaunchMode::Workspace, (1500, 950), hidden_options(), cx).unwrap()
+    });
+    first
+        .update(cx, |_, window, cx| {
+            assert_eq!(window.bounds().origin, point(px(173.), px(197.)));
+            assert_eq!(window.bounds().size, size(px(800.), px(650.)));
+            window.replace_root(cx, |_, _| DraftRoot("another root".into()));
+        })
+        .unwrap();
+    cx.simulate_window_resize(first.into(), size(px(750.), px(600.)));
+    cx.run_until_parked();
+    assert_eq!(Placement::load(&path).unwrap().rect, rect);
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(Placement::load(&path).unwrap().rect.width, 750.);
+
+    cx.simulate_window_resize(first.into(), size(px(715.), px(565.)));
+    gpui::AnyWindowHandle::from(first)
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    assert_eq!(Placement::load(&path).unwrap().rect.width, 715.);
+
+    let second = cx.update(|cx| {
+        open_host_window(LaunchMode::Workspace, (1500, 950), hidden_options(), cx).unwrap()
+    });
+    second
+        .update(cx, |_, window, _| {
+            assert_eq!(window.bounds().origin, point(px(173.), px(197.)));
+            assert_eq!(window.bounds().size, size(px(715.), px(565.)));
+        })
+        .unwrap();
+    cx.simulate_window_resize(second.into(), size(px(740.), px(580.)));
+    cx.quit();
+    assert_eq!(Placement::load(&path).unwrap().rect.width, 740.);
+}
+
+#[gpui::test]
+fn placement_on_a_missing_display_falls_back_to_the_modes_centered_default(
+    cx: &mut TestAppContext,
+) {
+    use jcode_desktop_model::window_placement::{Placement, Presentation, Rect};
+
+    let state = tempfile::tempdir().unwrap();
+    Placement {
+        rect: Rect {
+            x: 40.,
+            y: 50.,
+            width: 600.,
+            height: 450.,
+        },
+        presentation: Presentation::Maximized,
+        display_uuid: Some("disconnected".into()),
+    }
+    .save(&state.path().join("window-placement-single-panel.json"))
+    .unwrap();
+    let mode = LaunchMode::SinglePanel;
+    let window = cx.update(|cx| {
+        window_placement::install(state.path().to_owned(), cx);
+        open_host_window(mode, mode.initial_window_size(), hidden_options(), cx).unwrap()
+    });
+    window
+        .update(cx, |_, window, cx| {
+            assert_eq!(window.bounds().size, size(px(800.), px(950.)));
+            assert_eq!(
+                window.bounds().center(),
+                cx.primary_display().unwrap().visible_bounds().center()
+            );
+        })
+        .unwrap();
+}
+
+fn hidden_options() -> WindowOptions {
+    WindowOptions {
+        show: false,
+        focus: false,
+        ..Default::default()
+    }
+}

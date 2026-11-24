@@ -12,6 +12,7 @@ mod host {
     pub mod reload_config;
     pub mod resources;
     pub mod window_controls;
+    pub mod window_placement;
 }
 mod diagnostics;
 #[cfg(test)]
@@ -41,6 +42,7 @@ use host::{
     instance::{self, Command as InstanceCommand, Instance},
     reload::ReloadManager,
     resources::HostState,
+    window_placement,
 };
 
 actions!(
@@ -258,6 +260,36 @@ fn fit_window_bounds(
     Bounds::centered_at(visible.center(), fitted)
 }
 
+fn open_host_window(
+    mode: LaunchMode,
+    default_size: (u32, u32),
+    options: WindowOptions,
+    cx: &mut App,
+) -> anyhow::Result<gpui::WindowHandle<HostFallback>> {
+    let (display_id, bounds) = window_placement::restore(mode, cx)
+        .map(|(display, bounds)| (Some(display), bounds))
+        .unwrap_or_else(|| {
+            (
+                None,
+                WindowBounds::Windowed(initial_window_bounds(default_size, cx)),
+            )
+        });
+    cx.open_window(
+        WindowOptions {
+            app_id: Some(jcode_desktop_ui::APP_ID.into()),
+            display_id,
+            window_bounds: Some(bounds),
+            titlebar: Some(titlebar_options()),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            ..options
+        },
+        |window, cx| {
+            window_placement::observe(mode, bounds, window, cx);
+            cx.new(|_| HostFallback)
+        },
+    )
+}
+
 /// Bring the desktop window back, whatever the traffic lights did to it.
 ///
 /// If a window still exists (visible or minimized), activate it. If the red
@@ -280,19 +312,12 @@ fn restore_window(
             return Ok(());
         }
 
-    let bounds = initial_window_bounds(
-        LaunchMode::from_args(env::args_os()).initial_window_size(),
+    let mode = LaunchMode::from_args(env::args_os());
+    let replacement = open_host_window(
+        mode,
+        mode.initial_window_size(),
+        WindowOptions::default(),
         cx,
-    );
-    let replacement = cx.open_window(
-        WindowOptions {
-            app_id: Some(jcode_desktop_ui::APP_ID.into()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(titlebar_options()),
-            app_owns_titlebar_drag: cfg!(target_os = "macos"),
-            ..Default::default()
-        },
-        |_, cx| cx.new(|_| HostFallback),
     )?;
     replacement.update(cx, {
         let manager = manager.clone();
@@ -331,6 +356,7 @@ fn install_close_handler(
             eprintln!("failed to suspend desktop workspace: {error:#}");
             return false;
         }
+        window_placement::flush(window, cx);
         *current_window.borrow_mut() = None;
         true
     });
@@ -462,18 +488,16 @@ fn open_shared_window(
     focus: bool,
     cx: &mut App,
 ) -> anyhow::Result<u64> {
-    let bounds = initial_window_bounds(LaunchMode::SinglePanel.initial_window_size(), cx);
-    let window = cx.open_window(
+    let mode = LaunchMode::SinglePanel;
+    let window = open_host_window(
+        mode,
+        mode.initial_window_size(),
         WindowOptions {
-            app_id: Some(jcode_desktop_ui::APP_ID.into()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(titlebar_options()),
-            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             show,
             focus,
             ..Default::default()
         },
-        |_, cx| cx.new(|_| HostFallback),
+        cx,
     )?;
     let handle = gpui::AnyWindowHandle::from(window);
     jcode_desktop_api::WindowLaunches::insert(cx, handle.window_id().as_u64(), launch);
@@ -635,12 +659,13 @@ fn main() {
     let instance_socket = Rc::new(instance_socket);
     // Isolated acceptance instances must never activate or expose a window on
     // the user's desktop. Only the offline fixture may request this mode.
-    let control_fixture = env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
-        && env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1");
+    let screenshot = env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1");
+    let control_fixture =
+        screenshot && env::var("JCODE_DESKTOP_CONTROL_TEST").as_deref() == Ok("1");
     let plugin_path = host::reload_config::plugin_path();
     let app = application().with_quit_mode(launch_quit_mode(
         launch_mode,
-        env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1"),
+        screenshot,
         env::var("JCODE_DESKTOP_SCREENSHOT_MACOS_LIFECYCLE").as_deref() == Ok("1"),
     ));
     // Clicking the Dock icon after the red button closed the last window must
@@ -662,6 +687,9 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        if !screenshot && let Some(dir) = jcode_desktop_model::platform_dirs::state_dir() {
+            window_placement::install(dir, cx);
+        }
         let quit_socket = instance_socket.clone();
         cx.on_app_quit(move |_| {
             quit_socket.cleanup();
@@ -686,21 +714,17 @@ fn main() {
         } else {
             width
         };
-        let bounds = initial_window_bounds((width, height), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    focus: !control_fixture,
-                    show: !control_fixture,
-                    app_id: Some(jcode_desktop_ui::APP_ID.into()),
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(titlebar_options()),
-                    app_owns_titlebar_drag: cfg!(target_os = "macos"),
-                    ..Default::default()
-                },
-                |_, cx| cx.new(|_| HostFallback),
-            )
-            .expect("failed to open native Jcode Desktop window");
+        let window = open_host_window(
+            launch_mode,
+            (width, height),
+            WindowOptions {
+                focus: !control_fixture,
+                show: !control_fixture,
+                ..Default::default()
+            },
+            cx,
+        )
+        .expect("failed to open native Jcode Desktop window");
 
         let host = Rc::new(HostState::default());
         let manager = Rc::new(RefCell::new(

@@ -17,6 +17,7 @@ pub mod platform_dirs;
 pub mod prompt_completion;
 pub mod text_buffer;
 pub mod todoist;
+pub mod window_placement;
 
 #[cfg(test)]
 #[path = "global_search_tests.rs"]
