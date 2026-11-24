@@ -1,31 +1,113 @@
 use super::*;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InlineQuestion {
     child_session_id: String,
-    pub(super) question: String,
-    pub(super) answer: String,
+    #[serde(flatten)]
+    first: InlineTurn,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    follow_ups: Vec<InlineTurn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct InlineTurn {
+    question: String,
+    answer: String,
     outcome: Option<Outcome>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Outcome {
     Done,
     Failed(String),
     Closed,
 }
 
-fn latest_question<'a>(
+impl InlineTurn {
+    fn pending(question: &str) -> Self {
+        Self {
+            question: question.into(),
+            answer: String::new(),
+            outcome: None,
+        }
+    }
+
+    fn from_saved(turn: &crate::harness::SideQuestionTurn) -> Self {
+        Self {
+            question: turn.question.clone(),
+            answer: turn.answer.clone(),
+            outcome: Some(Outcome::Done),
+        }
+    }
+}
+
+impl InlineQuestion {
+    pub(super) fn with_pending_follow_up(
+        child_session_id: String,
+        first: &crate::harness::SideQuestionTurn,
+        previous: &[crate::harness::SideQuestionTurn],
+        question: &str,
+    ) -> Self {
+        Self {
+            child_session_id,
+            first: InlineTurn::from_saved(first),
+            follow_ups: previous
+                .iter()
+                .map(InlineTurn::from_saved)
+                .chain(std::iter::once(InlineTurn::pending(question)))
+                .collect(),
+        }
+    }
+
+    fn turns(&self) -> impl Iterator<Item = &InlineTurn> {
+        std::iter::once(&self.first).chain(&self.follow_ups)
+    }
+
+    pub(super) fn selection_segments(&self, row: usize) -> Vec<(SharedString, SharedString)> {
+        self.turns()
+            .enumerate()
+            .flat_map(|(index, turn)| {
+                let prefix = format!("btw-{row}-{index}");
+                let question = (
+                    format!("{prefix}-question").into(),
+                    turn.question.clone().into(),
+                );
+                std::iter::once(question).chain(markdown::selection_segments_with_prefix(
+                    &turn.answer,
+                    &prefix,
+                    false,
+                    false,
+                ))
+            })
+            .collect()
+    }
+}
+
+fn find_thread<'a>(
     items: &'a mut Transcript,
     child_session_id: &str,
 ) -> Option<&'a mut InlineQuestion> {
-    let index = items.iter().rposition(|item| {
+    let index = items.iter().position(|item| {
         matches!(item, Item::SideQuestion(question) if question.child_session_id == child_session_id)
     })?;
     let Item::SideQuestion(question) = &mut items[index] else {
         return None;
     };
     Some(question)
+}
+
+fn pending_turn<'a>(items: &'a mut Transcript, session_id: &str) -> Option<&'a mut InlineTurn> {
+    let thread = find_thread(items, session_id)?;
+    let turn = thread.follow_ups.last_mut().unwrap_or(&mut thread.first);
+    turn.outcome.is_none().then_some(turn)
+}
+
+pub(super) fn append_follow_up(items: &mut Transcript, child_id: &str, question: &str) -> bool {
+    let Some(thread) = find_thread(items, child_id) else {
+        return false;
+    };
+    thread.follow_ups.push(InlineTurn::pending(question));
+    true
 }
 
 pub(super) fn apply_event(items: &mut Transcript, child_session_id: &str, event: &ApiEvent) {
@@ -37,7 +119,7 @@ pub(super) fn apply_event(items: &mut Transcript, child_session_id: &str, event:
         }
         _ => return,
     };
-    let Some(question) = latest_question(items, child_session_id) else {
+    let Some(question) = pending_turn(items, child_session_id) else {
         return;
     };
     if let ApiEvent::TextDelta { text, .. } = event {
@@ -48,23 +130,24 @@ pub(super) fn apply_event(items: &mut Transcript, child_session_id: &str, event:
 }
 
 pub(super) fn close(items: &mut Transcript, child_session_id: &str) {
-    if let Some(question) = latest_question(items, child_session_id)
-        && question.outcome.is_none()
-    {
+    if let Some(question) = pending_turn(items, child_session_id) {
         question.outcome = Some(Outcome::Closed);
     }
 }
 
 impl Panel {
     pub(super) fn record_inline_side_question(&mut self, child_session_id: &str, question: &str) {
+        self.push_inline_side_question(InlineQuestion {
+            child_session_id: child_session_id.into(),
+            first: InlineTurn::pending(question),
+            follow_ups: Vec::new(),
+        });
+    }
+
+    pub(super) fn push_inline_side_question(&mut self, question: InlineQuestion) {
         self.flush_reasoning();
         self.flush_streaming();
-        self.items.push(Item::SideQuestion(Box::new(InlineQuestion {
-            child_session_id: child_session_id.into(),
-            question: question.into(),
-            answer: String::new(),
-            outcome: None,
-        })));
+        self.items.push(Item::SideQuestion(Box::new(question)));
         self.transcript_measurements.dirty = true;
     }
 
@@ -78,7 +161,9 @@ impl Panel {
         let theme = Theme::global();
         let key = expandable::key::details(index);
         let expanded = self.expanded_regions.contains(&key);
+        let child_session_id = question.child_session_id.clone();
         let preview = question
+            .first
             .question
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -121,7 +206,15 @@ impl Panel {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_line(&key, cx);
+                        let already_open = this.side_question_child()
+                            == Some(child_session_id.as_str())
+                            && this.side_question_history.is_none();
+                        if already_open || !this.expanded_regions.contains(&key) {
+                            this.toggle_line(&key, cx);
+                        }
+                        if !already_open {
+                            this.open_saved_side_question(&child_session_id, cx);
+                        }
                     })),
             )
             .when(expanded, |el| {
@@ -133,38 +226,9 @@ impl Panel {
                         .min_w_0()
                         .gap_2()
                         .pl_2()
-                        .child(
-                            div()
-                                .debug_selector(|| "inline-btw-question".into())
-                                .text_color(theme.TEXT)
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(text_selection::plain(
-                                    self.transcript_selection.clone(),
-                                    format!("btw-question-{index}"),
-                                    question.question.clone(),
-                                    window,
-                                    cx,
-                                )),
-                        )
-                        .when(!question.answer.is_empty(), |el| {
-                            el.child(
-                                div()
-                                    .debug_selector(|| "inline-btw-answer".into())
-                                    .min_w_0()
-                                    .font_family(theme.FONT_AI)
-                                    .child(markdown::render_interactive(
-                                        &question.answer,
-                                        index,
-                                        &self.transcript_selection,
-                                        window,
-                                        cx,
-                                        false,
-                                        self.media_preview_handler(cx),
-                                    )),
-                            )
-                        })
-                        .when_some(
-                            match &question.outcome {
+                        .children(question.turns().enumerate().map(|(turn_index, turn)| {
+                            let prefix = format!("btw-{index}-{turn_index}");
+                            let status = match &turn.outcome {
                                 None => Some("Thinking…"),
                                 Some(Outcome::Failed(error)) if error.trim().is_empty() => {
                                     Some("Side question stopped")
@@ -172,16 +236,54 @@ impl Panel {
                                 Some(Outcome::Failed(error)) => Some(error.as_str()),
                                 Some(Outcome::Done) => None,
                                 Some(Outcome::Closed) => Some("Side question closed"),
-                            },
-                            |el, status| {
-                                el.child(
+                            };
+                            div()
+                                .id(("inline-btw-turn", turn_index))
+                                .flex()
+                                .flex_col()
+                                .min_w_0()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("inline-btw-question-{turn_index}")
+                                        })
+                                        .text_color(theme.TEXT)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(text_selection::plain(
+                                            self.transcript_selection.clone(),
+                                            format!("{prefix}-question"),
+                                            turn.question.clone(),
+                                            window,
+                                            cx,
+                                        )),
+                                )
+                                .when(!turn.answer.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("inline-btw-answer-{turn_index}")
+                                            })
+                                            .min_w_0()
+                                            .font_family(theme.FONT_AI)
+                                            .child(markdown::render_inline_answer(
+                                                &turn.answer,
+                                                index,
+                                                &prefix,
+                                                &self.transcript_selection,
+                                                window,
+                                                cx,
+                                                self.media_preview_handler(cx),
+                                            )),
+                                    )
+                                })
+                                .children(status.map(|status| {
                                     div()
                                         .text_size(px(12.))
                                         .text_color(theme.TEXT_DIM)
-                                        .child(status.to_owned()),
-                                )
-                            },
-                        ),
+                                        .child(status.to_owned())
+                                }))
+                        })),
                 )
             })
             .into_any_element()
@@ -189,22 +291,56 @@ impl Panel {
 }
 
 pub(super) fn screenshot_fixture() -> Vec<Item> {
+    let thread = screenshot_thread();
+    let mut turns = thread.turns.iter().map(InlineTurn::from_saved);
     vec![
         Item::User("Review the new import job.".into()),
         Item::Assistant("I’ll trace the happy path and check where retries happen.".into()),
         Item::SideQuestion(Box::new(InlineQuestion {
-            child_session_id: "btw-fixture".into(),
-            question: "What happens to rows that fail validation?".into(),
-            answer: "Invalid rows go to the quarantine table with their failure reason. Valid rows continue through the import.".into(),
-            outcome: Some(Outcome::Done),
+            child_session_id: thread.session.session_id,
+            first: turns.next().unwrap(),
+            follow_ups: turns.collect(),
         })),
-        Item::Assistant("The import is safe to retry. It uses a stable source ID to avoid duplicate rows.".into()),
+        Item::Assistant(
+            "The import is safe to retry. It uses a stable source ID to avoid duplicate rows."
+                .into(),
+        ),
     ]
+}
+
+pub(super) fn screenshot_thread() -> crate::harness::SideQuestionThread {
+    use crate::harness::{SideQuestionThread, SideQuestionTurn};
+    SideQuestionThread {
+        session: serde_json::from_value(serde_json::json!({
+            "session_id": "btw-fixture", "status": "idle",
+            "context": {"model": "claude-opus-5-5", "reasoning_effort": "high"}
+        }))
+        .expect("valid BTW fixture session"),
+        turns: vec![
+            SideQuestionTurn {
+                question: "What happens to rows that fail validation?".into(),
+                answer: "Invalid rows go to the quarantine table with their failure reason.".into(),
+            },
+            SideQuestionTurn {
+                question: "Can I retry those rows?".into(),
+                answer: "Yes. Correct the validation errors, then retry just those rows.".into(),
+            },
+        ],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_turn_snapshot_remains_readable() {
+        let snapshot = serde_json::json!({
+            "child_session_id": "side", "question": "Original?", "answer": "Yes.", "outcome": "Done"
+        });
+        let thread: InlineQuestion = serde_json::from_value(snapshot.clone()).unwrap();
+        assert_eq!(serde_json::to_value(thread).unwrap(), snapshot);
+    }
 
     #[gpui::test]
     fn btw_stays_in_order_and_collapses_only_in_clean_chat(cx: &mut gpui::TestAppContext) {
@@ -267,12 +403,12 @@ mod tests {
         assert!(vcx.debug_bounds("transcript-row-0").unwrap().bottom() <= pill.top());
         assert!(vcx.debug_bounds("transcript-row-2").unwrap().top() >= pill.bottom());
         assert!(vcx.debug_bounds("inline-btw-content").is_none());
-        assert!(vcx.debug_bounds("side-question-card").is_none());
+        assert!(vcx.debug_bounds("side-question-card").is_some());
 
         vcx.simulate_click(pill.center(), Default::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("inline-btw-question").is_some());
-        assert!(vcx.debug_bounds("inline-btw-answer").is_some());
+        assert!(vcx.debug_bounds("inline-btw-question-0").is_some());
+        assert!(vcx.debug_bounds("inline-btw-answer-0").is_some());
         let pill = vcx.debug_bounds("inline-btw").unwrap();
         vcx.simulate_click(pill.center(), Default::default());
         vcx.run_until_parked();

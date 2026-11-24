@@ -2531,8 +2531,17 @@ pub(crate) fn selection_segments(
     reasoning: bool,
     prompt: bool,
 ) -> Vec<(SharedString, SharedString)> {
+    selection_segments_with_prefix(source, &row.to_string(), reasoning, prompt)
+}
+
+pub(crate) fn selection_segments_with_prefix(
+    source: &str,
+    key_prefix: &str,
+    reasoning: bool,
+    prompt: bool,
+) -> Vec<(SharedString, SharedString)> {
     let mut segments = Vec::new();
-    collect_selection_segments(source, &row.to_string(), reasoning, prompt, &mut segments);
+    collect_selection_segments(source, key_prefix, reasoning, prompt, &mut segments);
     segments
 }
 
@@ -2677,6 +2686,28 @@ pub(crate) fn render_interactive(
 ) -> impl IntoElement {
     render_interactive_with_avatar(
         source, row, selection, window, cx, reasoning, on_preview, false,
+    )
+}
+
+pub(crate) fn render_inline_answer(
+    source: &str,
+    row: usize,
+    key_prefix: &str,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    on_preview: MediaPreviewHandler,
+) -> impl IntoElement {
+    render_document(
+        source,
+        row,
+        key_prefix,
+        selection,
+        window,
+        cx,
+        false,
+        Some(on_preview),
+        false,
     )
 }
 

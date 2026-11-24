@@ -177,7 +177,12 @@ impl Panel {
         card.reasoning.clear();
         card.error = None;
         card.status = SideQuestionStatus::Working;
-        card.tracked_in_transcript = clean_chat;
+        let existing_inline = side_question_inline::append_follow_up(
+            &mut self.items,
+            &card.child_session_id,
+            question,
+        );
+        card.tracked_in_transcript = clean_chat || existing_inline;
         card.scroll.set_offset(Default::default());
         let editor = card.editor.clone();
         cx.defer(move |cx| {
@@ -187,9 +192,16 @@ impl Panel {
             session_id: card.child_session_id.clone(),
             question: question.to_string(),
         });
-        if clean_chat {
-            let child_session_id = card.child_session_id.clone();
-            self.record_inline_side_question(&child_session_id, question);
+        if existing_inline {
+            self.transcript_measurements.dirty = true;
+        } else if clean_chat && let Some((first, previous)) = card.previous.split_first() {
+            let inline = side_question_inline::InlineQuestion::with_pending_follow_up(
+                card.child_session_id.clone(),
+                first,
+                previous,
+                question,
+            );
+            self.push_inline_side_question(inline);
         }
         cx.notify();
     }
@@ -224,10 +236,7 @@ impl Panel {
         }
     }
 
-    fn open_saved_side_question(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if !matches!(self.side_question_history, Some(HistoryView::Ready(_))) {
-            return;
-        }
+    pub(super) fn open_saved_side_question(&mut self, session_id: &str, cx: &mut Context<Self>) {
         if let Some(card) = self
             .side_question
             .as_ref()
@@ -259,40 +268,46 @@ impl Panel {
             return;
         }
         match result {
-            Ok(SideQuestionThread {
-                mut session,
-                mut turns,
-            }) => {
-                let Some(last) = turns.pop() else {
-                    self.side_question_history = Some(HistoryView::Failed(
-                        "This topic has no saved question yet.".into(),
-                    ));
-                    cx.notify();
-                    return;
-                };
-                if session.working_dir.is_none() {
-                    session.working_dir.clone_from(&self.working_dir);
-                }
-                let mut card = SideQuestionCard::new(
-                    session,
-                    last.question,
-                    Self::create_side_question_editor(cx),
-                    cx,
-                );
-                card.previous = turns;
-                card.answer = last.answer;
-                card.status = if card.answer.is_empty() {
-                    SideQuestionStatus::Failed
-                } else {
-                    SideQuestionStatus::Done
-                };
-                self.show_side_question(card, cx);
-            }
+            Ok(thread) => self.show_saved_side_question(thread, cx),
             Err(error) => {
                 self.side_question_history = Some(HistoryView::Failed(error));
                 cx.notify();
             }
         }
+    }
+
+    pub(super) fn show_saved_side_question(
+        &mut self,
+        SideQuestionThread {
+            mut session,
+            mut turns,
+        }: SideQuestionThread,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(last) = turns.pop() else {
+            self.side_question_history = Some(HistoryView::Failed(
+                "This topic has no saved question yet.".into(),
+            ));
+            cx.notify();
+            return;
+        };
+        if session.working_dir.is_none() {
+            session.working_dir.clone_from(&self.working_dir);
+        }
+        let mut card = SideQuestionCard::new(
+            session,
+            last.question,
+            Self::create_side_question_editor(cx),
+            cx,
+        );
+        card.previous = turns;
+        card.answer = last.answer;
+        card.status = if card.answer.is_empty() {
+            SideQuestionStatus::Failed
+        } else {
+            SideQuestionStatus::Done
+        };
+        self.show_side_question(card, cx);
     }
 
     pub(crate) fn start_side_question(
@@ -420,9 +435,6 @@ impl Panel {
             return Some(self.render_side_question_history(history, window, cx));
         }
         let card = self.side_question.as_ref()?;
-        if self.clean_chat_enabled() && card.tracked_in_transcript {
-            return None;
-        }
         let theme = Theme::global();
         let (model, effort) = card.model_and_effort();
         let status = match card.status {

@@ -111,10 +111,7 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
         Item::RuntimeError { message, .. } | Item::AgentMessage { message, .. } => {
             message.hash(&mut state)
         }
-        Item::SideQuestion(question) => {
-            question.question.hash(&mut state);
-            question.answer.hash(&mut state);
-        }
+        Item::SideQuestion(question) => question.hash(&mut state),
         Item::Tool {
             call_id,
             name,
@@ -229,8 +226,7 @@ fn segments_with_regions(
         }
         Item::AgentMessage { .. } => {}
         Item::SideQuestion(question) if open.details => {
-            push(format!("btw-question-{index}"), question.question.clone());
-            result.extend(markdown::selection_segments(&question.answer, index, false, false));
+            return question.selection_segments(index);
         }
         Item::SideQuestion(_) => {}
         Item::Reasoning(text) => return markdown::selection_segments(text, index, true, false),

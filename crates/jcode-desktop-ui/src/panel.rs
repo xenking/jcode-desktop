@@ -1720,6 +1720,16 @@ impl Panel {
         } else {
             "idle"
         };
+        if crate::harness::screenshot_mode()
+            && matches!(fixture.as_deref(), Some("btw-normal" | "btw-clean-expanded"))
+        {
+            let panel = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = panel.update(cx, |panel, cx| {
+                    panel.show_saved_side_question(side_question_inline::screenshot_thread(), cx);
+                });
+            });
+        }
         if crate::harness::screenshot_mode() && fixture.as_deref() == Some("ask") {
             let panel = cx.weak_entity();
             cx.defer(move |cx| {
@@ -1861,6 +1871,7 @@ impl Panel {
             transcript_list,
             clean_chat_override: match fixture.as_deref().filter(|_| crate::harness::screenshot_mode()) {
                 Some("external-dm-clean" | "btw-clean" | "btw-clean-expanded") => Some(true),
+                Some("btw-normal") => Some(false),
                 Some("external-dm") => Some(false),
                 _ => None,
             },
@@ -13212,7 +13223,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("external-dm" | "external-dm-clean")) {
         return agent_message::screenshot_fixture();
     }
-    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("btw-clean" | "btw-clean-expanded")) {
+    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("btw-normal" | "btw-clean" | "btw-clean-expanded")) {
         return side_question_inline::screenshot_fixture();
     }
     if crate::harness::screenshot_mode()

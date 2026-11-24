@@ -441,10 +441,14 @@ unsafe extern "C-unwind" fn activate(
                             }
                         }
                     }
-                    let markdown_file = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE").is_some();
+                    let needs_layout_pass = std::env::var_os("JCODE_DESKTOP_SCREENSHOT_MARKDOWN_FILE").is_some()
+                        || matches!(
+                            std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(),
+                            Ok("btw-normal" | "btw-clean-expanded")
+                        );
                     let _ = cx.update(|window, cx| {
                         window.refresh();
-                        if markdown_file {
+                        if needs_layout_pass {
                             window.draw(cx).clear(cx);
                         }
                     });
@@ -452,7 +456,7 @@ unsafe extern "C-unwind" fn activate(
                         .timer(std::time::Duration::from_millis(600))
                         .await;
                     let _ = cx.update(|window, cx| {
-                        if markdown_file {
+                        if needs_layout_pass {
                             window.refresh();
                             window.draw(cx).clear(cx);
                         }

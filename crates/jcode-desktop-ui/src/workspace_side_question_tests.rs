@@ -295,6 +295,139 @@ fn turn_done(session_id: &str) -> jcode_sdk::ApiEvent {
 }
 
 #[gpui::test]
+fn clean_chat_btw_opens_and_continues_the_same_side_thread(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.set_test_bridge(bridge);
+        workspace.push_test_panel("source", cx);
+        workspace.slots[0].panel.update(cx, |panel, cx| {
+            panel.load_history(vec![], vec![], cx);
+            panel.echo_external_prompt("Review the import.".into(), cx);
+        });
+        workspace
+    });
+    vcx.run_until_parked();
+    let toggle = vcx.debug_bounds("clean-chat-toggle").unwrap();
+    vcx.simulate_click(toggle.center(), Default::default());
+    vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+    vcx.run_until_parked();
+    while commands.try_recv().is_ok() {}
+
+    let question = "What happens to invalid rows?";
+    let first_answer = "Invalid rows are quarantined.";
+    let follow_up = "Can I retry them?";
+    let second_answer = "Retry the rows after correcting them.";
+    let child = "btw-child";
+    let apply = |vcx: &mut gpui::VisualTestContext, update| {
+        workspace.update(vcx, |workspace, cx| workspace.apply(update, cx));
+        vcx.run_until_parked();
+    };
+    let finish = |vcx: &mut gpui::VisualTestContext, answer| {
+        for event in [text_delta(child, answer), turn_done(child)] {
+            apply(
+                vcx,
+                Update::Event {
+                    session_id: child.into(),
+                    event,
+                },
+            );
+        }
+    };
+    vcx.simulate_input(&format!("/btw {question}"));
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SideQuestion { session_id, question: sent })
+        if session_id == "source" && sent == question)
+    );
+    let session = super::super::tests::session_info(child, None);
+    apply(
+        vcx,
+        Update::SideQuestionStarted {
+            parent_session_id: "source".into(),
+            session: session.clone(),
+            question: question.into(),
+        },
+    );
+    finish(vcx, first_answer);
+    let card = vcx
+        .debug_bounds("side-question-card")
+        .expect("asking /btw opens the card in clean chat");
+    assert!(card.bottom() <= vcx.debug_bounds("composer").unwrap().top());
+    let follow_up_field = vcx
+        .debug_bounds("side-question-follow-up")
+        .expect("follow-up field in clean chat");
+    vcx.simulate_click(follow_up_field.center(), Default::default());
+    vcx.simulate_input(follow_up);
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::ContinueSideQuestion { session_id, question })
+        if session_id == child && question == follow_up)
+    );
+    finish(vcx, second_answer);
+    let copy = vcx.debug_bounds("side-question-copy").unwrap();
+    vcx.simulate_click(copy.center(), Default::default());
+    let copied = vcx
+        .update(|_, cx| cx.read_from_clipboard())
+        .and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some(second_answer));
+
+    let dismiss = vcx.debug_bounds("side-question-dismiss").unwrap();
+    vcx.simulate_click(dismiss.center(), Default::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::DismissSideQuestion { session_id }) if session_id == child)
+    );
+    assert!(vcx.debug_bounds("side-question-card").is_none());
+    let pill = vcx
+        .debug_bounds("inline-btw")
+        .expect("the original BTW pill remains");
+    vcx.simulate_click(pill.center(), Default::default());
+    vcx.run_until_parked();
+    let original_answer = vcx.debug_bounds("inline-btw-answer-0").unwrap();
+    let follow_up_prompt = vcx.debug_bounds("inline-btw-question-1").unwrap();
+    let follow_up_answer = vcx.debug_bounds("inline-btw-answer-1").unwrap();
+    assert!(original_answer.bottom() <= follow_up_prompt.top());
+    assert!(follow_up_prompt.bottom() <= follow_up_answer.top());
+    let Ok(Command::OpenSideQuestion {
+        parent_session_id,
+        session_id,
+        request_id,
+    }) = commands.try_recv()
+    else {
+        panic!("clicking the pill reopens the saved side thread");
+    };
+    assert_eq!(
+        (parent_session_id.as_str(), session_id.as_str()),
+        ("source", child)
+    );
+    apply(
+        vcx,
+        Update::SideQuestionOpened {
+            parent_session_id,
+            request_id,
+            result: Ok(harness::SideQuestionThread {
+                session,
+                turns: vec![
+                    harness::SideQuestionTurn {
+                        question: question.into(),
+                        answer: first_answer.into(),
+                    },
+                    harness::SideQuestionTurn {
+                        question: follow_up.into(),
+                        answer: second_answer.into(),
+                    },
+                ],
+            }),
+        },
+    );
+    assert!(vcx.debug_bounds("side-question-follow-up").is_some());
+}
+
+#[gpui::test]
 fn side_question_wheel_stays_in_the_card_even_at_both_edges(cx: &mut gpui::TestAppContext) {
     let (bridge, _) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
