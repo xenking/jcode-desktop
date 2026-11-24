@@ -712,6 +712,10 @@ pub struct PanelSnapshot {
     pub(crate) clean_chat_override: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) turn_outcome: Option<session_status::TurnOutcome>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) finished_unseen: bool,
     #[serde(default)]
     pub image_pane_open: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2843,6 +2847,8 @@ impl Panel {
             draft_config: self.draft_config.clone(),
             clean_chat_override: self.clean_chat_override,
             transcript: None,
+            turn_outcome: self.turn_outcome,
+            finished_unseen: self.finished_unseen,
             image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
             prompt_queue: self.prompt_queue.clone(),
@@ -2879,7 +2885,10 @@ impl Panel {
         }
         if let Some(transcript) = snapshot.transcript {
             self.restore_transcript(transcript);
+        } else {
+            self.turn_outcome = snapshot.turn_outcome;
         }
+        self.finished_unseen = snapshot.finished_unseen;
         self.clean_chat_override = snapshot.clean_chat_override;
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;

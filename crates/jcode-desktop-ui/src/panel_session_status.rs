@@ -3,7 +3,7 @@ use super::*;
 use crate::swarm_glyph::{Icon, Mark, Motion};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum TurnOutcome {
+pub(crate) enum TurnOutcome {
     Done,
     Stopped,
     Error,

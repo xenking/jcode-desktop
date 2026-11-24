@@ -754,6 +754,142 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn restart_preserves_session_bindings_and_completed_chrome(cx: &mut gpui::TestAppContext) {
+        use crate::harness::{Command, Update};
+        use jcode_sdk::ApiEvent;
+
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let session_ids = ["focused-done", "background-done", "idle", "active"];
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            for id in session_ids {
+                workspace.push_test_panel(id, cx);
+            }
+            workspace
+        });
+        let status = |session_id: &str, status: &str| Update::Event {
+            session_id: session_id.into(),
+            event: ApiEvent::SessionStatus {
+                session_id: session_id.into(),
+                status: status.into(),
+                pending_soft_interrupts: None,
+            },
+        };
+        let tab_modes = |workspace: &Workspace, cx: &App| {
+            workspace
+                .slots
+                .iter()
+                .map(|slot| slot.panel.read(cx).tab_ring().map(|ring| ring.mode.label()))
+                .collect::<Vec<_>>()
+        };
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.restore_focus(window, cx));
+        });
+        vcx.run_until_parked();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.json");
+        let start = Instant::now();
+        let mut writer = ManifestWriter::default();
+        vcx.update(|window, cx| {
+            let snapshot = workspace.read(cx).snapshot(window, cx).unwrap();
+            assert!(
+                writer
+                    .observe(start, snapshot, LaunchSnapshot::default())
+                    .unwrap()
+            );
+            writer.save_pending(&path, 1).unwrap();
+        });
+
+        workspace.update(vcx, |workspace, cx| {
+            for id in &session_ids[..2] {
+                workspace.apply(status(id, "running"), cx);
+                workspace.apply(
+                    Update::Event {
+                        session_id: (*id).into(),
+                        event: ApiEvent::TurnDone {
+                            session_id: (*id).into(),
+                            pending_soft_interrupts: None,
+                        },
+                    },
+                    cx,
+                );
+            }
+            workspace.apply(status("active", "running"), cx);
+            assert_eq!(
+                tab_modes(workspace, cx),
+                [None, Some("done"), None, Some("working")]
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("session-status-done").is_some());
+
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let snapshot = workspace.snapshot(window, cx).unwrap();
+                for now in [start + DEBOUNCE, start + DEBOUNCE * 2] {
+                    if writer
+                        .observe(now, snapshot.clone(), LaunchSnapshot::default())
+                        .unwrap()
+                    {
+                        writer.save_pending(&path, 1).unwrap();
+                    }
+                }
+                let manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                let snapshot =
+                    decode_restore(&serde_json::to_vec(&manifest.snapshot).unwrap()).unwrap();
+                workspace.apply_snapshot(snapshot, cx);
+                workspace.restore_focus(window, cx);
+
+                assert_eq!(
+                    workspace
+                        .slots
+                        .iter()
+                        .map(|slot| slot.panel.read(cx).session_id.clone())
+                        .collect::<Vec<_>>(),
+                    session_ids
+                );
+                assert_ne!(tab_modes(workspace, cx)[3], Some("working"));
+                let watched = commands
+                    .try_iter()
+                    .filter_map(|command| match command {
+                        Command::Watch { session_id } => Some(session_id),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(watched, session_ids);
+                for id in session_ids {
+                    workspace.apply(
+                        Update::SessionConnected {
+                            session_id: id.into(),
+                        },
+                        cx,
+                    );
+                    workspace.apply(
+                        status(id, if id == "active" { "running" } else { "idle" }),
+                        cx,
+                    );
+                }
+                assert_eq!(
+                    tab_modes(workspace, cx),
+                    [None, Some("done"), None, Some("working")]
+                );
+                cx.notify();
+            });
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("session-status-done").is_some());
+
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[1]
+                .panel
+                .update(cx, |panel, cx| panel.set_surface_focused(true, cx));
+            assert_eq!(tab_modes(workspace, cx)[1], None);
+        });
+    }
+
     #[test]
     fn restored_launch_drops_transient_flags() {
         let args: Vec<String> = [
@@ -784,6 +920,8 @@ mod tests {
         assert_eq!(snapshot.slots[0].panel.terminal_resource_id, None);
         assert_eq!(snapshot.slots[0].panel.terminal_output_cursor, None);
         assert_eq!(snapshot.slots[0].panel.draft.content, "hello");
+        assert_eq!(snapshot.slots[0].panel.turn_outcome, None);
+        assert!(!snapshot.slots[0].panel.finished_unseen);
         assert_eq!(snapshot.launch.unwrap().args, vec!["--single-panel"]);
     }
 
