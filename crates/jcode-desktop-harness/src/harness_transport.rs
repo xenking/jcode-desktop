@@ -55,6 +55,24 @@ impl RemoteTransports {
         if let Some(destination) = Destination::parse(host) {
             return self.connect_cloud(destination, progress);
         }
+        if crate::remote_targets::paired_id(host).is_some() {
+            let destination = crate::paired::find(host).map_err(|message| {
+                jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
+            })?;
+            let token = crate::paired::token(&destination.id).map_err(|message| {
+                jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
+            })?;
+            return JcodeClient::connect_paired_harness(
+                &destination.endpoint,
+                &token,
+                jcode_sdk::ConnectOptions {
+                    client_name: format!("jcode-desktop-paired/{}", crate::client_version()),
+                    supports_applets: true,
+                    ensure_runtime: false,
+                    ..Default::default()
+                },
+            ).map(|client| (client, false));
+        }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
         })?;

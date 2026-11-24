@@ -3539,6 +3539,7 @@ dependencies = [
  "jcode-config-types",
  "jcode-core",
  "jcode-gateway-types",
+ "jcode-harness-api-server",
  "jcode-import-core",
  "jcode-logging",
  "jcode-memory-types",
@@ -3725,10 +3726,12 @@ dependencies = [
  "libc",
  "log",
  "reqwest 0.12.28",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+ "uuid",
 ]
 
 [[package]]
@@ -3895,6 +3898,25 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "jcode-harness-api-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jcode-build-meta",
+ "jcode-build-support",
+ "jcode-harness-api",
+ "jcode-provider-metadata",
+ "jcode-session-types",
+ "jcode-todo-policy",
+ "jcode-transport",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -4118,6 +4140,7 @@ name = "jcode-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "jcode-applet-types",
  "jcode-build-support",
  "jcode-harness-api",
@@ -4126,10 +4149,13 @@ dependencies = [
  "jcode-transport",
  "jsonschema",
  "libc",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "socket2",
  "tempfile",
+ "tokio",
+ "tokio-tungstenite",
  "url",
  "uuid",
 ]

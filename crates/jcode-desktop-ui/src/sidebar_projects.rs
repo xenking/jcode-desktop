@@ -36,6 +36,7 @@ pub(super) struct State {
     /// directory, never on every hover repaint.
     roots: HashMap<String, Option<PathBuf>>,
     checkouts: HashMap<String, (Option<Checkout>, Instant)>,
+    paired_labels: HashMap<String, String>,
 }
 
 impl State {
@@ -103,13 +104,27 @@ impl State {
             .map(str::trim)
             .filter(|dir| !dir.is_empty());
         if let Some(host) = harness::remote_host(&session.session_id) {
+            let name = if crate::remote_targets::paired_id(&host).is_some() {
+                self.paired_labels.entry(host.clone()).or_insert_with(|| {
+                    jcode_desktop_harness::paired::find(&host)
+                        .map(|destination| destination.label)
+                        .unwrap_or_else(|_| "Paired machine".into())
+                }).as_str()
+            } else { host.as_str() };
             let label = match directory {
-                Some(dir) => format!("{host} · {}", path_label(dir)),
-                None => host.clone(),
+                Some(dir) => format!("{name} · {}", path_label(dir)),
+                None => name.to_owned(),
             };
             return (
                 Project {
-                    key: format!("ssh://{host}{}", directory.unwrap_or_default()),
+                    key: if crate::remote_targets::paired_id(&host).is_some() {
+                        format!(
+                            "paired-project:{}",
+                            serde_json::to_string(&(host, directory)).unwrap_or_default()
+                        )
+                    } else {
+                        format!("ssh://{host}{}", directory.unwrap_or_default())
+                    },
                     label,
                     location: sidebar_session_directory(session),
                 },

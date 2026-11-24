@@ -20,12 +20,22 @@ const MAX_HOSTS: usize = 512;
 
 /// Validate a saved Desktop destination without admitting it as an SSH alias.
 pub fn validate_destination(value: &str) -> Result<String, String> {
+    if paired_id(value).is_some() {
+        return Ok(value.to_owned());
+    }
     if !value.chars().any(char::is_control)
         && crate::managed_cloud::Destination::parse(value.trim()).is_some()
     {
         return Ok(value.trim().to_owned());
     }
     validate_host(value)
+}
+
+/// A paired destination is a stable opaque identifier, never an endpoint or SSH alias.
+pub fn paired_id(value: &str) -> Option<&str> {
+    let id = value.strip_prefix("paired:")?;
+    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .then_some(id)
 }
 
 /// Validate a single SSH destination, not an SSH command or URL.
