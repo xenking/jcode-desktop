@@ -3556,6 +3556,7 @@ dependencies = [
  "jcode-provider-openai",
  "jcode-provider-openrouter",
  "jcode-render-core",
+ "jcode-routing-policy",
  "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
@@ -4128,6 +4129,13 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "unicode-width",
+]
+
+[[package]]
+name = "jcode-routing-policy"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
