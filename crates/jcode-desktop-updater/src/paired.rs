@@ -2,9 +2,12 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::Mutex,
+    thread,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Deserialize)]
@@ -85,14 +88,44 @@ fn checked(output: Output, message: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+fn probe(command: &mut Command, timeout: Duration, message: &str) -> Result<Vec<u8>> {
+    // Use a file instead of a pipe so a helper spawned by git cannot keep the
+    // updater blocked on EOF after the CLI has exited.
+    let mut stdout = tempfile::tempfile()?;
+    let mut child = command
+        .stdout(stdout.try_clone()?)
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{message} (timed out)");
+        }
+        thread::sleep(Duration::from_millis(25).min(remaining));
+    };
+    if !status.success() {
+        bail!("{message} ({status})");
+    }
+    let mut bytes = Vec::new();
+    stdout.seek(SeekFrom::Start(0))?;
+    stdout.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub fn check() -> Result<Option<Preview>> {
     static CHECK: Mutex<()> = Mutex::new(());
     let _check = CHECK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let output = command(&cli_path()?)?.arg("--check-update").output()?;
-    let result = checked(
-        output,
+    let result = probe(
+        command(&cli_path()?)?.arg("--check-update"),
+        Duration::from_secs(90),
         "Couldn't check the fork heads. Verify the local rollout checkouts and Git authentication",
     )?;
     serde_json::from_slice(&result).context("The bundled CLI returned an invalid update preview")
@@ -139,8 +172,11 @@ pub enum Progress {
 }
 
 pub fn progress(preview: &Preview) -> Result<Progress> {
-    let output = command(&cli_path()?)?.arg("--status").output()?;
-    let raw = checked(output, "Couldn't read rollout status")?;
+    let raw = probe(
+        command(&cli_path()?)?.arg("--status"),
+        Duration::from_secs(35),
+        "Couldn't read rollout status",
+    )?;
     let status: Status = serde_json::from_slice(&raw)?;
     let intent = status.intent.context("No submitted update was found")?;
     if !intent.reviewed
@@ -159,6 +195,23 @@ pub fn progress(preview: &Preview) -> Result<Progress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_probes_return_output_or_timeout() {
+        let result = probe(
+            Command::new("/bin/sh").args(["-c", "printf null; printf hidden >&2"]),
+            Duration::from_secs(5),
+            "read preview",
+        );
+        assert_eq!(result.unwrap(), b"null");
+        let result = probe(
+            Command::new("/bin/sleep").arg("30"),
+            Duration::ZERO,
+            "read preview",
+        );
+        assert_eq!(result.unwrap_err().to_string(), "read preview (timed out)");
+    }
 
     #[test]
     fn update_reports_low_disk_without_reclaiming_caches() {
