@@ -1,6 +1,8 @@
 //! Machine selection is a workspace preference, not a mutation of existing panels.
 use super::*;
+use crate::login_input::LoginInput;
 use crate::managed_cloud::{self, Destination, RegisteredMachine};
+use jcode_desktop_harness::paired;
 
 /// Reserved managed destination, never an SSH alias or the personal AWS alpha.
 pub(super) const MANAGED_CLOUD_HOST: &str = managed_cloud::HOST;
@@ -26,6 +28,13 @@ struct MachineSessions {
     destination: String,
     request_id: u64,
     result: Option<Result<Vec<jcode_sdk::SessionInfo>, String>>,
+}
+
+struct PairingInput {
+    endpoint: Entity<PromptInput>,
+    label: Entity<PromptInput>,
+    directory: Entity<PromptInput>,
+    code: Entity<LoginInput>,
 }
 
 #[path = "workspace_cloud_alpha.rs"]
@@ -89,6 +98,10 @@ pub(super) struct Machines {
     connected_cloud_sessions: std::collections::HashSet<String>,
     cloud_progress: std::collections::HashMap<String, cloud_progress::Progress>,
     cloud_monitor: Option<gpui::Task<()>>,
+    paired: Vec<paired::Destination>,
+    pairing: Option<PairingInput>,
+    pairing_task: Option<gpui::Task<()>>,
+    paired_directory: Option<Entity<PromptInput>>,
 }
 
 impl Machines {
@@ -101,6 +114,7 @@ impl Machines {
             hosts.push(host.clone());
         }
         Self {
+            paired: paired::list().unwrap_or_default(),
             default_host: config
                 .default_remote_host
                 .as_deref()
@@ -113,6 +127,83 @@ impl Machines {
 }
 
 impl Workspace {
+    fn open_pairing(&mut self, cx: &mut Context<Self>) {
+        let text = |cx: &mut Context<Self>, placeholder: &'static str| {
+            cx.new(|cx| {
+                PromptInput::new(cx, placeholder, |_, _, _, _| {})
+                    .without_chrome()
+                    .without_command_completion()
+            })
+        };
+        self.remotes.pairing = Some(PairingInput {
+            endpoint: text(cx, "https://work-mac.example"),
+            label: text(cx, "Work Mac"),
+            directory: text(cx, "/Users/me/project"),
+            code: cx.new(|cx| LoginInput::new(cx, "Pairing code")),
+        });
+        cx.notify();
+    }
+
+    fn submit_pairing(&mut self, cx: &mut Context<Self>) {
+        if self.remotes.pairing_task.is_some() {
+            return;
+        }
+        let Some(input) = self.remotes.pairing.as_ref() else {
+            return;
+        };
+        let destination = paired::Destination::new(
+            &input.endpoint.read(cx).snapshot().content,
+            &input.label.read(cx).snapshot().content,
+            &input.directory.read(cx).snapshot().content,
+        );
+        let destination = match destination {
+            Ok(destination) => destination,
+            Err(error) => {
+                self.remotes.notice = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let code = input.code.update(cx, |input, cx| input.take(cx));
+        if code.trim().is_empty() {
+            self.remotes.notice = Some("Enter the pairing code".into());
+            cx.notify();
+            return;
+        }
+        self.remotes.notice = Some("Pairing with Work Mac…".into());
+        self.remotes.pairing_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let name = std::env::var("HOSTNAME").unwrap_or_else(|_| "Jcode Desktop".into());
+                    let result = jcode_sdk::pair_harness(
+                        &destination.endpoint,
+                        code.trim(),
+                        &destination.id,
+                        &name,
+                    )
+                    .map_err(|_| "Pairing failed. Check the endpoint and code.".to_owned())
+                    .and_then(|pair| paired::save(&destination, &pair.token).map(|_| destination));
+                    code.into_bytes().fill(0);
+                    result
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.remotes.pairing_task = None;
+                match result {
+                    Ok(destination) => {
+                        this.remotes.paired.push(destination);
+                        this.remotes.pairing = None;
+                        this.remotes.notice = Some("Machine paired".into());
+                    }
+                    Err(error) => this.remotes.notice = Some(error),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(super) fn show_cloud_picker_fixture(&mut self, cx: &mut Context<Self>) {
         self.remotes.registered = vec![
             RegisteredMachine {
@@ -492,7 +583,8 @@ impl Workspace {
             self.remotes.startup_requested = true;
             for slot in &self.slots {
                 if !slot.closing && slot.panel.read(cx).is_startup_draft() {
-                    slot.panel.update(cx, |panel, _| panel.mark_session_requested());
+                    slot.panel
+                        .update(cx, |panel, _| panel.mark_session_requested());
                 }
             }
             self.create_default_session(
@@ -544,9 +636,17 @@ impl Workspace {
                 request_id: Some(request_id),
             });
         } else {
+            let directory = if crate::remote_targets::paired_id(&host).is_some() {
+                self.slots
+                    .iter()
+                    .find(|slot| !slot.closing && slot.panel.read(cx).session_id == request_id)
+                    .and_then(|slot| slot.panel.read(cx).working_dir.clone())
+            } else {
+                None
+            };
             self.bridge.send(Command::CreateRemoteSession {
                 host,
-                working_dir: None,
+                working_dir: directory,
                 request_id: Some(request_id),
             });
         }
@@ -680,6 +780,13 @@ impl Workspace {
 
     pub(super) fn show_machines(&mut self, cx: &mut Context<Self>) {
         self.start_cloud_monitor(cx);
+        if self.remotes.paired_directory.is_none() {
+            self.remotes.paired_directory = Some(cx.new(|cx| {
+                PromptInput::new(cx, "Absolute remote project path", |_, _, _, _| {})
+                    .without_chrome()
+                    .without_command_completion()
+            }));
+        }
         if let Some(index) = self.machines_panel_index(cx) {
             self.set_active(index, cx);
         } else {
@@ -906,7 +1013,7 @@ impl Workspace {
         if let Some(host) = host {
             self.remotes.failed = false;
             self.remotes.notice = None;
-            if !managed_destination(&host) && !self.remotes.hosts.contains(&host) {
+            if !managed_destination(&host) && crate::remote_targets::paired_id(&host).is_none() && !self.remotes.hosts.contains(&host) {
                 self.remotes.hosts.push(host.clone());
                 self.remotes.notice = crate::config::persist_remote_hosts(&self.remotes.hosts)
                     .err()
@@ -1111,12 +1218,93 @@ impl Workspace {
         if let Some(error) = &self.remotes.registry_error {
             picker = picker.child(div().text_color(theme.TEXT_DIM).child(error.clone()));
         }
-        for (index, host) in
-            self.remotes.hosts.iter().enumerate().filter(|(_, host)| {
-                !managed_destination(host) || host.as_str() == cloud_alpha::HOST
-            })
+        if !self.remotes.paired.is_empty()
+            && let Some(directory) = &self.remotes.paired_directory
         {
+            picker = picker
+                .child(
+                    div()
+                        .text_color(theme.TEXT_DIM)
+                        .child("Remote project path for a new session"),
+                )
+                .child(directory.clone());
+        }
+        for (index, machine) in self.remotes.paired.iter().enumerate() {
+            let host = machine.host();
+            picker = picker
+                .child(self.render_machine_row(
+                    Some(host.clone()),
+                    cloud_index + self.remotes.registered.len() + index + 1,
+                    None,
+                    cx,
+                ))
+                .children(self.render_machine_sessions(&host, cx))
+                .child(
+                    div()
+                        .id(("machine-paired-folder", index))
+                        .debug_selector(move || format!("machine-paired-folder-{index}"))
+                        .px_2()
+                        .py_1()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(theme.TOOL_BG)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let path = this
+                                .remotes
+                                .paired_directory
+                                .as_ref()
+                                .map(|input| input.read(cx).snapshot().content)
+                                .unwrap_or_default();
+                            if !path.starts_with('/') || path.chars().any(char::is_control) {
+                                this.remotes.notice =
+                                    Some("Enter an absolute remote project path".into());
+                                cx.notify();
+                                return;
+                            }
+                            this.open_remote_draft_in(host.clone(), Some(path), cx);
+                        }))
+                        .child("New session in remote project"),
+                );
+        }
+        for (index, host) in self.remotes.hosts.iter().enumerate().filter(|(_, host)| {
+            crate::remote_targets::paired_id(host).is_none()
+                && (!managed_destination(host) || host.as_str() == cloud_alpha::HOST)
+        }) {
             picker = picker.child(self.render_machine_row(Some(host.clone()), index + 1, None, cx));
+        }
+        picker = picker.child(
+            div()
+                .id("machine-pair")
+                .px_2()
+                .py_2()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(theme.ACCENT_DIM)
+                .on_click(cx.listener(|this, _, _, cx| this.open_pairing(cx)))
+                .child("Pair Work Mac"),
+        );
+        if let Some(input) = &self.remotes.pairing {
+            picker = picker.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(input.endpoint.clone())
+                    .child(input.label.clone())
+                    .child(input.directory.clone())
+                    .child(input.code.clone())
+                    .child(
+                        div()
+                            .id("machine-pair-submit")
+                            .px_2()
+                            .py_2()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(theme.ACCENT_DIM)
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_pairing(cx)))
+                            .child("Pair and save"),
+                    ),
+            );
         }
         picker = picker.child(div().mt_2().child("Connect another machine"));
         if let Some(input) = &self.remotes.input {
@@ -1198,7 +1386,13 @@ impl Workspace {
         let label = match host.as_deref() {
             Some(MANAGED_CLOUD_HOST) => "Jcode Cloud".into(),
             Some(cloud_alpha::HOST) => "Personal cloud alpha (existing sessions only)".into(),
-            Some(host) => machine_label(host).to_owned(),
+            Some(host) => self
+                .remotes
+                .paired
+                .iter()
+                .find(|machine| machine.host() == host)
+                .map(|machine| machine.label.clone())
+                .unwrap_or_else(|| machine_label(host).to_owned()),
             None => "This computer".into(),
         };
         let default_host = host.clone();
@@ -1216,7 +1410,9 @@ impl Workspace {
         } else {
             None
         };
-        let browse_host = machine.and(host.clone());
+        let browse_host = host
+            .clone()
+            .filter(|host| machine.is_some() || crate::remote_targets::paired_id(host).is_some());
         let expanded = self.remotes.cloud_sessions.as_ref().is_some_and(|list| {
             Some(&list.destination) == browse_host.as_ref()
                 && list.result.as_ref().is_none_or(Result::is_ok)
@@ -1227,17 +1423,27 @@ impl Workspace {
             .px_3()
             .py_2()
             .rounded_full()
-            .bg(if registered { theme.TOOL_BG } else { theme.PANEL_BG })
+            .bg(if registered {
+                theme.TOOL_BG
+            } else {
+                theme.PANEL_BG
+            })
             .flex()
-            .when(registered, |el| el.flex_wrap().items_center().justify_between())
+            .when(registered, |el| {
+                el.flex_wrap().items_center().justify_between()
+            })
             .when(!registered, |el| el.flex_col())
             .gap_2()
             .child(
                 div()
                     .min_w_0()
-                    .flex().flex_col().gap_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     .child(div().font_family(theme.FONT_MONO).truncate().child(label))
-                    .children(cloud_status.map(|status| div().text_color(theme.TEXT_DIM).child(status))),
+                    .children(
+                        cloud_status.map(|status| div().text_color(theme.TEXT_DIM).child(status)),
+                    ),
             )
             .child(
                 div()
@@ -1289,7 +1495,11 @@ impl Workspace {
                                     this.browse_machine_sessions(host.clone(), cx);
                                 }
                             }))
-                            .child(if expanded { "Hide sessions" } else { "Sessions" })
+                            .child(if expanded {
+                                "Hide sessions"
+                            } else {
+                                "Sessions"
+                            })
                     }))
                     .child(
                         div()
@@ -1400,6 +1610,31 @@ fn registered_machine_status(machine: &RegisteredMachine) -> String {
 mod cloud_routing_tests {
     use super::super::remote_tests::{click, session};
     use super::*;
+
+    #[gpui::test]
+    fn paired_machine_creates_sessions_in_multiple_remote_projects(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.remotes = Machines::default();
+            w.remotes.paired.push(paired::Destination {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                endpoint: "https://work.example".into(), label: "Work Mac".into(),
+                working_dir: "/work/default".into(),
+            });
+            w.show_machines(cx);
+            w
+        });
+        for path in ["/work/one", "/work/two"] {
+            workspace.update(vcx, |w, cx| {
+                w.remotes.paired_directory.as_ref().unwrap().update(cx, |input, cx| input.set_content(path.into(), cx));
+            });
+            click(vcx, "machine-paired-folder-0");
+            assert!(matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, working_dir: Some(dir), .. })
+                if host == "paired:0123456789abcdef0123456789abcdef" && dir == path));
+        }
+    }
 
     #[gpui::test]
     fn machines_picker_routes_named_cloud_connect_default_and_session_open(

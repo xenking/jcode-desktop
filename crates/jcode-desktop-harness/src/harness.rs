@@ -2398,10 +2398,13 @@ fn create_remote_session(
 ) {
     let result = crate::remote_targets::validate_destination(&host).and_then(|host| {
         let managed = crate::managed_cloud::Destination::parse(&host).is_some();
+        let paired = crate::remote_targets::paired_id(&host).is_some();
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
             message: if managed {
                 "Checking your Jcode Cloud machine…".into()
+            } else if paired {
+                "Connecting to paired machine…".into()
             } else {
                 format!("Connecting to {host} over SSH...")
             },
@@ -2411,7 +2414,7 @@ fn create_remote_session(
         let (client, self_hosted) = connector(&host).map_err(|error| error.to_string())?;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
-            message: if managed {
+            message: if managed || paired {
                 "Connected. Creating Jcode session…".into()
             } else {
                 "SSH connected. Creating Jcode session...".into()
@@ -2419,7 +2422,11 @@ fn create_remote_session(
             request_id: request_id.clone(),
             failed: false,
         });
-        let working_dir = working_dir.or_else(|| {
+        let working_dir = if paired && working_dir.is_none() {
+            Some(crate::paired::find(&host)?.working_dir)
+        } else {
+            working_dir
+        }.or_else(|| {
             // The managed bootstrap creates this persistent workspace. Naming
             // it explicitly also lets older cloud bridges report the directory.
             // A self-hosted machine has no such folder and starts in its home.

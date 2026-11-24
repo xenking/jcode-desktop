@@ -5,6 +5,13 @@
 
 const PREFIX: &str = "ssh://";
 const CLOUD_PREFIX: &str = "cloud://";
+const PAIRED_PREFIX: &str = "paired://";
+
+enum Kind {
+    Ssh,
+    Cloud,
+    Paired,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SessionAddress {
@@ -14,10 +21,12 @@ pub(super) struct SessionAddress {
 
 impl SessionAddress {
     pub fn parse(id: &str) -> Result<Self, String> {
-        let (is_cloud, remote) = if let Some(remote) = id.strip_prefix(CLOUD_PREFIX) {
-            (true, remote)
+        let (kind, remote) = if let Some(remote) = id.strip_prefix(CLOUD_PREFIX) {
+            (Kind::Cloud, remote)
+        } else if let Some(remote) = id.strip_prefix(PAIRED_PREFIX) {
+            (Kind::Paired, remote)
         } else if let Some(remote) = id.strip_prefix(PREFIX) {
-            (false, remote)
+            (Kind::Ssh, remote)
         } else {
             return Ok(Self {
                 host: None,
@@ -27,16 +36,22 @@ impl SessionAddress {
         let (host, session_id) = remote
             .split_once('/')
             .ok_or("Invalid remote session address")?;
-        let host = if is_cloud {
-            crate::managed_cloud::Destination::named(host)
+        let host = match kind {
+            Kind::Cloud => crate::managed_cloud::Destination::named(host)
                 .ok_or("Invalid Cloud machine name")?
-                .preference()
-        } else {
-            let host = decode(host)?;
-            if host != crate::remote_targets::validate_host(&host)? {
-                return Err("Invalid remote session host".into());
+                .preference(),
+            Kind::Paired => {
+                let host = format!("paired:{host}");
+                crate::remote_targets::paired_id(&host).ok_or("Invalid paired machine ID")?;
+                host
             }
-            host
+            Kind::Ssh => {
+                let host = decode(host)?;
+                if host != crate::remote_targets::validate_host(&host)? {
+                    return Err("Invalid remote session host".into());
+                }
+                host
+            }
         };
         let session_id = decode(session_id)?;
         if session_id.is_empty() || session_id.chars().any(char::is_control) {
@@ -63,10 +78,13 @@ impl SessionAddress {
 }
 
 pub(super) fn is_remote(id: &str) -> bool {
-    id.starts_with(PREFIX) || id.starts_with(CLOUD_PREFIX)
+    id.starts_with(PREFIX) || id.starts_with(CLOUD_PREFIX) || id.starts_with(PAIRED_PREFIX)
 }
 
 pub(super) fn namespace(host: &str, session_id: &str) -> String {
+    if let Some(id) = crate::remote_targets::paired_id(host) {
+        return format!("{PAIRED_PREFIX}{id}/{}", encode(session_id));
+    }
     match crate::managed_cloud::Destination::parse(host).and_then(|target| target.name()) {
         Some(name) => format!("{CLOUD_PREFIX}{name}/{}", encode(session_id)),
         None => format!("{PREFIX}{}/{}", encode(host), encode(session_id)),
@@ -109,6 +127,20 @@ fn decode(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_addresses_are_distinct_and_round_trip() {
+        let host = "paired:0123456789abcdef0123456789abcdef";
+        let id = namespace(host, "folder/session");
+        assert_eq!(id, "paired://0123456789abcdef0123456789abcdef/folder%2Fsession");
+        let parsed = SessionAddress::parse(&id).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some(host));
+        assert_eq!(parsed.session_id, "folder/session");
+        assert!(is_remote(&id));
+        assert_ne!(id, namespace("0123456789abcdef0123456789abcdef", "folder/session"));
+        assert!(SessionAddress::parse("paired://broken/session").is_err());
+        assert!(crate::remote_targets::validate_host(host).is_err());
+    }
 
     #[test]
     fn remote_namespace_preserves_source_connection_presence() {

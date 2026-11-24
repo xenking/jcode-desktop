@@ -92,6 +92,15 @@ impl Workspace {
     }
 
     pub(super) fn open_remote_draft(&mut self, host: String, cx: &mut Context<Self>) {
+        self.open_remote_draft_in(host, None, cx);
+    }
+
+    pub(super) fn open_remote_draft_in(
+        &mut self,
+        host: String,
+        directory: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         // The old Cloud button stored a personal AWS alias. New drafts must
         // never turn that legacy preference into an implicit AWS operation.
         // Existing live SSH sessions keep their original destination.
@@ -111,7 +120,7 @@ impl Workspace {
         ));
         self.mount_session_draft(
             request_id.clone(),
-            None,
+            directory,
             if remotes::managed_destination(&host) {
                 remotes::machine_label(&host).into()
             } else {
