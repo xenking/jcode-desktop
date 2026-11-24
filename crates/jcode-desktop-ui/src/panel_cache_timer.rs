@@ -125,7 +125,15 @@ impl Panel {
             return self.cache_telemetry.retention(self);
         }
         let (provider, ttl_secs) = self.cache_retention()?;
-        let (touched_ms, cached_tokens) = self.last_cache_touch()?;
+        let latest = self.last_cache_touch();
+        if let Some(facts) = self.cache_telemetry.keepalive_retention(
+            provider,
+            self.model.as_deref(),
+            latest.map(|(at, _)| at),
+        ) {
+            return Some(facts);
+        }
+        let (touched_ms, cached_tokens) = latest?;
         Some(CacheFacts::new(
             ttl_secs,
             jcode_base::provider::cache_ttl_is_estimate(provider),

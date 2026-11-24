@@ -4422,6 +4422,7 @@ impl Panel {
                 | ApiEvent::TokenUsage { .. }
                 | ApiEvent::RequestUsage { .. }
                 | ApiEvent::ContextOccupancy { .. }
+                | ApiEvent::CacheKeepalive { .. }
                 | ApiEvent::ModelInfo { .. }
                 | ApiEvent::RuntimeInfo { .. }
                 | ApiEvent::SessionRenamed { .. }
@@ -5144,7 +5145,9 @@ impl Panel {
                 self.context_tokens = Some(*prompt_tokens);
             }
             ApiEvent::ContextCapChanged { .. } => self.refresh_context_usage(cx),
-            ApiEvent::RequestUsage { .. } => self.cache_telemetry.observe(event),
+            ApiEvent::RequestUsage { .. } | ApiEvent::CacheKeepalive { .. } => {
+                self.cache_telemetry.observe(event)
+            }
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
                     self.cache_telemetry.miss(&notice);

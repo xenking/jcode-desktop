@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 #[derive(Default)]
 pub(super) struct CacheTelemetry {
     usage: Usage,
+    keepalive: jcode_sdk::api::CacheKeepaliveUsage,
     route: Option<(String, String)>,
     touches: BTreeMap<(String, String), (i64, u64)>,
     misses: Misses,
@@ -17,6 +18,16 @@ impl CacheTelemetry {
     }
 
     pub(super) fn observe_at(&mut self, event: &ApiEvent, at_ms: i64) {
+        if let ApiEvent::CacheKeepalive { usage, .. } = event {
+            // An attach snapshot can race a live settlement of the same ping.
+            if usage.attempted > self.keepalive.attempted
+                || (usage.attempted == self.keepalive.attempted
+                    && usage.unconfirmed_micros <= self.keepalive.unconfirmed_micros)
+            {
+                self.keepalive = usage.clone();
+            }
+            return;
+        }
         if let ApiEvent::RequestUsage {
             request_id,
             provider,
@@ -65,10 +76,13 @@ impl CacheTelemetry {
             && panel.model.as_deref() == Some(model.as_str()))
         .then(|| panel.response_stats.cache_touch())
         .flatten();
-        let (at_ms, tokens) = completed
-            .into_iter()
-            .chain(live)
-            .max_by_key(|&(at, _)| at)?;
+        let latest = completed.into_iter().chain(live).max_by_key(|&(at, _)| at);
+        if let Some(facts) =
+            self.keepalive_retention(provider, Some(model), latest.map(|(at, _)| at))
+        {
+            return Some(facts);
+        }
+        let (at_ms, tokens) = latest?;
         Some(CacheFacts::new(
             jcode_base::provider::cache_ttl_for_provider_model(provider, Some(model))?,
             jcode_base::provider::cache_ttl_is_estimate(provider),
@@ -76,6 +90,28 @@ impl CacheTelemetry {
             cache_timer::now_ms(),
             tokens,
         ))
+    }
+
+    pub(super) fn keepalive_retention(
+        &self,
+        provider: &str,
+        model: Option<&str>,
+        latest_at: Option<i64>,
+    ) -> Option<CacheFacts> {
+        let hit = self.keepalive.last_hit.as_ref()?;
+        let model = model?;
+        ((provider.eq_ignore_ascii_case("anthropic") || provider.eq_ignore_ascii_case("claude"))
+            && model.strip_suffix("[1m]").unwrap_or(model) == hit.model
+            && latest_at.is_none_or(|at| hit.at_ms > at))
+        .then(|| {
+            CacheFacts::new(
+                hit.ttl_secs,
+                false,
+                hit.at_ms,
+                cache_timer::now_ms(),
+                Some(hit.cached_tokens),
+            )
+        })
     }
 }
 
@@ -235,12 +271,41 @@ impl Render for CacheTooltip {
                 pill.map_or_else(|| panel.cache_facts(), |pill| pill.retention(now)),
                 theme,
             ))
+            .children(keepalive_label(&telemetry.keepalive).map(|text| {
+                usage::meter_detail(text.into(), theme)
+                    .debug_selector(|| "panel-cache-keepalive".into())
+            }))
             .child(render_misses(&telemetry.misses, theme))
             .child(usage::meter_detail(
                 "Requests and misses observed in this panel".into(),
                 theme,
             ))
     }
+}
+
+fn keepalive_label(usage: &jcode_sdk::api::CacheKeepaliveUsage) -> Option<String> {
+    if usage.attempted == 0 {
+        return None;
+    }
+    fn dollars(micros: u64) -> String {
+        match micros {
+            1..=9999 => "<$0.01".into(),
+            _ => format!("${:.2}", micros as f64 / 1_000_000.0),
+        }
+    }
+    let times = if usage.warmed == 1 { "time" } else { "times" };
+    let mut line = format!(
+        "Kept warm {} {times} · {} est.",
+        usage.warmed,
+        dollars(usage.cost_micros)
+    );
+    if usage.unconfirmed_micros > 0 {
+        line.push_str(&format!(
+            " · {} unconfirmed",
+            dollars(usage.unconfirmed_micros)
+        ));
+    }
+    Some(line)
 }
 
 fn one_line(text: &str) -> String {
@@ -421,6 +486,66 @@ fn render_misses(misses: &Misses, theme: &Theme) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_sdk::api::{CacheKeepaliveHit, CacheKeepaliveUsage};
+
+    fn kept_warm(at_ms: i64) -> CacheKeepaliveUsage {
+        CacheKeepaliveUsage {
+            attempted: 1,
+            warmed: 1,
+            cost_micros: 180_000,
+            unconfirmed_micros: 0,
+            last_hit: Some(CacheKeepaliveHit {
+                at_ms,
+                model: "claude-opus-5-5".into(),
+                ttl_secs: 3600,
+                cached_tokens: 900_000,
+            }),
+        }
+    }
+
+    #[test]
+    fn cache_keepalive_usage_is_separate_and_only_refreshes_matching_retention() {
+        let mut telemetry = CacheTelemetry::default();
+        let at = cache_timer::now_ms();
+        let usage = kept_warm(at);
+        let event = |usage| ApiEvent::CacheKeepalive {
+            session_id: "fixture".into(),
+            usage,
+        };
+        telemetry.observe(&event(usage.clone()));
+        // The previous attach snapshot may have reserved but not settled yet.
+        telemetry.observe(&event(CacheKeepaliveUsage {
+            attempted: 1,
+            unconfirmed_micros: 7_200_000,
+            ..CacheKeepaliveUsage::default()
+        }));
+        assert_eq!(telemetry.keepalive, usage);
+        assert!(!telemetry.has_requests());
+        assert_eq!(
+            keepalive_label(&telemetry.keepalive).as_deref(),
+            Some("Kept warm 1 time · $0.18 est.")
+        );
+        let facts = telemetry
+            .keepalive_retention("Claude", Some("claude-opus-5-5[1m]"), Some(at - 2000))
+            .unwrap();
+        assert_eq!(facts.cached_tokens, Some(900_000));
+        assert_eq!(facts.ttl_secs, 3600);
+        assert!(
+            telemetry
+                .keepalive_retention("anthropic", Some("claude-opus-5-5"), Some(at + 1))
+                .is_none()
+        );
+        assert!(
+            telemetry
+                .keepalive_retention("openai", Some("claude-opus-5-5"), None)
+                .is_none()
+        );
+        assert!(
+            telemetry
+                .keepalive_retention("anthropic", Some("claude-sonnet-5-5"), None)
+                .is_none()
+        );
+    }
 
     #[test]
     fn provider_accounting_produces_the_same_normalized_ratio() {
@@ -507,6 +632,17 @@ mod tests {
         assert!(vcx.debug_bounds("panel-cache-session-bar").is_none());
 
         panel.update(vcx, |panel, cx| panel.apply_cache_card_fixture(false, cx));
+        panel.update(vcx, |panel, cx| {
+            let count = panel.items.len();
+            panel.apply(
+                &ApiEvent::CacheKeepalive {
+                    session_id: panel.session_id.clone(),
+                    usage: kept_warm(cache_timer::now_ms() + 1),
+                },
+                cx,
+            );
+            assert_eq!(panel.items.len(), count);
+        });
         vcx.run_until_parked();
         for selector in [
             "panel-cache-tooltip",
@@ -516,6 +652,7 @@ mod tests {
             "panel-cache-last-request-value-83% cached",
             "panel-cache-last-request-bar",
             "panel-cache-retention-bar",
+            "panel-cache-keepalive",
             "panel-cache-misses",
             "panel-cache-miss-0",
             "panel-cache-miss-1",
