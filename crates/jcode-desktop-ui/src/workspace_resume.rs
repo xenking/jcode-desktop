@@ -11,6 +11,7 @@ use crate::global_search::{self, Effect, PickRow};
 use std::time::Instant;
 
 const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
+const RESUME_STACKED_WIDTH: f32 = 640.;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) enum Filter {
@@ -1000,6 +1001,7 @@ impl Workspace {
         let theme = Theme::global();
         let secondary = resume_secondary_ink(theme);
         let now = now_ms();
+        let stacked = window.viewport_size().width < px(RESUME_STACKED_WIDTH);
         let mut rows = div()
             .id("resume-results")
             .debug_selector(|| "resume-results".into())
@@ -1089,6 +1091,8 @@ impl Workspace {
             let is_open = open_activity.contains_key(&id);
             let badge = resume_liveness_badge(live, open_spinners.get(&id).cloned(), index);
             let title = highlighted_text(format!("{icon} {saved_marker}{title}"), &terms, theme);
+            #[cfg(test)]
+            tests::observe_title(&id, title.layout());
             let action_label = if is_open {
                 "Go to session"
             } else {
@@ -1489,12 +1493,14 @@ impl Workspace {
             .child(
                 div()
                     .flex()
+                    .when(stacked, |el| el.flex_col())
                     .gap_2()
                     .flex_1()
                     .min_h_0()
                     .child(
                         div()
-                            .w(relative(0.4))
+                            .when(stacked, |el| el.flex_1().min_h_0())
+                            .when(!stacked, |el| el.w(relative(0.4)))
                             .min_w_0()
                             .flex()
                             .flex_col()
@@ -1649,7 +1655,7 @@ fn hit_badge(hit: &global_search::SearchHit, theme: &crate::theme::Theme) -> gpu
 fn highlighted_snippet(
     hit: &global_search::SearchHit,
     theme: &crate::theme::Theme,
-) -> gpui::AnyElement {
+) -> gpui::StyledText {
     // Highlights are character offsets; styled text wants byte ranges.
     let byte_at = |chars: u32| {
         hit.snippet
@@ -1671,7 +1677,7 @@ fn highlighted_text(
     text: String,
     terms: &[String],
     theme: &crate::theme::Theme,
-) -> gpui::AnyElement {
+) -> gpui::StyledText {
     let ranges = global_search::term_ranges(&text, terms);
     styled_matches(text, ranges, theme)
 }
@@ -1680,7 +1686,7 @@ fn styled_matches(
     text: String,
     mut ranges: Vec<std::ops::Range<usize>>,
     theme: &crate::theme::Theme,
-) -> gpui::AnyElement {
+) -> gpui::StyledText {
     ranges.sort_by_key(|range| range.start);
     ranges.dedup_by(|next, previous| next.start < previous.end);
     let style = gpui::HighlightStyle {
@@ -1689,7 +1695,6 @@ fn styled_matches(
     };
     gpui::StyledText::new(text)
         .with_highlights(ranges.into_iter().map(|range| (range, style)))
-        .into_any_element()
 }
 
 fn now_ms() -> i64 {
@@ -1936,6 +1941,38 @@ mod tests {
         panel.update_in(vcx, |panel, window, cx| {
             panel.control_state(window, cx).unwrap()["visible_transcript_items"].clone()
         })
+    }
+
+    thread_local! {
+        static OBSERVED_TITLES: std::cell::RefCell<Option<HashMap<String, gpui::TextLayout>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn observe_title(id: &str, layout: &gpui::TextLayout) {
+        OBSERVED_TITLES.with_borrow_mut(|titles| {
+            if let Some(titles) = titles {
+                titles.insert(id.to_owned(), layout.clone());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn resume_recent_renders_catalog_titles(cx: &mut gpui::TestAppContext) {
+        OBSERVED_TITLES.with_borrow_mut(|titles| *titles = Some(HashMap::new()));
+        let (workspace, vcx) = picker(cx);
+        seed_preview(&workspace, vcx);
+        for width in [220., 850.] {
+            vcx.simulate_resize(gpui::size(px(width), px(650.)));
+            vcx.run_until_parked();
+            OBSERVED_TITLES.with_borrow(|titles| {
+                let titles = titles.as_ref().unwrap();
+                for (id, expected) in [("alpha", "Alpha"), ("beta", "Beta")] {
+                    let title = titles[id].text();
+                    assert!(title.ends_with(expected), "at {width}px: {title:?}");
+                }
+            });
+        }
+        OBSERVED_TITLES.with_borrow_mut(Option::take);
     }
 
     #[gpui::test]
