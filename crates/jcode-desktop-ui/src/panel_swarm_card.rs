@@ -11,6 +11,7 @@ pub(super) struct Call {
     target: String,
     text: String,
     direction: Option<Direction>,
+    pub external: bool,
 }
 
 fn short_name(id: &str) -> &str {
@@ -48,6 +49,25 @@ fn row_preview(text: &str) -> String {
 
 pub(super) fn is_swarm(name: &str) -> bool {
     name.trim_start_matches("functions.") == "swarm"
+}
+
+fn external_target(output: &str) -> Option<&str> {
+    let receipt = output
+        .strip_prefix("External DM sent to ")
+        .or_else(|| output.strip_prefix("External DM queued for "))
+        .or_else(|| output.strip_prefix("Cross-swarm DM sent to "))?;
+    let (target, _) = receipt.split_once(": ")?;
+    Some(
+        target
+            .split_once(" in swarm '")
+            .map_or(target, |(peer, _)| peer),
+    )
+}
+
+pub(super) fn is_external_send(name: &str, input: &str, output: &str) -> bool {
+    is_swarm(name)
+        && external_target(output).is_some()
+        && parse(name, input, output).is_some_and(|call| call.external)
 }
 
 pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
@@ -91,7 +111,10 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
             }
         }
     }
-    let target = if action == "spawn" {
+    let external = external_target(output);
+    let target = if let Some(recipient) = external {
+        format!("To {recipient}")
+    } else if action == "spawn" {
         if let Some(id) = ids.first() {
             let name = short_name(id);
             format!("{} {name}", jcode_core::id::session_icon(name))
@@ -125,7 +148,9 @@ pub(super) fn parse(name: &str, input: &str, output: &str) -> Option<Call> {
         text.to_owned()
     };
     Some(Call {
-        direction: matches!(action.as_str(), "dm" | "message").then_some(Direction::To),
+        direction: (external.is_some() || matches!(action.as_str(), "dm" | "message"))
+            .then_some(Direction::To),
+        external: external.is_some(),
         action,
         session_ids: ids,
         target,
@@ -149,9 +174,21 @@ pub(super) fn from_codemode(call: &CodemodeCall, input: &str) -> Call {
     Call {
         action: call.action.clone().unwrap_or_default(),
         session_ids: Vec::new(),
-        target,
+        target: if call.external {
+            format!(
+                "To {}",
+                if target.is_empty() {
+                    "another session"
+                } else {
+                    &target
+                }
+            )
+        } else {
+            target
+        },
         text,
         direction: (call.direction == Some(CodemodeDirection::Outbound)).then_some(Direction::To),
+        external: call.external,
     }
 }
 
@@ -180,10 +217,12 @@ pub(super) enum Direction {
 }
 
 impl Direction {
-    fn description(self) -> &'static str {
-        match self {
-            Self::From => "Incoming swarm message",
-            Self::To => "Outgoing swarm message",
+    fn description(self, external: bool) -> &'static str {
+        match (self, external) {
+            (Self::From, false) => "Incoming swarm message",
+            (Self::To, false) => "Outgoing swarm message",
+            (Self::From, true) => "Incoming external message",
+            (Self::To, true) => "Outgoing external message",
         }
     }
 
@@ -216,6 +255,7 @@ pub(super) fn render_swarm_timestamp(ms: i64) -> Option<gpui::AnyElement> {
 pub(super) struct Row<'a> {
     pub action: &'a str,
     pub direction: Option<Direction>,
+    pub external: bool,
     pub peer: gpui::AnyElement,
     pub message: &'a str,
     pub clock: Option<gpui::AnyElement>,
@@ -226,10 +266,16 @@ pub(super) struct Row<'a> {
 }
 
 impl Row<'_> {
-    pub(super) fn render(self, header: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn render(
+        self,
+        header: gpui::Stateful<gpui::Div>,
+        disclosure: Option<bool>,
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
         let preview = row_preview(self.message);
-        let description = self.direction.map(Direction::description);
+        let description = self
+            .direction
+            .map(|direction| direction.description(self.external));
         header
             .flex()
             .items_center()
@@ -238,34 +284,63 @@ impl Row<'_> {
             .px_1()
             .py(px(2.0))
             .text_size(px(12.0))
-            .cursor_pointer()
-            .role(gpui::Role::Button)
+            .when(disclosure.is_some(), |el| {
+                el.cursor_pointer().role(gpui::Role::Button)
+            })
             .when_some(description, |el, description| {
                 el.aria_description(description)
             })
-            .child(
-                crate::tool_icon::render_badge("swarm", self.done, self.failed).child(
+            .when(self.external, |el| {
+                el.child(
                     div()
-                        .id("swarm-action")
-                        .debug_selector(|| "swarm-action".into())
+                        .debug_selector(|| "external-message-marker".into())
+                        .flex()
                         .flex_none()
-                        .size(px(14.0))
-                        .when_some(description, |el, description| {
-                            el.tooltip(move |_, cx| {
-                                cx.new(|_| ask::CardActionTooltip(description)).into()
-                            })
-                        })
+                        .items_center()
+                        .gap_1()
+                        .rounded_full()
+                        .px_2()
+                        .bg(theme.ACCENT.opacity(0.12))
+                        .text_color(theme.ACCENT)
                         .child(
                             gpui::svg()
                                 .data(
                                     self.direction
-                                        .map_or_else(|| action_icon(self.action), Direction::icon),
+                                        .map_or_else(|| action_icon("dm"), Direction::icon),
                                 )
-                                .size(px(14.0))
-                                .text_color(theme.TEXT_FAINT),
-                        ),
-                ),
-            )
+                                .size(px(12.0))
+                                .text_color(theme.ACCENT),
+                        )
+                        .child("External"),
+                )
+            })
+            .when(!self.external, |el| {
+                el.child(
+                    crate::tool_icon::render_badge("swarm", self.done, self.failed).child(
+                        div()
+                            .id("swarm-action")
+                            .debug_selector(|| "swarm-action".into())
+                            .flex_none()
+                            .size(px(14.0))
+                            .when_some(description, |el, description| {
+                                el.tooltip(move |_, cx| {
+                                    cx.new(|_| ask::CardActionTooltip(description)).into()
+                                })
+                            })
+                            .child(
+                                gpui::svg()
+                                    .data(
+                                        self.direction.map_or_else(
+                                            || action_icon(self.action),
+                                            Direction::icon,
+                                        ),
+                                    )
+                                    .size(px(14.0))
+                                    .text_color(theme.TEXT_FAINT),
+                            ),
+                    ),
+                )
+            })
             .child(self.peer)
             .child(
                 div()
@@ -274,7 +349,9 @@ impl Row<'_> {
                     .flex_1()
                     .truncate()
                     .text_color(theme.TOOL_TEXT)
-                    .child(if preview.is_empty() {
+                    .child(if preview.is_empty() && self.external {
+                        String::new()
+                    } else if preview.is_empty() {
                         self.action.to_owned()
                     } else {
                         format!("· {preview}")
@@ -293,10 +370,47 @@ impl Row<'_> {
             })
             .children(self.clock)
             .children(self.tokens)
+            .when_some(disclosure.filter(|_| self.external), |el, expanded| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.TEXT_DIM)
+                        .child(if expanded { "▾" } else { "▸" }),
+                )
+            })
     }
 }
 
 impl Panel {
+    pub(super) fn external_codemode_messages(
+        summary: &CodemodeSummary,
+    ) -> impl Iterator<Item = &CodemodeCall> {
+        summary.calls.iter().filter(|call| call.external)
+    }
+
+    pub(super) fn render_external_codemode_messages(
+        summary: &CodemodeSummary,
+    ) -> impl Iterator<Item = gpui::Stateful<gpui::Div>> + '_ {
+        Self::external_codemode_messages(summary)
+            .enumerate()
+            .map(|(ordinal, call)| {
+                let call = from_codemode(call, "");
+                Row {
+                    action: &call.action,
+                    direction: call.direction,
+                    external: true,
+                    peer: row_peer(call.target).into_any_element(),
+                    message: &call.text,
+                    clock: None,
+                    tokens: None,
+                    via_codemode: true,
+                    done: true,
+                    failed: false,
+                }
+                .render(div().id(("external-codemode-message", ordinal)), None)
+            })
+    }
+
     pub(crate) fn set_swarm_usage(
         &mut self,
         usage: HashMap<String, WorkerUsage>,
@@ -367,6 +481,7 @@ impl Panel {
         let row = Row {
             action: &call.action,
             direction,
+            external: call.external,
             peer: row_peer(call.target.clone()).into_any_element(),
             message: &call.text,
             clock,
@@ -413,6 +528,7 @@ impl Panel {
                             this.transcript_measurements.dirty = true;
                             cx.notify();
                         })),
+                    Some(expanded),
                 ),
             )
             .when(expanded, |el| {

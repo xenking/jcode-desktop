@@ -1848,7 +1848,11 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             rewind_selection: None,
             transcript_list,
-            clean_chat_override: None,
+            clean_chat_override: match fixture.as_deref().filter(|_| crate::harness::screenshot_mode()) {
+                Some("external-dm-clean") => Some(true),
+                Some("external-dm") => Some(false),
+                _ => None,
+            },
             pending_approval: None,
             expandable_viewport_height: px(0.),
             transcript_row_count: 0,
@@ -5765,7 +5769,12 @@ impl Panel {
             }
             let mut source = TranscriptRowSource::Settled(index);
             if clean_chat {
-                if !clean_chat::conversation_item(item) {
+                if !clean_chat::conversation_item(item)
+                    && !matches!(item, Item::Tool { name, input, output, call_id, done: true, error }
+                        if error.is_none() && swarm_card::is_external_send(name, input, output)
+                            || self.codemode_summaries.get(call_id).is_some_and(|summary|
+                                Self::external_codemode_messages(summary).next().is_some()))
+                {
                     continue;
                 }
                 if let Some(text) = item.assistant_text() {
@@ -6422,10 +6431,10 @@ impl Panel {
                     .flatten();
                 let failed = error.is_some()
                     || (is_codemode && codemode_card::wrapper_failed(codemode, None, output));
+                let nested = codemode.and_then(|summary| {
+                    codemode_card::single_swarm(summary).map(|call| (summary, call))
+                });
                 if !display.screenshot_mode {
-                    let nested = codemode.and_then(|summary| {
-                        codemode_card::single_swarm(summary).map(|call| (summary, call))
-                    });
                     if let Some(call) = nested
                         .map(|(_, call)| swarm_card::from_codemode(call, input))
                         .or_else(|| swarm_card::parse(name, input, output))
@@ -6435,6 +6444,11 @@ impl Panel {
                             nested, offset, opacity, window, cx,
                         );
                     }
+                }
+                if self.clean_chat_with_display(&display) && let Some(summary) = codemode {
+                    return div()
+                        .children(Self::render_external_codemode_messages(summary))
+                        .into_any_element();
                 }
                 let expanded = self.expanded_regions.contains(call_id)
                     ^ (name == "agentgrep" && display.show_agentgrep_output);
@@ -6497,6 +6511,9 @@ impl Panel {
                     .flex_none()
                     .flex_col()
                     .overflow_hidden()
+                    .when_some(codemode.filter(|_| nested.is_none() && !display.screenshot_mode), |el, summary| {
+                        el.children(Self::render_external_codemode_messages(summary))
+                    })
                     .child(crate::tool_icon::animate_running(
                         div()
                             .id(("tool-header-click", index))
@@ -13154,6 +13171,9 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     let fixture = fixture.map(str::to_owned);
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("clean-chat") {
         return clean_chat::screenshot_fixture();
+    }
+    if crate::harness::screenshot_mode() && matches!(fixture.as_deref(), Some("external-dm" | "external-dm-clean")) {
+        return agent_message::screenshot_fixture();
     }
     if crate::harness::screenshot_mode()
         && matches!(

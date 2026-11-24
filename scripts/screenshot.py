@@ -127,7 +127,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "tool-cards", "tool-cards-details", "file-mentions", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "tool-cards", "tool-cards-details", "external-dm", "external-dm-clean", "file-mentions", "prompts", "html", "image", "image-prompt", "image-ordinals", "image-ordinals-resolved", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "openrig", "openrig-inspector", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--markdown-file", type=Path,
                         help="capture a local file in the native Markdown viewer")
@@ -464,7 +464,7 @@ def main():
         parser.error("--markdown-file must be a readable file")
     native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
-                        "tool-cards", "tool-cards-details", "file-mentions",
+                        "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
                      ))
                     and not any(value for key, value in vars(args).items() if key.endswith("_interact"))
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
