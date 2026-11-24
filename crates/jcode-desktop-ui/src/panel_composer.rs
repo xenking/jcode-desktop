@@ -269,6 +269,22 @@ impl Panel {
         let strips = self.render_composer_applets(window, cx);
         let ask = self.render_ask_card(window, cx);
         let routing_gate = self.render_routing_gate_card(window, cx);
+        if self.routing_gate_wants_focus(window, cx) {
+            // Every composer layout shows the gate, so take the keyboard here.
+            let panel = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                let Some(panel) = panel.upgrade() else { return };
+                let focus = {
+                    let panel = panel.read(cx);
+                    panel
+                        .routing_gate_wants_focus(window, cx)
+                        .then(|| panel.focus_handle.clone())
+                };
+                if let Some(focus) = focus {
+                    window.focus(&focus, cx);
+                }
+            });
+        }
         let picker_open = self.picker_search.is_some();
         let hide_voice = picker_open && !self.input.read(cx).has_user_draft();
         if self.input.read(cx).external_picker_open != picker_open {
@@ -521,18 +537,21 @@ impl Panel {
         let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
             self.input.read(cx).focus_handle.is_focused(window)
                 || (card.submitting() && self.ask_editor_focused(window, cx))
-        }) || self.routing_gate_wants_focus(window, cx);
+        });
         if should_focus_ask {
             let panel = panel.clone();
             window.defer(cx, move |window, cx| {
                 if let Some(panel) = panel.upgrade() {
                     let focus = {
                         let panel = panel.read(cx);
-                        (panel.ask_card.as_ref().is_some_and(|card| {
-                            panel.input.read(cx).focus_handle.is_focused(window)
-                                || (card.submitting() && panel.ask_editor_focused(window, cx))
-                        }) || panel.routing_gate_wants_focus(window, cx))
-                        .then(|| panel.focus_handle.clone())
+                        panel
+                            .ask_card
+                            .as_ref()
+                            .is_some_and(|card| {
+                                panel.input.read(cx).focus_handle.is_focused(window)
+                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
+                            })
+                            .then(|| panel.focus_handle.clone())
                     };
                     if let Some(focus) = focus {
                         window.focus(&focus, cx);

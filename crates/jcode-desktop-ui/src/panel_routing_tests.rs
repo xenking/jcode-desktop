@@ -275,3 +275,23 @@ fn acct_is_a_registered_command(_cx: &mut gpui::TestAppContext) {
         "the composer offers /acct"
     );
 }
+
+#[gpui::test]
+fn an_opening_gate_takes_the_keyboard_so_keys_answer_without_a_click(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx, commands) = panel_with_bridge(cx);
+    vcx.update(|window, cx| window.blur(cx));
+    panel.update(vcx, |panel, cx| panel.apply(&gate_event("g1"), cx));
+    vcx.run_until_parked();
+    vcx.run_until_parked();
+    assert!(
+        panel.read_with(vcx, |panel, _| panel.routing_gate.is_some()),
+        "the gate is open"
+    );
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_eq!(
+        answers(&commands),
+        vec![RoutingGateChoice::Switch { account: "claude:spare".into() }],
+        "Enter answers the focused switch with no prior click"
+    );
+}

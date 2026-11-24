@@ -174,7 +174,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
                 | "resume-origin-agents"
         )
         || selector.starts_with("routing-gate-row-")
-        || matches!(selector, "routing-chip" | "sidebar-accounts-tab")
+        || selector == "routing-chip"
         || selector.starts_with("status-worker:")
         || selector.starts_with("background-job:")
         || selector.starts_with("agent-message:")

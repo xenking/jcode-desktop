@@ -133,9 +133,12 @@ impl Panel {
         }
     }
 
-    /// Whether the gate card should take the keyboard from the composer.
+    /// Whether the gate card should take the keyboard: from the composer, or
+    /// when this is the focused panel and nothing in the window has focus.
     pub(super) fn routing_gate_wants_focus(&self, window: &Window, cx: &App) -> bool {
-        self.routing_gate.is_some() && self.input.read(cx).focus_handle.is_focused(window)
+        self.routing_gate.is_some()
+            && (self.input.read(cx).focus_handle.is_focused(window)
+                || (self.surface_focused && window.focused(cx).is_none()))
     }
 
     pub(super) fn handle_routing_gate_key(

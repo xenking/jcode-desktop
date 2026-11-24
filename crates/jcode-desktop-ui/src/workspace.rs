@@ -111,7 +111,6 @@ use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
 
 use crate::accounts;
-use crate::routing_rows;
 use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
@@ -1670,6 +1669,9 @@ impl Workspace {
                         executor.timer(Duration::from_millis(1500)).await;
                     }
                 }));
+            }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_SIDEBAR").as_deref() == Ok("accounts") {
+                workspace.sidebar_view = SidebarView::Accounts;
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()
@@ -7776,11 +7778,6 @@ impl Workspace {
                                             div()
                                                 .id("sidebar-accounts-tab")
                                                 .debug_selector(|| "sidebar-accounts-tab".into())
-                                                .relative()
-                                                .children(crate::fixture_control_targets::marker(
-                                                    || "sidebar-accounts-tab".into(),
-                                                    || None,
-                                                ))
                                                 .flex_none()
                                                 .border_1()
                                                 .border_color(Theme::global().PANEL_BORDER)
