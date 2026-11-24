@@ -440,9 +440,24 @@ impl PromptInput {
                 context_picker::Action::Attach => Some(crate::mode_catalog::ModeIcon::Document),
                 context_picker::Action::Skill(_) => None,
             });
-        let alternate_hint = match &suggestion.context_action {
-            Some(context_picker::Action::File(_)) => Some("⌥↵ Include contents"),
-            Some(context_picker::Action::Skill(name)) if name != "off" => Some("⌥↵ Toggle mode"),
+        let alternate_key = if cfg!(target_os = "macos") {
+            "⌥↵"
+        } else {
+            "Alt+Enter"
+        };
+        let action_hint = match &suggestion.context_action {
+            Some(context_picker::Action::File(_)) if selected && !compact => {
+                Some(format!("{alternate_key} Include contents"))
+            }
+            Some(context_picker::Action::Skill(name)) if selected && name != "off" => {
+                let pin = match (active_mode, compact) {
+                    (true, _) => "Unpin",
+                    (false, true) => "Pin",
+                    (false, false) => "Pin for session",
+                };
+                let once = if compact { "Use once" } else { "Next message only" };
+                Some(format!("↵ {pin} · {alternate_key} {once}"))
+            }
             _ => None,
         };
         let mode_target = mode.map(str::to_owned);
@@ -684,7 +699,7 @@ impl PromptInput {
                             })
                             .child(suggestion.help)
                     }))
-                    .children(alternate_hint.filter(|_| selected && !compact).map(|hint| {
+                    .children(action_hint.map(|hint| {
                         div().flex_none().text_size(px(10.)).child(hint)
                     }))
                     .children(

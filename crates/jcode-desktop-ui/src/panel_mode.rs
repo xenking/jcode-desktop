@@ -176,7 +176,9 @@ mod tests {
         vcx.simulate_click(plus.center(), Default::default());
         vcx.run_until_parked();
         vcx.simulate_input("verify-jcode");
-        vcx.simulate_keystrokes("enter");
+        vcx.simulate_keystrokes("alt-enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_none());
         assert!(vcx.debug_bounds("composer-image-chip").is_some());
         vcx.simulate_input("Check the preview");
         vcx.simulate_keystrokes("enter");
@@ -188,11 +190,76 @@ mod tests {
             }
         });
         assert_eq!(sent, Some(("verify-jcode".into(), "Check the preview".into())));
-        assert!(panel.read_with(vcx, |panel, _| panel.active_skill.is_none()));
+        assert!(vcx.debug_bounds("composer-image-chip").is_none());
+        assert!(!panel.read_with(vcx, |panel, _| {
+            panel.mode_names().iter().any(|mode| mode == "verify-jcode")
+        }));
     }
 
     #[gpui::test]
-    fn context_plus_opens_multi_file_attach_and_can_pin_a_skill(cx: &mut gpui::TestAppContext) {
+    fn context_plus_plain_enter_pins_the_mode_and_click_unpins_it(cx: &mut gpui::TestAppContext) {
+        use jcode_sdk::api::RuntimeCommand;
+        cx.update(crate::input::bind_keys);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("mode-context-picker".into(), None, None, bridge, cx)
+        });
+        panel.update(vcx, |panel, cx| panel.seed_mode_picker_fixture(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, app| {
+            window.focus(&panel.read(app).input_focus_handle(app), app);
+        });
+        vcx.simulate_input("Keep this draft");
+        let modes = ["selfdev", "swarm", "poteto-mode", "quiet"];
+        for pinned in [true, false] {
+            while commands.try_recv().is_ok() {}
+            let plus = vcx.debug_bounds("composer-context-plus").unwrap();
+            vcx.simulate_click(plus.center(), Default::default());
+            vcx.run_until_parked();
+            vcx.simulate_input("quiet");
+            if pinned {
+                vcx.simulate_keystrokes("enter");
+            } else {
+                let row = vcx.debug_bounds("slash-command-row-0").unwrap();
+                vcx.simulate_click(row.center(), Default::default());
+            }
+            vcx.run_until_parked();
+            assert!(matches!(
+                commands.try_recv(),
+                Ok(Command::RuntimeCommand { command: RuntimeCommand::Mode, args, .. })
+                    if args == ["toggle", "quiet"]
+            ));
+            assert!(vcx.debug_bounds("picker-search").is_none());
+            assert!(vcx.debug_bounds("composer-image-chip").is_none());
+            assert!(vcx.update(|window, app| {
+                panel.read(app).input_focus_handle(app).is_focused(window)
+            }));
+            assert_eq!(
+                panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.clone()),
+                "Keep this draft"
+            );
+
+            let active = if pinned { &modes[..] } else { &modes[..3] };
+            panel.update(vcx, |panel, cx| {
+                panel.apply_event(
+                    &ApiEvent::RuntimeCommandResult {
+                        session_id: panel.session_id.clone(),
+                        command: RuntimeCommand::Mode,
+                        data: serde_json::json!({"pinned_skills": active}),
+                        message: String::new(),
+                    },
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds("panel-mode-icon-moon-3").is_some(), pinned);
+        }
+    }
+
+    #[gpui::test]
+    fn context_plus_opens_multi_file_attach_and_accepts_option_click_for_one_use(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(crate::input::bind_keys);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new("context-picker".into(), None, None, bridge, cx));
@@ -219,8 +286,29 @@ mod tests {
         assert!(panel.read_with(vcx, |panel, _| panel.picker_search.is_none()));
         open(vcx);
         vcx.simulate_input("verify-jcode");
-        vcx.simulate_keystrokes("alt-enter");
-        assert!(matches!(commands.try_recv(), Ok(Command::RuntimeCommand { command: jcode_sdk::api::RuntimeCommand::Mode, args, .. }) if args == ["toggle", "verify-jcode"]));
+        while commands.try_recv().is_ok() {}
+        let row = vcx.debug_bounds("slash-command-row-0").unwrap();
+        vcx.simulate_click(
+            row.center(),
+            gpui::Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("picker-search").is_none());
+        assert!(panel.read_with(vcx, |panel, cx| {
+            panel.input.read(cx).content.contains("Skill: verify-jcode")
+        }));
+        assert!(!std::iter::from_fn(|| commands.try_recv().ok()).any(|command| {
+            matches!(
+                command,
+                Command::RuntimeCommand {
+                    command: jcode_sdk::api::RuntimeCommand::Mode,
+                    ..
+                }
+            )
+        }));
     }
 
     #[gpui::test]

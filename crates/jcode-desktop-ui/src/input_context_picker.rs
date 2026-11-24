@@ -282,17 +282,17 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match &action {
+        let draft_action = match action {
             Action::Browse => {
                 self.set_content("@".into(), cx);
                 return;
             }
-            Action::Skill(name) if alternate || name == "off" => {
-                self.toggle_mode_row(name, window, cx);
-                return;
+            Action::Skill(name) if !alternate || name == "off" => {
+                self.toggle_mode_row(&name, window, cx);
+                None
             }
-            _ => {}
-        }
+            action => Some(action),
+        };
         if let Some(target) = self
             .context_picker
             .as_ref()
@@ -301,9 +301,11 @@ impl PromptInput {
             (target.accept)(cx);
             let _ = target.draft.update(cx, |input, cx| {
                 window.focus(&input.focus_handle, cx);
-                input.apply_to_draft(action, alternate, false, window, cx);
+                if let Some(action) = draft_action {
+                    input.apply_to_draft(action, alternate, false, window, cx);
+                }
             });
-        } else {
+        } else if let Some(action) = draft_action {
             self.apply_to_draft(action, alternate, true, window, cx);
         }
     }

@@ -1035,13 +1035,12 @@ fn draft_pickers_show_the_selected_fable_low_and_mode_before_the_first_prompt(
     vcx.run_until_parked();
     click_draft_control(vcx, "panel-mode");
     vcx.simulate_input("quiet");
-    vcx.simulate_keystrokes("alt-enter");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
     assert!(vcx.debug_bounds("panel-mode-icon-moon-0").is_some());
+    assert!(vcx.debug_bounds("picker-search").is_none());
     assert!(commands.try_recv().is_err());
 
-    click_draft_control(vcx, "panel-mode");
-    assert!(vcx.debug_bounds("slash-command-row-0").is_none());
-    click_draft_control(vcx, "prompt-editor");
     vcx.simulate_input("first prompt");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
