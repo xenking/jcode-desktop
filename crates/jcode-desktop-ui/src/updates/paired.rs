@@ -1,6 +1,6 @@
-use super::{ReleaseStatus, UpdateState, set, store_release_status};
+use super::{ReleaseStatus, UpdateState, current, paired_dialog, set, store_release_status};
 use gpui::{App, PromptButton, PromptLevel};
-use jcode_desktop_updater::paired::{self, Change, Preview, Progress};
+use jcode_desktop_updater::paired::{self, BlockedAction, Change, Install, Preview, Progress};
 use std::{
     sync::{
         Arc,
@@ -10,6 +10,12 @@ use std::{
 };
 
 static REQUEST: AtomicBool = AtomicBool::new(false);
+static CANCEL_RETRY: AtomicBool = AtomicBool::new(false);
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+pub(super) fn cancel_retry() {
+    CANCEL_RETRY.store(true, Ordering::Release);
+}
 
 struct Request;
 impl Drop for Request {
@@ -85,7 +91,7 @@ pub(super) fn request(cx: &mut App) {
             let disk = if enough_space { String::new() } else {
                 format!("\n\nOnly {} GiB free. Rollout needs at least {} GiB, and a release build may need more.", preview.free_gib, preview.minimum_gib)
             };
-            let detail = format!("{}\n\n{}\n\nJcode builds and installs this pair together. Desktop restarts only after active turns finish.{disk}",
+            let detail = format!("{}\n\n{}\n\nJcode builds and installs this pair together. Active work can finish first, and unanswered questions will still be available after the update.{disk}",
                 describe("CLI", &preview.cli), describe("Desktop", &preview.desktop));
             let answer = window.update(cx, |_, window, cx| {
                 let install = [PromptButton::cancel("Not now"), PromptButton::new("Build and Update")];
@@ -95,18 +101,56 @@ pub(super) fn request(cx: &mut App) {
             if !enough_space || !matches!(answer.await, Ok(1)) {
                 return Ok(false);
             }
-            set(UpdateState::ApplyingPair);
-            let _ = cx.update(|cx| cx.refresh_windows());
             let preview = Arc::new(preview);
-            let confirmed = preview.clone();
-            cx.background_executor().spawn(async move { paired::submit(&confirmed) }).await?;
+            let mut install = Install::WhenIdle;
             loop {
-                let submitted = preview.clone();
-                let progress = cx.background_executor().spawn(async move { paired::progress(&submitted) }).await?;
-                match progress {
-                    Progress::Completed => return Ok(true),
-                    Progress::Failed => anyhow::bail!("Rollout failed or rolled back. See jcode rollout --status for details."),
-                    Progress::InProgress => cx.background_executor().timer(Duration::from_secs(2)).await,
+                show_state(cx, UpdateState::ApplyingPair);
+                let confirmed = preview.clone();
+                let receipt = Arc::new(cx.background_executor().spawn(async move { paired::submit(&confirmed, install) }).await?);
+                let poll = || {
+                    let (preview, receipt) = (preview.clone(), receipt.clone());
+                    cx.background_executor().spawn(async move { paired::progress(&preview, &receipt) })
+                };
+                let (sessions, mut retry_blockers) = loop {
+                    match poll().await? {
+                        Progress::Completed => return Ok(true),
+                        Progress::Failed => anyhow::bail!("The update did not complete. Check for updates again to retry."),
+                        Progress::Blocked { sessions, retry_blockers } => break (sessions, retry_blockers),
+                        Progress::InProgress => show_state(cx, UpdateState::ApplyingPair),
+                        Progress::Draining(blockers) => show_state(cx, UpdateState::PairDrain { blockers, retry: false }),
+                    }
+                    cx.background_executor().timer(POLL_INTERVAL).await;
+                };
+                show_state(cx, UpdateState::ApplyingPair);
+                let (answer, _closing) = cx.update(|app| {
+                    let dialog_window = app.windows().into_iter()
+                        .filter_map(|w| w.downcast::<crate::workspace::Workspace>())
+                        .min_by_key(|w| w.window_id() != window.window_id());
+                    dialog_window.map(|handle| handle.update(app, |_, window, cx| {
+                        paired_dialog::show(sessions.clone(), window, cx)
+                    })).transpose()
+                })?.ok_or_else(|| anyhow::anyhow!("The update was blocked:\n{}", sessions.join("\n")))?;
+                match answer.recv().await.unwrap_or(BlockedAction::Cancel) {
+                    BlockedAction::Cancel => return Ok(false),
+                    BlockedAction::InstallNow => install = Install::Now,
+                    BlockedAction::RetryWhenIdle => {
+                        CANCEL_RETRY.store(false, Ordering::Release);
+                        while let Some(blockers) = retry_blockers.filter(|blockers| !blockers.is_empty()) {
+                            show_state(cx, UpdateState::PairDrain { blockers, retry: true });
+                            cx.background_executor().timer(POLL_INTERVAL).await;
+                            if CANCEL_RETRY.load(Ordering::Acquire) {
+                                return Ok(false);
+                            }
+                            let Progress::Blocked { retry_blockers: latest, .. } = poll().await? else {
+                                anyhow::bail!("The blocked update changed. Check for updates again.");
+                            };
+                            retry_blockers = latest;
+                        }
+                        if CANCEL_RETRY.load(Ordering::Acquire) {
+                            return Ok(false);
+                        }
+                        install = Install::WhenIdle;
+                    }
                 }
             }
         }.await;
@@ -126,4 +170,11 @@ pub(super) fn request(cx: &mut App) {
         }
         let _ = cx.update(|cx| cx.refresh_windows());
     }).detach();
+}
+
+fn show_state(cx: &gpui::AsyncApp, state: UpdateState) {
+    if current() != state {
+        set(state);
+        let _ = cx.update(|cx| cx.refresh_windows());
+    }
 }

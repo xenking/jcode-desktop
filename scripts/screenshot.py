@@ -51,6 +51,8 @@ def main():
                         help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--update-clicked", action="store_true",
                         help="show the version pill just after the user clicked it to check for updates")
+    parser.add_argument("--paired-update", choices=("draining", "blocked", "retry"),
+                        help="capture an offline paired update waiting or blocked on macOS")
     parser.add_argument("--account-sign-in", action="store_true",
                         help="show optional first-launch account sign-in without network access")
     parser.add_argument("--account-sign-in-no-emails", action="store_true",
@@ -464,7 +466,7 @@ def main():
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     if args.markdown_file and not args.markdown_file.is_file():
         parser.error("--markdown-file must be a readable file")
-    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.cache_warning
+    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.cache_warning or args.paired_update
                         or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                         "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
@@ -474,6 +476,8 @@ def main():
                     and not (args.record or args.focus_panel is not None or args.scroll_up or args.selection_drag))
     if args.openrig_attention and not (native_capture and args.transcript == "openrig"):
         parser.error("--openrig-attention requires the isolated macOS --transcript openrig capture")
+    if args.paired_update and not native_capture:
+        parser.error("--paired-update requires isolated macOS capture")
     if not native_capture:
         for tool in ("Xvfb", "import", "openbox", "xdotool"):
             if not shutil.which(tool):
@@ -511,6 +515,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
         if args.update_clicked:
             env["JCODE_DESKTOP_SCREENSHOT_UPDATE_CLICKED"] = "1"
+        if args.paired_update:
+            env["JCODE_DESKTOP_SCREENSHOT_PAIRED_UPDATE"] = args.paired_update
         if args.worktrees:
             env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
         if args.collections:

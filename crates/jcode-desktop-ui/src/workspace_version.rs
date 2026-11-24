@@ -41,7 +41,10 @@ pub(super) fn update_offer(
     match update {
         // The popup's version lines already say how a check is going, and a
         // finished Linux request has no follow-up click.
-        UpdateState::Checking | UpdateState::ApplyingPair | UpdateState::Finished { .. } => None,
+        UpdateState::Checking
+        | UpdateState::ApplyingPair
+        | UpdateState::PairDrain { .. }
+        | UpdateState::Finished { .. } => None,
         UpdateState::Available { version } => {
             offer("Update", format!("{} downloading", version_tag(version)))
         }
@@ -208,6 +211,7 @@ fn about_status(
         (UpdateState::Available { .. }, _) => "Downloading…".to_string(),
         (UpdateState::Checking, _) => "Checking for updates…".to_string(),
         (UpdateState::ApplyingPair, _) => "Building or waiting for active turns…".to_string(),
+        (UpdateState::PairDrain { .. }, _) => update.label().unwrap_or_default(),
         (_, ReleaseStatus::Current { latest }) => {
             format!("No channel update ({})", version_tag(latest))
         }

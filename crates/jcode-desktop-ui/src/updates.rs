@@ -8,6 +8,33 @@ mod linux;
 mod packaged;
 #[cfg(target_os = "macos")]
 mod paired;
+#[cfg(target_os = "macos")]
+mod paired_dialog;
+#[cfg(target_os = "macos")]
+pub(crate) use paired_dialog::render as render_pair_dialog;
+
+#[cfg(target_os = "macos")]
+pub(crate) fn paired_screenshot_fixture(window: &mut gpui::Window, cx: &mut gpui::App) {
+    let sessions = vec![
+        "raccoon is waiting for your answer".into(),
+        "turkey has an active turn".into(),
+    ];
+    match std::env::var("JCODE_DESKTOP_SCREENSHOT_PAIRED_UPDATE").as_deref() {
+        Ok("blocked") => {
+            let _ = paired_dialog::show(sessions, window, cx);
+        }
+        Ok(mode @ ("draining" | "retry")) => set(UpdateState::PairDrain {
+            blockers: sessions,
+            retry: mode == "retry",
+        }),
+        _ => {}
+    }
+}
+
+pub(crate) fn cancel_pair_retry() {
+    #[cfg(target_os = "macos")]
+    paired::cancel_retry();
+}
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -351,17 +378,29 @@ pub enum UpdateState {
     #[default]
     Idle,
     /// A Linux request completed without forcibly restarting the user's work.
-    Finished { message: String },
+    Finished {
+        message: String,
+    },
     /// A recoverable error. A subsequent `/update` retries the operation.
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
     /// A scheduled or user-requested check is in flight.
     Checking,
     /// The reviewed pair is building or waiting at the daemon drain.
     ApplyingPair,
+    PairDrain {
+        blockers: Vec<String>,
+        retry: bool,
+    },
     /// A newer build exists and Sparkle is fetching it.
-    Available { version: String },
+    Available {
+        version: String,
+    },
     /// The download is staged; the next launch runs the new build.
-    ReadyToRestart { version: String },
+    ReadyToRestart {
+        version: String,
+    },
 }
 
 impl UpdateState {
@@ -374,6 +413,21 @@ impl UpdateState {
             Self::Failed { .. } => Some("desktop update failed · see /update result".into()),
             Self::Checking => Some("checking for updates".to_owned()),
             Self::ApplyingPair => Some("updating CLI and Desktop".into()),
+            Self::PairDrain { blockers, retry } => {
+                let activity = if *retry {
+                    "retry scheduled"
+                } else {
+                    "waiting to install"
+                };
+                Some(match blockers.as_slice() {
+                    [] => activity.into(),
+                    [first] => format!("{activity} · {first}"),
+                    [first, second] => format!("{activity} · {first} · {second}"),
+                    [first, second, rest @ ..] => {
+                        format!("{activity} · {first} · {second} +{}", rest.len())
+                    }
+                })
+            }
             Self::Available { version } => Some(format!("downloading {version}")),
             Self::ReadyToRestart { version } => Some(format!("{version} ready · restart")),
         }
@@ -384,7 +438,7 @@ impl UpdateState {
     pub fn is_busy(&self) -> bool {
         matches!(
             self,
-            Self::Checking | Self::ApplyingPair | Self::Available { .. }
+            Self::Checking | Self::ApplyingPair | Self::PairDrain { .. } | Self::Available { .. }
         )
     }
 
@@ -510,7 +564,7 @@ pub fn request_now() -> UpdateRequest {
     let previous = {
         let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
         match &*state {
-            UpdateState::Checking | UpdateState::ApplyingPair => {
+            UpdateState::Checking | UpdateState::ApplyingPair | UpdateState::PairDrain { .. } => {
                 return UpdateRequest::AlreadyChecking;
             }
             UpdateState::Available { .. } => return UpdateRequest::Downloading,

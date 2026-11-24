@@ -438,6 +438,7 @@ const MINIMAP_RIGHT: f32 = 12.0;
 /// The update chip sits above the workspace bar in the bottom-right corner,
 /// out of the reading path but always in view.
 const UPDATE_CHIP_BOTTOM: f32 = 44.0;
+const PAIRED_UPDATE_ROW_HEIGHT: f32 = 32.0;
 /// Update the countdown once per second, never at display refresh rate.
 const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(1);
 const SHOWCASE_DURATION: Duration = Duration::from_millis(1800);
@@ -8021,38 +8022,32 @@ impl Workspace {
     fn render_update_chip(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let state = updates::current();
         let label = state.label()?;
-        let busy = state.is_busy();
         let actionable = state.is_actionable();
+        let paired = matches!(state, updates::UpdateState::PairDrain { .. });
         let ink = if actionable {
             Theme::global().ACCENT
         } else {
             Theme::global().TEXT_DIM
         };
 
-        // Keep this indicator still. Repeating element animations schedule a
-        // repaint of the complete workspace, which is especially expensive in a
-        // source/debug build and while several markdown transcripts are visible.
-        // State transitions still notify the workspace and update the label.
-        let dot = div().size(px(6.0)).flex_none().rounded_full().bg(ink);
-        let dot: gpui::AnyElement = dot
-            .opacity(if busy { 0.65 } else { 1.0 })
-            .into_any_element();
-
         let mut chip = div()
             .id("update-chip")
             // Tagged so a render test can prove the chip painted and can click
             // the real element, rather than only asserting on updater state.
             .debug_selector(|| "update-chip".into())
-            .absolute()
-            .bottom(px(UPDATE_CHIP_BOTTOM))
-            .right(px(MINIMAP_RIGHT))
+            .when(!paired, |chip| {
+                chip.absolute()
+                    .bottom(px(UPDATE_CHIP_BOTTOM))
+                    .right(px(MINIMAP_RIGHT))
+            })
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
             .px_2p5()
             .py_1()
-            .rounded_md()
+            .rounded_full()
+            .max_w(relative(1.0))
             .bg(Theme::global().MINIMAP_BG)
             .border_1()
             .border_color(if actionable {
@@ -8064,8 +8059,40 @@ impl Workspace {
             .font_family(Theme::global().FONT_MONO)
             .text_color(ink)
             .occlude()
-            .child(dot)
-            .child(label);
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(label),
+            );
+
+        if let updates::UpdateState::PairDrain { blockers, retry } = state {
+            if !blockers.is_empty() {
+                let details = blockers.join("\n");
+                chip = chip
+                    .tooltip(move |_, cx| cx.new(|_| PairedUpdateTooltip(details.clone())).into());
+            }
+            if retry {
+                chip = chip.child(
+                    div()
+                        .id("cancel-paired-update-retry")
+                        .debug_selector(|| "cancel-paired-update-retry".into())
+                        .flex_none()
+                        .rounded_full()
+                        .px_2()
+                        .bg(Theme::global().HEADER_BG)
+                        .text_color(Theme::global().TEXT)
+                        .hover(|el| el.opacity(0.85))
+                        .cursor_pointer()
+                        .on_click(|_, _, cx| {
+                            cx.stop_propagation();
+                            updates::cancel_pair_retry();
+                        })
+                        .child("Cancel"),
+                );
+            }
+        }
 
         if actionable {
             chip = chip
@@ -8081,7 +8108,20 @@ impl Workspace {
                 );
         }
 
-        Some(chip.into_any_element())
+        Some(if paired {
+            div()
+                .w_full()
+                .h(px(PAIRED_UPDATE_ROW_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_3()
+                .child(chip)
+                .into_any_element()
+        } else {
+            chip.into_any_element()
+        })
     }
 
     /// The dedicated tab fills the sidebar, with fixed-height account rows and
@@ -9784,6 +9824,8 @@ impl Render for Workspace {
         }
         if self.single_panel {
             let root = self.render_single_panel(window, cx);
+            #[cfg(target_os = "macos")]
+            let root = root.children(updates::render_pair_dialog(window, cx));
             return crate::window_caption::wrap(root, window, true);
         }
         self.sidebar_applets = self.render_sidebar_applets(window, cx);
@@ -9862,7 +9904,10 @@ impl Render for Workspace {
             self.camera_snap_pending.fill(true);
         }
         let fullscreen = workspace_fullscreen(window);
-        let viewport_h = f32::from(viewport.height);
+        let paired_draining = matches!(updates::current(), updates::UpdateState::PairDrain { .. });
+        let viewport_h = (f32::from(viewport.height)
+            - if paired_draining { PAIRED_UPDATE_ROW_HEIGHT } else { 0.0 })
+        .max(1.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -10287,8 +10332,31 @@ impl Render for Workspace {
             profile.observe_render(render_started.elapsed());
             profile.observe_frame(Instant::now(), animation_active);
         }
+        let root = root.when(paired_draining, |root| {
+            root.children(self.render_update_chip(cx))
+        });
+        #[cfg(target_os = "macos")]
+        let root = root.children(updates::render_pair_dialog(window, cx));
         // The workspace tab row shares the caption row, Windows Terminal style.
         crate::window_caption::wrap(root, window, false)
+    }
+}
+
+struct PairedUpdateTooltip(String);
+
+impl Render for PairedUpdateTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        div()
+            .max_w(px(360.0))
+            .px_3()
+            .py_2()
+            .rounded_xl()
+            .shadow_md()
+            .bg(theme.PANEL_BG)
+            .text_color(theme.TEXT)
+            .text_size(px(12.0))
+            .child(self.0.clone())
     }
 }
 

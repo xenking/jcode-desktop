@@ -380,6 +380,10 @@ unsafe extern "C-unwind" fn activate(
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
             let fixture = harness::screenshot_mode();
+            #[cfg(target_os = "macos")]
+            if fixture {
+                updates::paired_screenshot_fixture(window, cx);
+            }
             // `JCODE_DESKTOP_SCREENSHOT_SEARCH=<query>`: the screenshot harness
             // needs the results screen populated without a keyboard or a daemon.
             if fixture && let Ok(query) = std::env::var("JCODE_DESKTOP_SCREENSHOT_SEARCH") {
