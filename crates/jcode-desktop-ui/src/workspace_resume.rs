@@ -204,9 +204,9 @@ fn filtered_sessions(
             })
             .then_with(|| match preferences.sort {
                 sidebar_session_catalog::Sort::Recent => std::cmp::Ordering::Equal,
-                sidebar_session_catalog::Sort::AgentActivity => b
-                    .last_agent_activity_at_ms()
-                    .cmp(&a.last_agent_activity_at_ms()),
+                sidebar_session_catalog::Sort::AgentActivity => {
+                    resume_activity_at_ms(b).cmp(&resume_activity_at_ms(a))
+                }
             })
             .then_with(|| b.saved.cmp(&a.saved))
             .then_with(|| {
@@ -645,6 +645,7 @@ impl Workspace {
         if let Some(state) = self.resume.as_mut() {
             state._presence_task = Some(presence);
         }
+        self.bridge.send(Command::RefreshSessions);
         cx.notify();
     }
 
@@ -1001,6 +1002,7 @@ impl Workspace {
         let theme = Theme::global();
         let secondary = resume_secondary_ink(theme);
         let now = now_ms();
+        let sort = self.session_catalog.sort;
         let stacked = window.viewport_size().width < px(RESUME_STACKED_WIDTH);
         let mut rows = div()
             .id("resume-results")
@@ -1076,7 +1078,7 @@ impl Workspace {
                 _ => String::new(),
             };
             let live = liveness(session);
-            let (runtime, usage) = resume_row_metadata(session, now);
+            let (runtime, usage) = resume_row_metadata(session, sort, now);
             let full_metadata = [&runtime, &usage]
                 .into_iter()
                 .filter(|text| !text.is_empty())
@@ -1297,7 +1299,7 @@ impl Workspace {
                     },
                     if session.saved { " · saved" } else { "" }
                 )),
-                sidebar_session_meta(session),
+                resume_usage(session, sort, now),
             ]
             .into_iter()
             .flatten()
@@ -1559,6 +1561,7 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
     {
         return;
     }
+    let now = now_ms();
     for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
         sessions.push(jcode_sdk::SessionInfo {
             session_id: format!("resume-fixture-{name}"),
@@ -1588,7 +1591,8 @@ fn append_resume_fixture(sessions: &mut Vec<jcode_sdk::SessionInfo>) {
                     } else {
                         jcode_sdk::api::SessionOrigin::Agent
                     },
-                    last_agent_activity_at_ms: Some(index as i64 + 1),
+                    last_agent_activity_at_ms: Some(now - if index == 0 { 305_000 } else { 605_000 }),
+                    last_message_at_ms: Some(Some(now - if index == 0 { 305_000 } else { 65_000 })),
                 }),
             }),
         });
@@ -1704,7 +1708,34 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-fn resume_row_metadata(session: &jcode_sdk::SessionInfo, now: i64) -> (String, String) {
+fn resume_activity_at_ms(session: &jcode_sdk::SessionInfo) -> Option<u64> {
+    let timestamp = if session.has_message_activity() {
+        session.last_message_at_ms()
+    } else {
+        session.last_agent_activity_at_ms()
+    }?;
+    (timestamp > 0).then_some(timestamp as u64)
+}
+
+fn resume_usage(
+    session: &jcode_sdk::SessionInfo,
+    sort: sidebar_session_catalog::Sort,
+    now: i64,
+) -> Option<String> {
+    match sort {
+        sidebar_session_catalog::Sort::Recent => sidebar_session_meta(session),
+        sidebar_session_catalog::Sort::AgentActivity => session_meta(
+            session,
+            resume_activity_at_ms(session).map(|timestamp| format_time_ago(timestamp, now as u64)),
+        ),
+    }
+}
+
+fn resume_row_metadata(
+    session: &jcode_sdk::SessionInfo,
+    sort: sidebar_session_catalog::Sort,
+    now: i64,
+) -> (String, String) {
     let mut runtime = Vec::new();
     let mut usage = Vec::new();
     if let Some(context) = &session.context {
@@ -1717,7 +1748,7 @@ fn resume_row_metadata(session: &jcode_sdk::SessionInfo, now: i64) -> (String, S
             usage.push(if now < expiry { "warm" } else { "cold" }.into());
         }
     }
-    usage.extend(sidebar_session_meta(session));
+    usage.extend(resume_usage(session, sort, now));
     (runtime.join(" · "), usage.join(" · "))
 }
 
@@ -2517,19 +2548,60 @@ mod tests {
         w.restore_focus(window, cx);
     }
 
+    #[test]
+    fn resume_activity_age_ignores_creation_and_metadata_edits() {
+        use jcode_sdk::api::{SessionCatalogActivity, SessionCatalogContext, SessionOrigin};
+        let now = 1_795_505_400_000;
+        let sort = sidebar_session_catalog::Sort::AgentActivity;
+        let mut session = session_info("session_dragon_1795408406006_fixture", Some("Work"));
+        session.updated_at_ms = Some(now - 1_000);
+        session.last_active_at_ms = Some(now - 2_000);
+        session.transcript_bytes = Some(16_800);
+        assert_eq!(
+            resume_usage(&session, sort, now).as_deref(),
+            Some("4.2k tok")
+        );
+        session.context = Some(SessionCatalogContext {
+            activity: Some(SessionCatalogActivity {
+                origin: SessionOrigin::User,
+                last_agent_activity_at_ms: Some(now - 65_000),
+                last_message_at_ms: None,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            resume_usage(&session, sort, now).as_deref(),
+            Some("1m ago · 4.2k tok")
+        );
+        let activity = |session: &mut jcode_sdk::SessionInfo, timestamp| {
+            session.context.as_mut().unwrap().activity.as_mut().unwrap().last_message_at_ms =
+                Some(timestamp);
+        };
+        activity(&mut session, Some(now - 5_000));
+        assert_eq!(
+            resume_usage(&session, sort, now).as_deref(),
+            Some("5s ago · 4.2k tok")
+        );
+        activity(&mut session, None);
+        assert_eq!(
+            resume_usage(&session, sort, now).as_deref(),
+            Some("4.2k tok")
+        );
+    }
+
     #[gpui::test]
-    fn session_catalog_sorts_by_latest_agent_activity(cx: &mut gpui::TestAppContext) {
+    fn session_catalog_reorders_when_message_activity_changes(cx: &mut gpui::TestAppContext) {
         use jcode_sdk::api::{SessionCatalogActivity, SessionCatalogContext, SessionOrigin};
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
             w.sessions = [
-                ("updated", 100, Some(10), SessionOrigin::User),
-                ("answered", 40, Some(30), SessionOrigin::Agent),
-                ("unanswered", 200, None, SessionOrigin::Agent),
+                ("updated", 100, Some(10), None, SessionOrigin::User),
+                ("answered", 40, Some(30), Some(Some(30)), SessionOrigin::Agent),
+                ("unanswered", 200, None, Some(Some(40)), SessionOrigin::Agent),
             ]
             .into_iter()
-            .map(|(id, updated, replied, origin)| {
+            .map(|(id, updated, replied, last_message, origin)| {
                 let mut session = session_info(id, Some(id));
                 session.updated_at_ms = Some(updated);
                 session.saved = id == "updated";
@@ -2537,6 +2609,7 @@ mod tests {
                     activity: Some(SessionCatalogActivity {
                         origin,
                         last_agent_activity_at_ms: replied,
+                        last_message_at_ms: last_message,
                     }),
                     ..Default::default()
                 });
@@ -2565,10 +2638,28 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(
             workspace.read_with(vcx, ids),
-            ["answered", "updated", "unanswered"]
+            ["unanswered", "answered", "updated"]
         );
         assert!(vcx.debug_bounds("resume-agent-origin-0").is_some());
-        assert!(vcx.debug_bounds("resume-agent-origin-1").is_none());
+        assert!(vcx.debug_bounds("resume-agent-origin-2").is_none());
+
+        workspace.update(vcx, |w, cx| {
+            let mut sessions = w.sessions.clone();
+            let row = sessions
+                .iter_mut()
+                .find(|s| s.session_id == "updated")
+                .unwrap();
+            let context = row.context.as_mut().unwrap();
+            context.activity.as_mut().unwrap().last_message_at_ms = Some(Some(50));
+            assert!(w.apply(harness::Update::Sessions { sessions }, cx));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(vcx, ids),
+            ["updated", "unanswered", "answered"]
+        );
+        assert!(vcx.debug_bounds("resume-agent-origin-0").is_none());
     }
 
     #[gpui::test]
@@ -2623,6 +2714,7 @@ mod tests {
         });
         workspace.update_in(vcx, |w, window, cx| {
             w.open_resume(&OpenResume, window, cx);
+            assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
             let state = w.resume.as_mut().unwrap();
             state.search.update(cx, |input, cx| {
                 let mut search = input.snapshot();
@@ -2638,6 +2730,7 @@ mod tests {
             state.start_on_close = true;
             let expected = w.resume_snapshot(cx);
             reload_picker(w, window, cx);
+            assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
             assert_eq!(w.resume_snapshot(cx), expected);
             assert!(
                 w.resume
@@ -2729,6 +2822,7 @@ mod tests {
             w.restore_resume(Some(Snapshot::Legacy), false, window, cx);
             assert!(w.resume.is_none());
             w.restore_resume(Some(Snapshot::Legacy), true, window, cx);
+            assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
             assert!(w.resume.as_ref().unwrap().start_on_close);
             assert!(
                 w.resume
@@ -2763,6 +2857,7 @@ mod tests {
         });
         workspace.update_in(vcx, |w, window, cx| {
             w.open_resume(&OpenResume, window, cx);
+            assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
             w.apply(harness::Update::Connected, cx);
             assert!(
                 commands.try_recv().is_err(),
@@ -2827,6 +2922,7 @@ mod tests {
             });
             w.open_resume(&OpenResume, window, cx);
         });
+        assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("resume-panel").is_some());
         vcx.simulate_keystrokes("escape");

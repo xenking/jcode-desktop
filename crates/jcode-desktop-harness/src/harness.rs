@@ -2721,6 +2721,7 @@ impl PersistedSession {
         .then_some(jcode_sdk::api::SessionCatalogActivity {
             origin: jcode_sdk::api::SessionOrigin::Agent,
             last_agent_activity_at_ms: None,
+            last_message_at_ms: None,
         });
         (self.model.is_some()
             || self.reasoning_effort.is_some()

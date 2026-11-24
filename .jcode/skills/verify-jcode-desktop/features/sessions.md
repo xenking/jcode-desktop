@@ -9,8 +9,9 @@ their current draft.
 - sessions.cancel: close the browser without replacing the conversation.
 - sessions.resume: select a conversation with its existing history.
 - sessions.standalone: resume within a standalone window.
-- sessions.catalog: sort by latest reply and filter by session origin. The sidebar
-  and resume picker share these settings for one window.
+- sessions.catalog: sort and filter by session origin and activity. The sidebar
+  uses the last agent reply. The resume picker uses the latest user or assistant
+  message for both the order and the displayed age.
 
 ## How to get to it (user POV)
 

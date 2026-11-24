@@ -1096,7 +1096,8 @@ impl Workspace {
                     }
                 }
                 let accounts = accounts_feed.latest();
-                if catalog.due(Instant::now(), focused, activated) {
+                let picker_open = focused && this.read_with(cx, |w, _| w.resume.is_some()).unwrap_or(false);
+                if catalog.due(Instant::now(), focused, activated, picker_open) {
                     housekeeping_bridge.send(Command::RefreshSessions);
                 }
                 let Some(accounts) = accounts else {
@@ -1432,6 +1433,7 @@ impl Workspace {
                     activity: Some(jcode_sdk::api::SessionCatalogActivity {
                         origin: jcode_sdk::api::SessionOrigin::Agent,
                         last_agent_activity_at_ms: Some(42),
+                        last_message_at_ms: Some(Some(42)),
                     }),
                     ..Default::default()
                 });
@@ -10938,15 +10940,17 @@ fn sidebar_session_meta(session: &jcode_sdk::SessionInfo) -> Option<String> {
         .unwrap_or_default();
     let created = sidebar_session_created_ms(&session.session_id)
         .map(|created_ms| format_time_ago(created_ms, now_ms));
+    session_meta(session, created)
+}
+
+fn session_meta(session: &jcode_sdk::SessionInfo, age: Option<String>) -> Option<String> {
     let tokens = session
         .transcript_bytes
         .filter(|bytes| *bytes > 0)
         .map(|bytes| format_estimated_tokens(bytes / 4));
-    match (created, tokens) {
-        (Some(created), Some(tokens)) => Some(format!("{created} · {tokens}")),
-        (Some(created), None) => Some(created),
-        (None, Some(tokens)) => Some(tokens),
-        (None, None) => None,
+    match (age, tokens) {
+        (Some(age), Some(tokens)) => Some(format!("{age} · {tokens}")),
+        (age, tokens) => age.or(tokens),
     }
 }
 
@@ -11724,6 +11728,7 @@ mod tests {
                 activity: Some(SessionCatalogActivity {
                     origin: SessionOrigin::User,
                     last_agent_activity_at_ms: replied,
+                    last_message_at_ms: None,
                 }),
                 ..Default::default()
             });
