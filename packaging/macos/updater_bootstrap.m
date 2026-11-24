@@ -162,6 +162,9 @@ static void JcodeCheckNow(void)
 
     NSBundle *applicationBundle = [NSBundle mainBundle];
     NSDictionary *info = applicationBundle.infoDictionary;
+    if ([info[@"JcodePairedRollout"] isEqual:@YES]) {
+        return;
+    }
     NSString *publicKey = info[@"SUPublicEDKey"];
     NSString *feedURL = info[@"SUFeedURL"];
 

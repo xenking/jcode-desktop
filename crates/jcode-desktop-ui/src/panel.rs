@@ -3366,6 +3366,9 @@ impl Panel {
                     }
                 }
                 "/model" | "/models" => self.open_model_picker_deferred(cx),
+                "/update" if crate::updates::request_paired(cx) => {
+                    self.items.push(Item::Assistant("Checking for a paired CLI and Desktop update…".into()));
+                }
                 "/update" => {
                     let request = crate::updates::request_now();
                     let message = match request {

@@ -37,10 +37,33 @@ if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_ENVIRONMENT:-}" != github-hoste
   unset JCODE_BUILD_ADMISSION_PYTHON
 fi
 
-# Local builds pick up the Sparkle keypair from the 0600 env file so the app
-# embeds SUPublicEDKey and the appcast is signed. CI passes secrets directly.
+# Keep local upgrades on the same signing identity so TCC grants survive.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  APPLE_SIGNING_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null |
+    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*"$/\1/p' | head -1)"
+fi
+IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
+
+# Local signed builds use the paired rollout. Public releases retain Sparkle.
+if [[ -z "${JCODE_DESKTOP_PAIRED_ROLLOUT:-}" ]]; then
+  JCODE_DESKTOP_PAIRED_ROLLOUT=0
+  if [[ "${GITHUB_ACTIONS:-}" != true && "${REQUIRE_SECURE_UPDATES:-0}" != 1 && "$IDENTITY" != - ]]; then
+    JCODE_DESKTOP_PAIRED_ROLLOUT=1
+  fi
+fi
+case "$JCODE_DESKTOP_PAIRED_ROLLOUT" in
+  0) ;;
+  1) [[ "$IDENTITY" != - && "${REQUIRE_SECURE_UPDATES:-0}" != 1 ]] || {
+       echo "error: paired rollout requires a stable Apple signing identity and no Sparkle feed" >&2
+       exit 1
+     } ;;
+  *) echo "error: JCODE_DESKTOP_PAIRED_ROLLOUT must be 0 or 1" >&2; exit 1 ;;
+esac
+export JCODE_DESKTOP_PAIRED_ROLLOUT
+
+# Only standalone Sparkle builds read the keypair from the 0600 env file.
 SPARKLE_ENV="${SPARKLE_ENV:-$HOME/Library/Application Support/jcode/sparkle.env}"
-if [[ -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 0 && -z "${SPARKLE_PUBLIC_KEY:-}" && -r "$SPARKLE_ENV" ]]; then
   SPARKLE_PUBLIC_KEY="$(sed -n 's/^SPARKLE_PUBLIC_KEY=//p' "$SPARKLE_ENV")"
   SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY:-$(sed -n 's/^SPARKLE_PRIVATE_KEY=//p' "$SPARKLE_ENV")}"
 fi
@@ -124,7 +147,9 @@ PLIST_ARGS=(
   --version "$VERSION"
   --build "$BUILD_NUMBER"
 )
-if [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 1 ]]; then
+  PLIST_ARGS+=(--paired-rollout)
+elif [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
   PLIST_ARGS+=(--public-key "$SPARKLE_PUBLIC_KEY" --feed-url "$UPDATE_FEED_URL")
 fi
 if [[ "${REQUIRE_SECURE_UPDATES:-0}" == 1 ]]; then
@@ -153,17 +178,6 @@ rm -rf "$OUT/icon.iconset"
 # Use the hardened runtime without broad exceptions. The explicit empty
 # entitlement set makes accidental privilege additions visible in review and in
 # verify-macos-package.sh.
-# macOS keys privacy grants (Accessibility, Screen Recording) to the signing
-# identity. An ad-hoc signature changes with every build, so each update would
-# silently drop those grants. Without an explicit identity, local builds use the
-# keychain's Apple Development certificate, which stays the same across builds,
-# and fall back to ad-hoc only when none exists. APPLE_SIGNING_IDENTITY=- forces
-# ad-hoc.
-if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-  APPLE_SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null |
-    sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*"$/\1/p' | head -1)"
-fi
-IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 echo "package-macos: signing identity ${IDENTITY}" >&2
 # A secure timestamp needs Apple's server and only matters for notarized
 # Developer ID builds, so local identities sign without one.
@@ -226,7 +240,7 @@ fi
 EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
   "$ROOT/scripts/verify-macos-package.sh" "$APP" "$DMG"
 (cd "$OUT" && shasum -a 256 "$(basename "$ZIP")" "$(basename "$DMG")" > SHA256SUMS)
-if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+if [[ "$JCODE_DESKTOP_PAIRED_ROLLOUT" == 0 && -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
   UPDATES="$OUT/updates"
   ARCHIVE="Jcode-${VERSION}-macOS-universal.zip"
   rm -rf "$UPDATES" && mkdir -p "$UPDATES"

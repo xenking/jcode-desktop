@@ -1,7 +1,26 @@
 # Fork updates (xenking/jcode-desktop)
 
-Upstream points at `1jehuang/jcode-desktop-releases` and `jcode.sh`. This fork
-defaults to its own GitHub releases, and the practical path is a local build.
+Apple Silicon installs from the fork's local rollout update the CLI, running
+daemon and Desktop as one pair. Published macOS releases still use Sparkle.
+
+## Update an installed pair
+
+Choose **Jcode → Check for Updates…** (also in **Settings → About**, or run
+`/update`). The dialog shows both installed versions, the exact target commits
+from `origin/master` and `origin/main`, and a summary of the changes. **Build
+and Update** confirms those commits, not whatever is at the branch heads later.
+
+The bundled CLI prepares the pair using the existing rollout checkouts, build
+cache, and Apple Development signing identity. The daemon waits for every turn
+to finish before reloading or replacing Desktop. The app reopens on success.
+Inspect a failed or interrupted install with `jcode rollout --status`.
+
+Rollout needs at least 30 GiB free, and packaging may require more. Keep the
+same Apple signing identity for subsequent updates so macOS privacy grants
+carry forward. Paired Desktop bundles do not load a Sparkle feed or use its keys.
+
+Legacy installs need one normal `jcode rollout` to receive the paired updater
+and its companion daemon. Do not pass `--now` if active turns must finish.
 
 ## Settings
 
@@ -12,8 +31,9 @@ defaults to its own GitHub releases, and the practical path is a local build.
 
 The updater expects `<base>/desktop-latest/latest.json` and
 `<base>/desktop-v<version>/` assets with `SHA256SUMS`, same layout as upstream.
-The Sparkle feed is only embedded when `SPARKLE_PUBLIC_KEY` is set, so local
-ad-hoc builds have no Sparkle auto-update at all.
+The Sparkle feed is embedded only in non-paired builds with a
+`SPARKLE_PUBLIC_KEY`. Local packs without a signing identity do not support
+paired updates.
 
 ## Checks and release triggers
 
@@ -30,20 +50,3 @@ Native packaging and smoke tests stay in the macOS, Linux, Windows and FreeBSD
 release workflows. The release coordinator accepts only manual dispatch and
 defaults to a dry run. A normal `main` push cannot create a release tag, access
 signing credentials or start a native release build.
-
-## Recommended update flow (no releases published)
-
-The fork publishes no release assets, so the in-app check finds nothing and is
-harmless. Update by rebuilding from the sibling checkouts:
-
-```bash
-cd ~/projects/github.com/xenking/jcode && git pull
-cd ../jcode-desktop && git pull
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-scripts/package-macos.sh            # -> dist/macos/Jcode.app (ad-hoc signed)
-osascript -e 'quit app "Jcode"'      # let it save state
-ditto dist/macos/Jcode.app /Applications/Jcode.app
-```
-
-The upstream app is backed up at `~/.jcode/migration/Jcode.app.upstream.bak`.
-Upstream sync stays `git fetch upstream && git merge upstream/main`.

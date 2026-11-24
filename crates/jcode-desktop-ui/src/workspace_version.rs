@@ -41,7 +41,7 @@ pub(super) fn update_offer(
     match update {
         // The popup's version lines already say how a check is going, and a
         // finished Linux request has no follow-up click.
-        UpdateState::Checking | UpdateState::Finished { .. } => None,
+        UpdateState::Checking | UpdateState::ApplyingPair | UpdateState::Finished { .. } => None,
         UpdateState::Available { version } => {
             offer("Update", format!("{} downloading", version_tag(version)))
         }
@@ -151,6 +151,9 @@ impl Workspace {
     /// call it. Ask the platform updater to check, download, or install
     /// whatever is next.
     pub(crate) fn check_and_apply_update(cx: &mut gpui::App) {
+        if updates::request_paired(cx) {
+            return;
+        }
         updates::note_user_check();
         // A newer release this build cannot install itself (ad-hoc package
         // without Sparkle keys): open the fork's release page instead of
@@ -204,6 +207,7 @@ fn about_status(
         (UpdateState::ReadyToRestart { .. }, _) => "Restart to finish".to_string(),
         (UpdateState::Available { .. }, _) => "Downloading…".to_string(),
         (UpdateState::Checking, _) => "Checking for updates…".to_string(),
+        (UpdateState::ApplyingPair, _) => "Building or waiting for active turns…".to_string(),
         (_, ReleaseStatus::Current { latest }) => {
             format!("No channel update ({})", version_tag(latest))
         }

@@ -1,10 +1,13 @@
-//! Shared desktop updater state. macOS registers Sparkle callbacks. Linux
+//! Shared desktop updater state. The fork's local macOS builds use paired
+//! rollout. Published macOS builds use Sparkle callbacks. Linux
 //! source checkouts rebuild through the host. Packaged Linux, FreeBSD and
 //! Windows builds update themselves through `jcode_desktop_updater`.
 
 #[cfg(target_os = "linux")]
 mod linux;
 mod packaged;
+#[cfg(target_os = "macos")]
+mod paired;
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -281,6 +284,12 @@ fn spawn_release_check() {
         .name("desktop-release-check".into())
         .spawn(|| {
             let result = std::panic::catch_unwind(|| {
+                #[cfg(target_os = "macos")]
+                if jcode_desktop_updater::paired::configured() {
+                    return Ok(paired::release_status(
+                        jcode_desktop_updater::paired::check()?.as_ref(),
+                    ));
+                }
                 compare_release(
                     env!("JCODE_DESKTOP_VERSION"),
                     jcode_desktop_updater::latest()?,
@@ -299,6 +308,17 @@ fn spawn_release_check() {
             message: format!("Could not start release checker: {error}"),
         });
     }
+}
+
+/// On local macOS packages, all update controls enter the same review dialog.
+pub fn request_paired(cx: &mut gpui::App) -> bool {
+    #[cfg(target_os = "macos")]
+    if jcode_desktop_updater::paired::configured() {
+        paired::request(cx);
+        return true;
+    }
+    let _ = cx;
+    false
 }
 
 /// Anonymous fleet version telemetry for a packaged build: at most once per day
@@ -336,6 +356,8 @@ pub enum UpdateState {
     Failed { message: String },
     /// A scheduled or user-requested check is in flight.
     Checking,
+    /// The reviewed pair is building or waiting at the daemon drain.
+    ApplyingPair,
     /// A newer build exists and Sparkle is fetching it.
     Available { version: String },
     /// The download is staged; the next launch runs the new build.
@@ -351,6 +373,7 @@ impl UpdateState {
             Self::Finished { .. } => Some("desktop update status · see result".into()),
             Self::Failed { .. } => Some("desktop update failed · see /update result".into()),
             Self::Checking => Some("checking for updates".to_owned()),
+            Self::ApplyingPair => Some("updating CLI and Desktop".into()),
             Self::Available { version } => Some(format!("downloading {version}")),
             Self::ReadyToRestart { version } => Some(format!("{version} ready · restart")),
         }
@@ -359,7 +382,10 @@ impl UpdateState {
     /// Whether this state is still in motion. Finished work stops animating so
     /// a permanently pulsing chip never becomes background noise.
     pub fn is_busy(&self) -> bool {
-        matches!(self, Self::Checking | Self::Available { .. })
+        matches!(
+            self,
+            Self::Checking | Self::ApplyingPair | Self::Available { .. }
+        )
     }
 
     /// Restarting is the only action the user can usefully take from the chip.
@@ -484,7 +510,9 @@ pub fn request_now() -> UpdateRequest {
     let previous = {
         let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
         match &*state {
-            UpdateState::Checking => return UpdateRequest::AlreadyChecking,
+            UpdateState::Checking | UpdateState::ApplyingPair => {
+                return UpdateRequest::AlreadyChecking;
+            }
             UpdateState::Available { .. } => return UpdateRequest::Downloading,
             UpdateState::ReadyToRestart { .. } => {
                 drop(state);
