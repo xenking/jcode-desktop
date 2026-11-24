@@ -29,7 +29,9 @@ impl Panel {
         }
         let status = match event {
             ApiEvent::MessageAccepted { .. }
-                if !self.activity_active() || is_retry_phase(&self.connection_phase) =>
+                if !self.activity_active()
+                    || self.continuing_after_reload
+                    || is_retry_phase(&self.connection_phase) =>
             {
                 Some("running")
             }
@@ -62,6 +64,7 @@ impl Panel {
         };
         if let Some(status) = status {
             if !matches!(event, ApiEvent::ConnectionPhase { .. }) {
+                self.continuing_after_reload = false;
                 self.set_auto_retry(stop_reason::AutoRetry::Recovered);
             }
             self.status = status.into();

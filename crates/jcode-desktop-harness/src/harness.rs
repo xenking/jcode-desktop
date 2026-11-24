@@ -5012,9 +5012,26 @@ fn session_worker_with_connector(
                 } = &event
                 {
                     if recovery.notice(continuation_message) {
-                        let _ = updates.send(Update::Status("Resumed after reload".into()));
+                        let _ = updates.send(Update::Event {
+                            session_id: session_id.clone(),
+                            event: namespace_event(event, &address),
+                        });
                     }
                     continue;
+                }
+                if matches!(
+                    event,
+                    ApiEvent::TextDelta { .. }
+                        | ApiEvent::ReasoningDelta { .. }
+                        | ApiEvent::ToolStart { .. }
+                        | ApiEvent::AskRequest { .. }
+                        | ApiEvent::TurnDone { .. }
+                        | ApiEvent::TurnStopped { .. }
+                )
+                    || matches!(&event, ApiEvent::SessionStatus { status, .. }
+                        if matches!(status.as_str(), "cancelled" | "canceled" | "interrupted" | "crashed" | "error" | "failed"))
+                {
+                    recovery.supersede();
                 }
                 if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
                     // send_message is fire-and-forget, so its busy rejection

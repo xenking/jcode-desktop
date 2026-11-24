@@ -6,6 +6,7 @@ fn real_daemon_bridge_desktop_recovery_without_user_input() {
         .expect("isolated bridge socket");
     let session = std::env::var("JCODE_RECOVERY_ACCEPTANCE_SESSION")
         .expect("interrupted fixture session");
+    let expected_session = session.clone();
     let (commands, rx) = channel();
     let (tx, updates) = update_channel();
     let worker = std::thread::spawn(move || {
@@ -19,12 +20,26 @@ fn real_daemon_bridge_desktop_recovery_without_user_input() {
         });
     });
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut recovering = false;
     let mut running = false;
+    let mut text = String::new();
+    let mut done = false;
     while Instant::now() < deadline {
         match updates.try_recv() {
+            Ok(Update::Event { session_id, event: ApiEvent::SessionRecovery { session_id: target, .. } }) => {
+                assert_eq!(session_id, expected_session);
+                assert_eq!(target, expected_session);
+                assert!(!recovering, "one recovery notice per attachment");
+                recovering = true;
+            }
             Ok(Update::Event { event: ApiEvent::SessionStatus { status, .. }, .. }) if status == "running" => {
-                println!("DESKTOP_RECOVERY_RUNNING");
                 running = true;
+            }
+            Ok(Update::Event { event: ApiEvent::TextDelta { text: delta, .. }, .. }) => {
+                text.push_str(&delta);
+            }
+            Ok(Update::Event { event: ApiEvent::TurnDone { .. }, .. }) => {
+                done = true;
                 break;
             }
             Ok(Update::CommandFailed { reason, .. } | Update::SendFailed { reason, .. }) => panic!("{reason}"),
@@ -33,7 +48,11 @@ fn real_daemon_bridge_desktop_recovery_without_user_input() {
     }
     commands.send(SessionCommand::Stop).unwrap();
     worker.join().unwrap();
-    assert!(running, "Desktop must observe daemon-owned recovery without sending input");
+    assert!(recovering, "Desktop must receive the pending recovery notice");
+    assert!(running, "Desktop must observe the resumed turn running");
+    assert_eq!(text, "recovery completed", "Desktop must receive resumed output without sending input");
+    assert!(done, "Desktop must observe the resumed turn finish");
+    println!("DESKTOP_RECOVERY_RUNNING");
 }
 
 #[test]

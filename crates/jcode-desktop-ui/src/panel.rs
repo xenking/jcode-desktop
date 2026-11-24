@@ -760,6 +760,7 @@ pub struct Panel {
     pub working_dir: Option<String>,
     pub status: String,
     pub connection_phase: String,
+    continuing_after_reload: bool,
     turn_outcome: Option<session_status::TurnOutcome>,
     /// Model id serving this session, e.g. `gpt-5.6-sol`.
     pub model: Option<String>,
@@ -1778,6 +1779,7 @@ impl Panel {
             status: activity_status.into(),
             turn_outcome: None,
             connection_phase: String::new(),
+            continuing_after_reload: false,
             model: effort_fixture.then(|| "gpt-5.6-sol".into()),
             provider: effort_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
@@ -4428,12 +4430,16 @@ impl Panel {
             crate::sounds::play(cue, cx);
         }
         match event {
+            ApiEvent::SessionRecovery { .. } => {
+                self.continuing_after_reload = true;
+            }
             ApiEvent::AskRequest {
                 request_id,
                 tool_call_id,
                 questions,
                 ..
             } => {
+                self.continuing_after_reload = false;
                 self.show_live_ask(request_id, tool_call_id, questions, cx);
             }
             ApiEvent::PermissionRequest {
@@ -4948,7 +4954,9 @@ impl Panel {
                 } else {
                     status.clone()
                 };
-                if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
+                // The attachment can report idle before the daemon claims
+                // recovery. A terminal event, not that snapshot, ends recovery.
+                if status == "idle" && !self.continuing_after_reload {
                     self.reconcile_reconnect_response();
                     self.flush_reasoning();
                     self.settle_idle_output();
@@ -5156,6 +5164,7 @@ impl Panel {
 
     /// Settle partial output and stop activity without waiting for a later idle event.
     fn finish_response(&mut self) {
+        self.continuing_after_reload = false;
         self.pending_approval = None;
         self.transcript_measurements.dirty = true;
         self.flush_reasoning();
@@ -5382,6 +5391,9 @@ impl Panel {
 
     /// Prefer meaningful activity over transport bookkeeping.
     fn status_line(&self) -> String {
+        if self.continuing_after_reload && self.activity_active() && self.status != "compacting" {
+            return "Interrupted by update, continuing…".into();
+        }
         let phase = self.connection_phase.trim();
         if !phase.is_empty() && !matches!(phase, "connected" | "streaming") {
             return activity_state::phase_label(phase);
@@ -5448,7 +5460,8 @@ impl Panel {
         }
         // Historical transcript errors do not describe the current turn. A
         // transport streaming event can also arrive before its session status.
-        !self.streaming_text.is_empty()
+        self.continuing_after_reload
+            || !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
             || self.connection_phase.trim() == "streaming"
             || activity_state::is_request_phase(&self.connection_phase)

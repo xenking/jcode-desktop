@@ -57,6 +57,67 @@ fn footer_count(panel: &Panel) -> usize {
 }
 
 #[gpui::test]
+fn reload_recovery_shows_activity_until_output_or_completion(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "reload-test".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.load_history(vec![], vec![], cx);
+        panel
+    });
+    let session_id = "reload-test".to_owned();
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::SessionRecovery {
+                session_id: session_id.clone(),
+                continuation_message: "Must not appear in the transcript".into(),
+                reconnect_notice: None,
+            },
+            cx,
+        );
+        for status in ["idle", "running"] {
+            panel.apply(
+                &ApiEvent::SessionStatus {
+                    session_id: session_id.clone(),
+                    status: status.into(),
+                    pending_soft_interrupts: None,
+                },
+                cx,
+            );
+            assert!(panel.activity_active());
+            assert_eq!(panel.status_line(), "Interrupted by update, continuing…");
+        }
+        assert!(panel.items.is_empty(), "recovery is not user input");
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("transcript-activity").is_some());
+
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::ToolStart {
+                session_id: session_id.clone(),
+                call_id: "tool-1".into(),
+                name: "read".into(),
+            },
+            cx,
+        );
+        assert_eq!(panel.status_line(), "Running tools");
+        panel.apply(
+            &ApiEvent::TurnDone {
+                session_id,
+                pending_soft_interrupts: None,
+            },
+            cx,
+        );
+        assert!(!panel.activity_active());
+    });
+}
+
+#[gpui::test]
 fn attach_timeout_reconnect_keeps_transcript_free_of_error_cards(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
     panel.update(vcx, |panel, cx| {

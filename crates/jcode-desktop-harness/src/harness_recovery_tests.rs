@@ -6,7 +6,7 @@ fn recovery_event(session: &str) -> ApiEvent {
     }
 }
 
-fn recovery_fence(worker: &Worker) {
+fn recovery_fence(worker: &Worker, expected_notices: usize) {
     worker.event(ApiEvent::RuntimeInfo {
         speed_mode: Default::default(),
         speed_options: Vec::new(),
@@ -18,7 +18,11 @@ fn recovery_fence(worker: &Worker) {
         auth_method: None,
         account_label: None,
     });
+    let notices = std::cell::Cell::new(0);
     worker.wait_for(|update| {
+        if matches!(update, Update::Event { event: ApiEvent::SessionRecovery { .. }, .. }) {
+            notices.set(notices.get() + 1);
+        }
         matches!(
             update,
             Update::Event {
@@ -27,18 +31,25 @@ fn recovery_fence(worker: &Worker) {
             }
         )
     });
+    assert_eq!(notices.get(), expected_notices);
 }
 
 #[test]
 fn interrupted_session_recovery_only_displays_state_without_sending_input() {
     let worker = Worker::new(|_| vec![ApiEvent::MessageAccepted { session_id: "s1".into() }]);
     worker.event(recovery_event("s1"));
-    recovery_fence(&worker);
+    worker.wait_for(|update| {
+        matches!(update, Update::Event {
+            session_id,
+            event: ApiEvent::SessionRecovery { session_id: target, .. },
+        } if session_id == "s1" && target == "s1")
+    });
+    recovery_fence(&worker, 0);
     assert!(worker.requests.try_recv().is_err(), "daemon owns continuation, Desktop must not send a reminder");
     worker.event(ApiEvent::SessionStatus { session_id: "s1".into(), status: "running".into(), pending_soft_interrupts: None });
     worker.wait_for(|update| matches!(update, Update::Event { event: ApiEvent::SessionStatus { status, .. }, .. } if status == "running"));
     worker.event(recovery_event("s1"));
-    recovery_fence(&worker);
+    recovery_fence(&worker, 0);
     assert!(worker.requests.try_recv().is_err());
 }
 
@@ -51,17 +62,17 @@ fn completed_session_and_other_sessions_recovery_remain_idle() {
         pending_soft_interrupts: None,
     });
     worker.event(recovery_event("other-session"));
-    recovery_fence(&worker);
+    recovery_fence(&worker, 0);
     assert!(worker.requests.try_recv().is_err());
 }
 
 #[test]
-fn already_running_or_completed_turn_suppresses_stale_recovery() {
+fn resumed_or_completed_turn_suppresses_stale_recovery() {
     for event in [
-        ApiEvent::SessionStatus {
+        ApiEvent::ToolStart {
             session_id: "s1".into(),
-            status: "running".into(),
-            pending_soft_interrupts: None,
+            call_id: "call-1".into(),
+            name: "read".into(),
         },
         ApiEvent::TurnDone {
             session_id: "s1".into(),
@@ -76,7 +87,7 @@ fn already_running_or_completed_turn_suppresses_stale_recovery() {
         let worker = Worker::new(|_| panic!("stale recovery must not send"));
         worker.event(event);
         worker.event(recovery_event("s1"));
-        recovery_fence(&worker);
+        recovery_fence(&worker, 0);
         assert!(worker.requests.try_recv().is_err());
     }
 }
@@ -85,7 +96,7 @@ fn already_running_or_completed_turn_suppresses_stale_recovery() {
 fn busy_recovery_is_not_replayed_as_steering() {
     let worker = Worker::new(|_| vec![busy_error()]);
     worker.event(recovery_event("s1"));
-    recovery_fence(&worker);
+    recovery_fence(&worker, 1);
     assert!(
         worker.requests.try_recv().is_err(),
         "another client's continuation is sufficient"
@@ -108,7 +119,7 @@ fn user_submission_supersedes_automatic_continuation() {
         pending_soft_interrupts: None,
     });
     worker.event(recovery_event("s1"));
-    recovery_fence(&worker);
+    recovery_fence(&worker, 0);
     assert!(worker.requests.try_recv().is_err());
 }
 
@@ -145,7 +156,7 @@ fn explicit_cancel_or_clear_suppresses_late_recovery() {
             )
         });
         worker.event(recovery_event("s1"));
-        recovery_fence(&worker);
+        recovery_fence(&worker, 0);
         assert!(worker.requests.try_recv().is_err());
     }
 }

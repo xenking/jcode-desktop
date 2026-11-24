@@ -28,7 +28,10 @@ fn interrupted_remote_session_recovers_again_after_transport_replacement() {
         assert!(matches!(server.next(), ApiRequest::GetHistory { .. }));
         assert!(matches!(server.next(), ApiRequest::GetRuntimeInfo { .. }));
         wait_update(&updates, |update| {
-            matches!(update, Update::Status(message) if message == "Resumed after reload")
+            matches!(update, Update::Event {
+                session_id,
+                event: ApiEvent::SessionRecovery { session_id: target, .. },
+            } if session_id == &ui_id && target == &ui_id)
         });
         if attempt == 0 {
             // No TurnDone: the old worker activity flag is still true here.
