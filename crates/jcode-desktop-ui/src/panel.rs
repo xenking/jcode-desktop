@@ -7954,8 +7954,8 @@ impl Render for Panel {
                 }),
             )
             .on_action(
-                cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, _, cx| {
-                    panel.jump_to_latest_if_empty(cx);
+                cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, window, cx| {
+                    panel.jump_to_latest_if_empty(window, cx);
                 }),
             )
             .on_action(cx.listener(|panel, _: &voice::ToggleVoice, window, cx| {

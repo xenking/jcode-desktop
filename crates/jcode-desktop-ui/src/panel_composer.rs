@@ -975,6 +975,86 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn model_search_types_space_with_an_empty_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        cx.update(super::super::shortcuts::bind_keys);
+        let (bridge, _) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx
+            .add_window_view(|_, cx| Panel::new("model-search".into(), None, None, bridge, cx));
+        vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.model = Some("gpt-5.6-sol".into());
+            panel.provider = Some("openai".into());
+            panel.reasoning_effort = Some("high".into());
+            panel.available_models = vec!["openai-oauth:gpt-5.6-sol".into()];
+            let route = jcode_sdk::ModelRouteInfo {
+                model: "gpt-5.6-sol".into(),
+                provider: "OpenAI".into(),
+                api_method: "openai-oauth".into(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+                speed_options: Vec::new(),
+                reasoning_efforts: None,
+            };
+            panel.input.update(cx, |input, cx| {
+                input.set_model_routes(Vec::new(), &[route], Some("gpt-5.6-sol".into()), cx);
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let trigger = vcx.debug_bounds("panel-model").unwrap();
+        vcx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        let search = panel.read_with(vcx, |panel, _| {
+            let (kind, search) = panel.picker_search.as_ref().expect("model search opened");
+            assert!(*kind == PickerKind::Model);
+            search.clone()
+        });
+        let check_query = |vcx: &mut gpui::VisualTestContext, keys, query| {
+            vcx.update(|window, cx| assert!(search.read(cx).focus_handle.is_focused(window)));
+            vcx.simulate_keystrokes(keys);
+            assert_eq!(
+                search.read_with(vcx, |search, _| search.content.to_string()),
+                query,
+                "typed {keys:?}"
+            );
+            search.update(vcx, |search, cx| search.set_content(String::new(), cx));
+            vcx.run_until_parked();
+        };
+        check_query(vcx, "a space b", "a b");
+        check_query(vcx, "space a", " a");
+        check_query(vcx, "shift-space a", " a");
+
+        vcx.simulate_keystrokes("down");
+        vcx.run_until_parked();
+        let manage = vcx.debug_bounds("slash-command-row-1").unwrap();
+        let highlighted = vcx.debug_bounds("picker-keyboard-focus").unwrap();
+        assert!(manage.contains(&highlighted.center()));
+        check_query(vcx, "a space b", "a b");
+
+        let model = vcx.debug_bounds("slash-command-row-0").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(manage.center(), cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_mouse_move(model.center(), cx));
+        vcx.run_until_parked();
+        let highlighted = vcx.debug_bounds("picker-keyboard-focus").unwrap();
+        assert!(model.contains(&highlighted.center()));
+        check_query(vcx, "a space b", "a b");
+
+        let effort = vcx.debug_bounds("model-row-effort-0-medium").unwrap();
+        vcx.simulate_click(effort.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        check_query(vcx, "a space b", "a b");
+
+        let manage = vcx.debug_bounds("slash-command-row-1").unwrap();
+        vcx.simulate_click(manage.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        check_query(vcx, "a space b", "a b");
+    }
+
     #[test]
     fn location_label_only_shows_the_last_component() {
         let home = std::env::var("HOME").unwrap();

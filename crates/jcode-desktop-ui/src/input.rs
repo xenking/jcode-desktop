@@ -2266,7 +2266,7 @@ impl PromptInput {
     }
 
     fn shift_space(&mut self, _: &ShiftSpace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.content.is_empty() {
+        if self.content.is_empty() && self.picker_prefix.is_none() {
             cx.propagate();
         } else {
             self.replace_text_in_range(None, " ", window, cx);

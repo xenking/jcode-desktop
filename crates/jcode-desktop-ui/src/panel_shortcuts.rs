@@ -53,8 +53,12 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn jump_to_latest_if_empty(&mut self, cx: &mut Context<Self>) {
-        if self.ask_card.is_none() && self.input.read(cx).content.is_empty() {
+    pub(super) fn jump_to_latest_if_empty(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let composer = self.input.read(cx);
+        if composer.focus_handle.is_focused(window)
+            && composer.content.is_empty()
+            && self.ask_card.is_none()
+        {
             self.jump_to_latest(cx);
         } else {
             cx.propagate();
