@@ -4137,13 +4137,12 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::AuthChanged(provider) => {
-                        // The daemon re-resolves this session's route and
-                        // pushes the new catalog and model as ordinary events.
+                        // Refresh credentials and model routes for this session.
                         if let Err(error) = client.notify_auth_changed(&provider) {
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
                                 reason: format!(
-                                    "Signed in, but this session could not switch to the new account: {error}"
+                                    "Signed in, but this session could not refresh its model routes: {error}"
                                 ),
                             });
                         }

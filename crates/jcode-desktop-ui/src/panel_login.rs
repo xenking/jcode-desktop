@@ -74,6 +74,23 @@ enum LoginUpdate {
     Complete { validation_warning: bool },
 }
 
+fn completed_login_copy(
+    provider: Option<&str>,
+    has_target_session: bool,
+) -> (&'static str, &'static str) {
+    match (provider, has_target_session) {
+        (Some("claude"), true) => (
+            "Claude connected. The session's model is unchanged. Pick a Claude model to switch.",
+            "Choose Claude model",
+        ),
+        (_, true) => (
+            "Account connected. This session now uses it.",
+            "Pick a different model",
+        ),
+        (_, false) => ("Account connected.", "Pick a different model"),
+    }
+}
+
 impl Panel {
     pub(super) fn login_input_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
         let state = self.login.as_ref()?;
@@ -564,12 +581,11 @@ impl Panel {
         state.flow = None;
         state.prompt = None;
         state.input.update(cx, |input, cx| input.clear(cx));
-        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. If this session does not switch, choose another model. You do not need to reuse the sign-in code.".into());
+        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. Choose a model to try it. You do not need to reuse the sign-in code.".into());
         let provider = state.provider.map(|provider| provider.id.to_string());
         // The CLI and API-key paths notify the daemon on a throwaway
-        // connection. That refreshes credentials everywhere, but the automatic
-        // post-login model switch only applies to the notifying session, so
-        // the session this login is for must notify on its own connection.
+        // connection. Notify the affected session too so it receives the
+        // refreshed routes immediately and can choose a model.
         if let Some(session_id) = self.login_target_session() {
             self.bridge.send(match provider {
                 Some(provider) => Command::AuthChanged {
@@ -583,8 +599,8 @@ impl Panel {
         cx.notify();
     }
 
-    /// The live session whose model should follow this login, if any. An
-    /// Accounts panel signs in on behalf of the chat it was opened from.
+    /// The live session to notify after login, if any. An Accounts panel signs
+    /// in on behalf of the chat it was opened from.
     fn login_target_session(&self) -> Option<String> {
         if let Some(source) = self.session_id.strip_prefix("accounts://") {
             // Drafts, settings pages and remote sessions have no local runtime.
@@ -810,6 +826,10 @@ impl Panel {
             );
         }
         if state.complete {
+            let (status, choose_model_label) = completed_login_copy(
+                state.provider.map(|provider| provider.id),
+                self.login_target_session().is_some(),
+            );
             if let Some(provider) = state.provider {
                 body = body.child(self.render_login_steps(state, provider, cx));
             }
@@ -822,11 +842,7 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child(if self.login_target_session().is_some() {
-                            "Account connected. This session now uses it."
-                        } else {
-                            "Account connected."
-                        }),
+                        .child(status),
                 )
                 .child(
                     div()
@@ -844,7 +860,7 @@ impl Panel {
                             },
                         )))
                         .child(
-                            login_button("login-choose-model", "Pick a different model").on_click(
+                            login_button("login-choose-model", choose_model_label).on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.close_login_picker(cx);
                                     if this.is_accounts_panel() {
@@ -1260,7 +1276,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn accounts_login_switches_the_source_session_not_a_throwaway(cx: &mut gpui::TestAppContext) {
+    fn claude_login_offers_model_choice_without_changing_the_source_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new_accounts("chat-session", None, bridge, cx));
@@ -1276,7 +1294,19 @@ mod tests {
         ));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("login-done").is_some());
-        assert!(vcx.debug_bounds("login-choose-model").is_some());
+        let choose = vcx.debug_bounds("login-choose-model").unwrap();
+        assert_eq!(
+            completed_login_copy(Some("claude"), true),
+            (
+                "Claude connected. The session's model is unchanged. Pick a Claude model to switch.",
+                "Choose Claude model",
+            )
+        );
+        vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+        assert!(
+            commands.try_recv().is_err(),
+            "opening the model picker is not a switch or resend"
+        );
         // Nothing live behind a draft, settings page or remote host.
         for source in ["startup://draft", "ssh://host/session", ""] {
             panel.update(vcx, |panel, _| {
