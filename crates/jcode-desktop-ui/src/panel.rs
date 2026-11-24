@@ -154,6 +154,8 @@ mod decision_tests;
 mod fork_prompt;
 #[path = "panel_rig_hud.rs"]
 mod rig_hud;
+#[path = "panel_routing.rs"]
+mod account_routing;
 #[path = "panel_side_question.rs"]
 mod side_question;
 #[path = "panel_side_question_inline.rs"]
@@ -858,6 +860,10 @@ pub struct Panel {
     transcript_list: ListState,
     clean_chat_override: Option<bool>,
     pending_approval: Option<clean_chat::PendingApproval>,
+    /// The account serving this session, from the daemon's latest decision.
+    routing_chip: Option<crate::routing::RoutingChip>,
+    /// A spending limit holds the turn until the person answers.
+    routing_gate: Option<crate::routing::GateCard>,
     rewind_selection: Option<rewind::Selection>,
     expandable_viewport_height: gpui::Pixels,
     transcript_row_count: usize,
@@ -1211,7 +1217,11 @@ impl Panel {
             _ if self
                 .ask_card
                 .as_ref()
-                .is_some_and(|card| !card.submitting()) =>
+                .is_some_and(|card| !card.submitting())
+                || self
+                    .routing_gate
+                    .as_ref()
+                    .is_some_and(|gate| !gate.submitting()) =>
             {
                 return Some(TabRing::question());
             }
@@ -1877,6 +1887,8 @@ impl Panel {
                 _ => None,
             },
             pending_approval: None,
+            routing_chip: None,
+            routing_gate: None,
             expandable_viewport_height: px(0.),
             transcript_row_count: 0,
             transcript_measurements: Default::default(),
@@ -3272,6 +3284,9 @@ impl Panel {
             self.submit_or_queue(prompt, Vec::new(), true, cx);
             return true;
         }
+        if self.handle_acct_command(trimmed, cx) {
+            return true;
+        }
         if self.login_command(trimmed, cx) {
             return true;
         }
@@ -4439,6 +4454,9 @@ impl Panel {
         self.response_stats.observe(event, self.provider.as_deref());
         self.observe_activity_state(event);
         self.observe_session_image_ids(event, cx);
+        if matches!(event, ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. }) {
+            self.dismiss_routing_gate(cx);
+        }
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
             && !self.demo
@@ -4458,6 +4476,20 @@ impl Panel {
                 self.continuing_after_reload = false;
                 self.show_live_ask(request_id, tool_call_id, questions, cx);
             }
+            ApiEvent::RoutingDecision {
+                account,
+                reason,
+                warnings,
+                pending,
+                ..
+            } => self.routing_decision(account, reason, warnings, pending.as_deref(), cx),
+            ApiEvent::RoutingGate {
+                gate_id,
+                reason,
+                options,
+                ..
+            } => self.open_routing_gate(gate_id, reason, options, cx),
+            ApiEvent::RoutingGateClosed { gate_id, .. } => self.close_routing_gate(gate_id, cx),
             ApiEvent::PermissionRequest {
                 tool_name,
                 description,
@@ -7005,6 +7037,7 @@ impl Panel {
                 .is_some_and(|text| !text.is_empty() && text.chars().all(|c| !c.is_control()))
             || self.transcript_only
             || self.ask_card.is_some()
+            || self.routing_gate.is_some()
             || self.login.is_some()
             || self.recovery_picker_open
             || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
@@ -8079,6 +8112,7 @@ impl Render for Panel {
                 } else if this.handle_rewind_key(event, window, cx)
                     || this.handle_queue_card_key(event, window, cx)
                     || this.handle_ask_key(event, window, cx)
+                    || this.handle_routing_gate_key(event, window, cx)
                     || this.resume_composer_typing(event, false, window, cx)
                 {
                     cx.stop_propagation();

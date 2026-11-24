@@ -71,7 +71,7 @@ mod workspace;
 // The GPUI-free harness bridge and its transports live in their own crate so
 // edits there do not recompile this one. Re-exported under their old paths.
 pub(crate) use jcode_desktop_harness::{
-    accounts, harness, managed_cloud, platform, remote_targets,
+    accounts, harness, managed_cloud, platform, remote_targets, routing, routing_rows,
 };
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;

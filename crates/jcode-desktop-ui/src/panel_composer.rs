@@ -100,6 +100,7 @@ impl Panel {
         let cache_pill = self.render_cache_pill(cx);
         let rig_hud = self.render_rig_hud(cx);
         let activity_icon = self.render_session_status(cx);
+        let routing_chip = self.render_routing_chip(cx);
         let meta = div()
             .debug_selector(|| "panel-meta".into())
             .flex_shrink(4.)
@@ -125,6 +126,7 @@ impl Panel {
                     .items_center()
                     .gap_2()
                     .overflow_hidden()
+                    .children(routing_chip)
                     .children(workers_pill)
                     .children(rig_hud)
                     .children(cache_pill)
@@ -266,6 +268,7 @@ impl Panel {
             );
         let strips = self.render_composer_applets(window, cx);
         let ask = self.render_ask_card(window, cx);
+        let routing_gate = self.render_routing_gate_card(window, cx);
         let picker_open = self.picker_search.is_some();
         let hide_voice = picker_open && !self.input.read(cx).has_user_draft();
         if self.input.read(cx).external_picker_open != picker_open {
@@ -285,7 +288,8 @@ impl Panel {
             .children(self.render_swarm_list(window, cx))
             .children(strips)
             .children(ask)
-            .when(self.ask_card.is_none(), |el| {
+            .children(routing_gate)
+            .when(self.ask_card.is_none() && self.routing_gate.is_none(), |el| {
                 el.child(
                     // The voice button floats inside the input's right edge. The
                     // input reserves matching trailing space for it.
@@ -517,21 +521,18 @@ impl Panel {
         let should_focus_ask = self.ask_card.as_ref().is_some_and(|card| {
             self.input.read(cx).focus_handle.is_focused(window)
                 || (card.submitting() && self.ask_editor_focused(window, cx))
-        });
+        }) || self.routing_gate_wants_focus(window, cx);
         if should_focus_ask {
             let panel = panel.clone();
             window.defer(cx, move |window, cx| {
                 if let Some(panel) = panel.upgrade() {
                     let focus = {
                         let panel = panel.read(cx);
-                        panel
-                            .ask_card
-                            .as_ref()
-                            .is_some_and(|card| {
-                                panel.input.read(cx).focus_handle.is_focused(window)
-                                    || (card.submitting() && panel.ask_editor_focused(window, cx))
-                            })
-                            .then(|| panel.focus_handle.clone())
+                        (panel.ask_card.as_ref().is_some_and(|card| {
+                            panel.input.read(cx).focus_handle.is_focused(window)
+                                || (card.submitting() && panel.ask_editor_focused(window, cx))
+                        }) || panel.routing_gate_wants_focus(window, cx))
+                        .then(|| panel.focus_handle.clone())
                     };
                     if let Some(focus) = focus {
                         window.focus(&focus, cx);
@@ -557,7 +558,7 @@ impl Panel {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     if !this.owns_keyboard_focus(window, cx) {
-                        if this.ask_card.is_some() {
+                        if this.ask_card.is_some() || this.routing_gate.is_some() {
                             window.focus(&this.focus_handle, cx);
                         } else {
                             this.focus_input(window, cx);

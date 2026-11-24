@@ -221,6 +221,23 @@ impl Panel {
                 "option_selectors": card.questions.get(card.cursor_question).map(|question| (0..question.options.len()).map(|option| format!("ask:{}:{}:{}", card.request_id, card.cursor_question, option)).collect::<Vec<_>>()).unwrap_or_default(),
             }
         }).transpose()?;
+        let routing = state_object! {
+            "chip": self.routing_chip.as_ref().map(|chip| serde_json::json!({
+                "account": chip.account,
+                "reason": chip.reason,
+                "warnings": chip.warnings,
+                "pending": chip.pending,
+                "label": chip.label(),
+            })),
+            "gate": self.routing_gate.as_ref().map(|gate| serde_json::json!({
+                "gate_id": gate.gate_id(),
+                "reason": gate.model.reason,
+                "rows": gate.model.rows(),
+                "cursor": gate.model.cursor,
+                "submitting": gate.submitting(),
+                "error": gate.error,
+            })),
+        }?;
         let workers = self
             .swarm_workers
             .iter()
@@ -314,6 +331,7 @@ impl Panel {
             "streaming_text": self.streaming_text,
             "streaming_reasoning": self.streaming_reasoning,
             "ask": ask,
+            "routing": routing,
             "workers": workers,
             "workers_open": self.swarm_list_open,
             "expanded_regions": self.expanded_regions,

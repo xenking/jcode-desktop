@@ -70,6 +70,8 @@ pub(crate) mod change_review;
 mod account_menu;
 #[path = "sidebar_account.rs"]
 mod sidebar_account;
+#[path = "sidebar_routing.rs"]
+mod sidebar_routing;
 #[path = "sidebar_collections.rs"]
 mod sidebar_collections;
 #[path = "sidebar_edits.rs"]
@@ -109,6 +111,7 @@ use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
 
 use crate::accounts;
+use crate::routing_rows;
 use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
@@ -378,6 +381,24 @@ const SIDEBAR_WIDTH: f32 = 224.0;
 // With no connector gap the gutter stays inside the sidebar in every layout.
 const SIDEBAR_SCROLLBAR_OUTSET: f32 = 0.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
+
+/// The 3 px usage bar under an account or key window: `fraction` of the track
+/// in `color`. Every accounts-sidebar bar goes through here.
+fn usage_bar(fraction: f32, color: gpui::Rgba) -> gpui::Div {
+    div()
+        .w_full()
+        .h(px(3.0))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(Theme::global().INLINE_CODE_BG)
+        .child(
+            div()
+                .h_full()
+                .w(relative(fraction.clamp(0.0, 1.0)))
+                .rounded_full()
+                .bg(color),
+        )
+}
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
@@ -897,6 +918,8 @@ pub struct Workspace {
     pinned_working_dir: Option<String>,
     /// Configured logins and API keys, refreshed in the background.
     accounts: Vec<accounts::Account>,
+    /// Routing configuration with live usage, for the accounts sidebar.
+    routing_view: Option<jcode_session_types::routing::RoutingView>,
     recent_accounts: Vec<String>,
     accounts_scroll: ScrollHandle,
     accounts_scroll_remainder: f32,
@@ -985,6 +1008,7 @@ impl Workspace {
         updates::ensure_release_check();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
+        let routing_feed = crate::routing::spawn();
         let recovering_crash = crash_launch.is_some();
         let launch = crash_launch
             .or_else(|| snapshot.as_ref()?.launch.clone().map(Into::into))
@@ -1093,6 +1117,18 @@ impl Workspace {
                         })
                         .is_err()
                     {
+                        break;
+                    }
+                }
+                if let Some(view) = routing_feed.latest() {
+                    let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
+                        if workspace.routing_view.as_ref() != Some(&view) {
+                            workspace.routing_view = Some(view);
+                            workspace.accounts_layout_pending = true;
+                            cx.notify();
+                        }
+                    });
+                    if outcome.is_err() {
                         break;
                     }
                 }
@@ -1258,6 +1294,7 @@ impl Workspace {
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             remotes: remotes::Machines::from_config(),
             accounts: Vec::new(),
+            routing_view: None,
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
@@ -1850,6 +1887,7 @@ impl Workspace {
             pinned_working_dir: None,
             remotes: remotes::Machines::default(),
             accounts: Vec::new(),
+            routing_view: None,
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
@@ -2382,6 +2420,12 @@ impl Workspace {
     #[cfg(test)]
     pub fn set_test_bridge(&mut self, bridge: Bridge) {
         self.bridge = bridge;
+    }
+
+    /// Seed the routing view for tests, bypassing the runtime.
+    #[cfg(test)]
+    pub fn set_test_routing_view(&mut self, view: jcode_session_types::routing::RoutingView) {
+        self.routing_view = Some(view);
     }
 
     /// Seed accounts for tests, bypassing the CLI.
@@ -3083,6 +3127,30 @@ impl Workspace {
                         slot.panel.update(cx, |panel, cx| {
                             panel.ask_response_settled(&request_id, attempt_id, result.clone(), cx);
                         });
+                    }
+                }
+            }
+            Update::RoutingGateAnswerSettled {
+                session_id,
+                gate_id,
+                result,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.routing_gate_answer_settled(&gate_id, result.clone(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::RoutingIntentReply { session_id, result } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.routing_intent_reply(result.clone(), cx);
+                        });
+                        break;
                     }
                 }
             }
@@ -7708,6 +7776,11 @@ impl Workspace {
                                             div()
                                                 .id("sidebar-accounts-tab")
                                                 .debug_selector(|| "sidebar-accounts-tab".into())
+                                                .relative()
+                                                .children(crate::fixture_control_targets::marker(
+                                                    || "sidebar-accounts-tab".into(),
+                                                    || None,
+                                                ))
                                                 .flex_none()
                                                 .border_1()
                                                 .border_color(Theme::global().PANEL_BORDER)
@@ -8129,7 +8202,7 @@ impl Workspace {
     /// The dedicated tab fills the sidebar, with fixed-height account rows and
     /// independent scrolling when the credentials exceed the available height.
     fn render_accounts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if self.accounts.is_empty() {
+        if self.accounts.is_empty() && !self.has_routing_rows() {
             return None;
         }
 
@@ -8323,27 +8396,16 @@ impl Workspace {
                                         .text_color(Theme::global().TEXT_DIM)
                                         .child(label),
                                 )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .h(px(3.0))
-                                        .rounded_full()
-                                        .overflow_hidden()
-                                        .bg(Theme::global().INLINE_CODE_BG)
-                                        .child(
-                                            div()
-                                                .h_full()
-                                                .w(relative(used / 100.0))
-                                                .rounded_full()
-                                                .bg(if used >= 90.0 {
-                                                    Theme::global().ERROR
-                                                } else if used >= 70.0 {
-                                                    Theme::global().WARN
-                                                } else {
-                                                    Theme::global().ACCENT
-                                                }),
-                                        ),
-                                ),
+                                .child(usage_bar(
+                                    used / 100.0,
+                                    if used >= 90.0 {
+                                        Theme::global().ERROR
+                                    } else if used >= 70.0 {
+                                        Theme::global().WARN
+                                    } else {
+                                        Theme::global().ACCENT
+                                    },
+                                )),
                         );
                     }
                     limits = limits.child(limit_row);
@@ -8542,6 +8604,8 @@ impl Workspace {
                     ),
             );
         }
+
+        let list = self.append_routing_rows(list);
 
         Some(
             section
