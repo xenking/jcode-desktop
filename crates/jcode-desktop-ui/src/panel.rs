@@ -444,6 +444,7 @@ pub enum Item {
         message: String,
     },
     Stopped(stop_reason::StopNotice),
+    SwarmWorkerNotice(String),
     ProviderGuardrailRetry {
         turn_id: String,
         text: String,
@@ -4046,6 +4047,9 @@ impl Panel {
                         )));
                     }
                 }
+                "swarm_worker_notice" if !message.content.trim().is_empty() => {
+                    items.push(Item::SwarmWorkerNotice(message.content));
+                }
                 // A stored automatic memory injection. Like the compaction
                 // divider, its body already carries the label and the
                 // expandable detail, so the reloaded row matches the live one.
@@ -4608,6 +4612,11 @@ impl Panel {
                     message: message.clone(),
                     timestamp_ms: response_stats::now_ms(),
                 });
+            }
+            ApiEvent::SwarmWorkerNotice { message, .. } => {
+                self.flush_reasoning();
+                self.flush_streaming();
+                self.items.push(Item::SwarmWorkerNotice(message.clone()));
             }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
@@ -6110,6 +6119,22 @@ impl Panel {
                     .unwrap_or_else(|| div().into_any_element())
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::SwarmWorkerNotice(text) => div()
+                .debug_selector(|| "swarm-worker-notice".into())
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .truncate()
+                .text_size(px(11.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(text_selection::plain(
+                    self.transcript_selection.clone(),
+                    format!("{index}-swarm-worker-notice"),
+                    text.clone(),
+                    window,
+                    cx,
+                ))
+                .into_any_element(),
             Item::ProviderGuardrailRetry { text, .. } => div()
                 .debug_selector(|| "provider-guardrail-retry".into())
                 .min_w_0()
@@ -8470,6 +8495,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::SwarmWorkerNotice(_)
         | Item::ProviderGuardrailRetry { .. }
         | Item::Compaction(_)
         | Item::Memory(_)
@@ -11232,6 +11258,26 @@ mod tests {
             .and_then(|item| item.text())
             .expect("clicking copy fills the clipboard");
         assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
+    }
+
+    #[gpui::test]
+    fn swarm_worker_notices_remain_compact_transcript_rows(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("swarm-notices".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        panel.update(vcx, |panel, cx| {
+            let initial = panel.items.len();
+            let notify = |message: &str| ApiEvent::SwarmWorkerNotice {
+                session_id: "swarm-notices".into(),
+                message: message.into(),
+            };
+            panel.apply(&notify("worker: model set to test · medium"), cx);
+            panel.apply(&notify("worker: context compaction started"), cx);
+            assert!(matches!(&panel.items[initial..], [Item::SwarmWorkerNotice(model), Item::SwarmWorkerNotice(compact)]
+                if model == "worker: model set to test · medium" && compact == "worker: context compaction started"));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-worker-notice").is_some());
     }
 
     #[gpui::test]

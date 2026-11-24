@@ -1189,7 +1189,9 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "ev": "swarm_status", "session_id": "lead", "updated_at_unix_ms": timestamp,
                 "members": [{"session_id": worker_id, "status": status,
-                    "parent_session_id": "lead", "agent_label": "worker"}]
+                    "parent_session_id": "lead", "agent_label": "worker",
+                    "model": if timestamp >= 1_065 { "gpt-6.2-sol" } else { "old-model" },
+                    "effort": if timestamp >= 1_065 { "high" } else { "low" }}]
             }))
             .expect("SDK must expose swarm status events")
         };
@@ -1211,11 +1213,20 @@ mod tests {
                 .unwrap()
                 .swarm_status = Some("ready".into());
             w.apply(Update::Sessions { sessions: stale }, cx);
+            w.apply(Update::WorkerFacts {
+                workers: HashMap::from([(worker_id.into(), jcode_sdk::WorkerMeta {
+                    model: Some("old-model".into()),
+                    effort: Some("low".into()),
+                    ..Default::default()
+                })]),
+            }, cx);
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             let panel = w.slots[w.active].panel.read(cx);
             assert_eq!(panel.test_swarm_indicator_count(), 1);
+            assert_eq!(w.worker_meta[worker_id].model.as_deref(), Some("gpt-6.2-sol"));
+            assert_eq!(w.worker_meta[worker_id].effort.as_deref(), Some("high"));
             assert_eq!(
                 w.sessions
                     .iter()

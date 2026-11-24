@@ -5232,6 +5232,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
         | ApiEvent::AgentMessage { session_id, .. }
+        | ApiEvent::SwarmWorkerNotice { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
@@ -5310,6 +5311,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::BackgroundTasks { session_id, .. }
         | ApiEvent::PeerUserMessage { session_id, .. }
+        | ApiEvent::SwarmWorkerNotice { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
         | ApiEvent::AskRequest { session_id, .. }
         | ApiEvent::PermissionRequest { session_id, .. }
@@ -6855,6 +6857,9 @@ mod side_panel_routing_tests {
                 session_id: "lead".into(),
                 updated_at_unix_ms: 1_065,
                 members: vec![jcode_sdk::SwarmMemberInfo {
+                    model: None,
+                    provider: None,
+                    effort: None,
                     session_id: "worker".into(),
                     status: "running".into(),
                     parent_session_id: Some("lead".into()),

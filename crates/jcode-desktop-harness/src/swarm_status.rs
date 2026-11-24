@@ -1,7 +1,7 @@
 //! Ordered live swarm facts, shared by the sidebar and composer through the
 //! workspace session catalog. Polling durable metadata cannot roll these back.
 
-use jcode_sdk::{SessionInfo, SwarmMemberInfo};
+use jcode_sdk::{SessionInfo, SwarmMemberInfo, WorkerMeta};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -76,6 +76,20 @@ impl LiveSwarmStatus {
             }
         }
     }
+
+    pub fn merge_worker_routes(&self, workers: &mut HashMap<String, WorkerMeta>) {
+        for (id, (_, member)) in &self.members {
+            if member.parent_session_id.is_none() || member.model.is_none() {
+                continue;
+            }
+            let meta = workers.entry(id.clone()).or_default();
+            meta.model.clone_from(&member.model);
+            if member.provider.is_some() {
+                meta.provider.clone_from(&member.provider);
+            }
+            meta.effort.clone_from(&member.effort);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +102,9 @@ mod tests {
             status: status.into(),
             parent_session_id: Some("lead".into()),
             agent_label: Some("task".into()),
+            model: None,
+            provider: None,
+            effort: None,
         }
     }
 
@@ -141,5 +158,30 @@ mod tests {
         let mut sessions = catalog();
         live.merge(&mut sessions);
         assert_eq!(sessions[0].swarm_status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn live_worker_route_wins_over_stale_sidebar_poll_without_losing_usage() {
+        let mut live = LiveSwarmStatus::default();
+        let mut worker = member("running");
+        worker.model = Some("new-model".into());
+        worker.provider = Some("new-provider".into());
+        assert!(live.apply("lead", 200, &[worker]));
+        assert!(!live.apply("other-attachment", 100, &[member("running")]));
+        let mut facts = HashMap::from([(
+            "worker".into(),
+            WorkerMeta {
+                model: Some("old-model".into()),
+                effort: Some("high".into()),
+                input_tokens: Some(100),
+                ..Default::default()
+            },
+        )]);
+        live.merge_worker_routes(&mut facts);
+        let worker = &facts["worker"];
+        assert_eq!(worker.model.as_deref(), Some("new-model"));
+        assert_eq!(worker.provider.as_deref(), Some("new-provider"));
+        assert_eq!(worker.effort, None);
+        assert_eq!(worker.input_tokens, Some(100));
     }
 }

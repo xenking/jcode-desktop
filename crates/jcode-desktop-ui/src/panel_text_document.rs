@@ -143,6 +143,7 @@ fn fingerprint(item: &Item, open: Open) -> u64 {
         }
         Item::CacheMiss(notice) => notice.text().hash(&mut state),
         Item::ProviderGuardrailRetry { text, .. } => text.hash(&mut state),
+        Item::SwarmWorkerNotice(text) => text.hash(&mut state),
         // A divider's text is selectable, so its state participates in the
         // document hash: expanding it must invalidate the cached document.
         Item::Compaction(row) | Item::Memory(row) => {
@@ -379,6 +380,7 @@ fn segments_with_regions(
         Item::ProviderGuardrailRetry { text, .. } => {
             push(format!("{index}-provider-guardrail-retry"), text.clone())
         }
+        Item::SwarmWorkerNotice(text) => push(format!("{index}-swarm-worker-notice"), text.clone()),
         Item::Compaction(row) => {
             push(format!("{index}-compaction-label"), row.label().to_string());
             if row.state.is_expanded()

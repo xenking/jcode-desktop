@@ -24,6 +24,7 @@ pub(super) fn conversation_item(item: &Item) -> bool {
         | Item::Compaction(_)
         | Item::Memory(_)
         | Item::CacheMiss(_) => false,
+        Item::SwarmWorkerNotice(_) => true,
     }
 }
 

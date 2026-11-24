@@ -2472,10 +2472,11 @@ impl Workspace {
                 return false;
             }
         }
-        if let Update::WorkerFacts { workers } = &update
-            && workers == &self.worker_meta
-        {
-            return false;
+        if let Update::WorkerFacts { workers } = &mut update {
+            self.live_swarm_status.merge_worker_routes(workers);
+            if workers == &self.worker_meta {
+                return false;
+            }
         }
 
         match update {
@@ -2849,6 +2850,7 @@ impl Workspace {
                                     .any(|session| session.session_id == member.session_id)
                         });
                         self.live_swarm_status.merge(&mut self.sessions);
+                        self.live_swarm_status.merge_worker_routes(&mut self.worker_meta);
                         self.sync_swarm_strips(cx);
                         if unknown_worker {
                             self.bridge.send(Command::RefreshSessions);
