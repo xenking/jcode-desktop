@@ -251,11 +251,21 @@ fn side_question_history_reopens_a_topic_and_continues_its_child(cx: &mut gpui::
         question_after.top() - turns_after.top()
     );
     vcx.simulate_input("!");
+    let pasted = "\nLong follow-up line".repeat(12);
+    vcx.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(pasted.clone()));
+    });
+    vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    });
+    assert!(vcx.debug_bounds("composer-image-chip").is_some());
     vcx.simulate_keystrokes("enter enter");
     vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::ContinueSideQuestion { session_id, question })
-        if session_id == "btw-a" && question == "btw\na literal follow-up!")
+        if session_id == "btw-a" && question == format!("btw\na literal follow-up!{pasted}"))
     );
     assert!(commands.try_recv().is_err());
     workspace.read_with(vcx, |workspace, cx| {

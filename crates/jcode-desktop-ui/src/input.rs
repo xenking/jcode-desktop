@@ -74,6 +74,7 @@ actions!(
         Home,
         End,
         Paste,
+        PastePlainText,
         Cut,
         Copy,
         MoveWordLeft,
@@ -149,6 +150,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, Some("PromptInput")),
         KeyBinding::new("super-v", Paste, Some("PromptInput")),
         KeyBinding::new("alt-v", Paste, Some("PromptInput")),
+        KeyBinding::new("cmd-shift-v", PastePlainText, Some("PromptInput")),
+        KeyBinding::new("cmd-alt-shift-v", PastePlainText, Some("PromptInput")),
         KeyBinding::new("ctrl-c", Copy, Some("PromptInput")),
         KeyBinding::new("cmd-c", Copy, Some("PromptInput")),
         KeyBinding::new("super-c", Copy, Some("PromptInput")),
@@ -197,6 +200,13 @@ pub fn bind_keys(cx: &mut App) {
     // Registered after the composer keys so the effort chords outrank word
     // motion in a chat composer. See `effort::bind_keys` for the fallthrough.
     crate::effort::bind_keys(cx);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PasteMode {
+    Attachments,
+    TextAttachments,
+    InlineText,
 }
 
 pub struct PromptInput {
@@ -248,7 +258,7 @@ pub struct PromptInput {
     preview_remove_focus: FocusHandle,
     preview_panel_bounds: paste_preview::MeasuredBounds,
     file_attachments_enabled: bool,
-    text_only: bool,
+    paste_mode: PasteMode,
     queue_editor: bool,
     #[allow(clippy::type_complexity)]
     on_submit: Box<
@@ -1271,7 +1281,7 @@ impl PromptInput {
             preview_remove_focus: cx.focus_handle(),
             preview_panel_bounds: Default::default(),
             file_attachments_enabled: true,
-            text_only: false,
+            paste_mode: PasteMode::Attachments,
             queue_editor: false,
             on_submit: Box::new(on_submit),
             on_change: None,
@@ -1671,7 +1681,7 @@ impl PromptInput {
             .and_then(|ghost| ghost.machine.accept(&self.content, at_end));
         match accepted {
             Some(suffix) => {
-                self.replace_text_in_range(None, &suffix, window, cx);
+                self.replace_editor_text(self.replacement_range(None), &suffix, None, cx);
                 self.dismiss_ghost();
             }
             None => cx.propagate(),
@@ -1861,7 +1871,12 @@ impl PromptInput {
     }
 
     pub(crate) fn text_only(mut self) -> Self {
-        self.text_only = true;
+        self.paste_mode = PasteMode::InlineText;
+        self
+    }
+
+    pub(crate) fn text_attachments_only(mut self) -> Self {
+        self.paste_mode = PasteMode::TextAttachments;
         self
     }
 
@@ -2702,10 +2717,8 @@ impl PromptInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if self.text_only {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.replace_text_in_range(None, &text, window, cx);
-            }
+        if self.paste_mode != PasteMode::Attachments {
+            self.paste_clipboard_text(cx);
             return;
         }
         match crate::clipboard_image::read_paste(cx) {
@@ -2727,20 +2740,35 @@ impl PromptInput {
         }
     }
 
+    fn paste_plain_text(&mut self, _: &PastePlainText, _: &mut Window, cx: &mut Context<Self>) {
+        self.paste_clipboard_text(cx);
+    }
+
+    fn paste_clipboard_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.insert_pasted_text(&text, cx);
+        }
+    }
+
     fn paste_text_or_image_paths(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(paths) = image_paths::pasted_image_paths(text) {
             self.drop_files(&paths, window, cx);
         } else {
-            self.insert_pasted_text(text, window, cx);
+            self.insert_pasted_text(text, cx);
         }
     }
 
-    fn insert_pasted_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if is_large_paste(text) {
-            self.attach_pasted_text(text, cx);
-        } else {
-            self.replace_text_in_range(None, text, window, cx);
+    fn insert_pasted_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let range = self.replacement_range(None);
+        if !self.try_attach_pasted_text(&range, text, cx) {
+            self.replace_editor_text(range, text, None, cx);
         }
+        if self.paste_mode != PasteMode::InlineText {
+            self.finish_paste();
+        }
+    }
+
+    fn finish_paste(&mut self) {
         if self.picker_prefix.is_none() && self.content.starts_with('/') {
             self.close_command_menu(CommandMenuClose::Literal);
         }
@@ -2896,7 +2924,15 @@ impl PromptInput {
         cx.notify();
     }
 
-    fn attach_pasted_text(&mut self, text: &str, cx: &mut Context<Self>) {
+    fn try_attach_pasted_text(
+        &mut self,
+        range: &Range<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.paste_mode == PasteMode::InlineText || !is_large_paste(text) {
+            return false;
+        }
         let lines = text.split('\n').count();
         let description = if lines > 10 {
             format!("Pasted text, {lines} lines")
@@ -2911,29 +2947,14 @@ impl PromptInput {
             marker = format!("[{description} #{n}]");
             n += 1;
         }
-        self.undo.push(self.edit_snapshot());
-        self.redo.clear();
-        let range = self.expanded_chip_range(self.clamp_byte_range(self.selected_range.clone()));
-        self.remove_chips_in_range(&range);
-        let mut content = self.content.to_string();
-        content.replace_range(range.clone(), &marker);
-        self.rebase_live_dictation_after_edit(&range, marker.len());
-        self.content = content.into();
-        self.control_revision = self.control_revision.wrapping_add(1);
-        let cursor = range.start + marker.len();
-        self.selected_range = cursor..cursor;
-        self.attachments.push(Attachment {
-            label: marker.into(),
+        let attachment = Attachment {
+            label: marker.as_str().into(),
             payload: AttachmentPayload::Text(text.into()),
-        });
+        };
         self.attachment_preview = None;
         self.attachment_notice = None;
-        self.marked_range = None;
-        self.ghost_on_edit(cx);
-        if let Some(on_change) = &self.on_change {
-            on_change(&self.content, cx);
-        }
-        cx.notify();
+        self.replace_editor_text(range.clone(), &marker, Some(attachment), cx);
+        true
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -3733,7 +3754,7 @@ impl PromptInput {
                     window.focus(&self.focus_handle, cx);
                     self.selected_range = range;
                     self.marked_range = None;
-                    self.replace_text_in_range(None, &text, window, cx);
+                    self.replace_editor_text(self.replacement_range(None), &text, None, cx);
                 }
             }
             AttachmentPayload::Image { .. } | AttachmentPayload::File { image: Some(_), .. } => {
@@ -4048,6 +4069,48 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
             .unwrap_or(rest.len())
 }
 
+impl PromptInput {
+    fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
+        let range = range_utf16
+            .as_ref()
+            .map(|range| self.range_from_utf16(range))
+            .or(self.marked_range.clone())
+            .unwrap_or_else(|| self.selected_range.clone());
+        self.expanded_chip_range(self.clamp_byte_range(range))
+    }
+
+    fn replace_editor_text(
+        &mut self,
+        range: Range<usize>,
+        new_text: &str,
+        attachment: Option<Attachment>,
+        cx: &mut Context<Self>,
+    ) {
+        self.undo.push(self.edit_snapshot());
+        self.redo.clear();
+        self.remove_chips_in_range(&range);
+        self.control_revision = self.control_revision.wrapping_add(1);
+        self.command_menu_closed = None;
+        self.command_selection_explicit = None;
+        self.rebase_live_dictation_after_edit(&range, new_text.len());
+        let mut content = self.content.to_string();
+        content.replace_range(range.clone(), new_text);
+        self.content = content.into();
+        self.attachments.extend(attachment);
+        self.reset_model_groups_after_exit();
+        let cursor = range.start + new_text.len();
+        self.selected_range = cursor..cursor;
+        self.marked_range.take();
+        self.command_selection = 0;
+        self.reveal_command(0);
+        self.ghost_on_edit(cx);
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
+        cx.notify();
+    }
+}
+
 impl EntityInputHandler for PromptInput {
     fn text_for_range(
         &mut self,
@@ -4094,34 +4157,14 @@ impl EntityInputHandler for PromptInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .map(|range| self.clamp_byte_range(range))
-            .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
-
-        let range = self.expanded_chip_range(range);
-        self.undo.push(self.edit_snapshot());
-        self.redo.clear();
-        self.remove_chips_in_range(&range);
-        self.control_revision = self.control_revision.wrapping_add(1);
-        self.command_menu_closed = None;
-        self.command_selection_explicit = None;
-        self.rebase_live_dictation_after_edit(&range, new_text.len());
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
-        self.reset_model_groups_after_exit();
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
-        self.command_selection = 0;
-        self.reveal_command(0);
-        self.ghost_on_edit(cx);
-        if let Some(on_change) = &self.on_change {
-            on_change(&self.content, cx);
+        let range = self.replacement_range(range_utf16);
+        // The platform also sends unmarked bulk insertions through insertText.
+        // A marked IME candidate remains editable text even when it is long.
+        if self.marked_range.is_none() && self.try_attach_pasted_text(&range, new_text, cx) {
+            self.finish_paste();
+        } else {
+            self.replace_editor_text(range, new_text, None, cx);
         }
-        cx.notify();
     }
 
     fn replace_and_mark_text_in_range(
@@ -4132,14 +4175,7 @@ impl EntityInputHandler for PromptInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .map(|range| self.clamp_byte_range(range))
-            .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
-
-        let range = self.expanded_chip_range(range);
+        let range = self.replacement_range(range_utf16);
         self.remove_chips_in_range(&range);
         self.control_revision = self.control_revision.wrapping_add(1);
         self.command_menu_closed = None;
@@ -4996,6 +5032,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_plain_text))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::word_left))
@@ -5193,7 +5230,7 @@ impl Focusable for PromptInput {
 }
 
 fn is_large_paste(text: &str) -> bool {
-    text.split('\n').count() > 10 || text.encode_utf16().count() > 1000
+    text.split('\n').nth(10).is_some() || text.encode_utf16().nth(1000).is_some()
 }
 
 #[cfg(test)]
@@ -5211,41 +5248,129 @@ mod tests {
     }
 
     #[gpui::test]
-    fn long_paste_is_collapsed_restored_and_sent_in_full(cx: &mut TestAppContext) {
+    fn large_paste_and_match_style_renders_a_chip(cx: &mut TestAppContext) {
+        use crate::clipboard_image::TestPasteReader;
+
+        cx.update(|cx| {
+            bind_keys(cx);
+            cx.set_global(TestPasteReader(|| panic!("plain-text paste must not read media")));
+            cx.write_to_clipboard(ClipboardItem::new_string("line\n".repeat(12)));
+        });
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        for shortcut in ["cmd-shift-v", "cmd-alt-shift-v"] {
+            vcx.simulate_keystrokes(shortcut);
+            assert!(vcx.debug_bounds("composer-image-chip").is_some());
+            vcx.simulate_keystrokes("cmd-z");
+            assert!(input.read_with(vcx, |input, _| input.content.is_empty()));
+        }
+        let short = "a".repeat(999);
+        vcx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(short.clone())));
+        vcx.simulate_keystrokes("cmd-shift-v");
+        assert!(vcx.debug_bounds("composer-image-chip").is_none());
+        assert_eq!(
+            input.read_with(vcx, |input, _| input.snapshot().content),
+            short
+        );
+    }
+
+    #[gpui::test]
+    fn large_native_text_commit_renders_a_chip_at_its_replacement_range(cx: &mut TestAppContext) {
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
+            input.set_content("😀replace!".into(), cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        let text = "line\n".repeat(12);
+        input.update_in(vcx, |input, window, cx| {
+            EntityInputHandler::replace_text_in_range(input, Some(2..9), &text, window, cx);
+        });
+        vcx.run_until_parked();
+        let chip = vcx
+            .debug_bounds("composer-image-chip")
+            .expect("pasted text chip");
+        vcx.simulate_click(chip.center(), Default::default());
+        assert_eq!(
+            input.read_with(vcx, |input, _| input.snapshot().content),
+            format!("😀{text}!")
+        );
+    }
+
+    #[gpui::test]
+    fn long_marked_ime_commit_stays_editable(cx: &mut TestAppContext) {
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        let text = "你好".repeat(501);
+        input.update_in(vcx, |input, window, cx| {
+            input.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+            EntityInputHandler::replace_text_in_range(input, None, &text, window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("composer-image-chip").is_none());
+        assert_eq!(
+            input.read_with(vcx, |input, _| input.snapshot().content),
+            text
+        );
+    }
+
+    #[gpui::test]
+    fn inline_only_text_field_keeps_long_paste_literal(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|window, cx| {
+            let input = PromptInput::embedded_editor(cx, "Search").text_only();
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        let text = "a".repeat(1001);
+        vcx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())));
+        vcx.simulate_keystrokes("cmd-v");
+        assert!(vcx.debug_bounds("composer-image-chip").is_none());
+        assert_eq!(
+            input.read_with(vcx, |input, _| input.snapshot().content),
+            text
+        );
+    }
+
+    #[gpui::test]
+    fn long_paste_falls_back_to_text_and_sends_it_in_full(cx: &mut TestAppContext) {
+        use crate::clipboard_image::TestPasteReader;
+
         let sent = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
         let result = sent.clone();
         let text = "a line\n".repeat(12);
+        cx.update(|cx| {
+            bind_keys(cx);
+            cx.set_global(TestPasteReader(|| Err("image flavor unavailable".into())));
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        });
         let (input, vcx) = cx.add_window_view(|window, cx| {
-            let mut input = PromptInput::new(cx, "test", move |text, _, _, _| {
+            let input = PromptInput::new(cx, "test", move |text, _, _, _| {
                 *result.borrow_mut() = Some(text)
             });
-            input.insert_pasted_text(&text, window, cx);
+            window.focus(&input.focus_handle, cx);
             input
         });
+        vcx.simulate_keystrokes("cmd-v");
+        assert!(vcx.debug_bounds("composer-image-chip").is_some());
         input.update(vcx, |input, cx| {
-            assert_eq!(input.content.as_ref(), "[Pasted text, 13 lines]");
             let snapshot = input.snapshot();
             input.restore(snapshot, cx);
             assert_eq!(input.content.as_ref(), "[Pasted text, 13 lines]");
         });
-        input.update_in(vcx, |input, window, cx| {
-            input.dispatch_submission(
-                SubmissionKind::Message,
-                input.content.to_string(),
-                false,
-                window,
-                cx,
-            )
-        });
+        vcx.simulate_keystrokes("enter");
         assert_eq!(sent.borrow().as_deref(), Some(text.as_str()));
     }
 
     #[gpui::test]
     fn clicking_pasted_text_chip_expands_the_original_text(cx: &mut TestAppContext) {
         let text = "line\n".repeat(12);
-        let (input, vcx) = cx.add_window_view(|window, cx| {
+        let (input, vcx) = cx.add_window_view(|_, cx| {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
-            input.insert_pasted_text(&text, window, cx);
+            input.insert_pasted_text(&text, cx);
             input
         });
         vcx.run_until_parked();
@@ -6479,10 +6604,10 @@ mod tests {
         assert_eq!(counter.get(), 1);
 
         window
-            .update(cx, |input, window, cx| {
+            .update(cx, |input, _, cx| {
                 input.set_content("restored draft".into(), cx);
                 input.insert_dictation("dictated words", cx);
-                input.insert_pasted_text(" pasted contents", window, cx);
+                input.insert_pasted_text(" pasted contents", cx);
             })
             .unwrap();
         cx.executor().advance_clock(Duration::from_secs(1));

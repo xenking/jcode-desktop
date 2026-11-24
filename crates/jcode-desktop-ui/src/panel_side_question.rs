@@ -149,7 +149,7 @@ impl Panel {
                 },
             )
             .without_command_completion()
-            .text_only()
+            .text_attachments_only()
             .without_chrome()
             .with_compact_padding()
         })
