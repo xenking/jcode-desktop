@@ -25,13 +25,13 @@ fn decision(account: &str, warnings: &[&str], pending: Option<&str>) -> ApiEvent
     }))
 }
 
-fn panel_with_bridge(
-    cx: &mut gpui::TestAppContext,
-) -> (
+type Harness<'a> = (
     gpui::Entity<Panel>,
-    &mut gpui::VisualTestContext,
+    &'a mut gpui::VisualTestContext,
     std::sync::mpsc::Receiver<Bridge>,
-) {
+);
+
+fn panel_with_bridge(cx: &mut gpui::TestAppContext) -> Harness<'_> {
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("session-a".into(), None, None, bridge, cx));
