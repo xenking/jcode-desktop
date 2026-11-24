@@ -11,30 +11,52 @@ use gpui::{
 };
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
+use jcode_desktop_model::markdown_file::{self, FileReferenceCache, LinkTarget};
 
-pub(crate) type FileLinkHandler = Rc<dyn Fn(&str, &mut gpui::Window, &mut gpui::App)>;
+type OpenFileLink = dyn Fn(LinkTarget, &mut gpui::Window, &mut gpui::App);
+
+pub(crate) struct FileLinkHandler {
+    pub base: PathBuf,
+    pub open: Box<OpenFileLink>,
+}
+
+impl FileLinkHandler {
+    fn open_markdown(&self, destination: &str, window: &mut gpui::Window, cx: &mut gpui::App) {
+        if let Some(target) = markdown_file::resolve(&self.base, destination) {
+            (self.open)(target, window, cx);
+        }
+    }
+}
+
 pub(crate) type FileImageResolver = Rc<dyn Fn(&str) -> Option<std::path::PathBuf>>;
 
 pub(crate) struct FileRenderOptions {
     pub scroll: gpui::ScrollHandle,
-    pub on_link: FileLinkHandler,
+    pub on_link: Rc<FileLinkHandler>,
     pub resolve_image: FileImageResolver,
 }
 
 thread_local! {
     static FILE_OPTIONS: std::cell::RefCell<Option<Rc<FileRenderOptions>>> = const { std::cell::RefCell::new(None) };
-    static FILE_LINK_HANDLER: std::cell::RefCell<Option<FileLinkHandler>> = const { std::cell::RefCell::new(None) };
+    static TRANSCRIPT_LINKS: std::cell::RefCell<Option<(Rc<FileLinkHandler>, bool)>> = const { std::cell::RefCell::new(None) };
+    static FILE_REFERENCES: std::cell::RefCell<FileReferenceCache> = Default::default();
 }
 
-pub(crate) fn with_file_link_handler<R>(handler: FileLinkHandler, render: impl FnOnce() -> R) -> R {
-    let previous = FILE_LINK_HANDLER.with(|slot| slot.replace(Some(handler)));
+pub(crate) fn with_file_link_handler<R>(
+    handler: Rc<FileLinkHandler>,
+    infer_references: bool,
+    render: impl FnOnce() -> R,
+) -> R {
+    let previous = TRANSCRIPT_LINKS.with(|slot| slot.replace(Some((handler, infer_references))));
     let result = render();
-    FILE_LINK_HANDLER.with(|slot| slot.replace(previous));
+    TRANSCRIPT_LINKS.with(|slot| slot.replace(previous));
     result
 }
 
@@ -601,6 +623,43 @@ struct Inline {
     code_ranges: Vec<std::ops::Range<usize>>,
     highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
     links: Vec<(std::ops::Range<usize>, String)>,
+}
+
+enum InlineDestination {
+    Markdown(String),
+    Mention(PathBuf),
+}
+
+fn inline_file_mentions(inline: &Inline, base: &Path) -> Vec<(Range<usize>, PathBuf)> {
+    let overlaps = |left: &Range<usize>, right: &Range<usize>| {
+        left.start < right.end && right.start < left.end
+    };
+    let linked = |range: &Range<usize>| inline.links.iter().any(|(r, _)| overlaps(r, range));
+    let mut mentions = Vec::new();
+    FILE_REFERENCES.with_borrow_mut(|cache| {
+        for range in &inline.code_ranges {
+            if !linked(range) && let Some(path) = cache.resolve(base, &inline.plain[range.clone()]) {
+                mentions.push((range.clone(), path));
+            }
+        }
+        let mut offset = 0;
+        for token in inline.plain.split_inclusive(char::is_whitespace) {
+            let right = token.trim_end_matches(|c: char| {
+                c.is_whitespace() || ".,;:!?)]}>\"'”’»".contains(c)
+            });
+            let candidate = right.trim_start_matches(|c| "([{<\"'“‘«".contains(c));
+            let range = offset + right.len() - candidate.len()..offset + right.len();
+            offset += token.len();
+            if candidate.contains(['.', '/', '\\'])
+                && !linked(&range)
+                && !inline.code_ranges.iter().any(|r| overlaps(r, &range))
+                && let Some(path) = cache.resolve(base, candidate)
+            {
+                mentions.push((range, path));
+            }
+        }
+    });
+    mentions
 }
 
 /// Inline spans: strip `code`, **bold**, *italic*, ~~strike~~ and link syntax,
@@ -1319,7 +1378,7 @@ fn styled_line_with_avatar(
                                         .id(part_key)
                                         .cursor_pointer()
                                         .text_color(Theme::global().ACCENT_MUTED)
-                                        .on_click(move |_, window, cx| on_link(&target, window, cx))
+                                        .on_click(move |_, window, cx| on_link.open_markdown(&target, window, cx))
                                         .child(label)
                                         .into_any_element()
                                 } else {
@@ -1613,6 +1672,11 @@ fn styled_inline_layout(
     cx: &gpui::App,
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
+    let transcript_links = TRANSCRIPT_LINKS.with_borrow(Clone::clone);
+    let mentions = match &transcript_links {
+        Some((handler, true)) => inline_file_mentions(&inline, &handler.base),
+        _ => Vec::new(),
+    };
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
     let markers = images.as_ref().map_or_else(Vec::new, |images| {
         crate::input::image_marker_ranges(&inline.plain)
@@ -1629,6 +1693,13 @@ fn styled_inline_layout(
             .collect()
     });
     let mut highlights = std::mem::take(&mut inline.highlights);
+    if !mentions.is_empty() {
+        let style = HighlightStyle {
+            color: Some(to_hsla(Theme::global().LINK)),
+            ..Default::default()
+        };
+        highlights.extend(mentions.iter().map(|(range, _)| (range.clone(), style)));
+    }
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
     highlights.extend(search_highlights(&inline.plain));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
@@ -1681,31 +1752,56 @@ fn styled_inline_layout(
             ),
         );
     let layout = text.layout().clone();
-    let child = if inline.links.is_empty() {
+    let hover_links = mentions.iter().map(|(range, _)| shift(range.clone())).collect();
+    let child = if inline.links.is_empty() && mentions.is_empty() {
         text.into_any_element()
     } else {
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
-        let (ranges, urls): (Vec<_>, Vec<_>) = inline
+        let links = inline
             .links
             .drain(..)
-            .map(|(range, url)| (shift(range), url))
-            .unzip();
+            .map(|(range, url)| (range, InlineDestination::Markdown(url)))
+            .chain(
+                mentions
+                    .into_iter()
+                    .map(|(range, path)| (range, InlineDestination::Mention(path))),
+            );
         let handler = FILE_OPTIONS
             .with(|slot| slot.borrow().as_ref().map(|file| file.on_link.clone()))
-            .or_else(|| FILE_LINK_HANDLER.with(|slot| slot.borrow().clone()));
+            .or_else(|| transcript_links.map(|(handler, _)| handler));
+        let (source_ranges, destinations): (Vec<_>, Vec<_>) = links.unzip();
         #[cfg(any(test, debug_assertions))]
         let selector = handler
             .as_ref()
-            .and_then(|_| urls.first())
-            .map(|url| format!("markdown-link:{url}"));
+            .and_then(|_| destinations.first())
+            .map(|destination| {
+                let label = match destination {
+                    InlineDestination::Markdown(url) => url,
+                    InlineDestination::Mention(_) => &inline.plain[source_ranges[0].clone()],
+                };
+                format!("markdown-link:{label}")
+            });
+        let ranges = source_ranges.into_iter().map(shift).collect();
         let interactive =
             InteractiveText::new(id, text).on_click(ranges, move |index, window, cx| {
-                if let Some(url) = urls.get(index) {
-                    if let Some(handler) = &handler {
-                        handler(url, window, cx);
-                    } else if let Some(url) = openable_url(url) {
-                        cx.open_url(url);
+                match (&handler, &destinations[index]) {
+                    (Some(handler), InlineDestination::Markdown(url)) => {
+                        handler.open_markdown(url, window, cx);
                     }
+                    (Some(handler), InlineDestination::Mention(path)) => (handler.open)(
+                        LinkTarget::Local {
+                            path: path.clone(),
+                            fragment: None,
+                        },
+                        window,
+                        cx,
+                    ),
+                    (None, InlineDestination::Markdown(url)) => {
+                        if let Some(url) = openable_url(url) {
+                            cx.open_url(url);
+                        }
+                    }
+                    (None, InlineDestination::Mention(_)) => {}
                 }
             });
         #[cfg(any(test, debug_assertions))]
@@ -1723,6 +1819,8 @@ fn styled_inline_layout(
         child,
         layout.clone(),
         inline.code_ranges.iter().cloned().map(shift).collect(),
+        hover_links,
+        key.clone(),
     );
     let image_overlay = images.as_ref().filter(|_| !chips.is_empty()).map(|images| {
         let keys = markers.iter().map(|(range, _)| inline.plain[range.clone()].to_owned()).collect();

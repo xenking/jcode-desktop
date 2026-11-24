@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
@@ -33,6 +35,63 @@ pub fn resolve(base_dir: &Path, destination: &str) -> Option<LinkTarget> {
     }
 
     resolve_local(base_dir, destination, is_drive_path(destination))
+}
+
+#[derive(Default)]
+pub struct FileReferenceCache {
+    files: HashMap<PathBuf, (Instant, bool)>,
+    last_prune: Option<Instant>,
+}
+
+impl FileReferenceCache {
+    /// Transcript paths are literal filenames, not URL-encoded destinations.
+    pub fn resolve(&mut self, base_dir: &Path, mention: &str) -> Option<PathBuf> {
+        let path = reference_path(base_dir, mention, crate::platform_dirs::home_dir)?;
+        let now = Instant::now();
+        let freshness = Duration::from_secs(5);
+        if let Some(&(checked, exists)) = self.files.get(&path)
+            && now.duration_since(checked) < freshness
+        {
+            return exists.then_some(path);
+        }
+        if self.files.len() >= 2048
+            && self
+                .last_prune
+                .is_none_or(|time| now.duration_since(time) >= freshness)
+        {
+            self.files
+                .retain(|_, (checked, _)| now.duration_since(*checked) < freshness);
+            self.last_prune = Some(now);
+        }
+        let exists = path.is_file();
+        self.files.insert(path.clone(), (now, exists));
+        exists.then_some(path)
+    }
+}
+
+fn reference_path(
+    base_dir: &Path,
+    mention: &str,
+    home_dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let path = mention
+        .rsplit_once(':')
+        .filter(|(_, line)| !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(mention, |(path, _)| path);
+    let file = Path::new(path);
+    let has_separator = path.contains('/') || (cfg!(windows) && path.contains('\\'));
+    if file.file_name().is_none()
+        || path.contains("://")
+        || path.chars().any(char::is_control)
+        || (!has_separator && file.extension().is_none_or(|ext| ext.is_empty()))
+    {
+        return None;
+    }
+    if let Some(path) = path.strip_prefix("~/") {
+        Some(home_dir()?.join(path))
+    } else {
+        Some(base_dir.join(file))
+    }
 }
 
 fn resolve_file_url(base_dir: &Path, rest: &str) -> Option<LinkTarget> {
@@ -128,6 +187,35 @@ mod tests {
         assert_eq!(
             resolve(base, "C:\\docs\\file.md"),
             local("C:\\docs\\file.md", None)
+        );
+    }
+
+    #[test]
+    fn transcript_references_require_existing_files() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+        let report = base.join("daily #1%.md");
+        let directory = base.join("docs.md");
+        let extensionless = directory.join("report");
+        std::fs::write(&report, "# Report").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&extensionless, "Report").unwrap();
+        let mut cache = FileReferenceCache::default();
+
+        assert_eq!(cache.resolve(base, "daily #1%.md:12"), Some(report.clone()));
+        assert_eq!(
+            cache.resolve(&directory, report.to_str().unwrap()),
+            Some(report)
+        );
+        assert_eq!(cache.resolve(base, "docs.md/report"), Some(extensionless));
+        assert_eq!(cache.resolve(&directory, "daily #1%.md"), None);
+        assert_eq!(cache.resolve(base, "missing.md"), None);
+        assert_eq!(cache.resolve(base, "docs.md"), None);
+        assert_eq!(cache.resolve(&directory, "report"), None);
+        assert_eq!(cache.resolve(base, "https://example.com/report.md"), None);
+        assert_eq!(
+            reference_path(&directory, "~/daily #1%.md:12", || Some(base.into())),
+            Some(base.join("daily #1%.md")),
         );
     }
 

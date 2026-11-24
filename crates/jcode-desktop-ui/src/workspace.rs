@@ -1381,12 +1381,17 @@ impl Workspace {
             let worktree_fixture = crate::fixture_control_targets::enabled()
                 .then(|| std::env::var("JCODE_DESKTOP_CONTROL_SWARM_WORKTREE").ok())
                 .flatten();
+            let file_mentions = std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT")
+                .as_deref()
+                == Ok("file-mentions");
             let session = jcode_sdk::SessionInfo {
                 user_connected: false,
                 session_id: "screenshot-fixture".into(),
                 // Keep this longer than the sidebar to exercise single-line ellipsis.
                 title: Some("Review markdown rendering with a very long session title".into()),
-                working_dir: (worktree_fixture.is_some() || crate::fixture_control_targets::files_panel())
+                working_dir: (worktree_fixture.is_some()
+                    || crate::fixture_control_targets::files_panel()
+                    || file_mentions)
                     .then(|| std::env::var("JCODE_DESKTOP_WORKING_DIR").ok())
                     .flatten()
                     .or_else(|| Some("/workspace/example".into())),
@@ -17767,6 +17772,128 @@ mod accounts_panel_tests {
             assert!(w.slots.iter().any(|slot| slot.panel.read(cx).session_id == id));
         });
         assert!(vcx.debug_bounds("markdown-file-preview").is_some());
+    }
+
+    #[gpui::test]
+    fn transcript_file_mentions_open_native_previews(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(base.join("docs")).unwrap();
+        for name in ["report.md", "details.md", "dm.md"] {
+            std::fs::write(base.join("docs").join(name), "# Report\n").unwrap();
+        }
+        std::fs::write(base.join("notes.txt"), "Text preview\n").unwrap();
+        cx.update(crate::bind_workspace_keys);
+
+        for (item, selector, path, preview) in [
+            (
+                crate::panel::Item::Assistant("`docs/report.md`\n\n`docs/missing.md`".into()),
+                "markdown-link:docs/report.md",
+                "docs/report.md",
+                "markdown-file-preview",
+            ),
+            (
+                crate::panel::Item::Tool {
+                    call_id: "final".into(),
+                    name: "user_response".into(),
+                    input: r#"{"title":"Final","content":"`docs/details.md:12`"}"#.into(),
+                    output: String::new(),
+                    done: true,
+                    error: None,
+                },
+                "markdown-link:docs/details.md:12",
+                "docs/details.md",
+                "markdown-file-preview",
+            ),
+            (
+                crate::panel::Item::AgentMessage {
+                    from_session: "peer".into(),
+                    from_name: None,
+                    message: "docs/dm.md.".into(),
+                    timestamp_ms: None,
+                },
+                "markdown-link:docs/dm.md",
+                "docs/dm.md",
+                "markdown-file-preview",
+            ),
+            (
+                crate::panel::Item::Assistant("`notes.txt:12`".into()),
+                "markdown-link:notes.txt:12",
+                "notes.txt",
+                "code-file-contents",
+            ),
+        ] {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.push_test_panel("source", cx);
+                workspace
+            });
+            vcx.update(|_, cx| cx.set_reduce_motion(true));
+            vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
+            let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+            source.update(vcx, |panel, cx| {
+                panel.working_dir = Some(base.display().to_string());
+                panel.items.push(item);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            if let Some(summary) = vcx.debug_bounds("agent-message-summary") {
+                vcx.simulate_click(summary.center(), Default::default());
+                vcx.run_until_parked();
+            }
+            if let Some(tool) = vcx.debug_bounds("tool-header") {
+                vcx.simulate_click(tool.center(), Default::default());
+                vcx.run_until_parked();
+                assert!(vcx.debug_bounds("user-response-card").is_some());
+            }
+            assert!(vcx.debug_bounds("markdown-link:docs/missing.md").is_none());
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("expected a rendered {selector}"));
+            let pointer = gpui::point(bounds.left() + px(28.), bounds.center().y);
+            if selector == "markdown-link:docs/report.md" {
+                let has_underline = |vcx: &mut gpui::VisualTestContext| {
+                    vcx.update(|window, _| {
+                        let scale = window.scale_factor();
+                        let bounds = bounds.scale(scale);
+                        let pointer = pointer.scale(scale);
+                        window.painted_quads().iter().any(|quad| {
+                            quad.bounds.size.height == gpui::ScaledPixels::from(scale)
+                                && bounds.contains(&quad.bounds.center())
+                                && quad.bounds.left() <= pointer.x
+                                && pointer.x <= quad.bounds.right()
+                        })
+                    })
+                };
+                assert!(!has_underline(vcx));
+                vcx.simulate_mouse_move(pointer, None, Default::default());
+                vcx.run_until_parked();
+                assert!(has_underline(vcx));
+                vcx.simulate_mouse_move(
+                    gpui::point(pointer.x, bounds.bottom() + px(12.)),
+                    None,
+                    Default::default(),
+                );
+                vcx.run_until_parked();
+                assert!(!has_underline(vcx));
+            }
+            vcx.simulate_click(pointer, Default::default());
+            vcx.run_until_parked();
+            workspace.update(vcx, |w, cx| {
+                let row = w.active_row;
+                w.camera_x[row] = w.camera_target[row];
+                w.camera_started[row] = None;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |w, cx| {
+                assert_eq!(
+                    w.slots[w.active].panel.read(cx).session_id,
+                    format!("file://{}", base.join(path).display()),
+                );
+            });
+            assert!(vcx.debug_bounds(preview).is_some(), "{preview}");
+        }
     }
 
     #[gpui::test]

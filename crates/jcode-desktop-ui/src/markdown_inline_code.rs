@@ -1,7 +1,10 @@
 //! Rounded inline-code fills, painted behind the original selectable text.
 use std::ops::Range;
 
-use gpui::{Bounds, Pixels, TextAlign, TextLayout, canvas, div, point, prelude::*, px, size};
+use gpui::{
+    Bounds, InteractiveElement, Pixels, SharedString, TextAlign, TextLayout, canvas, div, point,
+    prelude::*, px, size,
+};
 
 use crate::theme::Theme;
 
@@ -13,39 +16,68 @@ pub(super) fn wrap(
     child: gpui::AnyElement,
     layout: TextLayout,
     ranges: Vec<Range<usize>>,
+    hover_links: Vec<Range<usize>>,
+    key: SharedString,
 ) -> gpui::AnyElement {
-    if ranges.is_empty() {
+    if ranges.is_empty() && hover_links.is_empty() {
         return child;
     }
-    div()
+    let has_hover = !hover_links.is_empty();
+    let wrapper = div()
         .relative()
         .min_w_0()
         .child(
             canvas(
                 |_, _, _| (),
                 move |_, _, window, _| {
-                    for bounds in backgrounds(&layout, &ranges, window.text_style().text_align) {
+                    let align = window.text_style().text_align;
+                    for bounds in range_bounds(&layout, &ranges, align, px(HORIZONTAL_PADDING)) {
                         let mut quad = gpui::fill(bounds, Theme::global().INLINE_CODE_BG);
                         quad.corner_radii = px(3.).into();
                         window.paint_quad(quad);
+                    }
+                    let pointer = window.mouse_position();
+                    if !hover_links.is_empty()
+                        && window.content_mask().bounds.contains(&pointer)
+                        && let Ok(index) = layout.index_for_position(pointer)
+                        && let Some(range) = hover_links.iter().find(|range| range.contains(&index))
+                    {
+                        for bounds in
+                            range_bounds(&layout, std::slice::from_ref(range), align, px(0.))
+                        {
+                            let underline = Bounds::new(
+                                point(bounds.left(), bounds.bottom() - px(4.)),
+                                size(bounds.size.width, px(1.)),
+                            );
+                            window.paint_quad(gpui::fill(underline, Theme::global().LINK));
+                        }
                     }
                 },
             )
             .absolute()
             .size_full(),
         )
-        .child(child)
-        .into_any_element()
+        .child(child);
+    if has_hover {
+        // Native hover state needs an ID to invalidate the paint on exit.
+        wrapper.id(key).hover(|style| style).into_any_element()
+    } else {
+        wrapper.into_any_element()
+    }
 }
 
 // Work from shaped wrap boundaries, not character widths: this keeps Unicode,
 // ligatures, mixed fonts and exact wrap endpoints aligned with the text. The
 // background layer neither changes layout nor intercepts links or selection.
-fn backgrounds(
+fn range_bounds(
     layout: &TextLayout,
     ranges: &[Range<usize>],
     align: TextAlign,
+    padding: Pixels,
 ) -> Vec<Bounds<Pixels>> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
     let bounds = layout.bounds();
     let height = layout.line_height();
     let mut origin = bounds.origin;
@@ -77,11 +109,8 @@ fn backgrounds(
                 let right = unwrapped.x_for_index(hi - offset) - start_x;
                 if right > left {
                     result.push(Bounds::new(
-                        point(
-                            origin.x + alignment + left - px(HORIZONTAL_PADDING),
-                            origin.y,
-                        ),
-                        size(right - left + px(2.0 * HORIZONTAL_PADDING), height),
+                        point(origin.x + alignment + left - padding, origin.y),
+                        size(right - left + padding * 2., height),
                     ));
                 }
             }
@@ -123,12 +152,19 @@ mod tests {
                     text.into_any_element(),
                     layout.clone(),
                     ranges.clone(),
+                    Vec::new(),
+                    "inline-code".into(),
                 ))
                 .child(
                     canvas(
                         |_, _, _| (),
                         move |_, _, _, _| {
-                            *output.borrow_mut() = backgrounds(&layout, &ranges, TextAlign::Left);
+                            *output.borrow_mut() = range_bounds(
+                                &layout,
+                                &ranges,
+                                TextAlign::Left,
+                                px(HORIZONTAL_PADDING),
+                            );
                         },
                     )
                     .absolute(),
@@ -163,7 +199,12 @@ mod tests {
             // One range of six glyphs, not the six indices.
             #[allow(clippy::single_range_in_vec_init)]
             let whole = [0..6];
-            let padded = backgrounds(&view.layout, &whole, TextAlign::Left);
+            let padded = range_bounds(
+                &view.layout,
+                &whole,
+                TextAlign::Left,
+                px(HORIZONTAL_PADDING),
+            );
             assert_eq!(padded.len(), 1);
             let lines = view.layout.line_layouts();
             let line = &lines[0].unwrapped_layout;
@@ -173,10 +214,14 @@ mod tests {
                 text.left() + line.x_for_index(6) + px(3.)
             );
             assert_eq!(padded[0].top(), text.top());
-            assert!(backgrounds(&view.layout, &[], TextAlign::Left).is_empty());
+            assert!(
+                range_bounds(&view.layout, &[], TextAlign::Left, px(HORIZONTAL_PADDING)).is_empty()
+            );
             #[allow(clippy::single_range_in_vec_init)]
             let empty = [7..7];
-            assert!(backgrounds(&view.layout, &empty, TextAlign::Left).is_empty());
+            assert!(
+                range_bounds(&view.layout, &empty, TextAlign::Left, px(HORIZONTAL_PADDING)).is_empty()
+            );
         });
     }
 }

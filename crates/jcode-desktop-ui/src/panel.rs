@@ -2176,11 +2176,12 @@ impl Panel {
     fn file_link_handler(
         base: PathBuf,
         document: Option<(PathBuf, gpui::WeakEntity<Self>)>,
-    ) -> markdown::FileLinkHandler {
-        Rc::new(
-            move |destination, window, cx| match markdown_file::resolve(&base, destination) {
-                Some(LinkTarget::External(url)) => cx.open_url(&url),
-                Some(LinkTarget::Local { path, fragment }) => {
+    ) -> Rc<markdown::FileLinkHandler> {
+        Rc::new(markdown::FileLinkHandler {
+            base,
+            open: Box::new(move |target, window, cx| match target {
+                LinkTarget::External(url) => cx.open_url(&url),
+                LinkTarget::Local { path, fragment } => {
                     if let Some((current, panel)) = &document
                         && current == &path
                     {
@@ -2195,15 +2196,14 @@ impl Panel {
                         );
                     }
                 }
-                Some(LinkTarget::Anchor(fragment)) => {
+                LinkTarget::Anchor(fragment) => {
                     if let Some((_, panel)) = &document {
                         let _ =
                             panel.update(cx, |panel, cx| panel.show_file_heading(&fragment, cx));
                     }
                 }
-                None => {}
-            },
-        )
+            }),
+        })
     }
 
     fn render_markdown_file(
@@ -7729,7 +7729,12 @@ impl Render for Panel {
                                     )
                                 });
                                 let element = match &file_links {
-                                    Some(handler) => markdown::with_file_link_handler(handler.clone(), render_item),
+                                    Some(handler) => {
+                                        let infer_references = matches!(item,
+                                            Item::Assistant(_) | Item::AssistantOutput { .. } | Item::AgentMessage { .. }
+                                        ) || matches!(item, Item::Tool { name, .. } if name == "user_response");
+                                        markdown::with_file_link_handler(handler.clone(), infer_references, render_item)
+                                    }
                                     _ => render_item(),
                                 };
                                 let heading = clean_chat.then(|| {
@@ -13319,6 +13324,19 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mcp-list") {
         return mcp_list_card::fixture_items();
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("file-mentions") {
+        return vec![
+            Item::Assistant("The report is in `docs/report.md`. The draft `docs/draft.md` does not exist.\n\nDetails are in docs/notes.txt:12.".into()),
+            Item::Tool {
+                call_id: "file-mentions-final".into(),
+                name: "user_response".into(),
+                input: r#"{"title":"Final","content":"Open `docs/report.md:12` to review the results."}"#.into(),
+                output: String::new(),
+                done: true,
+                error: None,
+            },
+        ];
     }
     if crate::harness::screenshot_mode()
         && matches!(
