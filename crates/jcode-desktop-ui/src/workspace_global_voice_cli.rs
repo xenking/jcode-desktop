@@ -129,7 +129,7 @@ impl Workspace {
     fn start_cli_capture(&mut self, session_id: String, cx: &mut Context<Self>) {
         // Replaces any lingering result pill from an earlier hold.
         self.global_voice.cli = None;
-        self.global_voice.close_overlay(cx);
+        self.global_voice.overlay().close(cx);
         let attempt = Arc::new(AtomicBool::new(false));
         let mut capture = CliCapture {
             session_id,
@@ -264,7 +264,7 @@ impl Workspace {
             .is_some_and(|at| at.elapsed() >= RESULT_VISIBLE)
         {
             self.global_voice.cli = None;
-            self.global_voice.hide_overlay(cx);
+            self.global_voice.overlay().hide(cx);
             return true;
         }
         let snapshot = capture.snapshot();
@@ -277,7 +277,7 @@ impl Workspace {
         if !shown {
             // Never keep recording without a visible indicator.
             self.global_voice.cli = None;
-            self.global_voice.hide_overlay(cx);
+            self.global_voice.overlay().hide(cx);
         }
         true
     }
