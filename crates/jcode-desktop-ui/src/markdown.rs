@@ -10,7 +10,8 @@ use gpui::{
     UnderlineStyle, div, prelude::*, px, relative,
 };
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -342,9 +343,98 @@ pub(crate) fn parse_count() -> usize {
 }
 
 fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block> {
-    #[cfg(test)]
-    PARSE_COUNT.set(PARSE_COUNT.get() + 1);
     parse_document(source, preserve_line_breaks, |_, _| {})
+}
+
+const PARSED_SOURCE_LIMIT: usize = 256;
+const PARSED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
+struct ParsedSource {
+    // Indexed by whether this render preserves soft breaks.
+    documents: [Option<Rc<ParsedMarkdown>>; 2],
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct ParsedSources {
+    sources: HashMap<Rc<str>, ParsedSource>,
+    source_bytes: usize,
+    clock: u64,
+}
+
+impl ParsedSources {
+    fn get(&mut self, source: &str, preserve_line_breaks: bool) -> Rc<ParsedMarkdown> {
+        let parse = || Rc::new(ParsedMarkdown::parse(source, preserve_line_breaks));
+        if source.len() > PARSED_SOURCE_BYTES {
+            return parse();
+        }
+        self.clock += 1;
+        let mode = usize::from(preserve_line_breaks);
+        if let Some(entry) = self.sources.get_mut(source) {
+            entry.last_used = self.clock;
+            return entry.documents[mode].get_or_insert_with(parse).clone();
+        }
+        while self.sources.len() == PARSED_SOURCE_LIMIT
+            || self.source_bytes + source.len() > PARSED_SOURCE_BYTES
+        {
+            let oldest = self
+                .sources
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .expect("cache is over budget")
+                .0
+                .clone();
+            self.sources.remove(oldest.as_ref());
+            self.source_bytes -= oldest.len();
+        }
+        let document = parse();
+        let mut documents = [None, None];
+        documents[mode] = Some(document.clone());
+        self.source_bytes += source.len();
+        self.sources.insert(
+            source.into(),
+            ParsedSource {
+                documents,
+                last_used: self.clock,
+            },
+        );
+        document
+    }
+}
+
+thread_local! {
+    // Bound count and source bytes: each reveal prefix is a different source.
+    static PARSED_SOURCES: RefCell<ParsedSources> = RefCell::default();
+}
+
+fn cached_parse(source: &str, preserve_line_breaks: bool) -> Rc<ParsedMarkdown> {
+    PARSED_SOURCES.with_borrow_mut(|cache| cache.get(source, preserve_line_breaks))
+}
+
+struct ParsedMarkdown {
+    blocks: Vec<Block>,
+    public: Option<String>,
+}
+
+impl ParsedMarkdown {
+    fn parse(source: &str, preserve_line_breaks: bool) -> Self {
+        let offset = |line: &str| line.as_ptr() as usize - source.as_ptr() as usize;
+        let mut public = String::new();
+        let mut cursor = 0;
+        let blocks = parse_document(source, preserve_line_breaks, |first, next| {
+            let start = offset(first);
+            public.push_str(&source[cursor..start]);
+            if !public.is_empty() && next.is_some() && !public.ends_with("\n\n") {
+                public.push('\n');
+            }
+            cursor = next.map_or(source.len(), offset);
+        });
+        let public = (cursor != 0).then(|| {
+            public.push_str(&source[cursor..]);
+            public
+        });
+        Self { blocks, public }
+    }
 }
 
 /// History encodes private reasoning as a Markdown block inside assistant text.
@@ -353,23 +443,10 @@ pub(crate) fn public_transcript(source: &str) -> Cow<'_, str> {
     if !source.contains(jcode_render_core::REASONING_SENTINEL) {
         return Cow::Borrowed(source);
     }
-    let offset = |line: &str| line.as_ptr() as usize - source.as_ptr() as usize;
-    let mut public = String::new();
-    let mut cursor = 0;
-    parse_document(source, false, |first, next| {
-        let start = offset(first);
-        public.push_str(&source[cursor..start]);
-        if !public.is_empty() && next.is_some() && !public.ends_with("\n\n") {
-            public.push('\n');
-        }
-        cursor = next.map_or(source.len(), offset);
-    });
-    if cursor == 0 {
-        Cow::Borrowed(source)
-    } else {
-        public.push_str(&source[cursor..]);
-        Cow::Owned(public)
-    }
+    cached_parse(source, false)
+        .public
+        .clone()
+        .map_or(Cow::Borrowed(source), Cow::Owned)
 }
 
 fn parse_document(
@@ -377,6 +454,8 @@ fn parse_document(
     preserve_line_breaks: bool,
     mut reasoning_block: impl FnMut(&str, Option<&str>),
 ) -> Vec<Block> {
+    #[cfg(test)]
+    PARSE_COUNT.set(PARSE_COUNT.get() + 1);
     let mut blocks = Vec::new();
     let mut lines = source.lines().peekable();
     let mut paragraph = String::new();
@@ -2564,20 +2643,18 @@ fn collect_selection_segments(
     prompt: bool,
     segments: &mut Vec<(SharedString, SharedString)>,
 ) {
-    for (block_index, block) in parse_with_line_breaks(source, prompt)
-        .into_iter()
-        .enumerate()
-    {
+    let document = cached_parse(source, prompt);
+    for (block_index, block) in document.blocks.iter().enumerate() {
         let key = format!("{key_prefix}-{block_index}");
         match block {
             Block::Paragraph(text) => {
-                segments.push((key.into(), inline_spans(&text).plain.into()));
+                segments.push((key.into(), inline_spans(text).plain.into()));
             }
             Block::Heading(_, text) | Block::Bullet { text, .. } | Block::Numbered { text, .. } => {
-                segments.push((key.into(), inline_spans(&text).plain.into()));
+                segments.push((key.into(), inline_spans(text).plain.into()));
             }
             Block::Reasoning(text) => {
-                collect_selection_segments(&text, &key, true, prompt, segments);
+                collect_selection_segments(text, &key, true, prompt, segments);
             }
             // Quotes currently render individual nonempty inline lines, not a
             // recursive markdown document. Preserve that exact leaf structure.
@@ -2597,7 +2674,7 @@ fn collect_selection_segments(
                 let columns = header
                     .len()
                     .max(rows.iter().map(Vec::len).max().unwrap_or(0));
-                for (row_index, row) in std::iter::once(&header).chain(rows.iter()).enumerate() {
+                for (row_index, row) in std::iter::once(header).chain(rows.iter()).enumerate() {
                     for column in 0..columns {
                         let text = row.get(column).map(String::as_str).unwrap_or("");
                         segments.push((
@@ -2613,7 +2690,7 @@ fn collect_selection_segments(
             | Block::HtmlPreview(body)
             | Block::Mermaid(body)
             | Block::Math(body) => {
-                segments.push((key.into(), body.into()));
+                segments.push((key.into(), body.as_str().into()));
             }
             Block::Rule => {}
         }
@@ -2799,13 +2876,9 @@ fn render_document_with_prompt_background(
     avatar: bool,
     prompt_background: Option<gpui::Rgba>,
 ) -> gpui::AnyElement {
-    let blocks = if prompt_background.is_some() {
-        parse_with_line_breaks(source, true)
-    } else {
-        parse(source)
-    };
+    let document = cached_parse(source, prompt_background.is_some());
     render_blocks(
-        &blocks,
+        &document.blocks,
         row,
         key_prefix,
         selection,
@@ -3498,6 +3571,28 @@ mod tests {
                 Block::Paragraph("Another paragraph.".into()),
             ]
         );
+    }
+
+    #[test]
+    fn parsed_markdown_keeps_hot_sources_and_distinguishes_line_break_modes() {
+        let mut cache = ParsedSources::default();
+        let cold = cache.get("old reply", false);
+        let source = "First line\nSecond line";
+        let assistant = cache.get(source, false);
+        let prompt = cache.get(source, true);
+        assert_eq!(
+            assistant.blocks,
+            [Block::Paragraph("First line Second line".into())]
+        );
+        assert_eq!(prompt.blocks, [Block::Paragraph(source.into())]);
+
+        for index in 0..PARSED_SOURCE_LIMIT {
+            cache.get(&format!("Reply {index}"), false);
+            assert!(Rc::ptr_eq(&cache.get(source, true), &prompt));
+        }
+        assert!(Rc::ptr_eq(&cache.get(source, false), &assistant));
+        assert!(!Rc::ptr_eq(&cache.get("old reply", false), &cold));
+        assert_eq!(cache.sources.len(), PARSED_SOURCE_LIMIT);
     }
 
     #[test]

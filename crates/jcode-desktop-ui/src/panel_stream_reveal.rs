@@ -339,7 +339,10 @@ mod panel_tests {
         });
         frames(vcx, 2);
         let warm_parses = markdown::parse_count();
-        assert!(warm_parses - initial_parses >= 4, "settled rows were rendered");
+        assert!(
+            warm_parses - initial_parses >= 4,
+            "settled rows were rendered"
+        );
         let renders = || crate::render_stats::test_renders::count(panel.entity_id());
         let warm_renders = renders();
         let deltas = ["**One**.\n\n", "`Two`.\n\n", "*Three*.\n\n", "Four."];
@@ -359,13 +362,15 @@ mod panel_tests {
         frames(vcx, 50);
         let render_count = renders() - warm_renders;
         let parse_count = markdown::parse_count() - warm_parses;
-        eprintln!("streaming_markdown_parse_budget: parses={parse_count} panel_renders={render_count}");
+        eprintln!(
+            "streaming_markdown_parse_budget: parses={parse_count} panel_renders={render_count}"
+        );
         panel.read_with(vcx, |panel, _| {
             assert_eq!(live_text(panel, usize::MAX).unwrap(), deltas.concat());
             assert_eq!(panel.text_reveal.fading(&panel.streaming_text), 0);
         });
         assert!(render_count > deltas.len(), "reveal frames were rendered");
-        assert!(parse_count >= deltas.len(), "streamed text was parsed");
+        assert_eq!(parse_count, deltas.len(), "one parse per revealed source");
     }
 
     #[gpui::test]
