@@ -1,7 +1,7 @@
 use crate::harness::protocol::{Command, Update};
 use jcode_base::compaction::CompactionEvent;
 use jcode_base::message::{ContentBlock, Role};
-use jcode_base::session::{self, Session, StoredCompactionState};
+use jcode_base::session::{self, Session, StoredCompactionState, StoredMessage};
 use jcode_sdk::ApiEvent;
 
 const ID: &str = "screenshot-fixture";
@@ -24,18 +24,15 @@ pub(super) fn session() -> Session {
     for i in 0..ARCHIVED {
         session.add_message(Role::User, text(format!("Before compaction {i:03}")));
     }
-    session.compaction = Some(
-        StoredCompactionState {
-            summary_text: GUIDE.into(),
-            openai_encrypted_content: None,
-            snapcompact: None,
-            covers_up_to_turn: ARCHIVED,
-            original_turn_count: ARCHIVED,
-            compacted_count: ARCHIVED,
-            plan_context: None,
-        }
-        .into(),
-    );
+    session.adopt_compaction(Some(StoredCompactionState {
+        summary_text: GUIDE.into(),
+        openai_encrypted_content: None,
+        snapcompact: None,
+        covers_up_to_turn: ARCHIVED,
+        original_turn_count: ARCHIVED,
+        compacted_count: ARCHIVED,
+        plan_context: None,
+    }));
     session.record_compaction_event(
         &CompactionEvent {
             trigger: "reactive".into(),
@@ -52,14 +49,17 @@ pub(super) fn session() -> Session {
         Some("snapcompact"),
         Some(GUIDE),
     );
-    session.add_message(Role::User, text("After compaction".into()));
-    if let Some(after) = session
-        .messages
-        .last_mut()
-        .and_then(|message| message.timestamp.as_mut())
-    {
-        *after += std::time::Duration::from_secs(1);
-    }
+    session.append_stored_message(StoredMessage {
+        id: "after-compaction".into(),
+        role: Role::User,
+        content: text("After compaction".into()).into(),
+        attachment_data: None,
+        display_role: None,
+        timestamp: Some(chrono::Utc::now() + std::time::Duration::from_secs(1)),
+        tool_duration_ms: None,
+        token_usage: None,
+        codemode: None,
+    });
     session
 }
 
