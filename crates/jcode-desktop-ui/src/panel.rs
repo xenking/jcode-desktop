@@ -754,7 +754,9 @@ impl gpui::EventEmitter<AccountsPanelClosed> for Panel {}
 
 pub struct Panel {
     rig_feed: Entity<crate::openrig_feed::Feed>,
-    pub(crate) rig_host_id: Option<String>,
+    rig_host_id: Option<String>,
+    rig_demand: Option<crate::openrig_feed::Demand>,
+    rig_identity: Option<rig_hud::Identity>,
     pub preview_state: Option<PreviewState>,
     /// Scripted onboarding replay: real rendering and motion, never sounds.
     pub(crate) demo: bool,
@@ -1620,7 +1622,14 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Self {
         let rig_feed = crate::openrig_feed::get(cx);
-        cx.observe(&rig_feed, |_, _, cx| cx.notify()).detach();
+        cx.observe(&rig_feed, |panel, _, cx| panel.refresh_rig_hud(cx))
+            .detach();
+        let rig_host_id = (crate::harness::screenshot_mode()
+            && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some())
+        .then(|| "host-fixture-local".to_owned());
+        let rig_identity = rig_host_id.as_deref().and_then(|host| {
+            rig_hud::identify(rig_feed.read(cx).fleet()?, &session_id, Some(host))
+        });
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
@@ -1915,9 +1924,9 @@ impl Panel {
             pending_history_scroll: None,
             bridge,
             rig_feed,
-            rig_host_id: (crate::harness::screenshot_mode()
-                && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RIG_HUD").is_some())
-            .then(|| "host-fixture-local".into()),
+            rig_host_id,
+            rig_demand: None,
+            rig_identity,
             preview_state: None,
             demo: false,
             history_loaded: false,

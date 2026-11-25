@@ -194,6 +194,58 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn fleet_updates_only_notify_panels_whose_seat_hud_changed(cx: &mut gpui::TestAppContext) {
+        let seat_id = "session_fox_1700000000000_0123456789abcdef";
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel(seat_id, cx);
+            workspace.push_test_panel("ordinary-session", cx);
+            for slot in &workspace.slots {
+                slot.panel.update(cx, |panel, cx| {
+                    panel.set_rig_host_id(Some("host-fixture-local".into()), cx);
+                });
+            }
+            workspace
+        });
+        vcx.run_until_parked();
+        let notifications = workspace.update_in(vcx, |workspace, _, cx| {
+            workspace
+                .slots
+                .iter()
+                .map(|slot| {
+                    let count = std::rc::Rc::new(std::cell::Cell::new(0));
+                    let observed = count.clone();
+                    cx.observe(&slot.panel, move |_, _, _| observed.set(observed.get() + 1))
+                        .detach();
+                    count
+                })
+                .collect::<Vec<_>>()
+        });
+        let publish = |vcx: &mut gpui::VisualTestContext, snapshot| {
+            vcx.update(|_, cx| {
+                crate::openrig_feed::get(cx).update(cx, |feed, cx| {
+                    feed.snapshot = Some(snapshot);
+                    cx.notify();
+                });
+            });
+            vcx.run_until_parked();
+        };
+        let mut snapshot = jcode_desktop_openrig::Snapshot::fixture();
+        publish(vcx, snapshot.clone());
+        assert_eq!(notifications[0].get(), 1, "the linked HUD must appear");
+        assert_eq!(notifications[1].get(), 0, "the ordinary panel has no seat");
+
+        snapshot.error = Some("Unrelated browser section unavailable".into());
+        publish(vcx, snapshot);
+        assert_eq!(
+            notifications[0].get(),
+            1,
+            "browser-only changes do not repaint the HUD"
+        );
+        assert_eq!(notifications[1].get(), 0);
+    }
+
+    #[gpui::test]
     fn hud_opens_exact_seat_and_reuses_openrig(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let id = "session_fox_1700000000000_0123456789abcdef";
@@ -302,8 +354,8 @@ mod tests {
             });
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel(id, cx);
-            workspace.slots[0].panel.update(cx, |panel, _| {
-                panel.rig_host_id = Some("host-fixture-local".into())
+            workspace.slots[0].panel.update(cx, |panel, cx| {
+                panel.set_rig_host_id(Some("host-fixture-local".into()), cx);
             });
             workspace
         });

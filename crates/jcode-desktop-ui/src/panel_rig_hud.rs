@@ -1,8 +1,8 @@
 use super::{Panel, composer, usage, *};
 use jcode_desktop_openrig::fleet::Fleet;
 
-#[derive(Clone)]
-struct Identity {
+#[derive(Clone, PartialEq)]
+pub(super) struct Identity {
     action: crate::ui_actions::InspectFleetSeat,
     agent: String,
     rig: String,
@@ -13,7 +13,11 @@ struct Identity {
     work: Option<u64>,
 }
 
-fn identify(fleet: &Fleet, session: &str, daemon_host_id: Option<&str>) -> Option<Identity> {
+pub(super) fn identify(
+    fleet: &Fleet,
+    session: &str,
+    daemon_host_id: Option<&str>,
+) -> Option<Identity> {
     if session.starts_with("cloud://") {
         return None;
     }
@@ -55,13 +59,7 @@ impl Render for Tooltip {
             return div();
         };
         let panel = panel.read(cx);
-        let Some(identity) = panel
-            .rig_feed
-            .read(cx)
-            .snapshot
-            .as_ref()
-            .and_then(|s| identify(&s.fleet, &panel.session_id, panel.rig_host_id.as_deref()))
-        else {
+        let Some(identity) = panel.rig_identity.clone() else {
             return div();
         };
         let theme = Theme::global();
@@ -112,12 +110,33 @@ impl Render for Tooltip {
 }
 
 impl Panel {
+    pub(crate) fn set_rig_host_id(&mut self, host: Option<String>, cx: &mut Context<Self>) {
+        if self.rig_host_id == host {
+            return;
+        }
+        self.rig_demand = host
+            .clone()
+            .map(|host| self.rig_feed.read(cx).demand(Some(host)));
+        self.rig_host_id = host;
+        self.refresh_rig_hud(cx);
+    }
+
+    pub(super) fn refresh_rig_hud(&mut self, cx: &mut Context<Self>) {
+        let identity = self.rig_host_id.as_deref().and_then(|host| {
+            identify(
+                self.rig_feed.read(cx).fleet()?,
+                &self.session_id,
+                Some(host),
+            )
+        });
+        if self.rig_identity != identity {
+            self.rig_identity = identity;
+            cx.notify();
+        }
+    }
+
     pub(super) fn render_rig_hud(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let identity = identify(
-            &self.rig_feed.read(cx).snapshot.as_ref()?.fleet,
-            &self.session_id,
-            self.rig_host_id.as_deref(),
-        )?;
+        let action = self.rig_identity.as_ref()?.action.clone();
         let panel = cx.entity().downgrade();
         let theme = Theme::global();
         let selector = format!("panel-openrig:{}", self.session_id);
@@ -154,16 +173,11 @@ impl Panel {
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if this
-                        .rig_feed
-                        .read(cx)
-                        .snapshot
+                        .rig_identity
                         .as_ref()
-                        .and_then(|s| {
-                            identify(&s.fleet, &this.session_id, this.rig_host_id.as_deref())
-                        })
-                        .is_some_and(|current| current.action == identity.action)
+                        .is_some_and(|current| current.action == action)
                     {
-                        window.dispatch_action(Box::new(identity.action.clone()), cx);
+                        window.dispatch_action(Box::new(action.clone()), cx);
                     }
                 }))
                 .into_any_element(),

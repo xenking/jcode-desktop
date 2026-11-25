@@ -504,6 +504,47 @@ fn daemon_target(base: &str) -> String {
     }
 }
 
+/// The composer HUD only needs seat identity and activity, not the browser's
+/// inbox, performance, configuration, or provider data. A local-only HUD
+/// never enumerates or contacts fleet peers.
+pub fn fetch_hud_fleet(
+    base_url: &str,
+    host_ids: &std::collections::BTreeSet<String>,
+) -> Option<fleet::Fleet> {
+    load_hud_fleet(base_url, host_ids, get_target)
+}
+
+fn load_hud_fleet(
+    base_url: &str,
+    host_ids: &std::collections::BTreeSet<String>,
+    get: impl Fn(&HostTarget, &str) -> Result<Value, String>,
+) -> Option<fleet::Fleet> {
+    if host_ids.is_empty() {
+        return None;
+    }
+    let local = HostTarget::primary(base_url, "local");
+    let health = get(&local, "/healthz").ok()?;
+    let local_id = health["selfHostId"].as_str();
+    let wants = |id: Option<&str>| id.is_some_and(|id| host_ids.contains(id));
+    let rigs = wants(local_id)
+        .then(|| get(&local, "/api/rigs/summary").ok())
+        .flatten();
+    let hosts = host_ids
+        .iter()
+        .any(|id| Some(id.as_str()) != local_id)
+        .then(|| get(&local, "/api/hosts").ok())
+        .flatten();
+    Some(fleet::Fleet::load_selected(
+        base_url,
+        Some(&health),
+        hosts.as_ref(),
+        rigs.as_ref(),
+        &mut Vec::new(),
+        get,
+        wants,
+    ))
+}
+
 pub fn fetch_snapshot(base_url: &str) -> Snapshot {
     let routes = [
         "/healthz",
@@ -719,6 +760,54 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_only_reads_inventory_from_requested_hosts() {
+        use std::{cell::RefCell, collections::BTreeSet};
+        let calls = RefCell::new(Vec::new());
+        let get = |target: &HostTarget, route: &str| {
+            calls
+                .borrow_mut()
+                .push((target.alias().to_owned(), route.to_owned()));
+            Ok(match (target.alias(), route) {
+                (alias, "/healthz") => json!({"selfHostId": format!("{alias}-identity")}),
+                ("local", "/api/hosts") => json!({"hosts": [
+                    {"id": "wanted", "url": "http://wanted.example.test"},
+                    {"id": "unrelated", "url": "http://unrelated.example.test"}
+                ]}),
+                (_, "/api/rigs/summary") => json!({"rigs": []}),
+                _ => panic!("unexpected {route} on {}", target.alias()),
+            })
+        };
+        let local = BTreeSet::from(["local-identity".into()]);
+        assert!(load_hud_fleet("http://127.0.0.1:7433", &local, get).is_some());
+        let drain = || {
+            calls
+                .take()
+                .into_iter()
+                .map(|(host, route)| format!("{host} {route}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(drain(), ["local /healthz", "local /api/rigs/summary"]);
+
+        let remote = BTreeSet::from(["wanted-identity".into()]);
+        let fleet = load_hud_fleet("http://127.0.0.1:7433", &remote, get).unwrap();
+        assert_eq!(
+            fleet.hosts[1].self_host_id.as_deref(),
+            Some("wanted-identity")
+        );
+        assert_eq!(
+            drain(),
+            [
+                "local /healthz",
+                "local /api/hosts",
+                "wanted /healthz",
+                "wanted /api/rigs/summary",
+                "wanted /healthz",
+                "unrelated /healthz"
+            ]
+        );
+    }
     #[test]
     fn parses_activity_notification() {
         let e = live_event(&json!({"type":"seat_changed","seatNodeId":"node-1","seq":3})).unwrap();

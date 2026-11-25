@@ -1,5 +1,31 @@
 # Interaction latency profile
 
+## macOS idle OpenRig polling and hang reports
+
+An ordinary workspace used to fetch the entire OpenRig browser snapshot every
+2 seconds while the app was active, including remote fleet inventory. Changes
+not relevant to a chat also invalidated its view. The browser still gets full
+snapshots while open. A session HUD now requests only fleet identity and seat
+activity for attached host identities every 10 seconds; a local HUD never
+enumerates peers, and unchanged seat data does not invalidate chat panels.
+
+On macOS, `scripts/accept-idle-openrig.py <candidate> <baseline>` exercises the
+production poll loop against a private loopback server in a hidden native window.
+With the same fixture entry point in both binaries, three alternating 12-second
+measurements after a 4-second warmup went from 72 requests per sample to 0 and
+from 0.250% to 0.083% median single-core CPU (`ps` process CPU-time delta divided
+by elapsed wall time). This isolates OpenRig idle overhead, not foreground frame
+cost on a loaded workspace or the cause of the reported hang.
+
+The macOS host watchdog posts one heartbeat at a time to the native main queue.
+If it takes more than 2 seconds to answer, the watchdog runs `/usr/bin/sample`
+off the main thread and writes a private report under
+`$JCODE_HOME/logs/desktop-hangs` (normally `~/.jcode/logs/desktop-hangs`). It saves
+at most one report per continuous stall and per minute per process, keeps eight
+reports of at most 2 MiB each, and records profiler failures in the report.
+`python3 scripts/accept-main-hang.py <binary>` checks the report contains the
+intentionally blocked main stack without opening or focusing a working window.
+
 ## Sidebar invalidation follow-up, 2026-11-15
 
 A passive generation-6 capture (`target/live-profile/render-cleanup-gen6/`)

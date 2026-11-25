@@ -414,6 +414,7 @@ impl Panel {
 
     pub fn new_openrig(bridge: crate::harness::Bridge, cx: &mut Context<Self>) -> Self {
         let mut panel = Self::new(SESSION_ID.into(), Some("OpenRig".into()), None, bridge, cx);
+        panel.rig_demand = Some(panel.rig_feed.read(cx).demand(None));
         panel.items.clear();
         let fixture = crate::harness::screenshot_mode() || cfg!(test);
         let mut state = State::fixture();

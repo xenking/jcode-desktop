@@ -420,6 +420,18 @@ impl Fleet {
         errors: &mut Vec<String>,
         get: impl Fn(&HostTarget, &str) -> Result<serde_json::Value, String>,
     ) -> Self {
+        Self::load_selected(base, health, hosts, rigs, errors, get, |_| true)
+    }
+
+    pub(crate) fn load_selected(
+        base: &str,
+        health: Option<&serde_json::Value>,
+        hosts: Option<&serde_json::Value>,
+        rigs: Option<&serde_json::Value>,
+        errors: &mut Vec<String>,
+        get: impl Fn(&HostTarget, &str) -> Result<serde_json::Value, String>,
+        wants: impl Fn(Option<&str>) -> bool,
+    ) -> Self {
         if health.is_none() && hosts.is_none() && rigs.is_none() {
             return Self::default();
         }
@@ -454,7 +466,9 @@ impl Fleet {
                 .map(str::to_owned),
             rigs: rigs.and_then(|value| record(inventory(value.clone()), "Fleet rigs", errors)),
         };
-        populate_nodes(&mut local, &get, errors);
+        if wants(local.self_host_id.as_deref()) {
+            populate_nodes(&mut local, &get, errors);
+        }
         let mut fleet = Self { hosts: vec![local] };
         for (target, status) in hosts.into_iter().flat_map(HostRegistry::into_targets) {
             let id = target.alias().to_owned();
@@ -467,6 +481,9 @@ impl Fleet {
                     .filter(|id| !id.is_empty())
                     .map(str::to_owned)
             });
+            if !wants(identity_before.as_deref()) {
+                continue;
+            }
             let (rigs, error) = match get(&target, "/api/rigs/summary").and_then(inventory) {
                 Ok(rigs) => (Some(rigs), None),
                 Err(error) => {
