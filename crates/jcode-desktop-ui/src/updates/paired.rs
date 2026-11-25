@@ -27,20 +27,43 @@ impl Drop for Request {
 pub(super) fn release_status(preview: Option<&Preview>) -> ReleaseStatus {
     match preview {
         Some(preview) => ReleaseStatus::Newer {
-            version: format!(
-                "{} ({})",
-                preview.desktop.target_version,
-                preview
-                    .desktop
-                    .target_sha
-                    .chars()
-                    .take(9)
-                    .collect::<String>()
-            ),
+            version: pending_label(preview),
         },
         None => ReleaseStatus::Current {
             latest: crate::build_info::VERSION.into(),
         },
+    }
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(9).collect()
+}
+
+fn is_pending(change: &Change) -> bool {
+    let (installed, target) = (change.installed_sha.trim(), change.target_sha.trim());
+    installed.is_empty()
+        || target.is_empty()
+        || !(installed.starts_with(target) || target.starts_with(installed))
+}
+
+/// Names only the parts that actually change, so a CLI-only update does not
+/// read as the Desktop build that is already installed.
+fn pending_label(preview: &Preview) -> String {
+    let parts: Vec<String> = [("Desktop", &preview.desktop), ("CLI", &preview.cli)]
+        .into_iter()
+        .filter(|(_, change)| is_pending(change))
+        .map(|(name, change)| {
+            format!("{name} {} ({})", change.target_version, short_sha(&change.target_sha))
+        })
+        .collect();
+    if parts.is_empty() {
+        format!(
+            "{} ({})",
+            preview.desktop.target_version,
+            short_sha(&preview.desktop.target_sha)
+        )
+    } else {
+        parts.join(" + ")
     }
 }
 
@@ -176,5 +199,46 @@ fn show_state(cx: &gpui::AsyncApp, state: UpdateState) {
     if current() != state {
         set(state);
         let _ = cx.update(|cx| cx.refresh_windows());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(installed: &str, target: &str) -> Change {
+        Change {
+            installed_version: "0.7.0".into(),
+            installed_sha: installed.into(),
+            target_version: "0.7.0".into(),
+            target_sha: target.into(),
+            commits: 0,
+            subjects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cli_only_update_does_not_name_the_installed_desktop() {
+        let preview = Preview {
+            cli: change("68da09880", "92e2399099aa"),
+            desktop: change("9c0a6acc9", "9c0a6acc9389690a"),
+            free_gib: 100,
+            minimum_gib: 30,
+        };
+        assert_eq!(pending_label(&preview), "CLI 0.7.0 (92e239909)");
+    }
+
+    #[test]
+    fn paired_update_names_both_parts() {
+        let preview = Preview {
+            cli: change("68da09880", "92e2399099aa"),
+            desktop: change("9c0a6acc9", "aaaaaaaaaaaa"),
+            free_gib: 100,
+            minimum_gib: 30,
+        };
+        assert_eq!(
+            pending_label(&preview),
+            "Desktop 0.7.0 (aaaaaaaaa) + CLI 0.7.0 (92e239909)"
+        );
     }
 }
