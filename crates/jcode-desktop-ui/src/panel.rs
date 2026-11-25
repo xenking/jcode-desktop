@@ -171,6 +171,8 @@ pub(crate) use swarm_indicator::OpenSwarmWorker;
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+#[path = "panel_model_switch.rs"]
+mod model_switch;
 #[path = "panel_speed.rs"]
 mod speed;
 #[path = "panel_mode.rs"]
@@ -781,6 +783,10 @@ pub struct Panel {
     pinned_modes: Vec<String>,
     mode_multiselect: bool,
     mode_catalog: crate::mode_catalog::ModeCatalog,
+    /// A model switch the daemon accepted but holds until the running turn
+    /// ends. The session keeps serving `model` meanwhile, so this is shown
+    /// beside the model chip and never replaces it.
+    pub pending_model: Option<String>,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
     /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
@@ -1785,6 +1791,7 @@ impl Panel {
             pinned_modes: Vec::new(),
             mode_multiselect: false,
             mode_catalog: Default::default(),
+            pending_model: None,
             pending_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
@@ -4739,6 +4746,12 @@ impl Panel {
             ApiEvent::ConnectionPhase { phase, .. } => {
                 self.connection_phase = phase.clone();
             }
+            ApiEvent::ModelSwitch {
+                state,
+                model,
+                error,
+                ..
+            } => self.apply_model_switch(*state, model.as_deref(), error.as_deref(), cx),
             ApiEvent::ModelInfo {
                 provider,
                 model,

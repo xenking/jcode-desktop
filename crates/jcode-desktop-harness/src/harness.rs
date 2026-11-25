@@ -581,6 +581,10 @@ pub enum Command {
         session_id: String,
         model: String,
     },
+    /// Withdraw a model switch the daemon queued behind the running turn.
+    CancelPendingModel {
+        session_id: String,
+    },
     RuntimeCommand {
         session_id: String,
         command: jcode_sdk::api::RuntimeCommand,
@@ -737,6 +741,7 @@ enum SessionCommand {
     RestoreSession,
     Transfer,
     SetModel(String),
+    CancelPendingModel,
     RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>),
     Operation(SessionOperation),
     Stop,
@@ -2176,6 +2181,14 @@ fn run_with_transports(
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
+            }
+            Command::CancelPendingModel { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::CancelPendingModel,
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
             }
             Command::RefreshRuntime { session_id } => {
                 send_to_session_worker(
@@ -4792,6 +4805,14 @@ fn session_worker_with_connector(
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
                                 reason: format!("Failed to switch model: {error}"),
+                            });
+                        }
+                    }
+                    SessionCommand::CancelPendingModel => {
+                        if let Err(error) = client.cancel_pending_model(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Failed to cancel the model switch: {error}"),
                             });
                         }
                     }

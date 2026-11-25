@@ -185,6 +185,7 @@ impl Panel {
                             }))
                     }))
                     .child(self.render_model_control(model_label, effort, cx))
+                    .children(self.render_pending_model_chip(cx))
                     .children(self.render_context_meter(cx)),
             )
             .when(!self.transcript_only && !self.is_pending_session(), |el| {
@@ -697,7 +698,7 @@ impl Render for LocationTooltip {
 
 /// Hover for the effort pill: the pill shows the dot alone, so the level name
 /// has to live here.
-struct EffortTooltip(String);
+pub(super) struct EffortTooltip(pub(super) String);
 
 impl Render for EffortTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

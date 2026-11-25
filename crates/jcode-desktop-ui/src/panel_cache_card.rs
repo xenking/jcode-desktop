@@ -116,6 +116,15 @@ impl CacheTelemetry {
 }
 
 impl Panel {
+    /// The route the cache figures were recorded on, when the session has
+    /// moved to another model since. `None` while they still match.
+    pub(super) fn cache_route_left_behind(&self) -> Option<String> {
+        let (provider, model) = self.cache_telemetry.route.as_ref()?;
+        let current = self.model.as_deref()?;
+        let bare = |model: &str| model.strip_suffix("[1m]").unwrap_or(model).to_owned();
+        (bare(current) != bare(model)).then(|| format!("{provider} · {model}"))
+    }
+
     pub(crate) fn apply_cache_card_fixture(&mut self, warning: bool, cx: &mut Context<Self>) {
         let provider = self.provider.clone().unwrap_or_else(|| "anthropic".into());
         let model = self
@@ -225,10 +234,15 @@ impl Render for CacheTooltip {
         };
         let panel = panel.read(cx);
         let telemetry = &panel.cache_telemetry;
-        let (provider, model) = telemetry.route.as_ref().map_or(
-            (panel.provider.as_deref(), panel.model.as_deref()),
-            |(provider, model)| (Some(provider.as_str()), Some(model.as_str())),
-        );
+        // The title names the model the session runs now, the same one the
+        // composer chip shows. The cache below belongs to the last request,
+        // which may have run on a model the session has since left.
+        let (provider, model) = match (panel.model.as_deref(), telemetry.route.as_ref()) {
+            (Some(_), _) => (panel.provider.as_deref(), panel.model.as_deref()),
+            (None, Some((provider, model))) => (Some(provider.as_str()), Some(model.as_str())),
+            (None, None) => (panel.provider.as_deref(), None),
+        };
+        let previous_route = panel.cache_route_left_behind();
         let title = [Some("Prompt cache"), provider, model]
             .into_iter()
             .flatten()
@@ -249,6 +263,10 @@ impl Render for CacheTooltip {
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
+            .children(previous_route.map(|route| {
+                usage::meter_detail(format!("Figures below are from {route}").into(), theme)
+                    .debug_selector(|| "panel-cache-previous-route".into())
+            }))
             .children(pill.map(|pill| {
                 usage::meter_detail(pill.caption(now).into(), theme)
                     .debug_selector(|| "panel-cache-footer-metric".into())
