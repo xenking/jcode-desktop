@@ -1,8 +1,11 @@
 //! Manual titles use the native SDK operation, never a desktop-only override.
 use super::*;
+use gpui::DismissEvent;
 
-pub(super) struct Editor {
-    // Capture identity, not the active index: navigation may change while editing.
+/// The rename dialog. It captures its target panel, not the active index,
+/// because navigation may change while editing.
+pub(super) struct Rename {
+    workspace: gpui::WeakEntity<Workspace>,
     target: Entity<Panel>,
     input: Entity<PromptInput>,
     error: Option<String>,
@@ -16,6 +19,78 @@ fn validated_title(title: &str) -> Result<String, &'static str> {
         Err("Use a single line for the session title.")
     } else {
         Ok(title.to_owned())
+    }
+}
+
+impl Rename {
+    fn new(
+        workspace: gpui::WeakEntity<Workspace>,
+        target: Entity<Panel>,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let weak = cx.weak_entity();
+        let cancel = weak.clone();
+        let input = cx.new(|cx| {
+            let mut input = PromptInput::new(cx, "Session title", move |title, _, _, app| {
+                let _ = weak.update(app, |this, cx| this.save(&title, cx));
+            })
+            .without_command_completion()
+            .with_on_overlay_cancel(move |app| {
+                let _ = cancel.update(app, |_, cx| cx.emit(DismissEvent));
+                true
+            });
+            input.set_content(title, cx);
+            let mut snapshot = input.snapshot();
+            snapshot.selection_start = 0;
+            snapshot.selection_end = snapshot.content.len();
+            input.restore(snapshot, cx);
+            input
+        });
+        Self {
+            workspace,
+            target,
+            input,
+            error: None,
+        }
+    }
+
+    fn save(&mut self, title: &str, cx: &mut Context<Self>) {
+        let title = match validated_title(title) {
+            Ok(title) => title,
+            Err(error) => {
+                self.error = Some(error.into());
+                cx.notify();
+                return;
+            }
+        };
+        let target = self.target.clone();
+        let sent = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.send_rename(&target, title, cx));
+        match sent {
+            // SessionRenamed is authoritative and updates both tabs and history.
+            // Transport failures use the existing visible session error path.
+            Ok(Ok(())) | Err(_) => cx.emit(DismissEvent),
+            Ok(Err(error)) => {
+                self.error = Some(error.into());
+                cx.notify();
+            }
+        }
+    }
+
+    fn save_current(&mut self, cx: &mut Context<Self>) {
+        let title = self.input.read(cx).content.to_string();
+        self.save(&title, cx);
+    }
+}
+
+impl gpui::EventEmitter<DismissEvent> for Rename {}
+impl ModalView for Rename {}
+
+impl Focusable for Rename {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle.clone()
     }
 }
 
@@ -40,8 +115,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        if let Some(editor) = &self.rename_editor {
-            let focus = editor.input.read(cx).focus_handle.clone();
+        if let Some(open) = self.active_modal::<Rename>(cx) {
+            let focus = open.focus_handle(cx);
             window.focus(&focus, cx);
             return;
         }
@@ -53,82 +128,45 @@ impl Workspace {
             target.read(cx).title.as_ref(),
         )
         .to_string();
-        let weak = cx.weak_entity();
-        let cancel = weak.clone();
-        let input = cx.new(|cx| {
-            let mut input = PromptInput::new(cx, "Session title", move |title, _, _, app| {
-                let _ = weak.update(app, |this, cx| this.save_session_title(&title, cx));
-            })
-            .without_command_completion()
-            .with_on_overlay_cancel(move |app| {
-                let _ = cancel.update(app, |this, cx| this.close_rename_editor(cx));
-                true
-            });
-            input.set_content(title, cx);
-            let mut snapshot = input.snapshot();
-            snapshot.selection_start = 0;
-            snapshot.selection_end = snapshot.content.len();
-            input.restore(snapshot, cx);
-            input
+        let workspace = cx.weak_entity();
+        self.modal_layer.update(cx, |layer, cx| {
+            layer.toggle(window, cx, |_, cx| Rename::new(workspace, target, title, cx))
         });
-        self.focus_pending = false;
-        let focus = input.read(cx).focus_handle.clone();
-        window.focus(&focus, cx);
-        self.rename_editor = Some(Editor {
-            target,
-            input,
-            error: None,
-        });
-        cx.notify();
     }
 
-    fn save_session_title(&mut self, title: &str, cx: &mut Context<Self>) {
-        let Some(editor) = &mut self.rename_editor else {
-            return;
-        };
-        let title = match validated_title(title) {
-            Ok(title) => title,
-            Err(error) => {
-                editor.error = Some(error.into());
-                cx.notify();
-                return;
-            }
-        };
+    /// Send the rename for `target` unless it can no longer take one. The
+    /// error is the dialog's to show.
+    fn send_rename(
+        &mut self,
+        target: &Entity<Panel>,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
         if !self
             .slots
             .iter()
-            .any(|slot| slot.panel.chat() == Some(&editor.target) && !slot.closing)
+            .any(|slot| slot.panel.chat() == Some(target) && !slot.closing)
         {
-            editor.error = Some("This session has been closed.".into());
-            cx.notify();
-            return;
+            return Err("This session has been closed.");
         }
-        if editor.target.read(cx).is_busy() {
-            editor.error =
-                Some("Wait for this session to finish working, then save your title.".into());
-            cx.notify();
-            return;
+        if target.read(cx).is_busy() {
+            return Err("Wait for this session to finish working, then save your title.");
         }
         self.bridge.send(Command::SessionOperation {
-            session_id: editor.target.read(cx).session_id.clone(),
+            session_id: target.read(cx).session_id.clone(),
             operation: harness::SessionOperation::Rename(Some(title)),
         });
-        // SessionRenamed is authoritative and updates both tabs and history.
-        // Transport failures use the existing visible session error path.
-        self.close_rename_editor(cx);
+        Ok(())
     }
+}
 
-    pub(super) fn close_rename_editor(&mut self, cx: &mut Context<Self>) {
-        self.rename_editor = None;
-        self.focus_pending = true;
-        cx.notify();
-    }
-
-    pub(super) fn render_rename_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let editor = self.rename_editor.as_ref().unwrap();
+impl Render for Rename {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("rename-session-overlay")
             .debug_selector(|| "rename-session-overlay".into())
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|_, _: &crate::menu::Cancel, _, cx| cx.emit(DismissEvent)))
             .absolute()
             .inset_0()
             .flex()
@@ -138,8 +176,8 @@ impl Workspace {
             .occlude()
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.close_rename_editor(cx);
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(DismissEvent);
                     cx.stop_propagation();
                 }),
             )
@@ -162,10 +200,7 @@ impl Workspace {
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .capture_action(cx.listener(|this, _: &crate::input::Submit, _, cx| {
                         cx.stop_propagation();
-                        if let Some(editor) = &this.rename_editor {
-                            let title = editor.input.read(cx).content.to_string();
-                            this.save_session_title(&title, cx);
-                        }
+                        this.save_current(cx);
                     }))
                     .child(div().text_size(px(16.0)).child("Rename session"))
                     .child(
@@ -174,8 +209,8 @@ impl Workspace {
                             .text_color(Theme::global().TEXT_DIM)
                             .child("Enter to save · Esc to cancel · F2 to rename"),
                     )
-                    .child(editor.input.clone())
-                    .when_some(editor.error.clone(), |el, error| {
+                    .child(self.input.clone())
+                    .when_some(self.error.clone(), |el, error| {
                         el.child(
                             div()
                                 .text_size(px(12.0))
@@ -197,9 +232,7 @@ impl Workspace {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.close_rename_editor(cx)),
-                                    )
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
                                     .child("Cancel"),
                             )
                             .child(
@@ -212,17 +245,11 @@ impl Workspace {
                                     .cursor_pointer()
                                     .bg(Theme::global().TOOL_BG)
                                     .text_color(Theme::global().ACCENT)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(editor) = &this.rename_editor {
-                                            let title = editor.input.read(cx).content.to_string();
-                                            this.save_session_title(&title, cx);
-                                        }
-                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_current(cx)))
                                     .child("Save"),
                             ),
                     ),
             )
-            .into_any_element()
     }
 }
 

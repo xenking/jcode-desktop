@@ -49,6 +49,13 @@ impl ModalLayer {
         self.active.is_some()
     }
 
+    /// Whether keyboard focus is inside the open modal.
+    pub(crate) fn has_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.focus.contains_focused(window, cx))
+    }
+
     /// The open modal, when it is a `V`.
     pub(crate) fn active<V: ModalView>(&self) -> Option<Entity<V>> {
         let active = self.active.as_ref()?;

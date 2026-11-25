@@ -38,19 +38,20 @@ fn open(mode: Mode, w: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                 limit_reached: true,
                 next_available_at: None,
             },
+            window,
             cx,
         ),
-        Mode::BetaNotice => w.show_beta_notice = true,
+        Mode::BetaNotice => w.show_beta_notice(window, cx),
     }
     cx.notify();
 }
 
-fn is_open(mode: Mode, w: &Workspace) -> bool {
+fn is_open(mode: Mode, w: &Workspace, cx: &gpui::App) -> bool {
     match mode {
-        Mode::Rename => w.rename_editor.is_some(),
+        Mode::Rename => w.active_modal::<super::rename::Rename>(cx).is_some(),
         Mode::FolderPicker => w.folder_picker_dir.is_some(),
-        Mode::UsageReset => w.usage_reset.is_some(),
-        Mode::BetaNotice => w.show_beta_notice,
+        Mode::UsageReset => w.active_modal::<super::usage_reset::UsageReset>(cx).is_some(),
+        Mode::BetaNotice => w.active_modal::<super::beta_notice::BetaNotice>(cx).is_some(),
     }
 }
 
@@ -85,9 +86,9 @@ fn behavior(mode: Mode) -> Behavior {
             takes_focus: true,
         },
         Mode::UsageReset => Behavior {
-            escape_dismisses: false,
+            escape_dismisses: true,
             outside_click_dismisses: false,
-            takes_focus: false,
+            takes_focus: true,
         },
         Mode::BetaNotice => Behavior {
             escape_dismisses: false,
@@ -124,7 +125,7 @@ fn open_mode(
     vcx.update(|window, cx| workspace.update(cx, |w, cx| open(mode, w, window, cx)));
     vcx.run_until_parked();
     assert!(
-        workspace.read_with(vcx, |w, _| is_open(mode, w)),
+        workspace.read_with(vcx, |w, cx| is_open(mode, w, cx)),
         "{mode:?} must open"
     );
 }
@@ -169,7 +170,7 @@ fn escape_dismisses_modes_that_own_it_and_returns_focus(cx: &mut gpui::TestAppCo
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert_eq!(
-            !workspace.read_with(vcx, |w, _| is_open(mode, w)),
+            !workspace.read_with(vcx, |w, cx| is_open(mode, w, cx)),
             behavior(mode).escape_dismisses,
             "{mode:?} escape"
         );
@@ -197,7 +198,7 @@ fn outside_click_dismisses_only_modes_that_allow_it(cx: &mut gpui::TestAppContex
         vcx.simulate_click(outside, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(
-            !workspace.read_with(vcx, |w, _| is_open(mode, w)),
+            !workspace.read_with(vcx, |w, cx| is_open(mode, w, cx)),
             behavior(mode).outside_click_dismisses,
             "{mode:?} outside click"
         );
@@ -235,7 +236,7 @@ fn root_typing_is_not_redirected_to_the_composer_while_a_mode_is_open(
         vcx.run_until_parked();
         assert_eq!(composer_text(&workspace, vcx), "", "{mode:?} redirect");
         assert!(
-            workspace.read_with(vcx, |w, _| is_open(mode, w)),
+            workspace.read_with(vcx, |w, cx| is_open(mode, w, cx)),
             "{mode:?} stays open"
         );
     }

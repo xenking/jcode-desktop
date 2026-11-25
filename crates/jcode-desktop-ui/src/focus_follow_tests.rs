@@ -94,7 +94,7 @@ fn typing_in_rename_field_does_not_focus_composer(cx: &mut gpui::TestAppContext)
     vcx.run_until_parked();
     vcx.update(|window, _| assert!(rename_focus.is_focused(window)));
     workspace.read_with(vcx, |w, cx| {
-        assert!(w.rename_editor.is_some());
+        assert!(w.active_modal::<crate::workspace::rename::Rename>(cx).is_some());
         assert!(
             w.test_panel(0)
                 .unwrap()

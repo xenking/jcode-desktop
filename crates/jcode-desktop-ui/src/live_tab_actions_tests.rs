@@ -51,13 +51,17 @@ fn title_actions_fit_and_rename_does_not_select_or_close(cx: &mut gpui::TestAppC
         assert_eq!(pill.center(), hovered_close.center());
         vcx.simulate_click(rename.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        workspace.read_with(vcx, |w, _| {
+        workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.active, 0);
             assert_eq!(w.slots.len(), 2);
             assert!(w.slots.iter().all(|slot| !slot.closing));
-            assert!(w.rename_editor.is_some());
+            assert!(w.active_modal::<crate::workspace::rename::Rename>(cx).is_some());
         });
-        vcx.update(|_, cx| workspace.update(cx, |w, cx| w.close_rename_editor(cx)));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.modal_layer.update(cx, |layer, cx| layer.hide(window, cx))
+            })
+        });
         vcx.run_until_parked();
     }
 }
@@ -141,7 +145,7 @@ fn hovered_inactive_tab_close_targets_that_tab_only(cx: &mut gpui::TestAppContex
             .map(|slot| slot.panel.read(cx).session_id.as_str())
             .collect();
         assert_eq!(surviving, ["session_fox_original"]);
-        assert!(w.rename_editor.is_none());
+        assert!(w.active_modal::<crate::workspace::rename::Rename>(cx).is_none());
     });
 }
 

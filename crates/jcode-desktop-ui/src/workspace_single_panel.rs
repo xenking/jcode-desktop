@@ -173,12 +173,6 @@ impl Workspace {
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(Self::rename_session))
             .key_context(self.key_context())
-            .capture_action(cx.listener(|this, _: &crate::menu::Cancel, _, cx| {
-                if this.rename_editor.is_some() {
-                    this.close_rename_editor(cx);
-                    cx.stop_propagation();
-                }
-            }))
             // Deliberately omit move/resize/overview/sidebar/workspace
             // actions. The host still handles Ctrl+R, and the panel owns chat,
             // model, login, clipboard, image and transcript shortcuts.
@@ -222,9 +216,7 @@ impl Workspace {
                     .overflow_hidden()
                     .children(content),
             )
-            .when(self.rename_editor.is_some(), |root| {
-                root.child(self.render_rename_editor(cx))
-            })
+            .child(self.modal_layer.clone())
             .when_some(self.render_update_chip(cx), |root, chip| root.child(chip));
         if Theme::is_transitioning() {
             cx.refresh_windows();

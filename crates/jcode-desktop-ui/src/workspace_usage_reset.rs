@@ -5,6 +5,7 @@
 //! provider, an explicit review, then one confirmed redemption. Preparation
 //! pins the login, so switching accounts meanwhile cannot spend another one.
 use super::*;
+use gpui::DismissEvent;
 use crate::accounts::{BankedReset, ResetProvider};
 use jcode_base::usage::{PendingAnthropicLimitReset, PendingOpenAiUsageReset};
 
@@ -51,10 +52,12 @@ pub(super) enum Stage {
     },
 }
 
-pub(super) struct Dialog {
+/// The review dialog, one login's reset at a time.
+pub(super) struct UsageReset {
     pub(super) provider: ResetProvider,
     pub(super) account_label: Option<String>,
     pub(super) stage: Stage,
+    focus: FocusHandle,
     _task: Option<gpui::Task<()>>,
 }
 
@@ -150,14 +153,14 @@ impl Workspace {
     pub(super) fn open_usage_reset_command(
         &mut self,
         request: &crate::ui_actions::OpenUsageReset,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // A redemption in flight keeps its dialog until the result is shown.
-        if matches!(
-            self.usage_reset.as_ref().map(|dialog| &dialog.stage),
-            Some(Stage::Redeeming(_))
-        ) {
+        if self
+            .active_modal::<UsageReset>(cx)
+            .is_some_and(|dialog| dialog.read(cx).redeeming())
+        {
             return;
         }
         let account_label = if live() {
@@ -180,13 +183,25 @@ impl Workspace {
             limit_reached: false,
             next_available_at: None,
         };
-        self.open_usage_reset(&reset, cx);
+        self.open_usage_reset(&reset, window, cx);
     }
 
     /// Open the review for one login's reset and start the read-only check.
-    pub(super) fn open_usage_reset(&mut self, reset: &BankedReset, cx: &mut Context<Self>) {
-        let provider = reset.provider;
-        let label = reset.account_label.clone();
+    pub(super) fn open_usage_reset(
+        &mut self,
+        reset: &BankedReset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (provider, label) = (reset.provider, reset.account_label.clone());
+        let dialog = cx.new(|cx| UsageReset::new(provider, label, cx));
+        self.modal_layer
+            .update(cx, |layer, cx| layer.show(dialog, window, cx));
+    }
+}
+
+impl UsageReset {
+    fn new(provider: ResetProvider, label: Option<String>, cx: &mut Context<Self>) -> Self {
         let task = live().then(|| {
             let check = {
                 let label = label.clone();
@@ -196,13 +211,10 @@ impl Workspace {
             cx.spawn(async move |this, cx| {
                 let result = check.await;
                 let _ = this.update(cx, |this, cx| {
-                    let Some(dialog) = this.usage_reset.as_mut() else {
-                        return;
-                    };
-                    if !matches!(dialog.stage, Stage::Checking) {
+                    if !matches!(this.stage, Stage::Checking) {
                         return;
                     }
-                    dialog.stage = match result {
+                    this.stage = match result {
                         Ok(PrepareResult::Ready(pending)) => Stage::Review(pending),
                         Ok(PrepareResult::Nothing(message)) => Stage::Done { message, ok: false },
                         Err(message) => Stage::Done { message, ok: false },
@@ -211,39 +223,35 @@ impl Workspace {
                 });
             })
         });
-        self.usage_reset = Some(Dialog {
+        Self {
             provider,
             account_label: label,
             stage: Stage::Checking,
+            focus: cx.focus_handle(),
             _task: task,
-        });
-        cx.notify();
+        }
     }
 
-    pub(super) fn close_usage_reset(&mut self, cx: &mut Context<Self>) {
+    fn redeeming(&self) -> bool {
+        matches!(self.stage, Stage::Redeeming(_))
+    }
+
+    pub(super) fn close(&mut self, cx: &mut Context<Self>) {
         // A redemption already sent cannot be recalled. Keep the dialog so the
         // user sees its result instead of guessing.
-        if matches!(
-            self.usage_reset.as_ref().map(|dialog| &dialog.stage),
-            Some(Stage::Redeeming(_))
-        ) {
-            return;
+        if !self.redeeming() {
+            cx.emit(DismissEvent);
         }
-        self.usage_reset = None;
-        cx.notify();
     }
 
-    fn confirm_usage_reset(&mut self, cx: &mut Context<Self>) {
-        let Some(dialog) = self.usage_reset.as_mut() else {
-            return;
-        };
-        let pending = match &dialog.stage {
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        let pending = match &self.stage {
             Stage::Review(pending) | Stage::Uncertain { pending, .. } => pending.clone(),
             _ => return,
         };
-        let provider = dialog.provider;
-        let label = dialog.account_label.clone();
-        dialog.stage = Stage::Redeeming(pending.clone());
+        let provider = self.provider;
+        let label = self.account_label.clone();
+        self.stage = Stage::Redeeming(pending.clone());
         if live() {
             let work = cx.background_executor().spawn(async move {
                 let result = redeem(&pending).await;
@@ -251,17 +259,13 @@ impl Workspace {
                 notify_daemon(provider, label.as_deref());
                 (result, pending)
             });
-            dialog._task = Some(cx.spawn(async move |this, cx| {
+            self._task = Some(cx.spawn(async move |this, cx| {
                 let (result, pending) = work.await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(dialog) = this.usage_reset.as_mut() {
-                        dialog.stage = match result {
-                            RedeemResult::Done { message, ok } => Stage::Done { message, ok },
-                            RedeemResult::Uncertain(message) => {
-                                Stage::Uncertain { message, pending }
-                            }
-                        };
-                    }
+                    this.stage = match result {
+                        RedeemResult::Done { message, ok } => Stage::Done { message, ok },
+                        RedeemResult::Uncertain(message) => Stage::Uncertain { message, pending },
+                    };
                     accounts::request_refresh();
                     cx.notify();
                 });
@@ -269,12 +273,21 @@ impl Workspace {
         }
         cx.notify();
     }
+}
 
-    pub(super) fn render_usage_reset(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+impl gpui::EventEmitter<DismissEvent> for UsageReset {}
+impl ModalView for UsageReset {}
+
+impl Focusable for UsageReset {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for UsageReset {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
-        let Some(dialog) = self.usage_reset.as_ref() else {
-            return div().into_any_element();
-        };
+        let dialog = &*self;
         let title = match dialog.provider {
             ResetProvider::OpenAi => "Reset OpenAI usage limits",
             ResetProvider::Claude => "Reset Claude session limit",
@@ -370,7 +383,7 @@ impl Workspace {
                     .hover(|el| el.bg(theme.INLINE_CODE_BG))
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        this.close_usage_reset(cx);
+                        this.close(cx);
                     }))
                     .child(cancel_label),
             );
@@ -395,7 +408,7 @@ impl Workspace {
                             .hover(|el| el.opacity(0.9))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 cx.stop_propagation();
-                                this.confirm_usage_reset(cx);
+                                this.confirm(cx);
                             }))
                     })
                     .child(label),
@@ -405,6 +418,9 @@ impl Workspace {
         div()
             .id("usage-reset-overlay")
             .debug_selector(|| "usage-reset-overlay".into())
+            .track_focus(&self.focus)
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, _, cx| this.close(cx)))
             .absolute()
             .inset_0()
             .flex()
@@ -449,7 +465,6 @@ impl Workspace {
                     .child(body)
                     .child(actions),
             )
-            .into_any_element()
     }
 }
 
@@ -511,8 +526,9 @@ mod tests {
         vcx.simulate_click(pill.center(), gpui::Modifiers::none());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("usage-reset-dialog").is_some());
-        workspace.read_with(vcx, |w, _| {
-            let dialog = w.usage_reset.as_ref().unwrap();
+        workspace.read_with(vcx, |w, cx| {
+            let dialog = w.active_modal::<UsageReset>(cx).unwrap();
+            let dialog = dialog.read(cx);
             assert_eq!(dialog.provider, ResetProvider::Claude);
             // Tests never reach the network: the dialog waits in its read-only check.
             assert!(matches!(dialog.stage, Stage::Checking));
@@ -523,7 +539,7 @@ mod tests {
         vcx.simulate_click(cancel.center(), gpui::Modifiers::none());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("usage-reset-dialog").is_none());
-        workspace.read_with(vcx, |w, _| assert!(w.usage_reset.is_none()));
+        workspace.read_with(vcx, |w, cx| assert!(w.active_modal::<UsageReset>(cx).is_none()));
     }
 
     #[gpui::test]
@@ -551,9 +567,12 @@ mod tests {
             w
         });
         vcx.run_until_parked();
-        workspace.update(vcx, |w, cx| {
-            w.open_usage_reset(&session_reset(true), cx);
-            w.usage_reset.as_mut().unwrap().stage = Stage::Done {
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| w.open_usage_reset(&session_reset(true), window, cx))
+        });
+        let dialog = workspace.read_with(vcx, |w, cx| w.active_modal::<UsageReset>(cx).unwrap());
+        dialog.update(vcx, |dialog, cx| {
+            dialog.stage = Stage::Done {
                 message: "Claude session limit reset.".into(),
                 ok: true,
             };
@@ -562,8 +581,9 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("usage-reset-result").is_some());
         assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
-        workspace.update(vcx, |w, cx| w.close_usage_reset(cx));
-        workspace.read_with(vcx, |w, _| assert!(w.usage_reset.is_none()));
+        dialog.update(vcx, |dialog, cx| dialog.close(cx));
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| assert!(w.active_modal::<UsageReset>(cx).is_none()));
     }
 
     #[test]

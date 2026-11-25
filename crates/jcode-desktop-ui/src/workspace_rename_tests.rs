@@ -62,8 +62,8 @@ fn f2_enter_renames_selected_session_without_consuming_composer(cx: &mut gpui::T
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("rename-session-dialog").is_some());
     workspace.read_with(vcx, |w, cx| {
-        let editor = w.rename_editor.as_ref().unwrap();
-        let snapshot = editor.input.read(cx).snapshot();
+        let editor = w.active_modal::<Rename>(cx).unwrap();
+        let snapshot = editor.read(cx).input.read(cx).snapshot();
         assert_eq!(snapshot.selection_start, 0);
         assert_eq!(snapshot.selection_end, snapshot.content.len());
     });
@@ -80,7 +80,7 @@ fn f2_enter_renames_selected_session_without_consuming_composer(cx: &mut gpui::T
         _ => panic!("expected rename only"),
     }
     workspace.read_with(vcx, |w, cx| {
-        assert!(w.rename_editor.is_none());
+        assert!(w.active_modal::<Rename>(cx).is_none());
         let panel = w.slots[0].panel.read(cx);
         assert_eq!(panel.input.read(cx).content.as_ref(), "draft");
     });
@@ -105,16 +105,16 @@ fn button_cancel_escape_and_blank_save_never_rename(cx: &mut gpui::TestAppContex
     let (workspace, vcx, commands) = setup(cx);
     click_rename(vcx);
     click(vcx, "rename-session-cancel");
-    assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_none()));
+    assert!(workspace.read_with(vcx, |w, cx| w.active_modal::<Rename>(cx).is_none()));
     click_rename(vcx);
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
-    assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_none()));
+    assert!(workspace.read_with(vcx, |w, cx| w.active_modal::<Rename>(cx).is_none()));
     click_rename(vcx);
     vcx.simulate_keystrokes("backspace");
     click(vcx, "rename-session-save");
-    assert!(workspace.read_with(vcx, |w, _| {
-        w.rename_editor.as_ref().unwrap().error.is_some()
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.active_modal::<Rename>(cx).unwrap().read(cx).error.is_some()
     }));
     assert!(commands.try_recv().is_err());
 }
@@ -125,10 +125,11 @@ fn save_keeps_captured_identity_and_server_event_updates_titles(cx: &mut gpui::T
     click_rename(vcx);
     workspace.update(vcx, |w, cx| {
         w.active = 1;
-        w.rename_editor
-            .as_ref()
+        w.active_modal::<Rename>(cx)
             .unwrap()
+            .read(cx)
             .input
+            .clone()
             .update(cx, |input, cx| {
                 input.set_content("  New title 🦊  ".into(), cx)
             });
@@ -184,7 +185,7 @@ fn non_session_panels_and_pending_drafts_cannot_be_renamed(cx: &mut gpui::TestAp
         });
         vcx.simulate_keystrokes("f2");
         vcx.run_until_parked();
-        assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_none()));
+        assert!(workspace.read_with(vcx, |w, cx| w.active_modal::<Rename>(cx).is_none()));
         assert!(vcx.debug_bounds("rename-session-button").is_none());
     }
     assert!(commands.try_recv().is_err());
@@ -195,8 +196,8 @@ fn enter_validates_blank_and_preserves_literal_slash_titles(cx: &mut gpui::TestA
     let (workspace, vcx, commands) = setup(cx);
     vcx.simulate_keystrokes("f2 backspace enter");
     vcx.run_until_parked();
-    assert!(workspace.read_with(vcx, |w, _| {
-        w.rename_editor.as_ref().unwrap().error.is_some()
+    assert!(workspace.read_with(vcx, |w, cx| {
+        w.active_modal::<Rename>(cx).unwrap().read(cx).error.is_some()
     }));
     assert!(commands.try_recv().is_err());
     vcx.simulate_keystrokes("/ m o d e l space p l a n enter");
@@ -215,11 +216,10 @@ fn enter_validates_blank_and_preserves_literal_slash_titles(cx: &mut gpui::TestA
 fn closed_target_does_not_rename_its_neighbor(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx);
     click_rename(vcx);
-    workspace.update(vcx, |w, cx| {
-        w.slots[0].closing = true;
-        w.save_session_title("Never rename neighbor", cx);
-        assert!(w.rename_editor.as_ref().unwrap().error.is_some());
-    });
+    workspace.update(vcx, |w, _| w.slots[0].closing = true);
+    let editor = workspace.read_with(vcx, |w, cx| w.active_modal::<Rename>(cx).unwrap());
+    editor.update(vcx, |editor, cx| editor.save("Never rename neighbor", cx));
+    editor.read_with(vcx, |editor, _| assert!(editor.error.is_some()));
     assert!(commands.try_recv().is_err());
 }
 
@@ -231,15 +231,17 @@ fn busy_session_retains_title_for_retry_after_turn(cx: &mut gpui::TestAppContext
         w.slots[0]
             .panel
             .update(cx, |panel, _| panel.status = "running".into());
-        w.rename_editor
-            .as_ref()
+        w.active_modal::<Rename>(cx)
             .unwrap()
+            .read(cx)
             .input
+            .clone()
             .update(cx, |input, cx| input.set_content("My title".into(), cx));
     });
     click(vcx, "rename-session-save");
     workspace.read_with(vcx, |w, cx| {
-        let editor = w.rename_editor.as_ref().unwrap();
+        let editor = w.active_modal::<Rename>(cx).unwrap();
+        let editor = editor.read(cx);
         assert!(editor.error.is_some());
         assert_eq!(editor.input.read(cx).content.as_ref(), "My title");
     });
@@ -276,7 +278,7 @@ fn rename_button_stays_clickable_without_squeezing_compact_tabs(cx: &mut gpui::T
             vcx.simulate_keystrokes("f2");
             vcx.run_until_parked();
         }
-        assert!(workspace.read_with(vcx, |w, _| w.rename_editor.is_some()));
+        assert!(workspace.read_with(vcx, |w, cx| w.active_modal::<Rename>(cx).is_some()));
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
     }

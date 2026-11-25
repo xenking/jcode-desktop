@@ -118,6 +118,7 @@ use crate::accounts;
 use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
+use crate::modal_layer::{HiddenWithoutFocus, ModalLayer, ModalView};
 use crate::panel::{Panel, PanelSnapshot};
 use crate::panel_item::PanelItem;
 use crate::performance::{
@@ -868,7 +869,6 @@ pub struct Workspace {
     sidebar_custom_width: f32,
     sidebar_resizing: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
-    show_beta_notice: bool,
     account_sign_in: account_sign_in::State,
     account_menu: account_menu::State,
     compact_sidebar_open: bool,
@@ -960,7 +960,6 @@ pub struct Workspace {
     accounts_scroll_remainder: f32,
     accounts_layout_pending: bool,
     /// Review and redemption of one login's banked usage reset.
-    usage_reset: Option<usage_reset::Dialog>,
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
@@ -1011,7 +1010,9 @@ pub struct Workspace {
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
     voice_settings: voice_settings::VoiceSettings,
-    rename_editor: Option<rename::Editor>,
+    /// Rename, folder picker, usage reset and the beta notice live here, one
+    /// at a time, each as its own view.
+    modal_layer: Entity<ModalLayer>,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
@@ -1038,10 +1039,26 @@ impl Workspace {
     pub(super) fn key_context(&self) -> gpui::KeyContext {
         let mut context = gpui::KeyContext::default();
         context.add(KEY_CONTEXT);
-        if self.rename_editor.is_some() || self.compact_sidebar_open {
+        if self.compact_sidebar_open {
             context.add(crate::menu::CONTEXT);
         }
         context
+    }
+
+    fn new_modal_layer(cx: &mut Context<Self>) -> Entity<ModalLayer> {
+        use gpui::AppContext as _;
+        let layer = cx.new(|_| ModalLayer::default());
+        // A modal restored after a reload has no earlier focus to return to.
+        cx.subscribe(&layer, |this, _, _: &HiddenWithoutFocus, cx| {
+            this.focus_pending = true;
+            cx.notify();
+        })
+        .detach();
+        layer
+    }
+
+    fn active_modal<V: ModalView>(&self, cx: &App) -> Option<Entity<V>> {
+        self.modal_layer.read(cx).active::<V>()
     }
 
     pub fn new(
@@ -1273,10 +1290,6 @@ impl Workspace {
             single_panel,
             launch: launch.clone(),
             resume: None,
-            show_beta_notice: snapshot.is_none()
-                && !single_panel
-                && !(harness::screenshot_mode()
-                    && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_HIDE_BETA").is_some()),
             account_sign_in: account_sign_in::State::startup(),
             account_menu: account_menu::State::startup(),
             show_minimap: false,
@@ -1344,7 +1357,6 @@ impl Workspace {
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
-            usage_reset: None,
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -1377,7 +1389,7 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             voice_settings: Default::default(),
-            rename_editor: None,
+            modal_layer: Self::new_modal_layer(cx),
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -1391,6 +1403,13 @@ impl Workspace {
             _performance_task: performance_task,
             _live_profile_task: crate::live_profile::spawn(window, cx),
         };
+        if snapshot.is_none()
+            && !single_panel
+            && !(harness::screenshot_mode()
+                && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_HIDE_BETA").is_some())
+        {
+            workspace.show_beta_notice(window, cx);
+        }
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
         } else if harness::screenshot_mode()
@@ -1873,7 +1892,6 @@ impl Workspace {
             single_panel: false,
             launch: Default::default(),
             resume: None,
-            show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             account_menu: account_menu::State::default(),
             show_sidebar: true,
@@ -1941,7 +1959,6 @@ impl Workspace {
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
-            usage_reset: None,
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -1974,7 +1991,7 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             voice_settings: Default::default(),
-            rename_editor: None,
+            modal_layer: Self::new_modal_layer(cx),
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -4487,8 +4504,8 @@ impl Workspace {
         cx.subscribe_in(
             &panel,
             window,
-            move |this, _, event: &crate::panel::AccountsPanelRedeemReset, _, cx| {
-                this.open_usage_reset(&event.0, cx);
+            move |this, _, event: &crate::panel::AccountsPanelRedeemReset, window, cx| {
+                this.open_usage_reset(&event.0, window, cx);
             },
         )
         .detach();
@@ -8583,9 +8600,9 @@ impl Workspace {
                                 })
                                 .into()
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.open_usage_reset(&reset, cx);
+                                this.open_usage_reset(&reset, window, cx);
                             }))
                             .child(label),
                     );
@@ -10305,11 +10322,9 @@ impl Render for Workspace {
                     && !this.overview
                     && !this.overview_progress.is_animating()
                     && !this.account_sign_in.visible
-                    && !this.show_beta_notice
                     && this.onboarding_launch.error.is_none()
-                    && this.rename_editor.is_none()
+                    && !this.modal_layer.read(cx).has_active()
                     && this.folder_picker_dir.is_none()
-                    && this.usage_reset.is_none()
                     && !this.compact_sidebar_open
                     && let Some(slot) = this.slots.get(this.active).filter(|slot| !slot.closing)
                     && slot
@@ -10333,16 +10348,13 @@ impl Render for Workspace {
             }))
             .key_context(self.key_context())
             .capture_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
-                if this.rename_editor.is_some() {
-                    this.close_rename_editor(cx);
-                } else if this.compact_sidebar_open {
+                // An open modal owns Cancel, and closes itself.
+                if this.compact_sidebar_open && !this.modal_layer.read(cx).has_focus(window, cx) {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
                     cx.notify();
-                } else {
-                    return;
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }))
             // Navigation belongs to the canvas, regardless of which control in
             // the active panel currently owns keyboard focus. Capture these at
@@ -10501,15 +10513,7 @@ impl Render for Workspace {
                 self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
                 |root| root.child(self.render_folder_picker(cx)),
             )
-            .when(self.rename_editor.is_some(), |root| {
-                root.child(self.render_rename_editor(cx))
-            })
-            .when(self.usage_reset.is_some(), |root| {
-                root.child(self.render_usage_reset(cx))
-            })
-            .when(self.show_beta_notice, |root| {
-                root.child(self.render_beta_notice(window, cx))
-            })
+            .child(self.modal_layer.clone())
             .children(self.render_applet_overlays(window, cx))
             .children(self.render_applet_consent(cx))
             .children(self.render_applet_toast(cx))

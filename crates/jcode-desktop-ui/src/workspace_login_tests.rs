@@ -412,7 +412,8 @@ fn reset_composer_command_opens_read_only_claude_review(cx: &mut gpui::TestAppCo
     submit(vcx, "/reset usage limits claude");
     assert!(vcx.debug_bounds("usage-reset-dialog").is_some());
     workspace.read_with(vcx, |w, cx| {
-        let dialog = w.usage_reset.as_ref().expect("reset dialog");
+        let dialog = w.active_modal::<usage_reset::UsageReset>(cx).expect("reset dialog");
+        let dialog = dialog.read(cx);
         assert_eq!(dialog.provider, crate::accounts::ResetProvider::Claude);
         // Tests never reach the network, so the dialog stays in its read-only check.
         assert!(matches!(dialog.stage, usage_reset::Stage::Checking));
@@ -422,12 +423,15 @@ fn reset_composer_command_opens_read_only_claude_review(cx: &mut gpui::TestAppCo
     });
     assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
     click(vcx, "usage-reset-cancel");
-    workspace.read_with(vcx, |w, _| assert!(w.usage_reset.is_none()));
+    workspace.read_with(vcx, |w, cx| {
+        assert!(w.active_modal::<usage_reset::UsageReset>(cx).is_none())
+    });
 
     submit(vcx, "/reset openai");
-    workspace.read_with(vcx, |w, _| {
+    workspace.read_with(vcx, |w, cx| {
         assert_eq!(
-            w.usage_reset.as_ref().map(|dialog| dialog.provider),
+            w.active_modal::<usage_reset::UsageReset>(cx)
+                .map(|dialog| dialog.read(cx).provider),
             Some(crate::accounts::ResetProvider::OpenAi)
         );
     });

@@ -1,6 +1,7 @@
 //! A non-blocking startup notification with a three-second countdown.
 use super::*;
 use crate::components::Tooltip;
+use gpui::DismissEvent;
 use gpui::{Animation, AnimationExt};
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
@@ -53,33 +54,51 @@ fn countdown_ring(progress: f32) -> gpui::AnyElement {
 }
 
 impl Workspace {
-    pub(super) fn dismiss_beta_notice(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.show_beta_notice = false;
-        cx.notify();
-    }
-
-    pub(super) fn render_beta_notice(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let theme = Theme::global();
-        let workspace = cx.weak_entity();
-        // The task lives only while the notification is rendered. Repaints do not
-        // restart it, and manual dismissal cancels it without stealing focus later.
-        window.use_keyed_state("desktop-beta-timer", cx, |window, cx| {
-            let timer = cx.background_executor().timer(COUNTDOWN);
-            cx.spawn_in(window, async move |_, cx| {
-                timer.await;
-                let _ = cx.update(|window, cx| {
-                    let _ = workspace.update(cx, |workspace, cx| {
-                        if workspace.show_beta_notice {
-                            workspace.dismiss_beta_notice(window, cx);
-                        }
-                    });
-                });
-            })
+    pub(super) fn show_beta_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.modal_layer.update(cx, |layer, cx| {
+            layer.toggle(window, cx, |_, cx| BetaNotice::new(cx))
         });
+    }
+}
+
+/// A notification, not a dialog: it never takes focus, keys or clicks, and
+/// dismisses itself when the countdown ends.
+pub(super) struct BetaNotice {
+    focus: FocusHandle,
+    // Dropped with the view, so a manual dismissal cancels the countdown.
+    _countdown: gpui::Task<()>,
+}
+
+impl BetaNotice {
+    pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        let timer = cx.background_executor().timer(COUNTDOWN);
+        Self {
+            focus: cx.focus_handle(),
+            _countdown: cx.spawn(async move |this, cx| {
+                timer.await;
+                let _ = this.update(cx, |_, cx| cx.emit(DismissEvent));
+            }),
+        }
+    }
+}
+
+impl gpui::EventEmitter<DismissEvent> for BetaNotice {}
+
+impl ModalView for BetaNotice {
+    fn takes_focus(&self) -> bool {
+        false
+    }
+}
+
+impl Focusable for BetaNotice {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for BetaNotice {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
         div()
             .id("desktop-beta-notice")
             .debug_selector(|| "desktop-beta-notice".into())
@@ -134,8 +153,8 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.ACCENT.opacity(0.15)))
                     .tooltip(Tooltip::text("Dismiss notification").builder())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.dismiss_beta_notice(window, cx);
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(DismissEvent);
                         cx.stop_propagation();
                     }))
                     .child(
@@ -148,7 +167,6 @@ impl Workspace {
                             ),
                     ),
             )
-            .into_any_element()
     }
 }
 
@@ -161,7 +179,7 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
-            w.show_beta_notice = true;
+            w.show_beta_notice(window, cx);
             w.restore_focus(window, cx);
             w
         });
@@ -199,7 +217,7 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
-            w.show_beta_notice = true;
+            w.show_beta_notice(window, cx);
             w.restore_focus(window, cx);
             w
         });
@@ -215,7 +233,7 @@ mod tests {
         vcx.executor().advance_clock(COUNTDOWN);
         vcx.run_until_parked();
         vcx.update(|window, _| assert!(other_focus.is_focused(window)));
-        workspace.read_with(vcx, |w, _| assert!(!w.show_beta_notice));
+        workspace.read_with(vcx, |w, cx| assert!(w.active_modal::<BetaNotice>(cx).is_none()));
     }
 
     #[gpui::test]
@@ -226,7 +244,7 @@ mod tests {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
             w.open_startup_draft(cx);
-            w.show_beta_notice = true;
+            w.show_beta_notice(window, cx);
             w.restore_focus(window, cx);
             w
         });
@@ -263,7 +281,7 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
-            w.show_beta_notice = true;
+            w.show_beta_notice(window, cx);
             w.restore_focus(window, cx);
             w
         });
@@ -293,7 +311,7 @@ mod tests {
     fn beta_notification_fits_compact_and_wide_windows(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.show_beta_notice = true;
+            w.show_beta_notice(window, cx);
             w.restore_focus(window, cx);
             w
         });
