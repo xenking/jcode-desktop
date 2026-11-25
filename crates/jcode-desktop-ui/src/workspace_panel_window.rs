@@ -12,11 +12,11 @@ pub(crate) fn open_terminal_window(
         let handle = handle.downcast::<PanelWindow>()?;
         handle
             .read(cx)
-            .is_ok_and(|root| root.item.terminal().is_some())
+            .is_ok_and(|root| root.item.profile().terminal().is_some())
             .then_some(handle)
     }) {
         return handle.update(cx, |root, window, cx| {
-            root.item.focus_input(window, cx);
+            root.item.surface().focus_input(window, cx);
             window.activate_window();
         });
     }
@@ -31,7 +31,7 @@ pub(crate) fn open_terminal_window(
             window.activate_window();
             let terminal = cx.new(|cx| TerminalPanel::new(working_dir, None, None, host, cx));
             let item = PanelItem::Terminal(terminal);
-            item.focus_input(window, cx);
+            item.surface().focus_input(window, cx);
             let origin = window.window_handle();
             cx.new(|_| PanelWindow::new(item, None, None, origin))
         },
@@ -86,7 +86,7 @@ pub(crate) fn open_file_window(
         true,
         cx,
     )?
-    .file()
+    .profile().file()
     .cloned()
     .ok_or_else(|| anyhow::anyhow!("the window for this file hosts another kind"))
 }
@@ -116,7 +116,7 @@ pub(crate) fn open_item_window(
             root.source_session = source_session;
             root.source_window = origin;
             if activate {
-                root.item.focus_input(window, cx);
+                root.item.surface().focus_input(window, cx);
                 window.activate_window();
             }
             existing
@@ -130,7 +130,7 @@ pub(crate) fn open_item_window(
             ..Default::default()
         },
         move |window, cx| {
-            window.set_window_title(&format!("{} · Jcode", item.title(cx)));
+            window.set_window_title(&format!("{} · Jcode", item.profile().title(cx)));
             if activate {
                 window.activate_window();
             }
@@ -172,7 +172,7 @@ pub(crate) fn open_item_window(
                     })
                     .unwrap_or(true)
                 });
-                item.focus_input(window, cx);
+                item.surface().focus_input(window, cx);
                 PanelWindow::new(
                     item,
                     source.as_ref().map(Entity::downgrade),
@@ -209,7 +209,7 @@ impl PanelWindow {
 
     /// Unsaved edits may veto the close. Other kinds never do.
     fn confirm_close(&self, cx: &mut App) -> bool {
-        self.item.confirm_close(cx)
+        self.item.surface().confirm_close(cx)
     }
 
     /// An agent deletion must not activate the source of a background document.
@@ -293,7 +293,7 @@ impl Render for PanelWindow {
             }
         });
         // A terminal owns Escape and its own close, so it never dismisses here.
-        let dismissible = self.item.terminal().is_none();
+        let dismissible = self.item.profile().terminal().is_none();
         div()
             .debug_selector(|| "panel-window-root".into())
             .size_full()
@@ -327,7 +327,7 @@ impl Render for PanelWindow {
                 },
             ))
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
-                if this.item.terminal().is_some() {
+                if this.item.profile().terminal().is_some() {
                     cx.propagate();
                     return;
                 }
@@ -358,7 +358,7 @@ impl Render for PanelWindow {
                         this.close(false, window, cx);
                     }))
             })
-            .child(self.item.view())
+            .child(self.item.surface().view())
     }
 }
 
@@ -378,7 +378,7 @@ mod tests {
         });
         vcx.run_until_parked();
         let item = window_view.read_with(vcx, |view, _| view.item.clone());
-        vcx.update(|window, cx| item.focus_input(window, cx));
+        vcx.update(|window, cx| item.surface().focus_input(window, cx));
         vcx.simulate_keystrokes("escape");
         assert!(window_view.read_with(vcx, |view, _| view.finished));
     }
@@ -398,7 +398,7 @@ mod tests {
         let window = window.expect("terminal window is a PanelWindow");
         window
             .update(cx, |root, _, _| {
-                assert!(root.item.terminal().is_some());
+                assert!(root.item.profile().terminal().is_some());
                 assert_eq!(root.window_background, Some(Theme::window_background()));
             })
             .unwrap();
@@ -443,7 +443,7 @@ mod tests {
         });
         vcx.run_until_parked();
         let item = window_view.read_with(vcx, |view, _| view.item.clone());
-        vcx.update(|window, cx| item.focus_input(window, cx));
+        vcx.update(|window, cx| item.surface().focus_input(window, cx));
         vcx.simulate_keystrokes("escape");
         assert!(!window_view.read_with(vcx, |view, _| view.finished));
     }
