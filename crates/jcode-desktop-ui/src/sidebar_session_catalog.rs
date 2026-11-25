@@ -1,5 +1,5 @@
 use super::*;
-use crate::components::Tooltip;
+use crate::components::{Pill, PillVariant, Tooltip};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,42 +41,39 @@ fn pill(
     label: &'static str,
     tooltip: &'static str,
     selected: bool,
-) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    crate::keyboard::button(div().id(gpui::SharedString::from(format!("{surface}-{id}"))))
-        .tab_index(3)
-        .relative()
-        .debug_selector(move || format!("{surface}-{id}"))
-        .children(crate::fixture_control_targets::marker(
-            || format!("{surface}-{id}"),
-            || None,
-        ))
-        .min_w_0()
-        .px(px(if surface == "sidebar" { 2.0 } else { 4.0 }))
-        .h(px(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .cursor_pointer()
-        .text_size(px(11.0))
-        .text_color(if selected { theme.TEXT } else { theme.TEXT_DIM })
-        .when(selected, |el| el.bg(theme.TOOL_BG))
-        .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
-        .tooltip(Tooltip::text(tooltip).builder())
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .debug_selector(move || {
-                    if selected {
-                        format!("{surface}-{id}-selected")
-                    } else {
-                        format!("{surface}-{id}-label")
-                    }
-                })
-                .child(label),
-        )
+) -> Pill {
+    Pill::unlabeled(
+        PillVariant::Ghost,
+        gpui::SharedString::from(format!("{surface}-{id}")),
+        label,
+    )
+    .selected(selected)
+    .tab_index(3)
+    .relative()
+    .debug_selector(format!("{surface}-{id}"))
+    .children(crate::fixture_control_targets::marker(
+        || format!("{surface}-{id}"),
+        || None,
+    ))
+    .min_w_0()
+    .flex_shrink(1.0)
+    .gap_0()
+    .px(px(if surface == "sidebar" { 2.0 } else { 4.0 }))
+    .h(px(22.0))
+    .tooltip(Tooltip::text(tooltip))
+    .child(
+        div()
+            .min_w_0()
+            .truncate()
+            .debug_selector(move || {
+                if selected {
+                    format!("{surface}-{id}-selected")
+                } else {
+                    format!("{surface}-{id}-label")
+                }
+            })
+            .child(label),
+    )
 }
 
 pub(super) fn agent_badge() -> gpui::Div {

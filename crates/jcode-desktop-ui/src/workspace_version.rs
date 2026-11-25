@@ -7,6 +7,7 @@
 //! and the account popup names the installed and the offered version with the
 //! one button that applies it. Nothing else in the chrome mentions versions.
 use super::*;
+use crate::components::Pill;
 use crate::updates::{ReleaseStatus, UpdateState};
 
 /// What the sidebar offers about an update, when it offers anything.
@@ -128,20 +129,11 @@ pub(super) fn render_version_block(
         );
     if let Some(offer) = &block.offer {
         section = section.child(
-            div()
-                .id("account-update-button")
-                .debug_selector(|| "account-update-button".into())
+            Pill::primary("account-update-button", offer.action)
+                .debug_selector("account-update-button")
                 .h(px(26.0))
                 .px_3()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .cursor_pointer()
-                .bg(theme.ACCENT)
-                .text_color(theme.BG)
-                .hover(|el| el.opacity(0.85))
-                .child(offer.action)
+                .text_size(px(11.0))
                 .on_click(on_action),
         );
     }

@@ -1,3 +1,4 @@
+use crate::components::{Pill, PillVariant};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -89,22 +90,19 @@ pub(crate) fn render(window: &Window, cx: &App) -> Option<AnyElement> {
         BlockedAction::ALL.into_iter().map(|action| {
             let primary = action == BlockedAction::RetryWhenIdle;
             let label = action.label();
-            div()
-                .id(label)
-                .debug_selector(move || label.into())
-                .px_4()
-                .py_1()
-                .rounded_full()
-                .cursor_pointer()
-                .bg(if primary {
-                    theme.ACCENT
+            Pill::new(
+                if primary {
+                    PillVariant::Primary
                 } else {
-                    theme.HEADER_BG
-                })
-                .text_color(if primary { theme.BG } else { theme.TEXT })
-                .hover(|button| button.opacity(0.85))
-                .on_click(move |_, window, cx| choose(action, window, cx))
-                .child(label)
+                    PillVariant::Secondary
+                },
+                label,
+                label,
+            )
+            .debug_selector(label)
+            .px_4()
+            .py_1()
+            .on_click(move |_, window, cx| choose(action, window, cx))
         }),
     );
     Some(div()

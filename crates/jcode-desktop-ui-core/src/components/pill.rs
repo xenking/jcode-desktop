@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, FocusHandle, FontWeight, Role, SharedString,
-    StyleRefinement, Window, div, px, svg,
+    AnyElement, App, ClickEvent, ElementId, FocusHandle, FontWeight, MouseButton, Role,
+    SharedString, StyleRefinement, Window, div, px, svg,
 };
 
 use super::{Tooltip, focus_ring};
@@ -61,7 +61,10 @@ pub struct Pill {
     label: Option<SharedString>,
     aria_label: Option<SharedString>,
     icon: Option<&'static [u8]>,
+    icon_size: Option<f32>,
     glyph: Option<SharedString>,
+    occlude: bool,
+    keep_focus: bool,
     selected: bool,
     disabled: bool,
     tooltip: Option<Tooltip>,
@@ -85,7 +88,10 @@ impl Pill {
             label: Some(label.into()),
             aria_label: None,
             icon: None,
+            icon_size: None,
             glyph: None,
+            occlude: false,
+            keep_focus: false,
             selected: false,
             disabled: false,
             tooltip: None,
@@ -118,6 +124,19 @@ impl Pill {
         Self::new(PillVariant::Ghost, id, label)
     }
 
+    /// A pill whose content is supplied as children, so it has no visible
+    /// label to name it. The accessible name is required.
+    pub fn unlabeled(
+        variant: PillVariant,
+        id: impl Into<ElementId>,
+        aria_label: impl Into<SharedString>,
+    ) -> Self {
+        let mut pill = Self::new(variant, id, "");
+        pill.label = None;
+        pill.aria_label = Some(aria_label.into());
+        pill
+    }
+
     /// A round, icon-only ghost button. It has no visible text, so the
     /// accessible name is required.
     pub fn icon_button(
@@ -125,16 +144,36 @@ impl Pill {
         icon: &'static [u8],
         aria_label: impl Into<SharedString>,
     ) -> Self {
-        let mut pill = Self::new(PillVariant::Ghost, id, "");
-        pill.label = None;
-        pill.aria_label = Some(aria_label.into());
-        pill.icon = Some(icon);
-        pill.size(px(28.)).p_0()
+        Self::unlabeled(PillVariant::Ghost, id, aria_label)
+            .icon(icon)
+            .size(px(28.))
+            .p_0()
     }
 
     /// A leading SVG glyph, drawn in the pill's text color.
     pub fn icon(mut self, icon: &'static [u8]) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The icon's edge in pixels. Defaults to 12, or 14 for full-size pills.
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_size = Some(size);
+        self
+    }
+
+    /// Blocks hover and clicks from reaching whatever is behind the pill,
+    /// for controls that float over a clickable row or header.
+    pub fn occlude(mut self) -> Self {
+        self.occlude = true;
+        self
+    }
+
+    /// A pointer press does not move keyboard focus to the pill. Use for
+    /// toolbar buttons that must leave focus in the composer. Tab and
+    /// Enter/Space still work.
+    pub fn keep_focus(mut self) -> Self {
+        self.keep_focus = true;
         self
     }
 
@@ -291,6 +330,12 @@ impl RenderOnce for Pill {
         } else {
             el = el.opacity(0.45);
         }
+        if self.occlude {
+            el = el.occlude();
+        }
+        if self.keep_focus {
+            el = el.on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default());
+        }
         if let Some(tooltip) = self.tooltip {
             if let Some(hint) = tooltip.key_hint_text() {
                 el = el.aria_keyshortcuts(hint);
@@ -306,7 +351,7 @@ impl RenderOnce for Pill {
             el.child(
                 svg()
                     .data(icon)
-                    .size(px(if small { 12. } else { 14. }))
+                    .size(px(self.icon_size.unwrap_or(if small { 12. } else { 14. })))
                     .flex_none()
                     .text_color(fg),
             )

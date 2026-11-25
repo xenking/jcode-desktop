@@ -1,6 +1,6 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
-use crate::components::Tooltip;
+use crate::components::{Pill, Tooltip};
 
 const COUNT: usize = 13;
 const STEP: f32 = 48.0;
@@ -249,35 +249,21 @@ impl Workspace {
                             .text_color(Theme::global().TEXT_DIM),
                     ),
                 );
-        let owner = cx.weak_entity();
-        let toggle = crate::keyboard::press_button(
-            div().id("workspace-sidebar-toggle"),
-            move |window, cx| {
-                window.prevent_default();
-                cx.stop_propagation();
-                let _ = owner.update(cx, |this, cx| {
-                    this.sidebar_roller.expanded = false;
-                    this.toggle_sidebar(&ToggleSidebar, window, cx);
-                });
-            },
+        let toggle = Pill::icon_button(
+            "workspace-sidebar-toggle",
+            include_bytes!("../../../assets/icons/menu.svg").as_slice(),
+            "Hide sidebar",
         )
-        .debug_selector(|| "workspace-sidebar-toggle".into())
-        .flex_none()
-        .size(px(28.0))
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
+        .icon_size(16.0)
+        .debug_selector("workspace-sidebar-toggle")
         .occlude()
-        .hover(|el| el.bg(Theme::global().TOOL_BG))
-        .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B").builder())
-        .child(
-            gpui::svg()
-                .data(include_bytes!("../../../assets/icons/menu.svg").as_slice())
-                .size(px(16.0))
-                .text_color(Theme::global().TEXT_DIM),
-        );
+        .keep_focus()
+        .tooltip(Tooltip::text("Hide sidebar").key_hint("Ctrl+B"))
+        .on_click(cx.listener(|this, _, window, cx| {
+            cx.stop_propagation();
+            this.sidebar_roller.expanded = false;
+            this.toggle_sidebar(&ToggleSidebar, window, cx);
+        }));
         // The section menu and the sidebar toggle share the destination row,
         // so the sidebar has no separate header line. The toggle sits rightmost.
         let controls = div()

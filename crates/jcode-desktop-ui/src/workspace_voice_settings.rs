@@ -2,6 +2,7 @@
 //! keys exactly where jcode-voice reads them (`~/.config/jcode/<name>.env`,
 //! owner-only). Applies to every Jcode client, not just this window.
 use super::*;
+use crate::components::{Pill, PillVariant};
 use crate::login_input::LoginInput;
 use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 use jcode_voice::{DictationBackend, StreamingBackend};
@@ -118,23 +119,18 @@ fn superwhisper_installed(cx: &gpui::App) -> bool {
     installed
 }
 
-fn pill(id: &'static str, selected: bool) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .flex_none()
+/// A voice setting choice: the selected one is the filled accent pill.
+fn pill(id: &'static str, label: impl Into<gpui::SharedString>, selected: bool) -> Pill {
+    let variant = if selected {
+        PillVariant::Primary
+    } else {
+        PillVariant::Secondary
+    };
+    Pill::new(variant, id, label)
+        .debug_selector(id)
         .px_3()
         .py_1()
-        .rounded_full()
-        .cursor_pointer()
-        .bg(if selected {
-            theme.ACCENT
-        } else {
-            theme.PANEL_BG
-        })
-        .text_color(if selected { theme.BG } else { theme.TEXT })
-        .hover(|el| el.bg(theme.TOOL_BG))
+        .text_size(px(11.0))
 }
 
 impl Workspace {
@@ -257,14 +253,9 @@ impl Workspace {
                 "subscription" => "settings-voice-subscription",
                 _ => "settings-voice-command",
             };
-            backends = backends.child(
-                pill(id, backend == selected)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.select_voice_backend(backend, cx)),
-                    )
-                    .child(label),
-            );
+            backends = backends.child(pill(id, label, backend == selected).on_click(
+                cx.listener(move |this, _, _, cx| this.select_voice_backend(backend, cx)),
+            ));
         }
         let detail: String = match selected {
             DictationBackend::Auto => "Uses a Nari key if present, else a Soniox key.".into(),
@@ -309,58 +300,43 @@ impl Workspace {
                 _ => "settings-voice-mode-send",
             };
             modes = modes.child(
-                pill(id, mode == dictation.mode)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.select_voice_mode(mode, cx)),
-                    )
-                    .child(label),
+                pill(id, label, mode == dictation.mode)
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_voice_mode(mode, cx))),
             );
         }
         if let Some(b) = streaming(selected) {
             actions = actions.child(
-                pill("settings-voice-key", false)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx)),
-                    )
-                    .child("Set API key"),
+                pill("settings-voice-key", "Set API key", false)
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_voice_key_input(b, cx))),
             );
             if b != StreamingBackend::ElevenLabs {
                 actions = actions.child(
-                    pill("settings-voice-base-url", false)
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.open_voice_text_input("base_url", cx)
-                            }),
-                        )
-                        .child(if dictation.base_url.trim().is_empty() {
+                    pill(
+                        "settings-voice-base-url",
+                        if dictation.base_url.trim().is_empty() {
                             "Custom endpoint".to_string()
                         } else {
                             format!("Endpoint: {}", dictation.base_url.trim())
-                        }),
+                        },
+                        false,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.open_voice_text_input("base_url", cx)),
+                    ),
                 );
             }
         }
         if selected == DictationBackend::Command {
             actions = actions.child(
-                pill("settings-voice-command-edit", false)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.open_voice_text_input("command", cx)),
-                    )
-                    .child("Edit command"),
+                pill("settings-voice-command-edit", "Edit command", false).on_click(
+                    cx.listener(|this, _, _, cx| this.open_voice_text_input("command", cx)),
+                ),
             );
         }
         if superwhisper_installed(cx) {
             actions = actions.child(
-                pill("settings-voice-superwhisper", false)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.use_superwhisper(cx)),
-                    )
-                    .child("Use SuperWhisper"),
+                pill("settings-voice-superwhisper", "Use SuperWhisper", false)
+                    .on_click(cx.listener(|this, _, _, cx| this.use_superwhisper(cx))),
             );
         }
         let key_editor = self.voice_settings.key_input.as_ref().map(|(_, input)| {
@@ -378,12 +354,8 @@ impl Workspace {
                         .child(input.clone()),
                 )
                 .child(
-                    pill("settings-voice-key-save", true)
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.save_voice_key(cx)),
-                        )
-                        .child("Save"),
+                    pill("settings-voice-key-save", "Save", true)
+                        .on_click(cx.listener(|this, _, _, cx| this.save_voice_key(cx))),
                 )
         });
         let text_editor = self.voice_settings.text_input.as_ref().map(|(_, input)| {
