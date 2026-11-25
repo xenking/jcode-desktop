@@ -486,6 +486,8 @@ mod tests {
                 reset_in: Some("2h".into()),
             }],
             usage_reports: vec![UsageReport {
+                identity: None,
+                credits: None,
                 provider_name: "Anthropic (Claude)".into(),
                 account_label: None,
                 limits: Vec::new(),

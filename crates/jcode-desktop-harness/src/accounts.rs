@@ -44,6 +44,93 @@ pub struct UsageReport {
     pub extra_info: Vec<(String, String)>,
     /// A banked usage reset this login can redeem, from `jcode usage --json`.
     pub banked_reset: Option<BankedReset>,
+    /// Who this login is: the user's name for it, plan and billing kind.
+    pub identity: Option<LoginIdentity>,
+    /// Credit balance and spend, for logins paid in credits or dollars.
+    pub credits: Option<Credits>,
+}
+
+/// How a login is billed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginKind {
+    Subscription,
+    Credits,
+    Metered,
+}
+
+impl LoginKind {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "subscription" => Some(Self::Subscription),
+            "credits" => Some(Self::Credits),
+            "metered" => Some(Self::Metered),
+            _ => None,
+        }
+    }
+
+    /// Short badge text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::Credits => "credits",
+            Self::Metered => "metered",
+        }
+    }
+}
+
+/// A saved login, named the way its owner knows it. `jcode usage --json` sends
+/// this as the report's `account` object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginIdentity {
+    /// Internal id (`claude-fox`). Never shown on its own when a name exists.
+    pub label: String,
+    /// The user's name, else organization or email, plus the plan.
+    pub display_name: String,
+    pub kind: LoginKind,
+    pub active: bool,
+}
+
+impl LoginIdentity {
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(Self {
+            label: text("label")?,
+            display_name: text("display_name").filter(|name| !name.is_empty())?,
+            kind: text("kind").as_deref().and_then(LoginKind::parse)?,
+            active: value
+                .get("active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// Credits as `jcode usage --json` words them. `summary` is the CLI's own line,
+/// so every surface reads the same.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Credits {
+    /// `false` when the provider reported no usable figure. Shown as unknown,
+    /// never as zero.
+    pub known: bool,
+    pub summary: String,
+    /// Used over limit, 0 to 1, when both are known.
+    pub used_fraction: Option<f32>,
+}
+
+impl Credits {
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        let known = value.get("state").and_then(|v| v.as_str()) == Some("known");
+        let number = |key: &str| value.get(key).and_then(|v| v.as_f64());
+        let used_fraction = number("used")
+            .zip(number("limit"))
+            .filter(|(_, limit)| *limit > 0.0)
+            .map(|(used, limit)| (used / limit).clamp(0.0, 1.0) as f32);
+        Some(Self {
+            known,
+            summary: value.get("summary")?.as_str()?.to_owned(),
+            used_fraction: used_fraction.filter(|_| known),
+        })
+    }
 }
 
 /// Read-only reset availability. Redeeming always needs a fresh, confirmed
@@ -395,25 +482,80 @@ pub fn spawn() -> Feed {
             auth_kind: auth_kind.into(),
             method: "Offline fixture".into(),
             usage_reports: if id == "claude" {
-                vec![UsageReport {
-                    provider_name: "Anthropic (Claude)".into(),
-                    account_label: None,
-                    limits: Vec::new(),
-                    extra_info: Vec::new(),
-                    banked_reset: Some(BankedReset {
+                // Three saved logins, so the offline sidebar shows each one
+                // by name with its own windows, resets and credits.
+                let login = |label: &str, name: &str, kind, active| {
+                    Some(LoginIdentity {
+                        label: label.into(),
+                        display_name: name.into(),
+                        kind,
+                        active,
+                    })
+                };
+                let window = |name: &str, used: f32, reset: &str| UsageLimit {
+                    name: name.into(),
+                    usage_percent: used,
+                    reset_in: Some(reset.into()),
+                };
+                let resets = |label: Option<&str>, available: u64, usable: Option<u64>, session: Option<bool>, reached: bool, imported: bool| {
+                    Some(BankedReset {
                         provider: ResetProvider::Claude,
-                        account_label: None,
-                        available_count: 1,
-                        usable_count: None,
-                        expires_at: None,
-                        cached_source: None,
-                        session_reset_available: None,
-                        limit_reached: true,
+                        account_label: label.map(str::to_owned),
+                        available_count: available,
+                        usable_count: usable,
+                        expires_at: Some(fixture_expiry(12)),
+                        cached_source: imported.then(|| "imported".to_owned()),
+                        session_reset_available: session,
+                        limit_reached: reached,
                         next_available_at: None,
-                    }),
-                }]
+                    })
+                };
+                vec![
+                    UsageReport {
+                        identity: login("claude-otter", "team · Max 20x", LoginKind::Subscription, true),
+                        credits: None,
+                        provider_name: "Anthropic - team · Max 20x ✦".into(),
+                        account_label: None,
+                        limits: vec![
+                            window("5-hour window", 41., "2h"),
+                            window("7-day window", 59., "3d"),
+                        ],
+                        extra_info: Vec::new(),
+                        banked_reset: resets(None, 2, Some(1), Some(true), true, false),
+                    },
+                    UsageReport {
+                        identity: login(
+                            "claude-fox",
+                            "m***x@example.com · Max",
+                            LoginKind::Subscription,
+                            false,
+                        ),
+                        credits: None,
+                        provider_name: "Anthropic - m***x@example.com · Max".into(),
+                        account_label: Some("claude-fox".into()),
+                        limits: vec![
+                            window("5-hour window", 12., "4h"),
+                            window("7-day window", 22., "5d"),
+                        ],
+                        extra_info: Vec::new(),
+                        banked_reset: resets(Some("claude-fox"), 1, Some(1), Some(false), false, true),
+                    },
+                    UsageReport {
+                        identity: login("claude-panda", "ent · Enterprise", LoginKind::Credits, false),
+                        credits: Some(Credits {
+                            known: false,
+                            summary: "unknown".into(),
+                            used_fraction: None,
+                        }),
+                        provider_name: "Anthropic - ent · Enterprise".into(),
+                        account_label: Some("claude-panda".into()),
+                        limits: Vec::new(),
+                        extra_info: Vec::new(),
+                        banked_reset: None,
+                    },
+                ]
             } else if id == "openai" {
-                vec![UsageReport {
+                vec![UsageReport { identity: None, credits: None,
                     provider_name: "OpenAI (ChatGPT)".into(),
                     account_label: Some("personal".into()),
                     limits: vec![UsageLimit { name: "5 hour".into(), usage_percent: 25., reset_in: Some("2h".into()) }],
@@ -424,7 +566,7 @@ pub fn spawn() -> Feed {
                     ],
                 }]
             } else if id == "opencode-go" {
-                vec![UsageReport {
+                vec![UsageReport { identity: None, credits: None,
                     provider_name: "OpenCode Go (API key)".into(),
                     account_label: None,
                     limits: vec![
@@ -547,6 +689,26 @@ pub fn fetch() -> Option<Vec<Account>> {
     Some(accounts)
 }
 
+/// An RFC3339 timestamp `days` from now, for offline fixtures that must keep
+/// reading as a near-term expiry.
+fn fixture_expiry(days: u64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+        + days * 86_400;
+    // Civil date from days since the epoch (Howard Hinnant's algorithm).
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T00:00:00Z")
+}
+
 /// Parse the complete CLI catalog, with connected providers first.
 pub fn parse(json: &str) -> Option<Vec<Account>> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -631,6 +793,8 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
             extra_info.push((USAGE_ERROR_KEY.into(), error.trim().to_owned()));
         }
         account.usage_reports.push(UsageReport {
+            identity: provider.get("account").and_then(LoginIdentity::parse),
+            credits: provider.get("credits").and_then(Credits::parse),
             provider_name: provider_name.to_owned(),
             account_label,
             banked_reset: provider.get("banked_reset").and_then(BankedReset::parse),
@@ -1103,6 +1267,45 @@ mod tests {
     }
 
     #[test]
+    fn each_login_keeps_its_own_identity_credits_and_resets() {
+        let mut accounts =
+            parse(r#"{"providers":[{"id":"claude","status":"available"}]}"#).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+            {"provider_name":"Anthropic - team · Max 20x ✦","limits":[{"name":"5-hour window","usage_percent":41.0}],
+             "extra_info":[["Account label","claude-otter"]],
+             "banked_reset":{"provider":"claude","account_label":"claude-otter","available_count":2,"usable_count":1,"expires_at":"2099-01-01T00:00:00Z"},
+             "account":{"label":"claude-otter","display_name":"team · Max 20x","kind":"subscription","active":true}},
+            {"provider_name":"Anthropic - ent · Enterprise","limits":[],
+             "extra_info":[["Account label","claude-panda"]],
+             "credits":{"state":"known","unit":"usd","balance":194.13,"used":105.87,"limit":300.0,"summary":"$194.13 left","unlimited":false},
+             "account":{"label":"claude-panda","display_name":"ent · Enterprise","kind":"credits"}}
+        ]}"#,
+        );
+        let claude = &accounts[0];
+        assert_eq!(claude.usage_reports.len(), 2);
+        let team = &claude.usage_reports[0];
+        assert_eq!(
+            team.identity.as_ref().unwrap().display_name,
+            "team · Max 20x"
+        );
+        assert!(team.identity.as_ref().unwrap().active);
+        assert_eq!(team.banked_reset.as_ref().unwrap().available_count, 2);
+        assert!(team.credits.is_none());
+        let ent = &claude.usage_reports[1];
+        assert_eq!(ent.identity.as_ref().unwrap().kind, LoginKind::Credits);
+        assert!(ent.banked_reset.is_none(), "resets never cross logins");
+        let credits = ent.credits.as_ref().unwrap();
+        assert!(credits.known);
+        assert_eq!(credits.summary, "$194.13 left");
+        assert!((credits.used_fraction.unwrap() - 0.3529).abs() < 0.001);
+        // Windows stay with the login that reported them.
+        assert_eq!(team.limits.len(), 1);
+        assert!(ent.limits.is_empty());
+    }
+
+    #[test]
     fn usage_limits_merge_by_provider_and_preserve_every_limit() {
         let mut accounts = parse(SAMPLE).unwrap();
         merge_usage(
@@ -1180,6 +1383,8 @@ mod tests {
         let other = accounts.iter().position(|a| a.id == "openrouter").unwrap();
         for index in [jcode, other] {
             accounts[index].usage_reports.push(UsageReport {
+                identity: None,
+                credits: None,
                 provider_name: "Jcode subscription".into(),
                 account_label: None,
                 banked_reset: None,

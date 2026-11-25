@@ -107,6 +107,8 @@ def main():
                         help="verify compact navigation, sidebar drawer, panel focus and native resizing")
     parser.add_argument("--roller-interact", action="store_true",
                         help="verify native sidebar hover popout, scroll selection, dismissal, and preserved focus")
+    parser.add_argument("--sidebar-accounts", action="store_true",
+                        help="open the accounts list in the sidebar with offline multi-login fixtures")
     parser.add_argument("--accounts-sidebar-interact", action="store_true",
                         help="verify connected, signed-out, unconfigured and expired sidebar accounts offline")
     parser.add_argument("--sidebar-interact", action="store_true",
@@ -466,7 +468,7 @@ def main():
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     if args.markdown_file and not args.markdown_file.is_file():
         parser.error("--markdown-file must be a readable file")
-    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.cache_warning or args.paired_update
+    native_capture = (sys.platform == "darwin" and (args.markdown_file or args.composer_picker or args.sidebar_accounts or args.cache_warning or args.paired_update
                         or args.rig_hud or args.transcript in (
                         "openrig", "openrig-inspector", "image-ordinals", "image-ordinals-resolved",
                         "tool-cards", "tool-cards-details", "file-mentions", "external-dm", "external-dm-clean",
@@ -505,6 +507,8 @@ def main():
         if args.cache_warning:
             env.update(JCODE_TEST_SESSION="1", JCODE_DESKTOP_SCREENSHOT_BAR="high",
                        JCODE_DESKTOP_SCREENSHOT_CACHE_CARD="warning", JCODE_DESKTOP_CONTROL_TEST="1")
+        if args.sidebar_accounts:
+            env["JCODE_DESKTOP_SCREENSHOT_SIDEBAR"] = "accounts"
         if args.rig_hud:
             env["JCODE_DESKTOP_SCREENSHOT_RIG_HUD"] = "1"
         if args.rig_hud_click:

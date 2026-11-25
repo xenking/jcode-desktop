@@ -59,6 +59,9 @@ pub(super) struct AccountRow {
     pub provider: LoginProvider,
     pub label: Option<String>,
     pub email: Option<String>,
+    /// What the login is called for people (`team · Max 20x`), from the usage
+    /// report. The internal label only shows when nothing better is known.
+    pub name: Option<String>,
     pub active: bool,
     pub status: ConnectionStatus,
     pub limits: Vec<UsageLimit>,
@@ -100,10 +103,14 @@ impl AccountRow {
     }
 
     fn subtitle(&self) -> Option<String> {
-        let parts: Vec<&str> = [self.label.as_deref(), self.email.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect();
+        let who = self.name.as_deref().or(self.label.as_deref());
+        // A name that already carries the email would repeat it.
+        let email = self.email.as_deref().filter(|email| {
+            self.name
+                .as_deref()
+                .is_none_or(|name| !name.contains(*email))
+        });
+        let parts: Vec<&str> = [who, email].into_iter().flatten().collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
@@ -275,6 +282,9 @@ pub(super) fn build_rows(
                 provider: *provider,
                 label: label.map(str::to_owned),
                 email,
+                name: report
+                    .and_then(|report| report.identity.as_ref())
+                    .map(|identity| identity.display_name.clone()),
                 active,
                 status,
                 limits,
@@ -437,7 +447,7 @@ pub(super) fn offline_data() -> AccountsData {
         })
     };
     let report = |label: &str, limits: Vec<UsageLimit>, today: &str| {
-        UsageReport {
+        UsageReport { identity: None, credits: None,
         provider_name: format!("OpenAI (ChatGPT) ({label})"),
         account_label: Some(label.into()),
         limits,
@@ -495,6 +505,8 @@ pub(super) fn offline_data() -> AccountsData {
                 "claude",
                 "Anthropic/Claude",
                 vec![UsageReport {
+                    identity: None,
+                    credits: None,
                     provider_name: "Anthropic (Claude) (claude-otter)".into(),
                     account_label: None,
                     limits: vec![
@@ -519,6 +531,8 @@ pub(super) fn offline_data() -> AccountsData {
                 method: "API key (`OPENCODE_GO_API_KEY`)".into(),
                 limits: Vec::new(),
                 usage_reports: vec![UsageReport {
+                    identity: None,
+                    credits: None,
                     provider_name: "OpenCode Go (API key)".into(),
                     account_label: None,
                     limits: vec![
@@ -538,6 +552,8 @@ pub(super) fn offline_data() -> AccountsData {
                 method: "Offline fixture".into(),
                 limits: Vec::new(),
                 usage_reports: vec![UsageReport {
+                    identity: None,
+                    credits: None,
                     provider_name: "OpenAI API key".into(),
                     account_label: None,
                     limits: Vec::new(),

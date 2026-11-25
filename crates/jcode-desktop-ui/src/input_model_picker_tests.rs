@@ -281,6 +281,8 @@ fn headers_show_quota_and_the_highlighted_row_offers_effort(cx: &mut gpui::TestA
                 method: String::new(),
                 limits: Vec::new(),
                 usage_reports: vec![crate::accounts::UsageReport {
+                    identity: None,
+                    credits: None,
                     provider_name: "OpenAI (ChatGPT) (a@x)".into(),
                     account_label: None,
                     limits: vec![

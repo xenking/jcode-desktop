@@ -13,6 +13,9 @@ pub(super) struct ModelDetails {
     pub api_method: String,
     pub usage: Option<ModelUsage>,
     pub speed_options: Vec<jcode_provider_core::SpeedOption>,
+    /// What the saved login behind this route is called (`team · Max 20x`),
+    /// from the catalog. `None` for routes that are not a saved OAuth login.
+    pub account_name: Option<String>,
 }
 
 /// Route identity: everything that decides its spec and recommendation.
@@ -70,6 +73,7 @@ pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
             api_method: route.api_method.clone(),
             usage: route.usage.clone(),
             speed_options: route.speed_options.clone(),
+            account_name: route_account_name(&route.api_method, &route.detail),
         };
         match details.get(&spec) {
             Some(existing)
@@ -81,6 +85,24 @@ pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
         }
     }
     details
+}
+
+/// The name of the saved login a route is pinned to: the user's name for it,
+/// else its email, else the internal label. `None` when the route is not a
+/// saved OAuth login. The detail only counts when it names the same login as
+/// the api method, so a stray diagnostic never renames a group.
+pub(crate) fn route_account_name(api_method: &str, detail: &str) -> Option<String> {
+    let label = jcode_provider_core::oauth_account_label(api_method)?;
+    let identity = jcode_provider_core::parse_route_account_identity(detail)
+        .filter(|identity| identity.label == label);
+    Some(match identity {
+        Some(identity) => identity
+            .display_name
+            .or_else(|| identity.email())
+            .unwrap_or(label)
+            .to_owned(),
+        None => label.to_owned(),
+    })
 }
 
 /// Use the same routing policy as the daemon and TUI, never infer auth from a label.
@@ -706,6 +728,46 @@ mod tests {
     }
 
     #[test]
+    fn three_saved_logins_of_one_provider_read_as_three_named_groups() {
+        let login = |label: &str, detail: &str| {
+            let mut route = route("claude-opus-5-5", &format!("claude-oauth@{label}"), 1);
+            route.provider = "Anthropic".into();
+            route.detail = detail.into();
+            route
+        };
+        let routes = [
+            login(
+                "claude-otter",
+                "account claude-otter [team · Max 20x] · t***m@example.com",
+            ),
+            login("claude-fox", "account claude-fox [m***x@example.com · Max]"),
+            // An older daemon sends no name: the email still tells it apart.
+            login("claude-panda", "account claude-panda · e***t@example.com"),
+        ];
+        let details = from_routes(&routes);
+        assert_eq!(details.len(), 3);
+        let mut labels: Vec<String> = details
+            .keys()
+            .map(|spec| group_label(spec, &details))
+            .collect();
+        labels.sort();
+        assert_eq!(
+            labels,
+            [
+                "Anthropic · e***t@example.com",
+                "Anthropic · m***x@example.com · Max",
+                "Anthropic · team · Max 20x",
+            ]
+        );
+        // A diagnostic naming another login never renames a group.
+        assert_eq!(
+            route_account_name("claude-oauth@claude-fox", "account claude-otter [team]"),
+            Some("claude-fox".into())
+        );
+        assert_eq!(route_account_name("claude-oauth", "account x [y]"), None);
+    }
+
+    #[test]
     fn groups_keep_auth_routes_distinct_and_canonicalize_aliases() {
         let routes = [
             route("atlas", "openai-oauth", 2),
@@ -870,6 +932,8 @@ mod tests {
         info: &[(&str, &str)],
     ) -> crate::accounts::UsageReport {
         crate::accounts::UsageReport {
+            identity: None,
+            credits: None,
             provider_name: name.into(),
             account_label: label.map(str::to_owned),
             limits: limits
@@ -992,6 +1056,7 @@ mod tests {
                     api_method: String::new(),
                     usage: Some(usage),
                     speed_options: Vec::new(),
+                    account_name: None,
                 },
             )
         })
@@ -1026,11 +1091,15 @@ fn group_label(model: &str, details: &HashMap<String, ModelDetails>) -> String {
     }
     // The header shows the credential's quota, not a word for how it signs
     // in. Only a key route says so, to tell it apart from the same
-    // provider's account route.
+    // provider's account route. A saved login says which one it is, so three
+    // Anthropic accounts never read as three identical groups.
     match parts.auth {
         AuthKind::ApiKey => format!("{} · API key", parts.provider),
         AuthKind::CloudCredentials => format!("{} · Cloud", parts.provider),
-        _ => parts.provider,
+        _ => match details.get(model).and_then(|d| d.account_name.as_deref()) {
+            Some(name) => format!("{} · {name}", parts.provider),
+            None => parts.provider,
+        },
     }
 }
 
@@ -1203,6 +1272,7 @@ mod grouping_performance_tests {
                         api_method: "openai-oauth".into(),
                         usage: None,
                         speed_options: Vec::new(),
+                        account_name: None,
                     },
                 )
             })

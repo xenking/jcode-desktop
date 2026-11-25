@@ -186,6 +186,8 @@ mod window_navigation_tests;
 #[path = "workspace_lone_panel_tests.rs"]
 mod workspace_lone_panel_tests;
 
+#[path = "workspace_login_rows.rs"]
+mod login_rows;
 #[path = "workspace_usage_reset.rs"]
 mod usage_reset;
 
@@ -1076,6 +1078,13 @@ impl Workspace {
         sidebar_account::JcodeAccount::prime();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
+        // Offline fixtures arrive at once, so the first frame already lists
+        // them instead of waiting for the housekeeping tick.
+        let initial_accounts = if harness::screenshot_mode() {
+            accounts_feed.latest().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let routing_feed = crate::routing::spawn();
         let recovering_crash = crash_launch.is_some();
         let launch = crash_launch
@@ -1299,7 +1308,14 @@ impl Workspace {
             compact_sidebar_open: false,
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
-            sidebar_view: SidebarView::Sessions,
+            // Offline captures can open on the accounts list directly.
+            sidebar_view: if crate::harness::screenshot_mode()
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_SIDEBAR").as_deref() == Ok("accounts")
+            {
+                SidebarView::Accounts
+            } else {
+                SidebarView::Sessions
+            },
             session_catalog: Default::default(),
             worktrees: sidebar_worktrees::State::default(),
             collections: Default::default(),
@@ -1349,7 +1365,7 @@ impl Workspace {
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             remotes: remotes::Machines::from_config(),
-            accounts: Vec::new(),
+            accounts: initial_accounts,
             routing_view: None,
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
@@ -8390,7 +8406,14 @@ impl Workspace {
                         .child(account.status_label()),
                 );
 
-            if available && !account.limits.is_empty() {
+            // Every saved login gets its own block: name, plan, windows, resets
+            // and credits. A provider without saved-login identities keeps the
+            // compact single row below.
+            let login_blocks = login_rows::login_blocks(account).filter(|_| available);
+            let lists_logins = login_blocks.is_some();
+            if let Some(blocks) = login_blocks {
+                details = details.child(blocks);
+            } else if available && !account.limits.is_empty() {
                 // A single two-column quota row retains the useful summary
                 // without letting one account grow into a card.
                 let limit_count = if account.id == "antigravity" {
@@ -8446,6 +8469,12 @@ impl Workspace {
                 }
                 details = details.child(limits);
             }
+            if !lists_logins
+                && available
+                && let Some(credits) = login_rows::provider_credits(account)
+            {
+                details = details.child(credits);
+            }
 
             if available {
                 // One compact pill per login with a redeemable reset. The pill
@@ -8456,9 +8485,21 @@ impl Workspace {
                 let has_resets = !resets.is_empty();
                 let mut pills = div().mt(px(3.0)).flex().flex_wrap().gap(px(4.0));
                 for (reset_index, reset) in resets.into_iter().enumerate() {
-                    let label = match (&reset.account_label, many) {
-                        (Some(login), true) => format!("{} · {login}", reset.pill_label()),
-                        _ => reset.pill_label(),
+                    // Name the login the reset belongs to. A listed login has a
+                    // name people know, never just its internal label.
+                    let owner = if lists_logins {
+                        account
+                            .usage_reports
+                            .iter()
+                            .find(|report| report.banked_reset.as_ref() == Some(&reset))
+                            .and_then(|report| report.identity.as_ref())
+                            .map(|identity| identity.display_name.clone())
+                    } else {
+                        reset.account_label.clone().filter(|_| many)
+                    };
+                    let label = match owner {
+                        Some(login) => format!("{} · {login}", reset.pill_label()),
+                        None => reset.pill_label(),
                     };
                     pills = pills.child(
                         div()
@@ -8468,6 +8509,8 @@ impl Workspace {
                                 move || format!("account-{id}-reset-{reset_index}")
                             })
                             .flex_none()
+                            .max_w(px(148.0))
+                            .truncate()
                             .px(px(8.0))
                             .h(px(16.0))
                             .flex()
@@ -8602,6 +8645,7 @@ impl Workspace {
 
             // Rows with history or a reset pill need more than the compact height.
             let grows = account.shows_oauth_history()
+                || lists_logins
                 || (available && account.offerable_resets().next().is_some())
                 || (available && account.upgrade_offer().is_some());
             list = list.child(
@@ -13494,7 +13538,7 @@ mod tests {
         );
         workspace.update(vcx, |w, cx| {
             w.accounts[0].usage_reports = ["personal", "work"].into_iter().map(|label| {
-                accounts::UsageReport {
+                accounts::UsageReport { identity: None, credits: None,
                     limits: Vec::new(),
                     banked_reset: None,
                     provider_name: format!("OpenAI (ChatGPT) {label}"),
