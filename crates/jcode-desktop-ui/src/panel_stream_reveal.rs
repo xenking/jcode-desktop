@@ -318,6 +318,57 @@ mod panel_tests {
     }
 
     #[gpui::test]
+    fn streaming_markdown_parse_budget(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("markdown-parse-budget", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        let initial_parses = markdown::parse_count();
+        panel.update(vcx, |panel, cx| {
+            panel.animate_stream_in_tests = true;
+            *panel.items = vec![
+                Item::User("Keep the **format**.\nSecond line.".into()),
+                Item::Assistant("A settled **answer**.".into()),
+                Item::User("And this `example`?".into()),
+                Item::Assistant("A settled [link](https://example.com).".into()),
+            ];
+            cx.notify();
+        });
+        frames(vcx, 2);
+        let warm_parses = markdown::parse_count();
+        assert!(warm_parses - initial_parses >= 4, "settled rows were rendered");
+        let renders = || crate::render_stats::test_renders::count(panel.entity_id());
+        let warm_renders = renders();
+        let deltas = ["**One**.\n\n", "`Two`.\n\n", "*Three*.\n\n", "Four."];
+        for delta in deltas {
+            panel.update(vcx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::TextDelta {
+                        session_id: panel.session_id.clone(),
+                        text: delta.into(),
+                        message_id: None,
+                    },
+                    cx,
+                );
+            });
+            frames(vcx, 20);
+        }
+        frames(vcx, 50);
+        let render_count = renders() - warm_renders;
+        let parse_count = markdown::parse_count() - warm_parses;
+        eprintln!("streaming_markdown_parse_budget: parses={parse_count} panel_renders={render_count}");
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(live_text(panel, usize::MAX).unwrap(), deltas.concat());
+            assert_eq!(panel.text_reveal.fading(&panel.streaming_text), 0);
+        });
+        assert!(render_count > deltas.len(), "reveal frames were rendered");
+        assert!(parse_count >= deltas.len(), "streamed text was parsed");
+    }
+
+    #[gpui::test]
     fn streamed_blocks_appear_whole_and_settle(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =

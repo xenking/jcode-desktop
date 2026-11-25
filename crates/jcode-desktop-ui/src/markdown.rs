@@ -331,7 +331,19 @@ fn parse(source: &str) -> Vec<Block> {
     parse_with_line_breaks(source, false)
 }
 
+#[cfg(test)]
+thread_local! {
+    static PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn parse_count() -> usize {
+    PARSE_COUNT.get()
+}
+
 fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block> {
+    #[cfg(test)]
+    PARSE_COUNT.set(PARSE_COUNT.get() + 1);
     parse_document(source, preserve_line_breaks, |_, _| {})
 }
 
