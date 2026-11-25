@@ -190,36 +190,6 @@ pub(super) fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i6
         .unwrap_or_default()
 }
 
-pub(super) fn unix_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or_default()
-}
-
-pub(super) fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
-    if let Some(host) = harness::remote_host(&session.session_id) {
-        let host = machines::machine_label(&host);
-        return Some(
-            match session
-                .working_dir
-                .as_deref()
-                .filter(|dir| !dir.trim().is_empty())
-            {
-                Some(dir) => format!("{host} · {dir}"),
-                None => host.to_owned(),
-            },
-        );
-    }
-    session
-        .working_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|directory| !directory.is_empty())
-        .map(compact_working_dir)
-}
-
 /// Creation timestamp embedded in modern session ids (`session_fox_<ms>_...`).
 pub(super) fn sidebar_session_created_ms(session_id: &str) -> Option<u64> {
     session_id
@@ -297,12 +267,5 @@ pub(super) fn session_meta(session: &jcode_sdk::SessionInfo, age: Option<String>
     match (age, tokens) {
         (Some(age), Some(tokens)) => Some(format!("{age} · {tokens}")),
         (age, tokens) => age.or(tokens),
-    }
-}
-
-pub(super) fn compact_working_dir(path: &str) -> String {
-    match crate::platform_dirs::tilde(path) {
-        home if home == "~" => "~ (home)".into(),
-        shortened => shortened,
     }
 }

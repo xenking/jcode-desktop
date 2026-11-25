@@ -342,3 +342,32 @@ pub(super) fn ranked_folder_matches_for_sessions(
         })
         .collect()
 }
+
+pub(super) fn compact_working_dir(path: &str) -> String {
+    match crate::platform_dirs::tilde(path) {
+        home if home == "~" => "~ (home)".into(),
+        shortened => shortened,
+    }
+}
+
+pub(super) fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
+    if let Some(host) = harness::remote_host(&session.session_id) {
+        let host = machines::machine_label(&host);
+        return Some(
+            match session
+                .working_dir
+                .as_deref()
+                .filter(|dir| !dir.trim().is_empty())
+            {
+                Some(dir) => format!("{host} · {dir}"),
+                None => host.to_owned(),
+            },
+        );
+    }
+    session
+        .working_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|directory| !directory.is_empty())
+        .map(compact_working_dir)
+}

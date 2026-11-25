@@ -1498,3 +1498,11 @@ fn advertises(keys: &str, chord: &str) -> bool {
     }
     false
 }
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
+}
