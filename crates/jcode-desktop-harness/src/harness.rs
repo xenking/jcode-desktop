@@ -4885,9 +4885,20 @@ fn session_worker_with_connector(
                         } = operation
                         {
                             let result = client
-                                .set_model(real_id, model)
+                                .set_model_switch(real_id, model)
                                 .map_err(|error| format!("Failed to switch model: {error}"))
-                                .and_then(|()| {
+                                .and_then(|switched| {
+                                    // A switch queued behind a running turn has
+                                    // not happened yet. Effort and speed meant
+                                    // for the new model would land on the one
+                                    // still running, so they are not sent.
+                                    if switched == jcode_sdk::api::ModelSwitchState::Queued {
+                                        return Err(
+                                            "The model switch is queued until this turn ends. \
+                                             Choose its effort and speed again afterwards."
+                                                .to_string(),
+                                        );
+                                    }
                                     if let Some(effort) = effort
                                         && let Err(error) =
                                             client.set_reasoning_effort(real_id, effort)

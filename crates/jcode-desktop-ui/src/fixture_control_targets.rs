@@ -156,6 +156,7 @@ pub(crate) fn is_selector(selector: &str) -> bool {
         || (selector.starts_with("openrig-chat:") && selector.ends_with(":open"))
         || selector == "finished-workers"
         || selector == "hover:panel-cache"
+        || selector == "panel-model-pending"
         || selector == "hover:panel-openrig"
         || selector == "hover:panel-context-meter"
         || selector.starts_with("sidebar-worker:")

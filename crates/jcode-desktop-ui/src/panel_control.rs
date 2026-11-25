@@ -307,6 +307,7 @@ impl Panel {
             "working_dir": self.working_dir,
             "provider": self.provider,
             "reasoning_effort": self.reasoning_effort,
+            "pending_model": self.pending_model,
             "speed_mode": crate::fixture_control_targets::model_speed_picker().then(|| self.visible_speed()),
             "active_modes": self.mode_names(),
             "mode_rows": self.picker_search.as_ref().map_or_else(|| self.input.read(cx), |(_, search)| search.read(cx)).mode_rows_for_control(),

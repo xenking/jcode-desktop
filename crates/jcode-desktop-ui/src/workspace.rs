@@ -1638,6 +1638,11 @@ impl Workspace {
                                 Ok("warning") => panel.apply_cache_card_fixture(true, cx),
                                 _ => {}
                             }
+                            // Builds on the fixture above, so the cache card
+                            // and the chip can be reviewed after a switch.
+                            if let Ok(stage) = std::env::var("JCODE_DESKTOP_SCREENSHOT_MODEL_SWITCH") {
+                                panel.apply_model_switch_fixture(&stage, cx);
+                            }
                         }
                     });
                 }

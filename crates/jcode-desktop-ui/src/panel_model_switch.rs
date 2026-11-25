@@ -54,6 +54,44 @@ impl Panel {
         cx.notify();
     }
 
+    /// Review fixture for `JCODE_DESKTOP_SCREENSHOT_MODEL_SWITCH`: `queued`
+    /// holds a switch behind the turn, `switched` lands it after the cache
+    /// figures were recorded on the previous model.
+    pub(crate) fn apply_model_switch_fixture(&mut self, stage: &str, cx: &mut Context<Self>) {
+        let session_id = self.session_id.clone();
+        let target = "gpt-6.2-sol";
+        let queued = ApiEvent::ModelSwitch {
+            session_id: session_id.clone(),
+            state: ModelSwitchState::Queued,
+            model: Some(target.into()),
+            error: None,
+        };
+        self.apply(&queued, cx);
+        if stage != "switched" {
+            return;
+        }
+        self.apply(
+            &ApiEvent::ModelInfo {
+                session_id: session_id.clone(),
+                provider: Some("openai".into()),
+                model: Some(target.into()),
+                reasoning_effort: self.reasoning_effort.clone(),
+                auth_method: None,
+                account_label: None,
+            },
+            cx,
+        );
+        self.apply(
+            &ApiEvent::ModelSwitch {
+                session_id,
+                state: ModelSwitchState::Applied,
+                model: Some(target.into()),
+                error: None,
+            },
+            cx,
+        );
+    }
+
     /// Withdraw the queued switch. The daemon answers with a cancelled event,
     /// which clears the chip.
     pub(super) fn cancel_pending_model(&mut self, cx: &mut Context<Self>) {
@@ -79,6 +117,10 @@ impl Panel {
         Some(
             composer::composer_pill("panel-model-pending")
                 .relative()
+                .children(crate::fixture_control_targets::marker(
+                    || "panel-model-pending".into(),
+                    || Some(self.session_id.clone()),
+                ))
                 .flex_shrink(4.)
                 .min_w_0()
                 .overflow_hidden()
