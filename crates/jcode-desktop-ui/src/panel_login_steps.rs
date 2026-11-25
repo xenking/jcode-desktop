@@ -33,21 +33,6 @@ pub(super) struct Progress {
     pub error: bool,
 }
 
-impl Progress {
-    pub(super) fn of(state: &LoginState) -> Self {
-        Self {
-            api_key: state
-                .provider
-                .is_some_and(|provider| provider.method == LoginMethod::ApiKey),
-            prompt: state.prompt.is_some(),
-            busy: state.busy,
-            authorized: state.authorized,
-            complete: state.complete,
-            error: state.error.is_some(),
-        }
-    }
-}
-
 pub(super) fn steps(progress: Progress) -> Vec<(StepKind, StepStatus)> {
     let (kinds, current): (&[StepKind], usize) = if progress.api_key {
         let current = if progress.complete {
@@ -109,12 +94,9 @@ fn title(kind: StepKind) -> &'static str {
 }
 
 /// Short confirmation shown on a collapsed, finished step.
-fn done_summary(kind: StepKind, state: &LoginState) -> &'static str {
+fn done_summary(kind: StepKind, state: &StepView<'_>) -> &'static str {
     match kind {
-        StepKind::Provider => state
-            .provider
-            .map(|provider| provider.display_name)
-            .unwrap_or("Selected"),
+        StepKind::Provider => state.provider.display_name,
         StepKind::Prepare => "Sign-in link ready",
         StepKind::Approve if state.authorized => "Approved in browser",
         StepKind::Approve => "Approved",
@@ -159,15 +141,17 @@ fn loading_bar() -> gpui::AnyElement {
 
 /// Only reveal the manual code field when it is actually the way forward:
 /// no automatic browser return exists, or the user asked for it.
-pub(super) fn manual_input_visible(state: &LoginState) -> bool {
-    !state.complete
-        && !state.busy
-        && !state.authorized
-        && state
-            .prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
-        && (state.manual_entry || !state.callback_waiting)
+pub(super) struct StepView<'a> {
+    pub provider: LoginProvider,
+    pub prompt: Option<&'a AuthPrompt>,
+    pub input: &'a Entity<LoginInput>,
+    pub busy: bool,
+    pub authorized: bool,
+    pub complete: bool,
+    pub error: Option<&'a str>,
+    pub callback_waiting: bool,
+    pub manual_entry: bool,
+    pub manual_input_visible: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -181,10 +165,9 @@ pub(super) enum StepAction {
 
 type StepHandler<T> = fn(&mut T, StepAction, &mut Window, &mut Context<T>);
 
-impl LoginState {
-    pub(super) fn render_login_steps<T: 'static>(
+impl StepView<'_> {
+    pub(super) fn render<T: 'static>(
         &self,
-        provider: LoginProvider,
         preview: bool,
         handle: StepHandler<T>,
         cx: &mut Context<T>,
@@ -196,7 +179,17 @@ impl LoginState {
             .flex()
             .flex_col()
             .gap_2();
-        for (index, (kind, status)) in steps(Progress::of(state)).into_iter().enumerate() {
+        for (index, (kind, status)) in steps(Progress {
+            api_key: state.provider.method == LoginMethod::ApiKey,
+            prompt: state.prompt.is_some(),
+            busy: state.busy,
+            authorized: state.authorized,
+            complete: state.complete,
+            error: state.error.is_some(),
+        })
+        .into_iter()
+        .enumerate()
+        {
             let number = index + 1;
             let expanded = matches!(status, StepStatus::Active | StepStatus::Failed);
             let badge = div()
@@ -269,29 +262,33 @@ impl LoginState {
                 );
             let step_id = format!("login-step-{number}");
             let row = div().debug_selector(move || step_id.clone());
-            list =
-                list.child(if expanded {
-                    row.child(
-                        div()
-                            .debug_selector(|| "login-current-step".into())
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .p_3()
-                            .rounded_xl()
-                            .bg(theme.HEADER_BG)
-                            .child(header)
-                            .child(div().pl(px(34.)).flex().flex_col().gap_3().children(
-                                self.render_step_body(kind, provider, preview, handle, cx),
-                            )),
-                    )
-                } else {
-                    row.px_3()
-                        .py_1p5()
-                        .rounded_full()
-                        .when(status == StepStatus::Done, |el| el.bg(theme.HEADER_BG))
+            list = list.child(if expanded {
+                row.child(
+                    div()
+                        .debug_selector(|| "login-current-step".into())
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .p_3()
+                        .rounded_xl()
+                        .bg(theme.HEADER_BG)
                         .child(header)
-                });
+                        .child(
+                            div()
+                                .pl(px(34.))
+                                .flex()
+                                .flex_col()
+                                .gap_3()
+                                .children(self.render_step_body(kind, preview, handle, cx)),
+                        ),
+                )
+            } else {
+                row.px_3()
+                    .py_1p5()
+                    .rounded_full()
+                    .when(status == StepStatus::Done, |el| el.bg(theme.HEADER_BG))
+                    .child(header)
+            });
         }
         list.into_any_element()
     }
@@ -299,7 +296,6 @@ impl LoginState {
     fn render_step_body<T: 'static>(
         &self,
         kind: StepKind,
-        provider: LoginProvider,
         preview: bool,
         handle: StepHandler<T>,
         cx: &mut Context<T>,
@@ -322,12 +318,12 @@ impl LoginState {
                 line.into_any_element()
             }
         };
-        if let Some(error) = &state.error {
+        if let Some(error) = state.error {
             body.push(
                 div()
                     .debug_selector(|| "login-error".into())
                     .text_color(theme.ERROR)
-                    .child(error.clone())
+                    .child(error.to_owned())
                     .into_any_element(),
             );
         }
@@ -412,7 +408,7 @@ impl LoginState {
                             .into_any_element(),
                     );
                 }
-                if manual_input_visible(state) {
+                if state.manual_input_visible {
                     body.push(
                         div()
                             .text_size(px(12.))
@@ -491,6 +487,7 @@ impl LoginState {
         // A failed attempt can always restart from a fresh link, except when
         // the only problem was an empty field the user can fix in place.
         if state.error.is_some() && (kind != StepKind::EnterKey || state.busy) {
+            let provider = state.provider;
             body.push(
                 login_button("login-retry", "Start a new sign-in")
                     .on_click(cx.listener(move |this, _, window, cx| {

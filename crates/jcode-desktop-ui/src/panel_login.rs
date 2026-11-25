@@ -20,7 +20,7 @@ mod provider_picker;
 mod provider_picker_tests;
 #[path = "panel_login_steps.rs"]
 mod steps;
-use steps::{StepAction, manual_input_visible};
+use steps::{StepAction, StepView};
 
 pub(super) struct LoginState {
     /// Composer account selection never starts a sign-in flow.
@@ -59,6 +59,34 @@ pub(super) struct LoginState {
     /// Failure reasons from the most recent live test, by provider id.
     live_errors: HashMap<String, String>,
     live_tasks: Vec<Task<()>>,
+}
+
+impl LoginState {
+    fn steps(&self, provider: LoginProvider) -> StepView<'_> {
+        StepView {
+            provider,
+            prompt: self.prompt.as_ref(),
+            input: &self.input,
+            busy: self.busy,
+            authorized: self.authorized,
+            complete: self.complete,
+            error: self.error.as_deref(),
+            callback_waiting: self.callback_waiting,
+            manual_entry: self.manual_entry,
+            manual_input_visible: manual_input_visible(self),
+        }
+    }
+}
+
+fn manual_input_visible(state: &LoginState) -> bool {
+    !state.complete
+        && !state.busy
+        && !state.authorized
+        && state
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
+        && (state.manual_entry || !state.callback_waiting)
 }
 
 impl Drop for LoginState {
@@ -929,8 +957,7 @@ impl Panel {
                 self.login_target_session().is_some(),
             );
             if let Some(provider) = state.provider {
-                body = body.child(state.render_login_steps(
-                    provider,
+                body = body.child(state.steps(provider).render(
                     self.preview_state.is_some(),
                     Self::handle_login_step,
                     cx,
@@ -998,8 +1025,7 @@ impl Panel {
                         .child(status.detail()),
                 );
             }
-            body = body.child(state.render_login_steps(
-                provider,
+            body = body.child(state.steps(provider).render(
                 self.preview_state.is_some(),
                 Self::handle_login_step,
                 cx,
