@@ -49,7 +49,7 @@ fn open(mode: Mode, w: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
 fn is_open(mode: Mode, w: &Workspace, cx: &gpui::App) -> bool {
     match mode {
         Mode::Rename => w.active_modal::<super::rename::Rename>(cx).is_some(),
-        Mode::FolderPicker => w.folder_picker_dir.is_some(),
+        Mode::FolderPicker => w.folder_picker(cx).is_some(),
         Mode::UsageReset => w.active_modal::<super::usage_reset::UsageReset>(cx).is_some(),
         Mode::BetaNotice => w.active_modal::<super::beta_notice::BetaNotice>(cx).is_some(),
     }
@@ -240,4 +240,36 @@ fn root_typing_is_not_redirected_to_the_composer_while_a_mode_is_open(
             "{mode:?} stays open"
         );
     }
+}
+
+#[gpui::test]
+fn a_folder_picker_restored_after_reload_closes_back_to_the_composer(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = setup(cx);
+    open_mode(Mode::FolderPicker, &workspace, vcx);
+    let snapshot = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+    assert!(snapshot.folder_picker_dir.is_some());
+    assert!(!snapshot.folder_picker_sets_default);
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(!workspace.read_with(vcx, |w, cx| is_open(Mode::FolderPicker, w, cx)));
+
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.apply_snapshot(snapshot, cx);
+            w.restore_focus(window, cx);
+        })
+    });
+    vcx.run_until_parked();
+    assert!(workspace.read_with(vcx, |w, cx| is_open(Mode::FolderPicker, w, cx)));
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+    let search = workspace.read_with(vcx, |w, cx| w.folder_picker(cx).unwrap().focus_handle(cx));
+    vcx.update(|window, _| assert!(search.is_focused(window), "restored focus"));
+
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(!workspace.read_with(vcx, |w, cx| is_open(Mode::FolderPicker, w, cx)));
+    let composer = composer_focus(&workspace, vcx);
+    vcx.update(|window, _| assert!(composer.is_focused(window), "focus returns to the panel"));
 }

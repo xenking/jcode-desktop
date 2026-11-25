@@ -60,7 +60,7 @@ fn held_close_through_picker_ignores_fading_right_neighbor(cx: &mut gpui::TestAp
             } else {
                 assert!(workspace.focus_handle.is_focused(window));
                 assert!(workspace.default_directory_panel_index(cx).is_none());
-                assert!(workspace.folder_search.is_none());
+                assert!(workspace.picker_search(cx).is_none());
             }
         });
     }

@@ -59,8 +59,8 @@ fn open_picker(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext)
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("default-directory-panel").is_some());
     assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
-    workspace.read_with(vcx, |workspace, _| {
-        assert!(workspace.folder_picker_sets_default);
+    workspace.read_with(vcx, |workspace, cx| {
+        assert!(workspace.picker_sets_default(cx));
     });
 }
 
@@ -70,12 +70,12 @@ fn select_directory(
     directory: &Path,
 ) {
     workspace.update(vcx, |workspace, cx| {
-        workspace.browse_to(directory.to_path_buf(), cx);
+        workspace.browse_picker_to(directory.to_path_buf(), cx);
     });
     vcx.run_until_parked();
-    workspace.read_with(vcx, |workspace, _| {
-        assert_eq!(workspace.folder_picker_dir.as_deref(), Some(directory));
-        assert!(workspace.folder_picker_error.is_none());
+    workspace.read_with(vcx, |workspace, cx| {
+        assert_eq!(workspace.picker_dir(cx).as_deref(), Some(directory));
+        assert!(workspace.picker_error(cx).is_none());
     });
 }
 
@@ -147,7 +147,7 @@ fn default_directory_panel_can_focus_move_resize_and_close_like_chat(
         assert_eq!(w.slots.len(), 3, "reopening must not duplicate the picker");
         assert_eq!(w.slots[w.active].panel.entity_id(), picker_id);
         assert_eq!(
-            w.folder_search.as_ref().unwrap().read(cx).content,
+            w.picker_search(cx).unwrap().read(cx).content,
             "unfinished"
         );
         assert!(
@@ -173,7 +173,7 @@ fn default_directory_panel_can_focus_move_resize_and_close_like_chat(
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert!(w.default_directory_panel_index(cx).is_none());
-        assert!(w.folder_search.is_none());
+        assert!(w.picker_search(cx).is_none());
         assert_eq!(w.pinned_working_dir.as_deref(), prior.path().to_str());
     });
     assert!(vcx.debug_bounds("default-directory-panel").is_none());
@@ -203,7 +203,7 @@ fn default_directory_panel_snapshot_restores_search_and_focus_without_watching_s
         let w = workspace.read(cx);
         assert_eq!(w.slots.len(), 3);
         assert!(w.slots[w.active].panel.read(cx).is_default_directory());
-        let search = w.folder_search.as_ref().unwrap();
+        let search = w.picker_search(cx).unwrap();
         assert_eq!(search.read(cx).content, "draft");
         assert!(search.read(cx).focus_handle.is_focused(window));
         assert_eq!(
@@ -261,12 +261,11 @@ fn destination_pill_opens_picker_with_focused_change_directory_action(
         assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
         vcx.update(|window, cx| {
             let workspace = workspace.read(cx);
-            assert!(workspace.folder_picker_sets_default);
-            assert!(workspace.folder_picker_error.is_none());
+            assert!(workspace.picker_sets_default(cx));
+            assert!(workspace.picker_error(cx).is_none());
             assert!(
                 workspace
-                    .folder_search
-                    .as_ref()
+                    .picker_search(cx)
                     .expect("default picker reuses the search input")
                     .read(cx)
                     .focus_handle
@@ -347,14 +346,14 @@ fn choosing_default_directory_changes_preference_without_spawning_and_next_enter
     select_directory(&workspace, vcx, selected.path());
     click(vcx, "folder-picker-open");
     assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
-    workspace.read_with(vcx, |workspace, _| {
+    workspace.read_with(vcx, |workspace, cx| {
         assert_eq!(
             workspace.pinned_working_dir.as_deref(),
             selected.path().to_str()
         );
-        assert!(workspace.folder_picker_dir.is_none());
-        assert!(workspace.folder_search.is_none());
-        assert!(workspace.folder_picker_error.is_none());
+        assert!(workspace.picker_dir(cx).is_none());
+        assert!(workspace.picker_search(cx).is_none());
+        assert!(workspace.picker_error(cx).is_none());
         assert_eq!(
             workspace
                 .slots
@@ -424,26 +423,28 @@ fn invalid_default_directory_preserves_prior_and_displays_error(cx: &mut gpui::T
     // become a regular file while the picker is open.
     for invalid in [&missing, &file] {
         workspace.update(vcx, |workspace, cx| {
-            workspace.folder_picker_dir = Some(invalid.clone());
-            workspace.folder_picker_error = None;
+            workspace.with_picker(cx, |picker| {
+                picker.dir = invalid.clone();
+                picker.error = None;
+            });
             cx.notify();
         });
         vcx.run_until_parked();
         click(vcx, "folder-picker-open");
-        workspace.read_with(vcx, |workspace, _| {
+        workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(
                 workspace.pinned_working_dir.as_deref(),
                 prior.path().to_str()
             );
             assert_eq!(
-                workspace.folder_picker_dir.as_deref(),
+                workspace.picker_dir(cx).as_deref(),
                 Some(invalid.as_path())
             );
-            assert!(workspace.folder_picker_sets_default);
-            assert!(workspace.folder_search.is_some());
+            assert!(workspace.picker_sets_default(cx));
+            assert!(workspace.picker_search(cx).is_some());
             assert!(
                 workspace
-                    .folder_picker_error
+                    .picker_error(cx)
                     .as_ref()
                     .is_some_and(|error| !error.is_empty())
             );
@@ -474,14 +475,14 @@ fn cancelling_default_directory_preserves_prior_and_restores_shortcut(
     select_directory(&workspace, vcx, selected.path());
     click(vcx, "folder-picker-cancel");
     assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
-    workspace.read_with(vcx, |workspace, _| {
+    workspace.read_with(vcx, |workspace, cx| {
         assert_eq!(
             workspace.pinned_working_dir.as_deref(),
             prior.path().to_str()
         );
-        assert!(workspace.folder_picker_dir.is_none());
-        assert!(workspace.folder_search.is_none());
-        assert!(workspace.folder_picker_error.is_none());
+        assert!(workspace.picker_dir(cx).is_none());
+        assert!(workspace.picker_search(cx).is_none());
+        assert!(workspace.picker_error(cx).is_none());
         assert_eq!(workspace.slots.len(), 2);
     });
     assert_no_command(&commands);
@@ -500,9 +501,9 @@ fn ordinary_open_folder_resets_default_mode_and_still_spawns(cx: &mut gpui::Test
     // a sticky mode bit even if cancellation happens to reset it correctly.
     vcx.update(|window, cx| window.dispatch_action(Box::new(OpenFolder), cx));
     vcx.run_until_parked();
-    workspace.read_with(vcx, |workspace, _| {
-        assert!(!workspace.folder_picker_sets_default);
-        assert!(workspace.folder_search.is_some());
+    workspace.read_with(vcx, |workspace, cx| {
+        assert!(!workspace.picker_sets_default(cx));
+        assert!(workspace.picker_search(cx).is_some());
     });
     select_directory(&workspace, vcx, selected.path());
     click(vcx, "folder-picker-open");
@@ -527,13 +528,13 @@ fn escape_cancels_default_directory_without_saving(cx: &mut gpui::TestAppContext
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
-    workspace.read_with(vcx, |workspace, _| {
+    workspace.read_with(vcx, |workspace, cx| {
         assert_eq!(
             workspace.pinned_working_dir.as_deref(),
             prior.path().to_str()
         );
         assert_eq!(workspace.slots.len(), 2);
-        assert!(!workspace.folder_picker_sets_default);
+        assert!(!workspace.picker_sets_default(cx));
     });
     assert_no_command(&commands);
 }
@@ -552,12 +553,12 @@ fn typed_invalid_default_path_does_not_fall_back_to_parent_or_fuzzy_match(
         select_directory(&workspace, vcx, base.path());
         vcx.simulate_keystrokes(keys);
         vcx.run_until_parked();
-        workspace.read_with(vcx, |workspace, _| {
+        workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(
                 workspace.pinned_working_dir.as_deref(),
                 prior.path().to_str()
             );
-            assert!(workspace.folder_picker_error.is_some());
+            assert!(workspace.picker_error(cx).is_some());
             assert_eq!(workspace.slots.len(), 3);
         });
         assert!(vcx.debug_bounds("folder-picker-error").is_some());
@@ -573,9 +574,8 @@ fn tilde_default_directory_paths_expand_to_home_without_spawning(cx: &mut gpui::
     let (workspace, vcx, commands) = setup(cx, prior.path());
     for query in ["~", "~/"] {
         open_picker(&workspace, vcx);
-        workspace.update(vcx, |workspace, cx| {
-            workspace.set_searched_default_directory(query, cx);
-        });
+        let picker = workspace.read_with(vcx, |workspace, cx| workspace.folder_picker(cx).unwrap());
+        picker.update(vcx, |picker, cx| picker.set_searched_default(query, cx));
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, _| {
             assert_eq!(
@@ -616,14 +616,14 @@ fn invalid_typed_default_path_confirm_click_keeps_escape_working(cx: &mut gpui::
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
     assert!(vcx.debug_bounds("folder-picker-error").is_none());
-    workspace.read_with(vcx, |workspace, _| {
+    workspace.read_with(vcx, |workspace, cx| {
         assert_eq!(
             workspace.pinned_working_dir.as_deref(),
             prior.path().to_str()
         );
         assert_eq!(workspace.slots.len(), 2);
-        assert!(workspace.folder_search.is_none());
-        assert!(!workspace.folder_picker_sets_default);
+        assert!(workspace.picker_search(cx).is_none());
+        assert!(!workspace.picker_sets_default(cx));
     });
     assert_no_command(&commands);
 }

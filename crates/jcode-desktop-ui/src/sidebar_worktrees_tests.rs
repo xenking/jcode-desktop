@@ -197,12 +197,16 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
 fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx, Vec::new());
     click(vcx, "sidebar-open-project");
-    workspace.read_with(vcx, |w, _| assert!(w.folder_search.is_some()));
+    workspace.read_with(vcx, |w, cx| assert!(w.picker_search(cx).is_some()));
     assert!(
         commands.try_recv().is_err(),
         "choosing a folder comes before any session"
     );
-    workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.modal_layer.update(cx, |layer, cx| layer.hide(window, cx))
+        })
+    });
     click(vcx, "sidebar-new-thread");
     workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(matches!(

@@ -140,7 +140,7 @@ impl Workspace {
             if panel.pending {
                 self.render_pending_session(self.active, cx)
             } else if panel.session_id == Panel::DEFAULT_DIRECTORY_SESSION_ID {
-                self.render_folder_picker(cx)
+                self.render_default_directory_picker()
             } else {
                 // Retained, and rebuilt on its own inside the chrome: see
                 // `render_strip`.

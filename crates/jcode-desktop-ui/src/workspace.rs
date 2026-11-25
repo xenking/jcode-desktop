@@ -195,6 +195,9 @@ mod pin;
 
 #[path = "workspace_default_directory.rs"]
 mod default_directory;
+#[path = "workspace_folder_picker.rs"]
+mod folder_picker;
+use folder_picker::FolderPicker;
 #[cfg(test)]
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
@@ -999,16 +1002,9 @@ pub struct Workspace {
     gesture_seen: Option<Instant>,
     /// Settles horizontal strip pans onto the nearest panel edge.
     scroll_snap: scroll_snap::ScrollSnap,
-    /// Saving a preference rather than opening a new session.
-    folder_picker_sets_default: bool,
-    /// The panel whose location pill opened the browser, if any. Its folder
-    /// is the one being switched.
-    folder_picker_source: Option<gpui::EntityId>,
-    /// Directory currently shown by the in-app folder browser. `None` closes it.
-    folder_picker_dir: Option<PathBuf>,
-    folder_candidates: std::cell::RefCell<FolderCandidates>,
-    folder_picker_error: Option<String>,
-    folder_search: Option<Entity<PromptInput>>,
+    /// The folder picker inside the default directory panel. The picker that
+    /// opens a folder lives in `modal_layer` instead.
+    default_directory_picker: Option<Entity<FolderPicker>>,
     voice_settings: voice_settings::VoiceSettings,
     /// Rename, folder picker, usage reset and the beta notice live here, one
     /// at a time, each as its own view.
@@ -1382,12 +1378,7 @@ impl Workspace {
             gesture: StripGesture::default(),
             gesture_seen: None,
             scroll_snap: Default::default(),
-            folder_picker_sets_default: false,
-            folder_picker_source: None,
-            folder_picker_dir: None,
-            folder_candidates: Default::default(),
-            folder_picker_error: None,
-            folder_search: None,
+            default_directory_picker: None,
             voice_settings: Default::default(),
             modal_layer: Self::new_modal_layer(cx),
             focus_restore: FocusSnapshot::Workspace,
@@ -1984,12 +1975,7 @@ impl Workspace {
             gesture: StripGesture::default(),
             gesture_seen: None,
             scroll_snap: Default::default(),
-            folder_picker_sets_default: false,
-            folder_picker_source: None,
-            folder_picker_dir: None,
-            folder_candidates: Default::default(),
-            folder_picker_error: None,
-            folder_search: None,
+            default_directory_picker: None,
             voice_settings: Default::default(),
             modal_layer: Self::new_modal_layer(cx),
             focus_restore: FocusSnapshot::Workspace,
@@ -2071,10 +2057,10 @@ impl Workspace {
             .and_then(|slot| index_for_id(slot.panel.entity_id()))
             .or(review_source)
             .unwrap_or(0);
-        let focus = if self
-            .folder_search
+        let picker = self.folder_picker(cx);
+        let focus = if picker
             .as_ref()
-            .is_some_and(|search| search.read(cx).focus_handle.is_focused(window))
+            .is_some_and(|picker| picker.focus_handle(cx).is_focused(window))
         {
             FocusSnapshot::FolderSearch
         } else if let Some(index) = slots
@@ -2087,10 +2073,6 @@ impl Workspace {
         } else {
             FocusSnapshot::Workspace
         };
-        let folder_search = self
-            .folder_search
-            .as_ref()
-            .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
             launch: Some((&self.launch).into()),
             format_version: SNAPSHOT_FORMAT_VERSION,
@@ -2128,10 +2110,12 @@ impl Workspace {
             camera_target: self.camera_target,
             overview: self.overview,
             hints_overlay: self.hints_overlay,
-            folder_picker_sets_default: self.folder_picker_sets_default,
-            folder_picker_dir: self.folder_picker_dir.clone(),
-            folder_picker_error: self.folder_picker_error.clone(),
-            folder_search,
+            folder_picker_sets_default: picker.as_ref().is_some_and(|p| p.read(cx).sets_default),
+            folder_picker_dir: picker.as_ref().map(|p| p.read(cx).dir.clone()),
+            folder_picker_error: picker.as_ref().and_then(|p| p.read(cx).error.clone()),
+            folder_search: picker
+                .as_ref()
+                .map(|p| p.read(cx).search.read(cx).snapshot()),
             focus,
         })
     }
@@ -2360,55 +2344,41 @@ impl Workspace {
             if snapshot.hints_overlay { 1.0 } else { 0.0 },
             transition::policy(Transition::Hints).duration,
         );
-        self.folder_picker_sets_default = snapshot.folder_picker_sets_default;
-        self.folder_picker_dir = snapshot.folder_picker_dir;
-        self.folder_picker_error = snapshot.folder_picker_error;
         self.focus_restore = match snapshot.focus {
             FocusSnapshot::Panel(index) => restored(index)
                 .map(FocusSnapshot::Panel)
                 .unwrap_or(FocusSnapshot::Workspace),
             focus => focus,
         };
-        if let Some(search_state) = snapshot.folder_search {
-            let search = self.create_folder_search(cx);
-            search.update(cx, |search, cx| search.restore(search_state, cx));
-            if let Some(index) = self.default_directory_panel_index(cx) {
-                self.slots[index]
-                    .panel
-                    .update_chat(cx, |panel, _| panel.input = search.clone());
+        if let Some(dir) = snapshot.folder_picker_dir {
+            let sets_default = snapshot.folder_picker_sets_default;
+            let workspace = cx.weak_entity();
+            let picker = cx.new(|cx| {
+                let mut picker = FolderPicker::new(workspace, sets_default, dir, None, cx);
+                picker.error = snapshot.folder_picker_error;
+                picker
+            });
+            if let Some(search_state) = snapshot.folder_search {
+                let search = picker.read(cx).search.clone();
+                search.update(cx, |search, cx| search.restore(search_state, cx));
             }
-            self.folder_search = Some(search);
+            if sets_default {
+                if let Some(index) = self.default_directory_panel_index(cx) {
+                    let search = picker.read(cx).search.clone();
+                    self.slots[index]
+                        .panel
+                        .update_chat(cx, |panel, _| panel.input = search);
+                }
+                self.adopt_default_directory_picker(picker, cx);
+            } else {
+                self.modal_layer
+                    .update(cx, |layer, cx| layer.restore(picker, cx));
+            }
         }
         self.restore_workspace_live_views(cx);
         if self.machines_panel_index(cx).is_some() {
             self.refresh_cloud_registry(cx);
         }
-    }
-
-    fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
-        let weak = cx.weak_entity();
-        let change_weak = weak.clone();
-        let cancel = weak.clone();
-        cx.new(|cx| {
-            PromptInput::new(
-                cx,
-                if self.folder_picker_sets_default {
-                    "enter a directory path, then press enter to set default"
-                } else {
-                    "type a folder name or path, then press enter"
-                },
-                move |query, _, _, app| {
-                    let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
-                },
-            )
-            .with_on_overlay_cancel(move |app| {
-                let _ = cancel.update(app, |this, cx| this.close_folder_picker(cx));
-                true
-            })
-            .with_on_change(move |_, app| {
-                let _ = change_weak.update(app, |_, cx| cx.notify());
-            })
-        })
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2433,8 +2403,8 @@ impl Workspace {
                 }
             }
             FocusSnapshot::FolderSearch => {
-                if let Some(search) = &self.folder_search {
-                    let handle = search.read(cx).focus_handle.clone();
+                if let Some(picker) = self.folder_picker(cx) {
+                    let handle = picker.focus_handle(cx);
                     window.focus(&handle, cx);
                 } else {
                     self.focus_active(window, cx);
@@ -4948,118 +4918,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Open Jcode's own directory browser. This deliberately does not call the
-    /// platform path prompt, so the workflow stays inside the application.
-    /// A session's working directory is fixed by the runtime, so choosing a
-    /// different folder intentionally opens a new session instead of silently
-    /// changing the meaning of an existing transcript.
-    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
-        self.remove_default_directory_panel(cx);
-        self.folder_picker_sets_default = false;
-        self.folder_picker_source = None;
-        self.folder_picker_dir = Some(
-            self.default_working_dir()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/")),
-        );
-        self.folder_picker_error = None;
-        self.folder_search = Some(self.create_folder_search(cx));
-        cx.defer_in(window, |this, window, cx| {
-            if let Some(search) = &this.folder_search {
-                let focus_handle = search.read(cx).focus_handle.clone();
-                window.focus(&focus_handle, cx);
-            }
-        });
-        cx.notify();
-    }
-
-    fn open_searched_folder(&mut self, query: &str, cx: &mut Context<Self>) {
-        if self.folder_picker_sets_default {
-            self.set_searched_default_directory(query, cx);
-            return;
-        }
-        let Some(base) = self.folder_picker_dir.as_deref() else {
-            return;
-        };
-        let expanded = if query == "~" {
-            self.default_working_dir().map(PathBuf::from)
-        } else if let Some(rest) = query.strip_prefix("~/") {
-            self.default_working_dir()
-                .map(|home| PathBuf::from(home).join(rest))
-        } else {
-            let path = PathBuf::from(query);
-            Some(if path.is_absolute() {
-                path
-            } else {
-                base.join(path)
-            })
-        };
-        let matched = expanded.filter(|path| path.is_dir()).or_else(|| {
-            let needle = query.to_lowercase();
-            let direct = base.join(query);
-            if direct.is_file() {
-                return direct.parent().map(Path::to_path_buf);
-            }
-            ranked_folder_matches_for_sessions(&self.sessions, base, &needle)
-                .into_iter()
-                .next()
-                .map(|(path, _)| path)
-        });
-        if let Some(path) = matched {
-            self.folder_picker_dir = Some(path);
-            self.choose_browsed_folder(cx);
-        } else {
-            self.folder_picker_error = Some(format!("no folder matches ‘{query}’"));
-            cx.notify();
-        }
-    }
-
-    fn browse_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        match directory_entries(&path) {
-            Ok(_) => {
-                self.folder_picker_dir = Some(path);
-                self.folder_picker_error = None;
-            }
-            Err(error) => self.folder_picker_error = Some(error),
-        }
-        cx.notify();
-    }
-
-    fn choose_browsed_folder(&mut self, cx: &mut Context<Self>) {
-        if self.folder_picker_sets_default {
-            if let Some(path) = self.folder_picker_dir.clone() {
-                self.set_default_directory(path, cx);
-            }
-            return;
-        }
-        let Some(path) = self.folder_picker_dir.take() else {
-            return;
-        };
-        self.folder_picker_error = None;
-        self.folder_search = None;
-        // Enter removes the focused search before the runtime responds. Restore
-        // a mounted target on the next render so navigation keeps working even
-        // if session creation is slow or fails.
-        self.focus_pending = true;
-        let directory = path.to_string_lossy().into_owned();
-        let source = self.folder_picker_source.take();
-        if !self.switch_source_directory(source, &directory, cx) {
-            self.open_local_draft(Some(directory), cx);
-        }
-        cx.notify();
-    }
-
-    fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
-        self.remove_default_directory_panel(cx);
-        self.folder_picker_sets_default = false;
-        self.folder_picker_source = None;
-        self.folder_picker_dir = None;
-        self.folder_picker_error = None;
-        self.folder_search = None;
-        self.focus_pending = true;
-        cx.notify();
-    }
-
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
     fn open_new_session(&mut self, cx: &mut Context<Self>) {
@@ -5091,7 +4949,7 @@ impl Workspace {
             .read_chat(cx)
             .is_some_and(Panel::is_default_directory)
         {
-            self.close_folder_picker(cx);
+            self.close_default_directory_picker(cx);
             self.focus_active(window, cx);
             return;
         }
@@ -5929,7 +5787,7 @@ impl Workspace {
                     .size_full(),
                 )
                 .child(if default_directory {
-                    self.render_folder_picker(cx)
+                    self.render_default_directory_picker()
                 } else if machines {
                     self.render_machines(cx)
                 } else if pending {
@@ -9606,376 +9464,6 @@ impl Workspace {
     }
 }
 
-impl Workspace {
-    fn folder_candidates(
-        &self,
-        directory: &Path,
-        query: String,
-        cx: &mut Context<Self>,
-    ) -> FolderMatches {
-        let mut state = self.folder_candidates.borrow_mut();
-        let key = FolderSearchKey {
-            directory: directory.to_owned(),
-            query,
-            sets_default: self.folder_picker_sets_default,
-        };
-        if let Some((previous, candidates)) = &state.result
-            && previous == &key
-        {
-            return candidates.clone();
-        }
-        if state.running {
-            return Default::default();
-        }
-        state.running = true;
-        drop(state);
-        let sessions = self.sessions.clone();
-        let load = cx.background_spawn(async move {
-            let candidates = if key.sets_default {
-                default_directory::ranked_directories(&sessions, &key.directory, &key.query)
-            } else {
-                ranked_folder_matches_for_sessions(&sessions, &key.directory, &key.query)
-            };
-            (key, candidates.into())
-        });
-        cx.spawn(async move |workspace, cx| {
-            let result = load.await;
-            let _ = workspace.update(cx, |workspace, cx| {
-                let mut state = workspace.folder_candidates.borrow_mut();
-                state.result = Some(result);
-                state.running = false;
-                if workspace.folder_picker_dir.is_some() {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        Default::default()
-    }
-
-    fn render_folder_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let Some(directory) = self.folder_picker_dir.clone() else {
-            return div().into_any_element();
-        };
-        let query = self
-            .folder_search
-            .as_ref()
-            .map(|search| search.read(cx).content.trim().to_lowercase())
-            .unwrap_or_default();
-        let entries = self.folder_candidates(&directory, query, cx);
-        let home = crate::platform_dirs::home_string();
-        let mut list = div()
-            .id("folder-picker-list")
-            .debug_selector(|| "folder-picker-list".into())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .border_t_1()
-            .border_b_1()
-            .border_color(Theme::global().PANEL_BORDER);
-
-        if let Some(parent) = directory.parent().map(Path::to_path_buf) {
-            list = list.child(
-                div()
-                    .id("folder-picker-parent")
-                    .debug_selector(|| "folder-picker-parent".into())
-                    .px_4()
-                    .py_2()
-                    .cursor_pointer()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .hover(|el| {
-                        el.bg(Theme::global().HEADER_BG)
-                            .text_color(Theme::global().TEXT)
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.browse_to(parent.clone(), cx);
-                        }),
-                    )
-                    .child("↰  .."),
-            );
-        }
-        for (index, (path, reason)) in entries.iter().cloned().enumerate() {
-            let label = if self.folder_picker_sets_default {
-                default_directory::compact_path_in(&path.to_string_lossy(), home.clone())
-            } else {
-                path.strip_prefix(&directory)
-                    .ok()
-                    .filter(|relative| !relative.as_os_str().is_empty())
-                    .map(|relative| relative.display().to_string())
-                    .unwrap_or_else(|| path.display().to_string())
-            };
-            let sets_default = self.folder_picker_sets_default;
-            let reason = if sets_default && self.pinned_working_dir.as_deref() == path.to_str() {
-                "current default".into()
-            } else {
-                reason
-            };
-            list = list.child(
-                div()
-                    .id(("folder-picker-entry", index))
-                    .relative()
-                    .children(crate::fixture_control_targets::marker(
-                        || format!("folder-picker-entry-{index}"),
-                        || None,
-                    ))
-                    .debug_selector(move || format!("folder-picker-entry-{index}"))
-                    .px_4()
-                    .py_2()
-                    .cursor_pointer()
-                    .hover(|el| el.bg(Theme::global().HEADER_BG))
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        cx.stop_propagation();
-                        if sets_default {
-                            this.set_default_directory(path.clone(), cx);
-                        } else {
-                            this.browse_to(path.clone(), cx);
-                        }
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(format!("▸  {label}")),
-                            )
-                            .when(!reason.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(Theme::global().TEXT_DIM)
-                                        .child(reason),
-                                )
-                            }),
-                    ),
-            );
-        }
-
-        let inline = self.folder_picker_sets_default;
-        div()
-            .id(if inline {
-                "default-directory-panel"
-            } else {
-                "folder-picker-overlay"
-            })
-            .debug_selector(move || {
-                if inline {
-                    "default-directory-panel".into()
-                } else {
-                    "folder-picker-overlay".into()
-                }
-            })
-            // Clicking a modal control must not let the workspace ancestor
-            // steal the search focus. In particular, a rejected save needs to
-            // keep accepting edits and Escape without an extra input click.
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    if this.folder_picker_sets_default
-                        && let Some(index) = this.default_directory_panel_index(cx)
-                    {
-                        this.set_active(index, cx);
-                    }
-                    if let Some(search) = &this.folder_search {
-                        this.focus_pending = false;
-                        window.focus(&search.read(cx).focus_handle.clone(), cx);
-                    }
-                }),
-            )
-            .when(inline, |el| el.size_full())
-            .when(!inline, |el| {
-                el.absolute()
-                    .inset_0()
-                    .occlude()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x000000cc))
-            })
-            .flex()
-            .child(
-                div()
-                    .when(inline, |el| el.size_full().min_w_0())
-                    .when(!inline, |el| {
-                        el.w(px(680.0))
-                            .h(px(560.0))
-                            .max_w(relative(0.9))
-                            .max_h(relative(0.85))
-                    })
-                    .flex()
-                    .flex_col()
-                    .when(!inline, |el| {
-                        el.rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .bg(Theme::global().PANEL_BG)
-                    })
-                    .child(
-                        div()
-                            .px_4()
-                            .py_3()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(div().text_size(px(14.0)).child(
-                                if self.folder_picker_sets_default {
-                                    "Default directory"
-                                } else if self.folder_picker_source.is_some() {
-                                    "switch folder"
-                                } else {
-                                    "open folder"
-                                },
-                            ))
-                            .child(
-                                div()
-                                    .id("folder-picker-cancel")
-                                    .debug_selector(|| "folder-picker-cancel".into())
-                                    .cursor_pointer()
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| el.text_color(Theme::global().TEXT))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_folder_picker(cx);
-                                    }))
-                                    .child("cancel"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px_4()
-                            .pb_3()
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if self.folder_picker_sets_default {
-                                self.default_directory_description(&directory)
-                            } else {
-                                directory.display().to_string()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .px_4()
-                            .pb_3()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("folder-picker-home")
-                                    .debug_selector(|| "folder-picker-home".into())
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .bg(Theme::global().HEADER_BG)
-                                    .hover(|el| el.text_color(Theme::global().TEXT))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            if let Some(home) = this.default_working_dir() {
-                                                this.browse_to(PathBuf::from(home), cx);
-                                            }
-                                        }),
-                                    )
-                                    .child("⌂  home"),
-                            )
-                            .child(
-                                div()
-                                    .id("folder-picker-computer")
-                                    .debug_selector(|| "folder-picker-computer".into())
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .bg(Theme::global().HEADER_BG)
-                                    .hover(|el| el.text_color(Theme::global().TEXT))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.browse_to(filesystem_root(), cx);
-                                        }),
-                                    )
-                                    .child("▣  computer"),
-                            ),
-                    )
-                    .when_some(self.folder_search.clone(), |el, search| {
-                        el.child(
-                            div()
-                                .id("folder-picker-search")
-                                .debug_selector(|| "folder-picker-search".into())
-                                .mx_4()
-                                .mb_3()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(Theme::global().INPUT_BORDER)
-                                .bg(Theme::global().INPUT_BG)
-                                .child(search),
-                        )
-                    })
-                    .child(list)
-                    .when_some(self.folder_picker_error.clone(), |el, error| {
-                        el.child(
-                            div()
-                                .debug_selector(|| "folder-picker-error".into())
-                                .px_4()
-                                .py_2()
-                                .text_color(Theme::global().ERROR)
-                                .child(error),
-                        )
-                    })
-                    .child(
-                        div().p_3().flex().justify_end().child(
-                            div()
-                                .id("folder-picker-open")
-                                .relative()
-                                .children(crate::fixture_control_targets::marker(
-                                    || "folder-picker-open".into(),
-                                    || None,
-                                ))
-                                .debug_selector(|| "folder-picker-open".into())
-                                .px_4()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .bg(Theme::global().ACCENT)
-                                .text_color(Theme::global().BG)
-                                // Keep the modal mounted until release. Opening on
-                                // mouse-down lets the rest of the click hit the
-                                // newly repositioned strip and steal draft focus.
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    cx.stop_propagation();
-                                    let query = this
-                                        .folder_search
-                                        .as_ref()
-                                        .map(|s| s.read(cx).content.trim().to_string())
-                                        .unwrap_or_default();
-                                    if this.folder_picker_sets_default && !query.is_empty() {
-                                        this.set_searched_default_directory(&query, cx);
-                                    } else {
-                                        this.choose_browsed_folder(cx);
-                                    }
-                                }))
-                                .child(if self.folder_picker_sets_default {
-                                    "Set as default"
-                                } else {
-                                    "open this folder"
-                                }),
-                        ),
-                    ),
-            )
-            .into_any_element()
-    }
-}
-
 /// A stable retained boundary for the sidebar. Camera ticks notify Workspace
 /// without changing its model, so the sidebar can replay its last frame while
 /// the canvas moves. Real workspace, panel, global and hover changes remain
@@ -10324,7 +9812,7 @@ impl Render for Workspace {
                     && !this.account_sign_in.visible
                     && this.onboarding_launch.error.is_none()
                     && !this.modal_layer.read(cx).has_active()
-                    && this.folder_picker_dir.is_none()
+                    && this.default_directory_picker.is_none()
                     && !this.compact_sidebar_open
                     && let Some(slot) = this.slots.get(this.active).filter(|slot| !slot.closing)
                     && slot
@@ -10509,10 +9997,6 @@ impl Render for Workspace {
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
-            .when(
-                self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
-                |root| root.child(self.render_folder_picker(cx)),
-            )
             .child(self.modal_layer.clone())
             .children(self.render_applet_overlays(window, cx))
             .children(self.render_applet_consent(cx))
@@ -10739,21 +10223,6 @@ struct FileTree {
     revision: u64,
     reading: Option<PathBuf>,
     needs_frame: bool,
-}
-
-#[derive(PartialEq, Eq)]
-struct FolderSearchKey {
-    directory: PathBuf,
-    query: String,
-    sets_default: bool,
-}
-
-type FolderMatches = std::sync::Arc<[(PathBuf, String)]>;
-
-#[derive(Default)]
-struct FolderCandidates {
-    result: Option<(FolderSearchKey, FolderMatches)>,
-    running: bool,
 }
 
 impl Default for FileTree {
@@ -14334,7 +13803,7 @@ mod tests {
         });
         workspace.update_in(vcx, |workspace, window, cx| {
             workspace.open_folder(&OpenFolder, window, cx);
-            workspace.browse_to(root.path().to_path_buf(), cx);
+            workspace.browse_picker_to(root.path().to_path_buf(), cx);
         });
         vcx.run_until_parked();
         let list = vcx.debug_bounds("folder-picker-list").unwrap();
@@ -14382,7 +13851,7 @@ mod tests {
                 workspace.sessions.push(session);
             }
             workspace.open_folder(&OpenFolder, window, cx);
-            workspace.browse_to(base.clone(), cx);
+            workspace.browse_picker_to(base.clone(), cx);
         });
         vcx.run_until_parked();
         let first = vcx
@@ -14398,8 +13867,8 @@ mod tests {
         );
         vcx.simulate_click(first.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        workspace.read_with(vcx, |workspace, _| {
-            assert_eq!(workspace.folder_picker_dir.as_deref(), Some(nested.as_path()));
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.picker_dir(cx).as_deref(), Some(nested.as_path()));
         });
     }
 
@@ -14442,7 +13911,7 @@ mod tests {
         std::fs::write(root.join("not-a-directory.txt"), "ignored").unwrap();
 
         workspace.update(vcx, |workspace, cx| {
-            workspace.folder_picker_dir = Some(root.clone());
+            workspace.with_picker(cx, |picker| picker.dir = root.clone());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -14459,9 +13928,9 @@ mod tests {
             .expect("the first child directory should paint");
         vcx.simulate_click(first_folder.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        workspace.update(vcx, |workspace, _| {
+        workspace.update(vcx, |workspace, cx| {
             assert_eq!(
-                workspace.folder_picker_dir.as_deref(),
+                workspace.picker_dir(cx).as_deref(),
                 Some(selected.as_path())
             );
         });
@@ -14471,13 +13940,13 @@ mod tests {
             .expect("cancel should paint");
         vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        workspace.update(vcx, |workspace, _| {
-            assert!(workspace.folder_picker_dir.is_none());
+        workspace.update(vcx, |workspace, cx| {
+            assert!(workspace.picker_dir(cx).is_none());
         });
 
         vcx.simulate_keystrokes("ctrl-o");
         workspace.update(vcx, |workspace, cx| {
-            workspace.folder_picker_dir = Some(selected.clone());
+            workspace.with_picker(cx, |picker| picker.dir = selected.clone());
             cx.notify();
         });
         vcx.run_until_parked();
@@ -14526,7 +13995,7 @@ mod tests {
             vcx.simulate_keystrokes("ctrl-o");
             vcx.run_until_parked();
             vcx.update(|window, cx| {
-                let search = workspace.read(cx).folder_search.as_ref().unwrap();
+                let search = workspace.read(cx).picker_search(cx).unwrap();
                 assert!(search.read(cx).focus_handle.is_focused(window));
             });
             if button == "enter" {
@@ -14625,13 +14094,13 @@ mod tests {
 
         vcx.simulate_keystrokes("ctrl-o");
         workspace.update(vcx, |workspace, cx| {
-            workspace.folder_picker_dir = Some(root.clone());
+            workspace.with_picker(cx, |picker| picker.dir = root.clone());
             cx.notify();
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("folder-picker-search").is_some());
         vcx.update(|window, cx| {
-            let search = workspace.read(cx).folder_search.clone().unwrap();
+            let search = workspace.read(cx).picker_search(cx).unwrap();
             assert!(search.read(cx).focus_handle.is_focused(window));
 
             window.focus(&workspace.read(cx).focus_handle.clone(), cx);
@@ -14639,7 +14108,7 @@ mod tests {
         let search_bounds = vcx.debug_bounds("folder-picker-search").unwrap();
         vcx.simulate_click(search_bounds.center(), gpui::Modifiers::default());
         vcx.update(|window, cx| {
-            let search = workspace.read(cx).folder_search.clone().unwrap();
+            let search = workspace.read(cx).picker_search(cx).unwrap();
             assert!(search.read(cx).focus_handle.is_focused(window));
         });
 
@@ -14658,9 +14127,9 @@ mod tests {
             }
             _ => panic!("search submitted the wrong runtime command"),
         }
-        workspace.update(vcx, |workspace, _| {
-            assert!(workspace.folder_picker_dir.is_none());
-            assert!(workspace.folder_search.is_none());
+        workspace.update(vcx, |workspace, cx| {
+            assert!(workspace.picker_dir(cx).is_none());
+            assert!(workspace.picker_search(cx).is_none());
         });
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -419,11 +419,15 @@ fn explicit_folder_and_help_stay_local_with_a_remote_default(cx: &mut gpui::Test
         w.push_test_panel("existing", cx);
         w
     });
-    workspace.update(vcx, |w, cx| {
-        w.folder_picker_dir = Some(PathBuf::from("/local/project"));
-        w.choose_browsed_folder(cx);
-        w.request_deferred_sessions(cx);
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.open_folder(&OpenFolder, window, cx))
     });
+    workspace.update(vcx, |w, cx| {
+        w.with_picker(cx, |picker| picker.dir = PathBuf::from("/local/project"))
+    });
+    let picker = workspace.read_with(vcx, |w, cx| w.folder_picker(cx).unwrap());
+    picker.update(vcx, |picker, cx| picker.choose(cx));
+    workspace.update(vcx, |w, cx| w.request_deferred_sessions(cx));
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/local/project")
     );

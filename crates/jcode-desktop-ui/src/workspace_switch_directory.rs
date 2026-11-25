@@ -22,17 +22,13 @@ impl Workspace {
         };
         let current = self.slots[index].panel.working_dir(cx).map(str::to_owned);
         self.set_active(index, cx);
-        self.open_folder(&OpenFolder, window, cx);
-        self.folder_picker_source = Some(request.source);
         // Start beside the current folder, where sibling repositories live.
-        if let Some(start) = current
+        let start = current
             .as_deref()
             .map(Path::new)
             .and_then(|dir| dir.parent().filter(|parent| parent.is_dir()))
-        {
-            self.folder_picker_dir = Some(start.to_path_buf());
-        }
-        cx.notify();
+            .map(Path::to_path_buf);
+        self.show_folder_picker(Some(request.source), start, window, cx);
     }
 
     /// Point the panel that opened the browser at `directory`. Returns false
@@ -138,9 +134,9 @@ mod tests {
         let (workspace, vcx, commands) = setup(cx, &current);
 
         click_location(vcx);
-        workspace.update(vcx, |workspace, _| {
-            assert_eq!(workspace.folder_picker_dir.as_deref(), Some(root.path()));
-            assert!(workspace.folder_picker_source.is_some());
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(workspace.picker_dir(cx).as_deref(), Some(root.path()));
+            assert!(workspace.picker_source(cx).is_some());
         });
         assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
 
@@ -167,8 +163,8 @@ mod tests {
         };
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 1, "the panel is reused");
-            assert!(workspace.folder_picker_dir.is_none());
-            assert!(workspace.folder_picker_source.is_none());
+            assert!(workspace.picker_dir(cx).is_none());
+            assert!(workspace.picker_source(cx).is_none());
             let panel = workspace.slots[0].panel.read(cx);
             assert_eq!(panel.session_id, request_id);
             assert_eq!(panel.working_dir.as_deref(), other.to_str());
@@ -222,7 +218,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(commands.try_recv().is_err());
         workspace.update(vcx, |workspace, cx| {
-            assert!(workspace.folder_picker_source.is_none());
+            assert!(workspace.picker_source(cx).is_none());
             assert_eq!(workspace.slots[0].panel.session_id(cx), "existing");
         });
     }

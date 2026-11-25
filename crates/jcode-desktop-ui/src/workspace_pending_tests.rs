@@ -685,7 +685,7 @@ fn new_draft_without_a_directory_can_choose_one_in_place(cx: &mut gpui::TestAppC
     let dir = tempfile::tempdir().unwrap();
     workspace.update(vcx, |w, cx| {
         assert!(w.switch_source_directory(
-            w.folder_picker_source,
+            w.picker_source(cx),
             dir.path().to_str().unwrap(),
             cx
         ));

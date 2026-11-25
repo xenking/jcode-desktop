@@ -15,16 +15,16 @@ impl Workspace {
             self.focus_pending = true;
             return;
         }
-        self.folder_picker_sets_default = true;
-        self.folder_picker_error = None;
-        self.folder_search = Some(self.create_folder_search(cx));
-        self.folder_picker_dir = Some(
-            self.pinned_working_dir
-                .clone()
-                .or_else(|| self.default_working_dir())
-                .map(PathBuf::from)
-                .unwrap_or_else(filesystem_root),
-        );
+        let dir = self
+            .pinned_working_dir
+            .clone()
+            .or_else(|| self.default_working_dir())
+            .map(PathBuf::from)
+            .unwrap_or_else(filesystem_root);
+        let workspace = cx.weak_entity();
+        let picker = cx.new(|cx| FolderPicker::new(workspace, true, dir, None, cx));
+        let search = picker.read(cx).search.clone();
+        self.adopt_default_directory_picker(picker, cx);
         let panel = cx.new(|cx| {
             let mut panel = Panel::new(
                 Panel::DEFAULT_DIRECTORY_SESSION_ID.into(),
@@ -35,7 +35,7 @@ impl Workspace {
             );
             // Use the panel's actual input handle for every existing focus path,
             // including live tabs, overview, navigation diagnostics and reload.
-            panel.input = self.folder_search.as_ref().unwrap().clone();
+            panel.input = search;
             panel
         });
         let width_fraction = 0.5;
@@ -86,6 +86,7 @@ impl Workspace {
     /// Remove only the preference panel, preserving the identities and focus of
     /// every conversation, including when saving after moving it to another row.
     pub(super) fn remove_default_directory_panel(&mut self, cx: &mut Context<Self>) {
+        self.default_directory_picker = None;
         let Some(index) = self.default_directory_panel_index(cx) else {
             return;
         };
@@ -128,57 +129,6 @@ impl Workspace {
             self.row_focus[self.active_row] = Some(slot.panel.entity_id());
         }
         self.retarget_camera();
-    }
-
-    pub(super) fn set_searched_default_directory(&mut self, query: &str, cx: &mut Context<Self>) {
-        let query = query.trim();
-        let path = if query == "~" {
-            self.default_working_dir().map(PathBuf::from)
-        } else if let Some(rest) = query.strip_prefix("~/") {
-            self.default_working_dir()
-                .map(|home| PathBuf::from(home).join(rest))
-        } else {
-            let path = PathBuf::from(query);
-            if path.is_absolute() {
-                Some(path)
-            } else {
-                self.folder_picker_dir.as_ref().map(|base| base.join(path))
-            }
-        };
-        if let Some(path) = path {
-            self.set_default_directory(path, cx);
-        } else {
-            self.folder_picker_error = Some("Enter an existing directory path.".into());
-            cx.notify();
-        }
-    }
-
-    pub(super) fn set_default_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        // Never silently substitute a fuzzy match or a file's parent for a preference.
-        let result = (|| -> Result<String, String> {
-            if !path.is_absolute() || !path.is_dir() {
-                return Err(format!("Not an existing directory: {}", path.display()));
-            }
-            std::fs::read_dir(&path)
-                .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
-            let directory = path
-                .to_str()
-                .ok_or_else(|| "Directory path is not valid UTF-8.".to_string())?
-                .to_owned();
-            crate::config::persist_pinned_working_dir(&directory)
-                .map_err(|error| format!("Could not save default directory: {error}"))?;
-            Ok(directory)
-        })();
-        match result {
-            Ok(directory) => {
-                self.pinned_working_dir = Some(directory);
-                self.close_folder_picker(cx);
-            }
-            Err(error) => {
-                self.folder_picker_error = Some(error);
-                cx.notify();
-            }
-        }
     }
 
     pub(super) fn default_directory_description(&self, browsing: &Path) -> String {
