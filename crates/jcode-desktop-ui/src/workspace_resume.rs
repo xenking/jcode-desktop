@@ -442,12 +442,7 @@ impl Workspace {
         let needle = row.as_ref().and_then(|row| state.daemon.reveal_for(row));
         let exact_hit = row.as_ref().is_some_and(|row| row.hit().is_some());
         let reveal = state.preview_revealed != row && !terms.is_empty();
-        panel.update(cx, |panel, cx| {
-            if panel.search_terms != terms {
-                panel.search_terms.clone_from(&terms);
-                cx.notify();
-            }
-        });
+        panel.update(cx, |panel, cx| panel.set_search_terms(&terms, cx));
         if reveal {
             let panel = panel.clone();
             window.defer(cx, move |_, cx| {
@@ -481,10 +476,7 @@ impl Workspace {
         else {
             return;
         };
-        panel.update(cx, |panel, cx| {
-            panel.search_terms.clone_from(&terms);
-            cx.notify();
-        });
+        panel.update(cx, |panel, cx| panel.set_search_terms(&terms, cx));
         if terms.is_empty() {
             return;
         }
@@ -1087,7 +1079,7 @@ pub(super) fn preview_panel(
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.transcript_only = true;
+        panel.show_transcript_only(cx);
         panel.load_history(messages, images, cx);
         panel
     })
