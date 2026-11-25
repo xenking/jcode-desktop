@@ -466,8 +466,7 @@ impl Workspace {
                     Err(error) => return error,
                 };
                 let panel = entity.read(cx);
-                let input = panel.input.read(cx);
-                let draft = input.snapshot();
+                let (draft, draft_revision) = panel.draft_fingerprint(cx);
                 let mut state = match panel.control_state(window, cx) {
                     Ok(state) => state,
                     Err(err) => return error("state_serialization", &err.to_string()),
@@ -478,7 +477,7 @@ impl Workspace {
                 };
                 state["agent_owned_draft"] = json!(
                     self.control_drafts.get(&entity.entity_id())
-                        == Some(&(draft.content, input.control_revision()))
+                        == Some(&(draft.content, draft_revision))
                         && draft.attachments.is_empty()
                         && draft.stashed_prompt.is_none()
                 );
