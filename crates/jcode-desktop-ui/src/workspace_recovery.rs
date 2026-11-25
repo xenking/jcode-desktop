@@ -221,11 +221,24 @@ fn restore(checkpoint: &Checkpoint, alive: bool) -> Option<WorkspaceSnapshot> {
     Some(snapshot)
 }
 
+#[cfg(test)]
+thread_local! {
+    static QUIT_OBSERVER_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone)]
 struct Writer {
     path: PathBuf,
     owner: String,
 }
+
+/// Quit observers of the live checkpoints, one per checkpoint file. They live
+/// in the long-lived App, so a generation that replaces a checkpoint's writer
+/// must also replace its observer.
+#[derive(Default)]
+struct QuitObservers(std::collections::HashMap<PathBuf, gpui::Subscription>);
+
+impl gpui::Global for QuitObservers {}
 
 struct SuspendedSnapshot {
     window_id: gpui::WindowId,
@@ -435,6 +448,7 @@ fn install_at_path(
             return;
         }
     };
+    let path_key = path.clone();
     let quit_writer = writer.clone();
     let quit_workspace = workspace.downgrade();
     let quit_window = window.window_handle();
@@ -456,7 +470,9 @@ fn install_at_path(
             true
         });
     }
-    app.on_app_quit(move |app| {
+    let quit_observer = app.on_app_quit(move |app| {
+        #[cfg(test)]
+        QUIT_OBSERVER_RUNS.with(|runs| runs.set(runs.get() + 1));
         let snapshot = quit_window
             .update(app, |_, window, app| {
                 quit_workspace
@@ -471,8 +487,12 @@ fn install_at_path(
             eprintln!("failed to disarm desktop crash recovery: {error:#}");
         }
         std::future::ready(())
-    })
-    .detach();
+    });
+    // The new writer owns the checkpoint now. Dropping the previous
+    // subscription unregisters its observer instead of leaving one per reload.
+    app.default_global::<QuitObservers>()
+        .0
+        .insert(path_key, quit_observer);
     let workspace = workspace.downgrade();
     let window = window.window_handle();
     app.spawn(async move |cx| {
@@ -724,6 +744,19 @@ mod tests {
         let restored = restore(&record, false).unwrap();
         let saved = serde_json::to_value(&restored.slots[0].panel).unwrap();
         assert_eq!(saved["ask_draft"]["chosen"][0], serde_json::json!([1]));
+    }
+
+    #[gpui::test]
+    fn each_reload_replaces_the_previous_quit_observer(cx: &mut gpui::TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        for claim in [Claim::Fresh, Claim::Reload, Claim::Reload] {
+            vcx.update(|window, app| install_at_path(&workspace, window, app, path.clone(), claim));
+        }
+        cx.quit();
+        assert_eq!(QUIT_OBSERVER_RUNS.with(|runs| runs.get()), 1);
     }
 
     #[gpui::test]
