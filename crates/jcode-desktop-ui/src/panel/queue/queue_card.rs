@@ -1,10 +1,10 @@
 use super::*;
 use jcode_sdk::api::QueuedPromptMode;
 
-const INDENT: &[u8] = include_bytes!("../../../assets/icons/queue-indent.svg");
-const SEND: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
-const PENCIL: &[u8] = include_bytes!("../../../assets/icons/pencil.svg");
-const TRASH: &[u8] = include_bytes!("../../../assets/icons/trash.svg");
+const INDENT: &[u8] = include_bytes!("../../../../../assets/icons/queue-indent.svg");
+const SEND: &[u8] = include_bytes!("../../../../../assets/icons/arrow-up.svg");
+const PENCIL: &[u8] = include_bytes!("../../../../../assets/icons/pencil.svg");
+const TRASH: &[u8] = include_bytes!("../../../../../assets/icons/trash.svg");
 
 
 /// The prompt row whose action menu is open.

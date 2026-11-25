@@ -253,7 +253,7 @@ mod login;
 mod preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
-#[path = "panel_queue.rs"]
+#[path = "panel/queue/panel_queue.rs"]
 mod queue;
 #[path = "panel_recovery.rs"]
 mod recovery;
