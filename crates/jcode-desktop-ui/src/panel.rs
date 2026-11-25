@@ -6953,6 +6953,15 @@ impl Panel {
 /// emit `ReasoningDone` between segments even though they belong to the same
 /// uninterrupted thinking phase.
 impl Panel {
+    /// A prompt's number counting the turns paged out of the loaded window.
+    pub(super) fn absolute_prompt_number(&self, index: usize) -> Option<usize> {
+        let offset = match &self.history_paging {
+            Some(paging) => paging.prompt_offset(),
+            None => Some(0),
+        }?;
+        prompt::prompt_number(&self.items, index).map(|number| number + offset)
+    }
+
     /// The ask editor dictation is aimed at, when an ask card is showing one.
     pub(super) fn ask_voice_input(&self) -> Option<Entity<PromptInput>> {
         self.ask_card.as_ref()?.voice_input()

@@ -29,41 +29,6 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn select_existing_provider(
-        &mut self,
-        provider: LoginProvider,
-        _label: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let spec = self
-            .input
-            .read(cx)
-            .provider_route_spec(provider.id, self.model.as_deref());
-        let Some(spec) = spec else {
-            if let Some(state) = self.login.as_mut() {
-                state.error = Some(format!(
-                    "{} has no available model for this session.",
-                    provider.display_name
-                ));
-            }
-            cx.notify();
-            return;
-        };
-        self.close_login_picker(cx);
-        if self.preview_state.is_none() {
-            self.bridge.send(Command::SetModel {
-                session_id: self.session_id.clone(),
-                model: spec.clone(),
-            });
-        }
-        self.items.push(Item::Assistant(format!(
-            "Switching provider to {}…",
-            provider.display_name
-        )));
-        self.focus_input(window, cx);
-        cx.notify();
-    }
 
     pub(crate) fn render_provider_picker(
         &mut self,
