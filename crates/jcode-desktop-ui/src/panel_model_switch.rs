@@ -49,7 +49,6 @@ impl Panel {
                     error.unwrap_or("the model was not accepted")
                 )));
             }
-            _ => return,
         }
         cx.notify();
     }
