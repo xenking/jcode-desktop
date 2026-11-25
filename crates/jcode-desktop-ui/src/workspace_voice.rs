@@ -118,15 +118,15 @@ impl Workspace {
 
     pub(super) fn voice_target(&self, cx: &App) -> Option<usize> {
         let eligible = |index: usize| {
-            self.slots
-                .get(index)
-                .is_some_and(|slot| !slot.closing && slot.panel.read(cx).supports_voice())
+            self.slots.get(index).is_some_and(|slot| {
+                !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::supports_voice)
+            })
         };
         // Stopping/canceling always belongs to the original recording owner,
         // even after navigating to another conversation or utility surface.
         self.slots
             .iter()
-            .position(|slot| slot.panel.read(cx).voice_active())
+            .position(|slot| slot.panel.read_chat(cx).is_some_and(Panel::voice_active))
             .or_else(|| eligible(self.active).then_some(self.active))
             .or_else(|| {
                 self.last_voice_chat.and_then(|id| {
@@ -153,7 +153,9 @@ impl Workspace {
         let Some(index) = self.voice_target(cx) else {
             return;
         };
-        let panel = self.slots[index].panel.clone();
+        let Some(panel) = self.slots[index].panel.chat().cloned() else {
+            return;
+        };
         if !panel.read(cx).voice_active() && self.account_sign_in.visible {
             return;
         }
@@ -195,7 +197,7 @@ impl Workspace {
                     && workspace
                         .slots
                         .iter()
-                        .any(|slot| !slot.closing && slot.panel == *source)
+                        .any(|slot| !slot.closing && slot.panel.chat() == Some(source))
                 {
                     workspace.activate_session(request.0.clone(), window, cx);
                     workspace.show_voice_navigation_decision("Open session", source, cx);
@@ -212,7 +214,7 @@ impl Workspace {
                     || !workspace
                         .slots
                         .iter()
-                        .any(|slot| !slot.closing && slot.panel == *source)
+                        .any(|slot| !slot.closing && slot.panel.chat() == Some(source))
                 {
                     source.update(cx, |panel, cx| panel.keep_voice_draft(&request.1, cx));
                     return;
@@ -262,7 +264,7 @@ impl Workspace {
         let candidates = self.slots.iter().enumerate().filter_map(|(index, slot)| {
             let position = (slot.row, index);
             (!slot.closing
-                && slot.panel.read(cx).supports_voice()
+                && slot.panel.read_chat(cx).is_some_and(Panel::supports_voice)
                 && if forward {
                     position > current
                 } else {
@@ -294,7 +296,7 @@ impl Workspace {
     ) {
         let trace = source.read(cx).voice_trace();
         if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing) {
-            slot.panel.update(cx, |panel, cx| {
+            slot.panel.update_chat(cx, |panel, cx| {
                 panel.show_voice_trace(trace, cx);
                 panel.show_voice_decision(format!("Jev chose: Quick action · {action}"), cx);
             });
@@ -327,7 +329,9 @@ impl Workspace {
         let Some(index) = self.voice_target(cx) else {
             return;
         };
-        let panel = self.slots[index].panel.clone();
+        let Some(panel) = self.slots[index].panel.chat().cloned() else {
+            return;
+        };
         // A hold never toggles or takes ownership of an existing click recording.
         if panel.read(cx).voice_active() {
             return;
@@ -357,7 +361,8 @@ impl Workspace {
         cx.stop_propagation();
         // Find the original owner even after changing tabs. Never refocus on release.
         for slot in &self.slots {
-            slot.panel.update(cx, |panel, cx| panel.end_voice_hold(cx));
+            slot.panel
+                .update_chat(cx, |panel, cx| panel.end_voice_hold(cx));
         }
         cx.notify();
     }
@@ -443,7 +448,7 @@ mod tests {
             workspace.update(cx, |workspace, cx| {
                 workspace.set_active(0, cx);
                 let owner = workspace.slots[0].panel.clone();
-                workspace.configure_voice_navigation(&owner, window, cx);
+                workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                 owner.update(cx, |panel, cx| {
                     panel.resolve_voice_for_test(
                         "open the PDF renderer session",
@@ -459,7 +464,7 @@ mod tests {
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);
             assert_eq!(workspace.active, 1);
-            assert_eq!(workspace.slots[1].panel.read(cx).session_id, "voice-target");
+            assert_eq!(workspace.slots[1].panel.session_id(cx), "voice-target");
             assert_eq!(
                 workspace.slots[1].panel.read(cx).voice_decision_for_test(),
                 Some("Jev chose: Quick action · Open session")
@@ -481,7 +486,7 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |workspace, cx| {
                 let owner = workspace.slots[0].panel.clone();
-                workspace.configure_voice_navigation(&owner, window, cx);
+                workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                 owner.update(cx, |panel, cx| {
                     panel.resolve_voice_for_test(
                         "open PDF renderer",
@@ -497,7 +502,7 @@ mod tests {
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "history-target"
             );
         });
@@ -523,7 +528,7 @@ mod tests {
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_active(start, cx);
                     let owner = workspace.slots[start].panel.clone();
-                    workspace.configure_voice_navigation(&owner, window, cx);
+                    workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                     owner.update(cx, |panel, cx| {
                         panel
                             .input
@@ -576,7 +581,7 @@ mod tests {
                     workspace.update(cx, |workspace, cx| {
                         workspace.set_active(0, cx);
                         let owner = workspace.slots[0].panel.clone();
-                        workspace.configure_voice_navigation(&owner, window, cx);
+                        workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                         match blocked {
                             "account" => workspace.account_sign_in.visible = true,
                             "closing" => workspace.slots[0].closing = true,
@@ -640,7 +645,7 @@ mod tests {
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_active(start, cx);
                     let owner = workspace.slots[start].panel.clone();
-                    workspace.configure_voice_navigation(&owner, window, cx);
+                    workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                     owner.update(cx, |panel, cx| {
                         panel.resolve_voice_for_test(
                             "navigate",
@@ -670,7 +675,7 @@ mod tests {
             vcx.update(|window, cx| {
                 workspace.update(cx, |workspace, cx| {
                     let owner = workspace.slots[0].panel.clone();
-                    workspace.configure_voice_navigation(&owner, window, cx);
+                    workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                     owner.update(cx, |panel, cx| {
                         panel
                             .input
@@ -703,8 +708,9 @@ mod tests {
 
     fn disable_test_microphones(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         for slot in &mut workspace.slots {
-            slot.panel =
-                cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+            slot.panel = PanelItem::Chat(
+                cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx)),
+            );
         }
     }
 
@@ -804,7 +810,10 @@ mod tests {
             vcx.simulate_event(down("super-shift-xf86assistant", held));
             workspace.read_with(vcx, |workspace, cx| {
                 assert!(
-                    workspace.slots[0].panel.read(cx).voice_active(),
+                    workspace.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::voice_active),
                     "repeat must not stop capture"
                 );
             });
@@ -819,7 +828,12 @@ mod tests {
             keystroke: gpui::Keystroke::parse("xf86touchpadoff").unwrap(),
         });
         workspace.read_with(vcx, |workspace, cx| {
-            assert!(!workspace.slots[0].panel.read(cx).voice_active());
+            assert!(
+                !workspace.slots[0]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::voice_active)
+            );
             assert!(!workspace.voice_key.is_down());
             assert_eq!(workspace.active, 1, "release must not steal focus");
         });
@@ -847,7 +861,12 @@ mod tests {
             keystroke: gpui::Keystroke::parse("f23").unwrap(),
         });
         workspace.read_with(vcx, |workspace, cx| {
-            assert!(workspace.slots[0].panel.read(cx).voice_active())
+            assert!(
+                workspace.slots[0]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::voice_active)
+            )
         });
     }
 
@@ -878,7 +897,12 @@ mod tests {
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, cx| {
-            assert!(!workspace.slots[0].panel.read(cx).voice_active())
+            assert!(
+                !workspace.slots[0]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::voice_active)
+            )
         });
     }
 
@@ -908,7 +932,12 @@ mod tests {
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, cx| {
-            assert!(!workspace.slots[0].panel.read(cx).voice_active());
+            assert!(
+                !workspace.slots[0]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::voice_active)
+            );
         });
     }
 
@@ -939,7 +968,12 @@ mod tests {
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, cx| {
                 assert!(workspace.account_sign_in.visible);
-                assert!(!workspace.slots[0].panel.read(cx).voice_active());
+                assert!(
+                    !workspace.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::voice_active)
+                );
             });
         }
     }
@@ -981,11 +1015,17 @@ mod tests {
             workspace.read_with(vcx, |workspace, cx| {
                 assert_eq!(workspace.active, 0, "button={button}");
                 assert!(
-                    !workspace.slots[0].panel.read(cx).voice_active(),
+                    !workspace.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::voice_active),
                     "button={button}"
                 );
                 assert!(
-                    !workspace.slots[1].panel.read(cx).voice_active(),
+                    !workspace.slots[1]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::voice_active),
                     "button={button}"
                 );
             });

@@ -1,6 +1,8 @@
 //! Workspace chrome observes a projection of each panel, not its transcript.
 //! Streaming text and transcript scrolling do not replace stable chrome metadata.
 use super::*;
+use crate::terminal::TerminalPanel;
+use gpui::Focusable;
 
 pub(super) struct SidebarPanelMetadata {
     pub session_id: String,
@@ -14,7 +16,7 @@ pub(super) struct SidebarPanelMetadata {
     todos: Option<(usize, usize)>,
     pub minimap_state: crate::panel::MinimapSessionState,
     pub tab_ring: Option<crate::panel::TabRing>,
-    pub tab_outline: gpui::AnyView,
+    pub tab_outline: Option<gpui::AnyView>,
     pub keyboard_focus: [Option<FocusHandle>; 4],
     pub openrig: bool,
     pub terminal: bool,
@@ -47,7 +49,7 @@ impl SidebarPanelMetadata {
 
     fn from_panel(panel: &Panel, cx: &App) -> Self {
         let (keyboard_focus, panel_focus) = panel.workspace_focus_handles(cx);
-        let (surface_focused, finished_unseen, openrig, terminal) = panel.workspace_surface_state();
+        let (surface_focused, finished_unseen, openrig) = panel.workspace_surface_state();
         Self {
             session_id: panel.session_id.clone(),
             title: panel.title.clone(),
@@ -60,13 +62,13 @@ impl SidebarPanelMetadata {
             todos: panel.latest_todo_progress(),
             minimap_state: panel.minimap_state(),
             tab_ring: panel.tab_ring(),
-            tab_outline: panel.tab_outline(),
+            tab_outline: Some(panel.tab_outline()),
             keyboard_focus,
             panel_focus,
             surface_focused,
             finished_unseen,
             openrig,
-            terminal,
+            terminal: false,
             pending: panel.is_pending_session(),
             can_rename: panel.can_fork()
                 && (!panel.session_id.contains("://")
@@ -74,7 +76,49 @@ impl SidebarPanelMetadata {
         }
     }
 
-    fn matches(&self, panel: &Panel, cx: &App) -> bool {
+    fn from_terminal(terminal: &TerminalPanel, cx: &App) -> Self {
+        let focus = terminal.focus_handle(cx);
+        Self {
+            session_id: PanelItem::TERMINAL_SESSION_ID.into(),
+            title: "terminal".into(),
+            working_dir: terminal.working_dir().map(str::to_owned),
+            status: "idle".into(),
+            overview_preview: String::new(),
+            listable: false,
+            voice: false,
+            activity: None,
+            todos: None,
+            minimap_state: crate::panel::MinimapSessionState::Idle,
+            tab_ring: None,
+            tab_outline: None,
+            keyboard_focus: [Some(focus.clone()), None, None, None],
+            panel_focus: focus,
+            surface_focused: terminal.surface_focused(),
+            finished_unseen: false,
+            openrig: false,
+            terminal: true,
+            pending: false,
+            can_rename: false,
+        }
+    }
+
+    fn from_item(item: &PanelItem, cx: &App) -> Self {
+        match item {
+            PanelItem::Chat(panel) => Self::from_panel(panel.read(cx), cx),
+            PanelItem::Terminal(terminal) => Self::from_terminal(terminal.read(cx), cx),
+        }
+    }
+
+    fn matches(&self, item: &PanelItem, cx: &App) -> bool {
+        match item {
+            PanelItem::Chat(panel) => self.matches_panel(panel.read(cx), cx),
+            PanelItem::Terminal(terminal) => {
+                self.surface_focused == terminal.read(cx).surface_focused()
+            }
+        }
+    }
+
+    fn matches_panel(&self, panel: &Panel, cx: &App) -> bool {
         self.session_id == panel.session_id
             && self.title == panel.title
             && self.working_dir == panel.working_dir
@@ -88,12 +132,8 @@ impl SidebarPanelMetadata {
             && self.tab_ring == panel.tab_ring()
             && panel.workspace_focus_handles(cx)
                 == (self.keyboard_focus.clone(), self.panel_focus.clone())
-            && (
-                self.surface_focused,
-                self.finished_unseen,
-                self.openrig,
-                self.terminal,
-            ) == panel.workspace_surface_state()
+            && (self.surface_focused, self.finished_unseen, self.openrig)
+                == panel.workspace_surface_state()
             && self.pending == panel.is_pending_session()
             && self.can_rename
                 == (panel.can_fork()
@@ -141,29 +181,33 @@ impl Workspace {
             if self.panel_metadata_observers.contains_key(&id) {
                 continue;
             }
-            added.push((
-                id,
-                SidebarPanelMetadata::from_panel(slot.panel.read(cx), cx),
-            ));
+            added.push((id, SidebarPanelMetadata::from_item(&slot.panel, cx)));
             let metadata = metadata.downgrade();
-            let observer = App::observe(cx, &slot.panel, move |panel, cx| {
+            let refresh = move |item: PanelItem, cx: &mut App| {
                 let Some(metadata) = metadata.upgrade() else {
                     return;
                 };
-                let panel = panel.read(cx);
                 if metadata
                     .read(cx)
                     .get(&id)
-                    .is_some_and(|old| old.matches(panel, cx))
+                    .is_some_and(|old| old.matches(&item, cx))
                 {
                     return;
                 }
-                let snapshot = SidebarPanelMetadata::from_panel(panel, cx);
+                let snapshot = SidebarPanelMetadata::from_item(&item, cx);
                 metadata.update(cx, |metadata, _| {
                     metadata.insert(id, snapshot);
                 });
                 cx.notify(workspace_id);
-            });
+            };
+            let observer = match &slot.panel {
+                PanelItem::Chat(panel) => App::observe(cx, panel, move |panel, cx| {
+                    refresh(PanelItem::Chat(panel), cx);
+                }),
+                PanelItem::Terminal(terminal) => App::observe(cx, terminal, move |terminal, cx| {
+                    refresh(PanelItem::Terminal(terminal), cx);
+                }),
+            };
             self.panel_metadata_observers.insert(id, observer);
         }
         metadata.update(cx, |metadata, _| {

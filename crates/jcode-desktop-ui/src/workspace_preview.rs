@@ -78,13 +78,17 @@ impl Workspace {
         };
         let index = if reset {
             let Some(index) = self.slots.iter().rposition(|slot| {
-                !slot.closing && slot.panel.read(cx).preview_state == Some(state)
+                !slot.closing
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(|panel| panel.preview_state == Some(state))
             }) else {
                 return json!({"ok":false,"error":"no open preview for this state"});
             };
             self.slots[index]
                 .panel
-                .update(cx, |panel, cx| panel.reset_preview(cx));
+                .update_chat(cx, |panel, cx| panel.reset_preview(cx));
             self.set_active(index, cx);
             self.focus_pending = true;
             self.retarget_camera();
@@ -93,7 +97,7 @@ impl Workspace {
         } else {
             self.open_preview_unchecked(state, cx)
         };
-        json!({"ok":true,"state":state.id(),"id":self.slots[index].panel.read(cx).session_id,"panel_count":self.slots.iter().filter(|slot| !slot.closing).count()})
+        json!({"ok":true,"state":state.id(),"id":self.slots[index].panel.session_id(cx),"panel_count":self.slots.iter().filter(|slot| !slot.closing).count()})
     }
 
     /// Reusable UI entry point. Opening adds a column, never replaces a real session.
@@ -126,7 +130,7 @@ impl Workspace {
         self.slots.insert(
             index,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(

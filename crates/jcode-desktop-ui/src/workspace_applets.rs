@@ -27,7 +27,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -65,7 +65,11 @@ impl Workspace {
             &panel,
             window,
             |this, panel, _: &crate::panel::applet_panel::AppletPanelClosed, window, cx| {
-                if let Some(index) = this.slots.iter().position(|slot| &slot.panel == panel) {
+                if let Some(index) = this
+                    .slots
+                    .iter()
+                    .position(|slot| slot.panel.chat() == Some(panel))
+                {
                     this.set_active(index, cx);
                     this.close_panel(&ClosePanel, window, cx);
                 }
@@ -86,7 +90,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+            .position(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -113,7 +117,7 @@ impl Workspace {
             let shown = self
                 .slots
                 .iter()
-                .any(|slot| slot.panel.read(cx).session_id == session_id);
+                .any(|slot| slot.panel.session_id(cx) == session_id);
             if !shown {
                 self.open_applet_instance(&instance, window, cx);
             }
@@ -166,7 +170,7 @@ impl Workspace {
             cx.new(|cx| Panel::new_applet(SHOWCASE_INSTANCE.into(), self.bridge.clone(), cx));
         let width_fraction = spawned_panel_width(self.slots.len());
         self.slots.push(Slot {
-            panel,
+            panel: PanelItem::Chat(panel),
             row: self.active_row,
             width_fraction,
             animated_width: AnimatedValue::new(width_fraction, Duration::ZERO),
@@ -250,7 +254,7 @@ impl Workspace {
         let input = self
             .slots
             .iter()
-            .map(|slot| slot.panel.read(cx))
+            .filter_map(|slot| slot.panel.read_chat(cx))
             .find(|panel| panel.session_id == session_id)
             .and_then(|panel| panel.tool_input(call_id))
             .and_then(|input| serde_json::from_str(input).ok())
@@ -309,7 +313,7 @@ impl Workspace {
                     if !prompt.trim().is_empty()
                         && let Some(slot) = self.slots.get(self.active)
                     {
-                        slot.panel.update(cx, |panel, cx| {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.submit_or_queue(prompt, Vec::new(), true, cx)
                         });
                     }
@@ -318,18 +322,20 @@ impl Workspace {
                     if !prompt.trim().is_empty() =>
                 {
                     let target = if session_id.is_empty() {
-                        self.slots
-                            .get(self.active)
-                            .filter(|slot| slot.panel.read(cx).supports_voice())
+                        self.slots.get(self.active).filter(|slot| {
+                            slot.panel.read_chat(cx).is_some_and(Panel::supports_voice)
+                        })
                     } else {
                         self.slots
                             .iter()
-                            .find(|slot| slot.panel.read(cx).session_id == session_id)
+                            .find(|slot| slot.panel.session_id(cx) == session_id)
                     };
                     match target {
-                        Some(slot) => slot.panel.update(cx, |panel, cx| {
-                            panel.submit_or_queue(prompt, Vec::new(), true, cx)
-                        }),
+                        Some(slot) => {
+                            slot.panel.update_chat(cx, |panel, cx| {
+                                panel.submit_or_queue(prompt, Vec::new(), true, cx)
+                            });
+                        }
                         None if !session_id.is_empty() => self.bridge.send(Command::Send {
                             session_id,
                             content: prompt,
@@ -410,7 +416,7 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                             // Transcript, sidebar and overlay placements
                             // render from the runtime, so repaint them.
                             for slot in &workspace.slots {
-                                slot.panel.update(cx, |_, cx| cx.notify());
+                                slot.panel.update_chat(cx, |_, cx| cx.notify());
                             }
                             cx.notify();
                         });

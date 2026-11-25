@@ -250,8 +250,13 @@ impl Workspace {
     ) {
         self.remotes.startup_failed = failed;
         for slot in &self.slots {
-            if !slot.closing && slot.panel.read(cx).is_startup_draft() {
-                slot.panel.update(cx, |panel, cx| {
+            if !slot.closing
+                && slot
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::is_startup_draft)
+            {
+                slot.panel.update_chat(cx, |panel, cx| {
                     panel.status = message.to_owned();
                     cx.notify();
                 });
@@ -271,8 +276,11 @@ impl Workspace {
         self.remotes.cloud_progress.retain(|id, _| {
             self.slots.iter().any(|slot| {
                 !slot.closing
-                    && slot.panel.read(cx).is_pending_session()
-                    && slot.panel.read(cx).session_id == *id
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_pending_session)
+                    && slot.panel.session_id(cx) == *id
             })
         });
         if let Some(id) = request_id {
@@ -286,7 +294,7 @@ impl Workspace {
             let live = self
                 .slots
                 .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == id);
+                .any(|slot| !slot.closing && slot.panel.session_id(cx) == id);
             if cloud && live {
                 self.remotes
                     .cloud_progress
@@ -300,10 +308,13 @@ impl Workspace {
         } else if let Some(request_id) = request_id {
             for slot in &self.slots {
                 if !slot.closing
-                    && slot.panel.read(cx).session_id == request_id
-                    && slot.panel.read(cx).is_pending_session()
+                    && slot.panel.session_id(cx) == request_id
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_pending_session)
                 {
-                    slot.panel.update(cx, |panel, cx| {
+                    slot.panel.update_chat(cx, |panel, cx| {
                         // Helper phases and SSH results use separate channels.
                         // A buffered wake-success phase must not erase an SSH
                         // failure. Retry gets a fresh ID and resets the status.
@@ -327,7 +338,7 @@ impl Workspace {
             .slots
             .get(index)
             .filter(|slot| !slot.closing)
-            .map(|slot| slot.panel.clone())
+            .and_then(|slot| slot.panel.chat().cloned())
         else {
             return;
         };
@@ -395,7 +406,9 @@ impl Workspace {
         index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let panel = self.slots[index].panel.clone();
+        let Some(panel) = self.slots[index].panel.chat().cloned() else {
+            return self.slots[index].panel.view().into_any_element();
+        };
         if panel.read(cx).session_deferred() {
             return panel.into_any_element();
         }
@@ -565,27 +578,41 @@ impl Workspace {
     pub(super) fn start_default_startup(&mut self, cx: &mut Context<Self>) {
         self.start_cloud_monitor(cx);
         if !self.remotes.startup_requested
-            && self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
+            && self.slots.iter().any(|slot| {
+                !slot.closing
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_startup_draft)
+            })
         {
             if self.remotes.default_host.is_none() {
                 // A local startup draft creates its session with the first
                 // prompt. Not marked requested: a machine chosen before then
                 // still connects through the branch below.
                 for slot in &self.slots {
-                    if !slot.closing && slot.panel.read(cx).is_startup_draft() {
-                        slot.panel.update(cx, |panel, cx| panel.defer_session(cx));
+                    if !slot.closing
+                        && slot
+                            .panel
+                            .read_chat(cx)
+                            .is_some_and(Panel::is_startup_draft)
+                    {
+                        slot.panel
+                            .update_chat(cx, |panel, cx| panel.defer_session(cx));
                     }
                 }
                 return;
             }
             self.remotes.startup_requested = true;
             for slot in &self.slots {
-                if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                if !slot.closing
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_startup_draft)
+                {
                     slot.panel
-                        .update(cx, |panel, _| panel.mark_session_requested());
+                        .update_chat(cx, |panel, _| panel.mark_session_requested());
                 }
             }
             self.create_default_session(
@@ -613,10 +640,13 @@ impl Workspace {
                 let managed_id = pending::next_remote_draft_id(MANAGED_CLOUD_HOST);
                 for slot in &self.slots {
                     if !slot.closing
-                        && slot.panel.read(cx).session_id == request_id
-                        && slot.panel.read(cx).is_pending_session()
+                        && slot.panel.session_id(cx) == request_id
+                        && slot
+                            .panel
+                            .read_chat(cx)
+                            .is_some_and(Panel::is_pending_session)
                     {
-                        slot.panel.update(cx, |panel, cx| {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.session_id = managed_id.clone();
                             cx.notify();
                         });
@@ -640,8 +670,8 @@ impl Workspace {
             let directory = if crate::remote_targets::paired_id(&host).is_some() {
                 self.slots
                     .iter()
-                    .find(|slot| !slot.closing && slot.panel.read(cx).session_id == request_id)
-                    .and_then(|slot| slot.panel.read(cx).working_dir.clone())
+                    .find(|slot| !slot.closing && slot.panel.session_id(cx) == request_id)
+                    .and_then(|slot| slot.panel.working_dir(cx).map(str::to_owned))
             } else {
                 None
             };
@@ -668,10 +698,13 @@ impl Workspace {
             let host = new_session_host(host).to_owned();
             self.remotes.default_host = Some(host.clone());
             for slot in &self.slots {
-                if Some(slot.panel.read(cx).session_id.as_str()) == request_id.as_deref()
-                    && slot.panel.read(cx).is_pending_session()
+                if Some(slot.panel.session_id(cx)) == request_id.as_deref()
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_pending_session)
                 {
-                    slot.panel.update(cx, |panel, cx| {
+                    slot.panel.update_chat(cx, |panel, cx| {
                         panel.title = machine_label(&host).to_owned().into();
                         cx.notify();
                     });
@@ -719,7 +752,7 @@ impl Workspace {
                             .slots
                             .iter()
                             .filter_map(|slot| {
-                                let panel = slot.panel.read(cx);
+                                let panel = slot.panel.read_chat(cx)?;
                                 live_cloud_panel(
                                     slot.closing,
                                     &panel.session_id,
@@ -814,7 +847,7 @@ impl Workspace {
             self.slots.insert(
                 insert_at,
                 Slot {
-                    panel,
+                    panel: PanelItem::Chat(panel),
                     row: self.active_row,
                     width_fraction,
                     animated_width: AnimatedValue::new(
@@ -923,9 +956,9 @@ impl Workspace {
     }
 
     pub(super) fn machines_panel_index(&self, cx: &App) -> Option<usize> {
-        self.slots
-            .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).is_machines())
+        self.slots.iter().position(|slot| {
+            !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_machines)
+        })
     }
 
     pub(super) fn create_machine_input(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
@@ -1180,11 +1213,11 @@ impl Workspace {
             .child(div().debug_selector(|| "machine-connection-status".into())
                 .text_color(if self.remotes.failed { theme.ERROR } else { theme.ACCENT })
                 .child(self.remotes.status.clone().unwrap_or_default()))
-            .children((self.remotes.startup_failed && self.slots.iter().any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())).then(|| {
+            .children((self.remotes.startup_failed && self.slots.iter().any(|slot| !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_startup_draft))).then(|| {
                 div().id("machine-retry-startup").debug_selector(|| "machine-retry-startup".into())
                     .px_2().py_2().cursor_pointer().bg(theme.ACCENT_DIM)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        if let Some(index) = this.slots.iter().position(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft()) {
+                        if let Some(index) = this.slots.iter().position(|slot| !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_startup_draft)) {
                             this.retry_pending_session(index, false, cx);
                         }
                     })).child("Retry startup on default machine")

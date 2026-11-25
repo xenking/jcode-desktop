@@ -272,7 +272,7 @@ impl Workspace {
                     || self
                         .slots
                         .get(self.active)
-                        .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())) =>
+                        .is_some_and(|slot| slot.panel.read_chat(cx).is_some_and(Panel::is_startup_draft))) =>
             {
                 self.open_resume(&OpenResume, window, cx);
                 self.resume.as_mut().unwrap().start_on_close = true;
@@ -287,7 +287,9 @@ impl Workspace {
         // Keep local drafts and already-open chats reachable when switching the
         // standalone window's primary conversation. Never discard their editors.
         for slot in &self.slots {
-            let panel = slot.panel.read(cx);
+            let Some(panel) = slot.panel.read_chat(cx) else {
+                continue;
+            };
             if !slot.closing
                 && panel.supports_voice()
                 && panel.listable_conversation(cx)
@@ -349,10 +351,8 @@ impl Workspace {
         self.slots
             .iter()
             .filter(|slot| !slot.closing)
-            .map(|slot| {
-                let panel = slot.panel.read(cx);
-                (panel.session_id.clone(), panel.sidebar_activity().is_some())
-            })
+            .filter_map(|slot| slot.panel.read_chat(cx))
+            .map(|panel| (panel.session_id.clone(), panel.sidebar_activity().is_some()))
             .collect()
     }
 
@@ -530,7 +530,7 @@ impl Workspace {
         let Some(panel) = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.clone())
+            .and_then(|slot| slot.panel.chat().cloned())
             .filter(|panel| !panel.read(cx).is_startup_draft())
         else {
             return;
@@ -812,13 +812,16 @@ impl Workspace {
         .flatten();
         self.activate_session(session, window, cx);
         if let Some((messages, images)) = fixture_history {
-            self.slots[self.active].panel.update(cx, |panel, cx| {
+            self.slots[self.active].panel.update_chat(cx, |panel, cx| {
                 if !panel.history_loaded() {
                     panel.load_history(messages, images, cx);
                 }
             });
         }
-        if self.slots[self.active].panel.read(cx).is_startup_draft()
+        if self.slots[self.active]
+            .panel
+            .read_chat(cx)
+            .is_some_and(Panel::is_startup_draft)
             && (self.connected || self.remotes.default_host.is_some())
         {
             self.start_default_startup(cx);
@@ -964,7 +967,7 @@ impl Workspace {
             .slots
             .iter()
             .filter_map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = slot.panel.read_chat(cx)?;
                 panel
                     .sidebar_activity()
                     .map(|view| (panel.session_id.clone(), view))
@@ -2066,7 +2069,7 @@ mod tests {
                     .as_deref(),
                 Some("beta")
             );
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "origin");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "origin");
         });
         for (key, target) in [("up", "alpha"), ("down", "beta")] {
             vcx.simulate_keystrokes(key);
@@ -2082,7 +2085,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             assert!(!w.resume_open());
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "beta");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "beta");
         });
     }
 
@@ -2118,7 +2121,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             assert!(!w.resume_open());
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "alpha");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "alpha");
         });
         workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
         vcx.run_until_parked();
@@ -2130,7 +2133,7 @@ mod tests {
             assert_eq!(
                 w.slots
                     .iter()
-                    .filter(|slot| slot.panel.read(cx).session_id == "beta")
+                    .filter(|slot| slot.panel.session_id(cx) == "beta")
                     .count(),
                 1
             );
@@ -2204,7 +2207,7 @@ mod tests {
         vcx.run_until_parked();
         let panel = workspace.read_with(vcx, |w, cx| {
             assert!(!w.resume_open());
-            let panel = w.slots[w.active].panel.clone();
+            let panel = w.slots[w.active].panel.chat().cloned().unwrap();
             assert_eq!(panel.read(cx).session_id, "beta");
             assert_eq!(panel.read(cx).search_terms, marks);
             panel
@@ -2834,7 +2837,12 @@ mod tests {
         workspace.update_in(vcx, |w, window, cx| {
             w.restore_resume(None, true, window, cx);
             w.close_resume(window, cx);
-            assert!(w.slots[w.active].panel.read(cx).is_startup_draft());
+            assert!(
+                w.slots[w.active]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::is_startup_draft)
+            );
             assert_eq!(w.resume_snapshot(cx), Snapshot::Closed);
             reload_picker(w, window, cx);
             assert!(
@@ -2860,7 +2868,7 @@ mod tests {
             w.resume_selected(window, cx);
             reload_picker(w, window, cx);
             assert!(w.resume.is_none());
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "target");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "target");
             while commands.try_recv().is_ok() {}
             w.apply(harness::Update::Connected, cx);
             assert!(
@@ -2935,7 +2943,7 @@ mod tests {
                 commands.try_recv().is_err(),
                 "cancel returns to a draft that waits for its first prompt"
             );
-            assert!(w.slots[0].panel.read(cx).session_deferred());
+            assert!(w.slots[0].panel.read_chat(cx).is_some_and(Panel::session_deferred));
             assert_eq!(w.request_deferred_sessions(cx), 1);
             assert!(matches!(
                 commands.try_recv(),
@@ -3034,7 +3042,7 @@ mod tests {
             w.resume_selected(window, cx);
             assert!(w.single_panel);
             assert_eq!(w.active, 0);
-            assert_eq!(w.slots[0].panel.read(cx).session_id, "target");
+            assert_eq!(w.slots[0].panel.session_id(cx), "target");
             assert_eq!(w.slots.len(), 2);
             assert!(
                 w.resume_sessions(cx)

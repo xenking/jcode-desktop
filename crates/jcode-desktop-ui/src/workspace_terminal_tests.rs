@@ -3,11 +3,11 @@
 use super::*;
 use crate::terminal::TerminalPanel;
 
-fn terminal_at(workspace: &Workspace, index: usize, cx: &App) -> Entity<TerminalPanel> {
+fn terminal_at(workspace: &Workspace, index: usize) -> Entity<TerminalPanel> {
     workspace.slots[index]
         .panel
-        .read(cx)
-        .test_terminal()
+        .terminal()
+        .cloned()
         .expect("slot holds a terminal")
 }
 
@@ -61,7 +61,7 @@ fn terminal_slot_opens_focused_and_paints(cx: &mut gpui::TestAppContext) {
         assert_eq!(panels[1]["session"], "terminal");
         assert_eq!(panels[0]["terminal"], serde_json::Value::Null);
         assert!(panels[1]["terminal"].is_object(), "terminal diagnostics exist");
-        let terminal = terminal_at(w, 1, cx);
+        let terminal = terminal_at(w, 1);
         assert!(terminal.read(cx).focus_handle(cx).is_focused(window));
         assert!(terminal.read(cx).surface_focused());
         let metadata = w.panel_metadata(&w.slots[1], cx);
@@ -89,7 +89,7 @@ fn terminal_surface_focus_follows_the_active_slot(cx: &mut gpui::TestAppContext)
     draw(vcx);
     vcx.update(|window, cx| {
         let w = workspace.read(cx);
-        let terminal = terminal_at(w, 1, cx);
+        let terminal = terminal_at(w, 1);
         assert!(!terminal.read(cx).surface_focused());
         assert!(!terminal.read(cx).focus_handle(cx).is_focused(window));
         assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], 0);
@@ -103,7 +103,7 @@ fn terminal_surface_focus_follows_the_active_slot(cx: &mut gpui::TestAppContext)
     draw(vcx);
     vcx.update(|window, cx| {
         let w = workspace.read(cx);
-        let terminal = terminal_at(w, 1, cx);
+        let terminal = terminal_at(w, 1);
         assert!(terminal.read(cx).surface_focused());
         assert!(terminal.read(cx).focus_handle(cx).is_focused(window));
     });
@@ -147,7 +147,7 @@ fn terminal_slot_survives_snapshot_and_restore(cx: &mut gpui::TestAppContext) {
         assert_eq!(state["rows"][0]["panels"][0]["session"], "chat-session");
         assert_eq!(state["rows"][0]["panels"][1]["session"], "terminal");
         assert_eq!(state["keyboard_panel"], 1, "focus returns to the terminal");
-        let terminal = terminal_at(w, 1, cx);
+        let terminal = terminal_at(w, 1);
         assert!(terminal.read(cx).focus_handle(cx).is_focused(window));
         let resaved = w.snapshot(window, cx).unwrap();
         assert_eq!(resaved.slots[1].panel.session_id, "terminal");

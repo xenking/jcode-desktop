@@ -119,10 +119,12 @@ use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
 use crate::panel::{Panel, PanelSnapshot};
+use crate::panel_item::PanelItem;
 use crate::performance::{
     ActionCapture, GpuiSnapshot as GpuiPerformanceSnapshot, Health as PerformanceHealth,
     Profile as PerformanceProfile,
 };
+use crate::terminal::TerminalPanel;
 use crate::theme::{Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
@@ -650,7 +652,7 @@ impl StripGesture {
 }
 
 struct Slot {
-    panel: Entity<Panel>,
+    panel: PanelItem,
     row: usize,
     /// Width as a fraction of the viewport (0.25, 0.5, 0.75, 1.0).
     width_fraction: f32,
@@ -669,6 +671,32 @@ struct Slot {
 }
 
 const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+/// A slot restored from a snapshot, at its saved place and width.
+fn restored_slot(
+    panel: PanelItem,
+    row: usize,
+    width_fraction: f32,
+    restore_fraction: Option<f32>,
+) -> Slot {
+    Slot {
+        panel,
+        row,
+        width_fraction,
+        animated_width: AnimatedValue::new(
+            width_fraction,
+            transition::policy(Transition::PanelWidth).duration,
+        ),
+        order_offset: AnimatedValue::new(0.0, transition::policy(Transition::PanelOrder).duration),
+        order_distance_fraction: width_fraction,
+        close_progress: AnimatedValue::new(
+            1.0,
+            transition::policy(Transition::PanelClose).duration,
+        ),
+        closing: false,
+        restore_fraction,
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct SlotSnapshot {
@@ -1157,7 +1185,7 @@ impl Workspace {
                     if workspace.accounts != accounts {
                         cx.set_global(crate::panel::usage::StatusAccounts(accounts.clone()));
                         for slot in &workspace.slots {
-                            slot.panel.update(cx, |_, cx| cx.notify());
+                            slot.panel.update_chat(cx, |_, cx| cx.notify());
                         }
                         workspace.accounts = accounts;
                         workspace.accounts_layout_pending = true;
@@ -1571,7 +1599,7 @@ impl Workspace {
                 // otherwise sync on the first session-list update.
                 workspace.sync_swarm_strips(cx);
                 if let Some(slot) = workspace.slots.first() {
-                    slot.panel.update(cx, |panel, cx| {
+                    slot.panel.update_chat(cx, |panel, cx| {
                         panel.apply_bar_fixture(&effort, cx);
                         if crate::fixture_control_targets::enabled() {
                             match std::env::var("JCODE_DESKTOP_SCREENSHOT_CACHE_CARD").as_deref() {
@@ -1607,7 +1635,8 @@ impl Workspace {
             if let Some(title) = panel_title(0) {
                 workspace.sessions[0].title = Some(title.clone());
                 if let Some(slot) = workspace.slots.first() {
-                    slot.panel.update(cx, |panel, _| panel.title = title.into());
+                    slot.panel
+                        .update_chat(cx, |panel, _| panel.title = title.into());
                 }
             }
             for index in 1..panel_count {
@@ -1638,7 +1667,7 @@ impl Workspace {
                 let panel = cx.new(|cx| {
                     Panel::new_code_file(PathBuf::from(path), workspace.bridge.clone(), cx)
                 });
-                workspace.slots[workspace.active].panel = panel;
+                workspace.slots[workspace.active].panel = PanelItem::Chat(panel);
             }
             workspace.focus_pending = true;
             if workspace_stream_fixture::enabled() {
@@ -1666,7 +1695,7 @@ impl Workspace {
                         let mut seeded = false;
                         this.update(cx, |workspace, cx| {
                             if let Some(slot) = workspace.slots.first() {
-                                slot.panel.update(cx, |panel, cx| {
+                                slot.panel.update_chat(cx, |panel, cx| {
                                     if !panel.has_visible_queued_prompts() {
                                         panel.seed_screenshot_queued(count, round);
                                         if queue_edit {
@@ -1692,11 +1721,10 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()
             {
-                let source = slot.panel.clone();
-                let session = source.read(cx).session_id.clone();
+                let session = slot.panel.session_id(cx).to_owned();
                 let bridge = workspace.bridge.clone();
                 let panel = cx.new(|cx| Panel::new_accounts(&session, None, bridge, cx));
-                workspace.slots[0].panel = panel;
+                workspace.slots[0].panel = PanelItem::Chat(panel);
             }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_HISTORY").as_deref() == Ok("1") {
                 for index in 0..80 {
@@ -1972,7 +2000,7 @@ impl Workspace {
         if self
             .slots
             .iter()
-            .any(|slot| slot.panel.read(cx).voice_active())
+            .any(|slot| slot.panel.read_chat(cx).is_some_and(Panel::voice_active))
         {
             eprintln!("voice: hot reload is replacing the UI while a recording is active");
         }
@@ -1994,16 +2022,18 @@ impl Workspace {
             .iter()
             .filter(|slot| {
                 !slot.closing
-                    && !slot.panel.read(cx).is_change_review()
-                    && !slot.panel.read(cx).is_accounts_panel()
-                    && !slot.panel.read(cx).is_changelog()
-                    && slot.panel.read(cx).preview_state.is_none()
+                    && slot.panel.read_chat(cx).is_none_or(|panel| {
+                        !panel.is_change_review()
+                            && !panel.is_accounts_panel()
+                            && !panel.is_changelog()
+                            && panel.preview_state.is_none()
+                    })
             })
             .collect();
         let index_for_id =
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
-            let panel = slot.panel.read(cx);
+            let panel = slot.panel.read_chat(cx)?;
             if panel.is_changelog() {
                 return self.previous.and_then(index_for_id);
             }
@@ -2013,7 +2043,7 @@ impl Workspace {
                 .or_else(|| panel.session_id.strip_prefix("accounts://"))?;
             slots
                 .iter()
-                .position(|slot| slot.panel.read(cx).session_id == source_id)
+                .position(|slot| slot.panel.session_id(cx) == source_id)
         });
         let active = self
             .slots
@@ -2027,12 +2057,10 @@ impl Workspace {
             .is_some_and(|search| search.read(cx).focus_handle.is_focused(window))
         {
             FocusSnapshot::FolderSearch
-        } else if let Some(index) = slots.iter().position(|slot| {
-            slot.panel
-                .read(cx)
-                .input_focus_handle(cx)
-                .is_focused(window)
-        }) {
+        } else if let Some(index) = slots
+            .iter()
+            .position(|slot| slot.panel.input_focus_handle(cx).is_focused(window))
+        {
             FocusSnapshot::Panel(index)
         } else if let Some(index) = review_source {
             FocusSnapshot::Panel(index)
@@ -2061,11 +2089,7 @@ impl Workspace {
             slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
-                    panel: if for_reload {
-                        slot.panel.read(cx).snapshot_for_reload(cx)
-                    } else {
-                        slot.panel.read(cx).snapshot(cx)
-                    },
+                    panel: slot.panel.snapshot(for_reload, cx),
                     row: slot.row,
                     width_fraction: slot.width_fraction,
                     restore_fraction: slot.restore_fraction,
@@ -2152,8 +2176,29 @@ impl Workspace {
                     restored_local_draft = Some(help || publish);
                 }
             }
-            let terminal =
-                panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
+            if panel_state.terminal_resource_id.is_some()
+                || panel_state.session_id == PanelItem::TERMINAL_SESSION_ID
+            {
+                let host = self.host;
+                let terminal = cx.new(|cx| {
+                    TerminalPanel::new(
+                        panel_state.working_dir,
+                        panel_state.terminal_resource_id,
+                        panel_state.terminal_output_cursor,
+                        host,
+                        cx,
+                    )
+                });
+                *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
+                let terminal = PanelItem::Terminal(terminal);
+                self.slots.push(restored_slot(
+                    terminal,
+                    saved.row,
+                    saved.width_fraction,
+                    saved.restore_fraction,
+                ));
+                continue;
+            }
             let panel = if panel_state.session_id == "unfinished-work" {
                 let workspace = cx.weak_entity();
                 cx.new(|cx| {
@@ -2167,20 +2212,6 @@ impl Workspace {
                                 .expect("unfinished-work workspace is still available");
                         }),
                         self.bridge.clone(),
-                        cx,
-                    )
-                })
-            } else if terminal {
-                let working_dir = panel_state.working_dir.clone();
-                let resource_id = panel_state.terminal_resource_id;
-                let replay_until = panel_state.terminal_output_cursor;
-                cx.new(|cx| {
-                    Panel::new_terminal(
-                        working_dir,
-                        self.bridge.clone(),
-                        self.host,
-                        resource_id,
-                        replay_until,
                         cx,
                     )
                 })
@@ -2257,26 +2288,12 @@ impl Workspace {
                 });
             }
             *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
-            self.slots.push(Slot {
-                panel,
-                row: saved.row,
-                width_fraction: saved.width_fraction,
-                animated_width: AnimatedValue::new(
-                    saved.width_fraction,
-                    transition::policy(Transition::PanelWidth).duration,
-                ),
-                order_offset: AnimatedValue::new(
-                    0.0,
-                    transition::policy(Transition::PanelOrder).duration,
-                ),
-                order_distance_fraction: saved.width_fraction,
-                close_progress: AnimatedValue::new(
-                    1.0,
-                    transition::policy(Transition::PanelClose).duration,
-                ),
-                closing: false,
-                restore_fraction: saved.restore_fraction,
-            });
+            self.slots.push(restored_slot(
+                PanelItem::Chat(panel),
+                saved.row,
+                saved.width_fraction,
+                saved.restore_fraction,
+            ));
         }
         let restored = |index: usize| restored_index.get(index).copied().flatten();
         self.active_row = snapshot.active_row;
@@ -2338,7 +2355,7 @@ impl Workspace {
             if let Some(index) = self.default_directory_panel_index(cx) {
                 self.slots[index]
                     .panel
-                    .update(cx, |panel, _| panel.input = search.clone());
+                    .update_chat(cx, |panel, _| panel.input = search.clone());
             }
             self.folder_search = Some(search);
         }
@@ -2389,7 +2406,7 @@ impl Workspace {
             }
             FocusSnapshot::Panel(index) => {
                 if let Some(slot) = self.slots.get(index) {
-                    let handle = slot.panel.read(cx).input_focus_handle(cx);
+                    let handle = slot.panel.input_focus_handle(cx);
                     window.focus(&handle, cx);
                 } else {
                     window.focus(&self.focus_handle, cx);
@@ -2415,7 +2432,7 @@ impl Workspace {
             cx.new(|cx| Panel::new(name.to_string(), Some(name.to_string()), None, bridge, cx));
         Panel::connect_input(&panel, cx);
         self.slots.push(Slot {
-            panel,
+            panel: PanelItem::Chat(panel),
             row: self.active_row,
             width_fraction: DEFAULT_WIDTH,
             animated_width: AnimatedValue::new(
@@ -2466,7 +2483,9 @@ impl Workspace {
     /// The panel entity at `index`, so tests can drive real events through it.
     #[cfg(test)]
     pub fn test_panel(&self, index: usize) -> Option<Entity<Panel>> {
-        self.slots.get(index).map(|slot| slot.panel.clone())
+        self.slots
+            .get(index)
+            .and_then(|slot| slot.panel.chat().cloned())
     }
 
     #[cfg(test)]
@@ -2489,8 +2508,8 @@ impl Workspace {
                         let owner = workspace.side_question_owner(session_id, cx);
                         let panel = workspace.slots.iter().find(|slot| {
                             (owner.is_none() || !slot.closing)
-                                && slot.panel.read(cx).session_id == *session_id
-                        }).map(|slot| slot.panel.clone());
+                                && slot.panel.session_id(cx) == *session_id
+                        }).and_then(|slot| slot.panel.chat().cloned());
                         let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
                         if let Some(owner) = owner {
                             owner.update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
@@ -2525,7 +2544,9 @@ impl Workspace {
             // catalogs can omit them, so never let a refresh erase an open session
             // from the sidebar.
             for slot in &self.slots {
-                let panel = slot.panel.read(cx);
+                let Some(panel) = slot.panel.read_chat(cx) else {
+                    continue;
+                };
                 if !panel.session_id.starts_with("session_")
                     || sessions
                         .iter()
@@ -2583,7 +2604,7 @@ impl Workspace {
                 Panel::publish_draft_models(current, routes, cx);
                 for slot in &self.slots {
                     slot.panel
-                        .update(cx, |panel, cx| panel.seed_draft_models(cx));
+                        .update_chat(cx, |panel, cx| panel.seed_draft_models(cx));
                 }
             }
             Update::Status(status) => {
@@ -2625,11 +2646,11 @@ impl Workspace {
                 self.status = "connected".into();
                 if let Some(state) = self.resume.as_mut() {
                     state.start_on_close = true;
-                } else if self
-                    .slots
-                    .get(self.active)
-                    .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())
-                {
+                } else if self.slots.get(self.active).is_some_and(|slot| {
+                    slot.panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_startup_draft)
+                }) {
                     self.start_default_startup(cx);
                 }
             }
@@ -2653,7 +2674,9 @@ impl Workspace {
                     // Another window may already have written the global.
                     // Compare with what this window last displayed.
                     for slot in &self.slots {
-                        let panel = slot.panel.read(cx);
+                        let Some(panel) = slot.panel.read_chat(cx) else {
+                            continue;
+                        };
                         let id = &panel.session_id;
                         if self.catalog_tasks.session(id) != catalog.session(id)
                             && panel.uses_catalog_todos()
@@ -2673,10 +2696,10 @@ impl Workspace {
                     cx,
                 );
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == "unfinished-work" {
+                    if slot.panel.session_id(cx) == "unfinished-work" {
                         let unfinished = self.unfinished_sessions.clone();
                         slot.panel
-                            .update(cx, |panel, cx| panel.set_unfinished_work(unfinished, cx));
+                            .update_chat(cx, |panel, cx| panel.set_unfinished_work(unfinished, cx));
                     }
                 }
                 return true;
@@ -2699,7 +2722,9 @@ impl Workspace {
                 }
                 for session in &sessions {
                     for slot in &self.slots {
-                        let panel = slot.panel.read(cx);
+                        let Some(panel) = slot.panel.read_chat(cx) else {
+                            continue;
+                        };
                         if panel.session_id != session.session_id {
                             continue;
                         }
@@ -2714,7 +2739,7 @@ impl Workspace {
                             !dir.trim().is_empty() && panel.working_dir.as_ref() != Some(*dir)
                         });
                         if title.is_some() || directory.is_some() {
-                            slot.panel.update(cx, |panel, cx| {
+                            slot.panel.update_chat(cx, |panel, cx| {
                                 if let Some(title) = title {
                                     panel.title = title.clone().into();
                                 }
@@ -2735,9 +2760,9 @@ impl Workspace {
                     let wanted = self
                         .slots
                         .iter()
-                        .map(|slot| {
-                            let panel = slot.panel.read(cx);
-                            (slot.panel.clone(), panel.swarm_card_worker_ids())
+                        .filter_map(|slot| {
+                            let panel = slot.panel.chat()?;
+                            Some((panel.clone(), panel.read(cx).swarm_card_worker_ids()))
                         })
                         .filter(|(_, ids)| !ids.is_empty())
                         .collect::<Vec<_>>();
@@ -2776,14 +2801,12 @@ impl Workspace {
                     .is_some_and(Panel::is_pending_session_id)
                 {
                     if let Some(slot) = self.slots.iter().find(|slot| {
-                        !slot.closing
-                            && Some(slot.panel.read(cx).session_id.as_str())
-                                == request_id.as_deref()
+                        !slot.closing && Some(slot.panel.session_id(cx)) == request_id.as_deref()
                     }) {
                         let session_id = session.session_id.clone();
                         let working_dir = session.working_dir.clone();
                         slot.panel
-                            .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
+                            .update_chat(cx, |panel, cx| panel.attach_startup_session(session, cx));
                         if let Some(request_id) = request_id.as_deref() {
                             self.resolve_collection_draft(request_id, &session_id, cx);
                         }
@@ -2840,8 +2863,9 @@ impl Workspace {
                 // connection. Paint it here so the fork never opens looking
                 // empty while the answer streams in.
                 if let Some(prompt) = prompt {
-                    let panel = self.slots[inserted].panel.clone();
-                    panel.update(cx, |panel, cx| panel.echo_external_prompt(prompt, cx));
+                    self.slots[inserted]
+                        .panel
+                        .update_chat(cx, |panel, cx| panel.echo_external_prompt(prompt, cx));
                 }
             }
             Update::SideQuestionStarted {
@@ -2852,10 +2876,9 @@ impl Workspace {
                 // A side question answers inside the source chat's card. It is
                 // never a tab of its own and never touches the source session.
                 if let Some(index) = self.slots.iter().position(|slot| {
-                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
+                    !slot.closing && slot.panel.session_id(cx) == parent_session_id
                 }) {
-                    let panel = self.slots[index].panel.clone();
-                    panel.update(cx, |panel, cx| {
+                    self.slots[index].panel.update_chat(cx, |panel, cx| {
                         panel.start_side_question(session, question, cx)
                     });
                 }
@@ -2865,10 +2888,12 @@ impl Workspace {
                 request_id,
                 result,
             } => {
-                if let Some(slot) = self.slots.iter().find(|slot| {
-                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
-                }) {
-                    slot.panel.update(cx, |panel, cx| {
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| !slot.closing && slot.panel.session_id(cx) == parent_session_id)
+                {
+                    slot.panel.update_chat(cx, |panel, cx| {
                         panel.load_side_question_history(request_id, result, cx)
                     });
                 }
@@ -2878,10 +2903,12 @@ impl Workspace {
                 request_id,
                 result,
             } => {
-                if let Some(slot) = self.slots.iter().find(|slot| {
-                    !slot.closing && slot.panel.read(cx).session_id == parent_session_id
-                }) {
-                    slot.panel.update(cx, |panel, cx| {
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| !slot.closing && slot.panel.session_id(cx) == parent_session_id)
+                {
+                    slot.panel.update_chat(cx, |panel, cx| {
                         panel.load_saved_side_question(request_id, result, cx)
                     });
                 }
@@ -2892,8 +2919,8 @@ impl Workspace {
                 images,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.load_history(messages, images, cx);
                         });
                         break;
@@ -2902,18 +2929,18 @@ impl Workspace {
             }
             Update::HistoryPage { session_id, result } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
+                    if slot.panel.session_id(cx) == session_id {
                         slot.panel
-                            .update(cx, |panel, cx| panel.load_older_history(result, cx));
+                            .update_chat(cx, |panel, cx| panel.load_older_history(result, cx));
                         break;
                     }
                 }
             }
             Update::BoundedHistory { session_id, page } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
+                    if slot.panel.session_id(cx) == session_id {
                         slot.panel
-                            .update(cx, |panel, cx| panel.load_bounded_history(page, cx));
+                            .update_chat(cx, |panel, cx| panel.load_bounded_history(page, cx));
                         break;
                     }
                 }
@@ -2924,8 +2951,8 @@ impl Workspace {
                 bounded,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.replace_rewound_history(page, bounded, cx)
                         });
                         break;
@@ -2934,9 +2961,10 @@ impl Workspace {
             }
             Update::BoundedHistoryPage { session_id, result } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel
-                            .update(cx, |panel, cx| panel.load_bounded_history_page(result, cx));
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
+                            panel.load_bounded_history_page(result, cx)
+                        });
                         break;
                     }
                 }
@@ -2947,9 +2975,9 @@ impl Workspace {
                 result,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
+                    if slot.panel.session_id(cx) == session_id {
                         slot.panel
-                            .update(cx, |panel, cx| panel.load_history_image(key, result, cx));
+                            .update_chat(cx, |panel, cx| panel.load_history_image(key, result, cx));
                         break;
                     }
                 }
@@ -3054,21 +3082,21 @@ impl Workspace {
                 let swarm_tool_finished =
                     matches!(&event, jcode_sdk::ApiEvent::ToolDone { name, .. } if name == "swarm");
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.apply(&event, cx);
                             if swarm_tool_finished {
                                 panel.refresh_local_pending_awaits(cx);
                             }
                         });
-                        if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. }) {
-                            let panel = slot.panel.read(cx);
-                            if let Some(provider) = panel.provider.as_deref() {
-                                let id = accounts::credential_id(provider, panel.auth_method.as_deref());
-                                if self.recent_accounts.first() != Some(&id) {
-                                    accounts::record_use(&mut self.recent_accounts, id);
-                                    changed = true;
-                                }
+                        if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. })
+                            && let Some(panel) = slot.panel.read_chat(cx)
+                            && let Some(provider) = panel.provider.as_deref()
+                        {
+                            let id = accounts::credential_id(provider, panel.auth_method.as_deref());
+                            if self.recent_accounts.first() != Some(&id) {
+                                accounts::record_use(&mut self.recent_accounts, id);
+                                changed = true;
                             }
                         }
                         break;
@@ -3078,8 +3106,8 @@ impl Workspace {
             }
             Update::SendFailed { session_id, reason } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.message_failed(format!("message failed: {reason}"), cx);
                         });
                         break;
@@ -3110,8 +3138,8 @@ impl Workspace {
                 }
                 if saved && let Some(label) = &label {
                     for slot in &self.slots {
-                        if slot.panel.read(cx).session_id == session_id {
-                            slot.panel.update(cx, |panel, cx| {
+                        if slot.panel.session_id(cx) == session_id {
+                            slot.panel.update_chat(cx, |panel, cx| {
                                 panel.title = label.clone().into();
                                 cx.notify();
                             });
@@ -3119,8 +3147,8 @@ impl Workspace {
                     }
                 }
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             if panel.session_saved_settled(saved, label.as_deref(), None) {
                                 cx.notify();
                             }
@@ -3135,8 +3163,8 @@ impl Workspace {
                 error,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             if !panel.session_saved_settled(saved, None, Some(&error)) {
                                 let verb = if saved { "save" } else { "unsave" };
                                 panel.items.push(crate::panel::Item::Error(format!(
@@ -3154,8 +3182,8 @@ impl Workspace {
             }
             Update::TodoState { session_id, state } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.todo_state_received(state, cx);
                         });
                         break;
@@ -3169,10 +3197,10 @@ impl Workspace {
                 if let Some(slot) = self
                     .slots
                     .iter()
-                    .find(|slot| slot.panel.read(cx).session_id == session_id)
+                    .find(|slot| slot.panel.session_id(cx) == session_id)
                 {
                     slot.panel
-                        .update(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
+                        .update_chat(cx, |panel, cx| panel.set_tab_waiting(waiting, cx));
                 }
             }
             Update::EffortSettled {
@@ -3181,8 +3209,8 @@ impl Workspace {
                 error,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.effort_settled(&effort, error.as_deref(), cx);
                         });
                         break;
@@ -3190,8 +3218,8 @@ impl Workspace {
                 }
             }
             Update::SpeedSettled { session_id, serial, result } => {
-                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.read(cx).session_id == session_id) {
-                    slot.panel.update(cx, |panel, cx| panel.speed_settled(serial, result, cx));
+                if let Some(slot) = self.slots.iter().find(|slot| slot.panel.session_id(cx) == session_id) {
+                    slot.panel.update_chat(cx, |panel, cx| panel.speed_settled(serial, result, cx));
                 }
             }
             Update::AskAttachment {
@@ -3200,8 +3228,8 @@ impl Workspace {
                 pending_ask_ids,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.reconcile_asks(attachment_id, pending_ask_ids.as_deref(), cx);
                         });
                     }
@@ -3214,8 +3242,8 @@ impl Workspace {
                 result,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.ask_response_settled(&request_id, attempt_id, result.clone(), cx);
                         });
                     }
@@ -3227,8 +3255,8 @@ impl Workspace {
                 result,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.routing_gate_answer_settled(&gate_id, result.clone(), cx);
                         });
                         break;
@@ -3237,8 +3265,8 @@ impl Workspace {
             }
             Update::RoutingIntentReply { session_id, result } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.routing_intent_reply(result.clone(), cx);
                         });
                         break;
@@ -3250,8 +3278,8 @@ impl Workspace {
                 supported,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.set_queue_mutations_supported(supported, cx)
                         });
                         break;
@@ -3263,8 +3291,8 @@ impl Workspace {
                 supported,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.set_queue_editing_supported(supported, cx)
                         });
                         break;
@@ -3277,8 +3305,8 @@ impl Workspace {
                 result,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.queued_prompt_edited(&prompt_id, result.clone(), cx)
                         });
                         break;
@@ -3292,8 +3320,8 @@ impl Workspace {
                 result,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.queue_removal_settled(prompt, edit, result, cx)
                         });
                         break;
@@ -3306,8 +3334,8 @@ impl Workspace {
                 reason,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.queue_prompt_failed(&client_id, reason.clone(), cx);
                         });
                         break;
@@ -3329,8 +3357,8 @@ impl Workspace {
                     self.remotes.startup_failed = true;
                 }
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             if panel.is_pending_session() {
                                 panel.status = "Session creation failed · draft retained".into();
                             }
@@ -3355,8 +3383,8 @@ impl Workspace {
                     self.invalidate_cloud_connection(&host);
                 }
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.set_queue_mutations_supported(false, cx);
                             panel.set_tab_waiting(false, cx);
                             panel.connection_lost(&reason, cx);
@@ -3367,8 +3395,8 @@ impl Workspace {
             }
             Update::SessionAttaching { session_id } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.status = "attaching…".into();
                             cx.notify();
                         });
@@ -3381,8 +3409,8 @@ impl Workspace {
                 self_host_id,
             } => {
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             panel.set_rig_host_id(self_host_id.clone(), cx);
                         });
                     }
@@ -3391,8 +3419,8 @@ impl Workspace {
             Update::SessionConnected { session_id } => {
                 self.set_cloud_transport_connected(&session_id, true);
                 for slot in &self.slots {
-                    if slot.panel.read(cx).session_id == session_id {
-                        slot.panel.update(cx, |panel, cx| {
+                    if slot.panel.session_id(cx) == session_id {
+                        slot.panel.update_chat(cx, |panel, cx| {
                             // A subsequent SessionStatus event will replace this
                             // with idle/running. Clear the stale lost banner now.
                             panel.status = "connected".into();
@@ -3449,7 +3477,7 @@ impl Workspace {
             self.bridge.send(Command::Watch { session_id });
         }
         let slot = Slot {
-            panel,
+            panel: PanelItem::Chat(panel),
             row: self.active_row,
             width_fraction,
             animated_width: AnimatedValue::new(
@@ -3516,7 +3544,9 @@ impl Workspace {
             crate::swarm_view::workers_by_coordinator(&self.sessions, &self.worker_meta, now);
         let mut changed = false;
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
-            let panel = slot.panel.read(cx);
+            let Some(panel) = slot.panel.read_chat(cx) else {
+                continue;
+            };
             let list = workers
                 .get(&panel.session_id)
                 .map_or(&[][..], Vec::as_slice);
@@ -3524,7 +3554,7 @@ impl Workspace {
             if !panel.swarm_strip_matches(list) || !panel.worker_record_matches(record) {
                 changed = true;
                 slot.panel
-                    .update(cx, |panel, cx| panel.sync_worker_strip(list, record, cx));
+                    .update_chat(cx, |panel, cx| panel.sync_worker_strip(list, record, cx));
             }
         }
         if changed {
@@ -3535,7 +3565,7 @@ impl Workspace {
     fn seed_tab_status_fixture(&self, cx: &mut Context<Self>) {
         use jcode_sdk::ApiEvent;
         for (index, slot) in self.slots.iter().take(4).enumerate() {
-            slot.panel.update(cx, |panel, cx| {
+            slot.panel.update_chat(cx, |panel, cx| {
                 let session_id = panel.session_id.clone();
                 let status = |status: &str| ApiEvent::SessionStatus {
                     session_id: session_id.clone(),
@@ -3575,7 +3605,7 @@ impl Workspace {
         let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+            .position(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
         else {
             return false;
         };
@@ -3618,13 +3648,14 @@ impl Workspace {
         self.active = self.open_session(coordinator, cx);
         let ids = self.slots[self.active]
             .panel
-            .read(cx)
-            .swarm_card_worker_ids();
+            .read_chat(cx)
+            .map(Panel::swarm_card_worker_ids)
+            .unwrap_or_default();
         let usage =
             jcode_desktop_harness::swarm_usage::usage_for(&fixtures.join("usage_home"), &ids);
         self.slots[self.active]
             .panel
-            .update(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
+            .update_chat(cx, |panel, cx| panel.set_swarm_usage(usage, cx));
         self.sync_swarm_strips(cx);
     }
 
@@ -3634,7 +3665,7 @@ impl Workspace {
         let index = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+            .position(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
             .unwrap_or_else(|| {
                 let session = self
                     .sessions
@@ -3661,7 +3692,7 @@ impl Workspace {
         let index = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == session.session_id)
+            .position(|slot| slot.panel.session_id(cx) == session.session_id)
             .unwrap_or_else(|| self.open_session(session, cx));
         // A sidebar card can be reopened before its close animation finishes.
         // Revive the original entity, including its composer draft, rather than
@@ -3669,7 +3700,7 @@ impl Workspace {
         if self.slots[index].closing {
             self.slots[index].closing = false;
             self.slots[index].close_progress.set(1.0, Instant::now());
-            let session_id = self.slots[index].panel.read(cx).session_id.clone();
+            let session_id = self.slots[index].panel.session_id(cx).to_owned();
             if !Panel::is_pending_session_id(&session_id) {
                 self.bridge.send(Command::Watch { session_id });
             }
@@ -3723,11 +3754,15 @@ impl Workspace {
         // Preserve the most recent chat when moving through several utility
         // panels, rather than relying on only the immediately previous slot.
         if let Some(slot) = self.slots.get(self.active)
-            && slot.panel.read(cx).supports_voice()
+            && slot.panel.read_chat(cx).is_some_and(Panel::supports_voice)
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
-        if self.slots[index].panel.read(cx).supports_voice() {
+        if self.slots[index]
+            .panel
+            .read_chat(cx)
+            .is_some_and(Panel::supports_voice)
+        {
             self.last_voice_chat = Some(self.slots[index].panel.entity_id());
         }
         let outgoing = self
@@ -4263,7 +4298,7 @@ impl Workspace {
 
     fn fork_panel(&mut self, _: &ForkPanel, _: &mut Window, cx: &mut Context<Self>) {
         let Some(session_id) = self.slots.get(self.active).and_then(|slot| {
-            let panel = slot.panel.read(cx);
+            let panel = slot.panel.read_chat(cx)?;
             (panel.preview_state.is_none() && panel.can_fork()).then(|| panel.session_id.clone())
         }) else {
             return;
@@ -4281,23 +4316,16 @@ impl Workspace {
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        let width_fraction = spawned_panel_width(self.slots.len());
-        let panel = cx.new(|cx| {
-            Panel::new_terminal(
-                self.default_working_dir(),
-                self.bridge.clone(),
-                self.host,
-                None,
-                None,
-                cx,
-            )
-        });
+        let working_dir = self.default_working_dir();
         if self.single_panel {
-            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+            if let Err(error) = panel_window::open_terminal_window(working_dir, self.host, cx) {
                 eprintln!("Could not open panel window: {error:#}");
             }
             return;
         }
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let host = self.host;
+        let terminal = cx.new(|cx| TerminalPanel::new(working_dir, None, None, host, cx));
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -4306,7 +4334,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Terminal(terminal),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4344,7 +4372,7 @@ impl Workspace {
         let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel == *panel)
+            .position(|slot| !slot.closing && slot.panel.chat() == Some(panel))
         else {
             return;
         };
@@ -4353,7 +4381,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel == *source)
+            .position(|slot| !slot.closing && slot.panel.chat() == Some(source))
         {
             self.set_active(index, cx);
             if source.read(cx).can_refresh_account_runtime() {
@@ -4379,7 +4407,7 @@ impl Workspace {
             .slots
             .iter()
             .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
-            .map(|slot| slot.panel.clone())
+            .and_then(|slot| slot.panel.chat().cloned())
         else {
             return;
         };
@@ -4399,7 +4427,9 @@ impl Workspace {
         else {
             return;
         };
-        let source = self.slots[source_index].panel.clone();
+        let Some(source) = self.slots[source_index].panel.chat().cloned() else {
+            return;
+        };
         if source.read(cx).is_accounts_panel() {
             if let Some(command) = &request.login_command {
                 source.update(cx, |panel, cx| panel.login_command(command, cx));
@@ -4428,11 +4458,10 @@ impl Workspace {
             return;
         }
         if let Some(index) = self.slots.iter().position(|slot| {
-            !slot.closing
-                && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
+            !slot.closing && slot.panel.session_id(cx) == format!("accounts://{source_session}")
         }) {
             if let Some(command) = &request.login_command {
-                self.slots[index].panel.update(cx, |panel, cx| {
+                self.slots[index].panel.update_chat(cx, |panel, cx| {
                     panel.login_command(command, cx);
                 });
             }
@@ -4481,7 +4510,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4533,7 +4562,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id.starts_with(&prefix))
+            .position(|slot| !slot.closing && slot.panel.session_id(cx).starts_with(&prefix))
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -4601,9 +4630,11 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == session_id)
+            .position(|slot| slot.panel.session_id(cx) == session_id)
         {
-            show_heading(&self.slots[index].panel, cx);
+            if let Some(panel) = self.slots[index].panel.chat() {
+                show_heading(panel, cx);
+            }
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
@@ -4627,7 +4658,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4663,7 +4694,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == "unfinished-work")
+            .position(|slot| slot.panel.session_id(cx) == "unfinished-work")
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -4699,7 +4730,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4756,16 +4787,15 @@ impl Workspace {
             let source = self
                 .slots
                 .iter()
-                .find(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
-            (session, source.map(|slot| slot.panel.clone()))
+                .find(|slot| !slot.closing && slot.panel.session_id(cx) == session.session_id);
+            (session, source.and_then(|slot| slot.panel.chat().cloned()))
         });
         if let Some(index) = self.slots.iter().position(|slot| {
-            !slot.closing
-                && slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
+            !slot.closing && slot.panel.session_id(cx) == crate::panel::orchestration::SESSION_ID
         }) {
             self.slots[index]
                 .panel
-                .update(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
+                .update_chat(cx, |panel, cx| panel.set_orchestration_focus(focus, cx));
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
@@ -4787,7 +4817,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID)
+            .position(|slot| slot.panel.session_id(cx) == crate::panel::openrig::SESSION_ID)
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -4818,7 +4848,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -4849,7 +4879,7 @@ impl Workspace {
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == "todoist://tasks")
+            .position(|slot| slot.panel.session_id(cx) == "todoist://tasks")
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -4871,7 +4901,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -5018,7 +5048,7 @@ impl Workspace {
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing)
-            && !slot.panel.update(cx, |panel, cx| panel.confirm_file_close(cx))
+            && slot.panel.update_chat(cx, |panel, cx| panel.confirm_file_close(cx)) == Some(false)
         {
             cx.stop_propagation();
             return;
@@ -5038,14 +5068,18 @@ impl Workspace {
         }
         if self.slots[self.active]
             .panel
-            .read(cx)
-            .is_default_directory()
+            .read_chat(cx)
+            .is_some_and(Panel::is_default_directory)
         {
             self.close_folder_picker(cx);
             self.focus_active(window, cx);
             return;
         }
-        if self.slots[self.active].panel.read(cx).is_machines() {
+        if self.slots[self.active]
+            .panel
+            .read_chat(cx)
+            .is_some_and(Panel::is_machines)
+        {
             self.close_machines(cx);
             self.focus_active(window, cx);
             return;
@@ -5056,20 +5090,22 @@ impl Workspace {
         let closed_id = self.slots[closed].panel.entity_id();
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
-        let session_id = self.slots[closed].panel.read(cx).session_id.clone();
+        let session_id = self.slots[closed].panel.session_id(cx).to_owned();
         // An open queue edit must not keep the daemon from delivering it.
         self.slots[closed]
             .panel
-            .update(cx, |panel, _| panel.release_queue_edit_hold());
-        if session_id != "terminal"
-            && !Panel::is_pending_session_id(&session_id)
-            && !self.slots[closed].panel.read(cx).is_side_document()
-            && !self.slots[closed].panel.read(cx).is_change_review()
-            && !self.slots[closed].panel.read(cx).is_accounts_panel()
-            && !self.slots[closed].panel.read(cx).is_changelog()
-            && !self.slots[closed].panel.read(cx).is_machines()
-            && self.slots[closed].panel.read(cx).preview_state.is_none()
-        {
+            .update_chat(cx, |panel, _| panel.release_queue_edit_hold());
+        // Only a runtime conversation has a session to stop watching.
+        let watched = self.slots[closed].panel.read_chat(cx).is_some_and(|panel| {
+            !panel.is_pending_session()
+                && !panel.is_side_document()
+                && !panel.is_change_review()
+                && !panel.is_accounts_panel()
+                && !panel.is_changelog()
+                && !panel.is_machines()
+                && panel.preview_state.is_none()
+        });
+        if watched {
             self.sidebar_closed_sessions.insert(session_id.clone());
             self.bridge.send(Command::Unwatch { session_id });
         }
@@ -5096,7 +5132,11 @@ impl Workspace {
         }
         self.active = if self.single_panel {
             0
-        } else if self.slots[closed].panel.read(cx).is_changelog() {
+        } else if self.slots[closed]
+            .panel
+            .read_chat(cx)
+            .is_some_and(Panel::is_changelog)
+        {
             self.previous
                 .and_then(|id| {
                     remaining
@@ -5425,9 +5465,7 @@ impl Workspace {
             .get(self.active)
             .filter(|slot| slot.row == self.active_row && !slot.closing)
         {
-            let panel = slot.panel.clone();
-            let handle = panel.read(cx).input_focus_handle(cx);
-            window.focus(&handle, cx);
+            slot.panel.focus_input(window, cx);
         } else {
             window.focus(&self.focus_handle, cx);
         }
@@ -5765,18 +5803,21 @@ impl Workspace {
             let machines = metadata.session_id == Panel::MACHINES_SESSION_ID;
             let needs_surface_update = metadata.surface_focused != focused
                 || (focused && metadata.finished_unseen)
-                || (metadata.terminal && slot.panel.read(cx).needs_surface_update(focused, cx));
-            if openrig && slot.panel.read(cx).openrig_width_changed(content_width) {
+                || (metadata.terminal && slot.panel.needs_surface_update(focused, cx));
+            if openrig
+                && slot
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(|panel| panel.openrig_width_changed(content_width))
+            {
                 slot.panel
-                    .update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
+                    .update_chat(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
             }
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             // Update only on a real change: GPUI retains views between frames and
             // treats any update while drawing as a change to what they read.
             if needs_surface_update {
-                slot.panel.update(cx, |panel, cx| {
-                    panel.set_surface_focused(focused, cx);
-                });
+                slot.panel.set_surface_focused(focused, cx);
             }
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
@@ -5881,7 +5922,7 @@ impl Workspace {
                     // A `.cached` view would opt out of the latter.
                     div()
                         .size_full()
-                        .child(slot.panel.clone())
+                        .child(slot.panel.view())
                         .into_any_element()
                 });
             if focused {
@@ -6045,7 +6086,7 @@ impl Workspace {
         let empty_panel = hovered_panel
             .and_then(|index| self.slots.get(index))
             .filter(|slot| slot.row == row)
-            .is_some_and(|slot| !slot.panel.read(cx).has_scrollable_conversation());
+            .is_some_and(|slot| !slot.panel.has_scrollable_conversation(cx));
         // Use the platform clock for both gesture continuity and presentation.
         // In tests it advances explicitly, so a busy test runner cannot turn
         // consecutive touchpad events into a new gesture or expire the reticle.
@@ -8310,7 +8351,7 @@ impl Workspace {
             );
 
         let active = self.slots.get(self.active).and_then(|slot| {
-            let panel = slot.panel.read(cx);
+            let panel = slot.panel.read_chat(cx)?;
             panel
                 .provider
                 .as_deref()
@@ -8912,8 +8953,12 @@ impl Workspace {
             );
         }
         let mut send_mode_setting = None;
-        if let Some(slot) = self.slots.get(self.active) {
-            let after_yield = slot.panel.read(cx).default_send_after_yield();
+        if let Some(panel) = self
+            .slots
+            .get(self.active)
+            .and_then(|slot| slot.panel.read_chat(cx))
+        {
+            let after_yield = panel.default_send_after_yield();
             let mut choices = div().flex().gap_1();
             for (id, label, value) in [
                 ("settings-send-steer", "Steer", false),
@@ -8937,7 +8982,7 @@ impl Workspace {
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 if let Some(slot) = this.slots.get(this.active) {
-                                    slot.panel.update(cx, |panel, cx| {
+                                    slot.panel.update_chat(cx, |panel, cx| {
                                         panel.set_default_send_after_yield(value, cx)
                                     });
                                 }
@@ -10264,9 +10309,12 @@ impl Render for Workspace {
                     && this.usage_reset.is_none()
                     && !this.compact_sidebar_open
                     && let Some(slot) = this.slots.get(this.active).filter(|slot| !slot.closing)
-                    && slot.panel.clone().update(cx, |panel, cx| {
-                        panel.resume_composer_typing(event, true, window, cx)
-                    })
+                    && slot
+                        .panel
+                        .update_chat(cx, |panel, cx| {
+                            panel.resume_composer_typing(event, true, window, cx)
+                        })
+                        .unwrap_or(false)
                 {
                     cx.stop_propagation();
                 }
@@ -12021,8 +12069,10 @@ mod tests {
             ));
             for slot in &workspace.slots {
                 let count = panel_updates.clone();
-                cx.observe(&slot.panel, move |_, _, _| count.set(count.get() + 1))
-                    .detach();
+                cx.observe(slot.panel.chat().unwrap(), move |_, _, _| {
+                    count.set(count.get() + 1)
+                })
+                .detach();
             }
         });
         vcx.run_until_parked();
@@ -12070,10 +12120,7 @@ mod tests {
                     },
                     cx,
                 );
-                assert_eq!(
-                    workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
-                    Some(directory)
-                );
+                assert_eq!(workspace.slots[slot].panel.working_dir(cx), Some(directory));
             }
             for directory in [None, Some("   ")] {
                 session.working_dir = directory.map(str::to_owned);
@@ -12084,7 +12131,7 @@ mod tests {
                     cx,
                 );
                 assert_eq!(
-                    workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
+                    workspace.slots[slot].panel.working_dir(cx),
                     Some("/srv/other")
                 );
             }
@@ -12223,7 +12270,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "session_puppy_1234567890000_abcdef",
                 "clicking in a restored panel must activate the worker's chat"
             );
@@ -12764,7 +12811,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "session_fox_499",
                 "a newly visible row must retain its own click target"
             );
@@ -13096,7 +13143,7 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
             w.push_test_panel("project", cx);
-            w.slots[0].panel.update(cx, |panel, _| {
+            w.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
             });
             w.sidebar_closed_sessions
@@ -13231,7 +13278,7 @@ mod tests {
         vcx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
         workspace.update(vcx, |workspace, cx| {
             workspace.push_test_panel("project", cx);
-            workspace.slots[0].panel.update(cx, |panel, _| {
+            workspace.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
             });
             cx.notify();
@@ -13284,7 +13331,7 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
             workspace.push_test_panel("project", cx);
-            workspace.slots[0].panel.update(cx, |panel, _| {
+            workspace.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
             });
             workspace.sidebar_view = SidebarView::Files;
@@ -13366,7 +13413,7 @@ mod tests {
             vcx.simulate_click(row.center(), gpui::Modifiers::default());
             workspace.update(vcx, |workspace, cx| {
                 assert_eq!(
-                    workspace.slots[workspace.active].panel.read(cx).session_id,
+                    workspace.slots[workspace.active].panel.session_id(cx),
                     expected_session
                 );
                 assert_eq!(workspace.active_row, workspace.slots[workspace.active].row);
@@ -13389,7 +13436,7 @@ mod tests {
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "unfinished-work"
             );
             // Leaving the navigation popup repaints the workspace while the
@@ -13425,10 +13472,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);
-            assert_eq!(
-                workspace.slots[0].panel.read(cx).session_id,
-                "unfinished-work"
-            );
+            assert_eq!(workspace.slots[0].panel.session_id(cx), "unfinished-work");
             assert_eq!(workspace.slots[0].row, 1);
             let panel_snapshot = workspace.slots[0].panel.read(cx).snapshot(cx);
             assert_eq!(panel_snapshot.session_id, "unfinished-work");
@@ -13490,11 +13534,11 @@ mod tests {
                 workspace
                     .slots
                     .iter()
-                    .any(|slot| slot.panel.read(cx).session_id == "todo-chat"),
+                    .any(|slot| slot.panel.session_id(cx) == "todo-chat"),
                 "clicking the card should open the chat panel"
             );
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "todo-chat"
             );
         });
@@ -13582,7 +13626,7 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
             workspace.push_test_panel("project", cx);
-            workspace.slots[0].panel.update(cx, |panel, _| {
+            workspace.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.working_dir = Some(project.display().to_string());
             });
             cx.notify();
@@ -13720,7 +13764,7 @@ mod tests {
                 vcx.run_until_parked();
                 workspace.read_with(vcx, |workspace, cx| {
                     assert_eq!(
-                        workspace.slots[workspace.active].panel.read(cx).session_id,
+                        workspace.slots[workspace.active].panel.session_id(cx),
                         expected,
                         "history click must activate the displayed row"
                     );
@@ -14074,7 +14118,7 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
             workspace.push_test_panel("active", cx);
-            workspace.slots[0].panel.update(cx, |panel, _| {
+            workspace.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.provider = Some("provider-9".into());
             });
             workspace.sidebar_view = SidebarView::Accounts;
@@ -15897,7 +15941,7 @@ mod tests {
 
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "applet://gmail#launch0"
             );
         });
@@ -17105,8 +17149,8 @@ mod tests {
 
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2, "Enter should open a second panel");
-            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "terminal");
-            assert_eq!(workspace.slots[1].panel.read(cx).session_id, "new-session");
+            assert_eq!(workspace.slots[0].panel.session_id(cx), "terminal");
+            assert_eq!(workspace.slots[1].panel.session_id(cx), "new-session");
             assert_eq!(
                 workspace.active, 1,
                 "the new session lands right of the focused panel and takes focus"
@@ -17504,7 +17548,7 @@ mod tests {
 
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 1);
-            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "terminal");
+            assert_eq!(workspace.slots[0].panel.session_id(cx), "terminal");
         });
         cx.draw(
             gpui::point(px(0.), px(0.)),
@@ -17520,13 +17564,9 @@ mod tests {
         // UI-only tests use an inert host. The host resource suite separately
         // creates a real PTY, reattaches a second generation, writes a command,
         // and verifies replayed output without opening a window.
-        workspace.update(cx, |workspace, cx| {
+        workspace.update(cx, |workspace, _| {
             assert!(
-                workspace.slots[0]
-                    .panel
-                    .read(cx)
-                    .test_terminal_contents(cx)
-                    .is_some(),
+                workspace.slots[0].panel.terminal().is_some(),
                 "terminal parser should exist even when the test host has no PTY"
             );
         });
@@ -17569,7 +17609,7 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 1);
             assert_eq!(
-                workspace.slots[0].panel.read(cx).session_id,
+                workspace.slots[0].panel.session_id(cx),
                 "applet://gmail#launch0"
             );
         });
@@ -17900,7 +17940,7 @@ mod accounts_panel_tests {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.set_test_bridge(bridge);
             w.push_test_panel("preview://empty", cx);
-            w.slots[0].panel.update(cx, |panel, _| {
+            w.slots[0].panel.update_chat(cx, |panel, _| {
                 panel.preview_state = Some(crate::preview_state::PreviewState::Empty);
             });
             w
@@ -17982,7 +18022,7 @@ mod accounts_panel_tests {
         });
         vcx.update(|_, cx| cx.set_reduce_motion(true));
         vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
-        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.chat().cloned().unwrap());
         source.update_in(vcx, |panel, window, cx| {
             panel.working_dir = Some(report.parent().unwrap().display().to_string());
             panel.focus_input(window, cx);
@@ -18005,7 +18045,7 @@ mod accounts_panel_tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 2);
             let id = format!("file://{}", report.display());
-            assert!(w.slots.iter().any(|slot| slot.panel.read(cx).session_id == id));
+            assert!(w.slots.iter().any(|slot| slot.panel.session_id(cx) == id));
         });
         assert!(vcx.debug_bounds("markdown-file-preview").is_some());
     }
@@ -18124,7 +18164,7 @@ mod accounts_panel_tests {
             vcx.run_until_parked();
             workspace.read_with(vcx, |w, cx| {
                 assert_eq!(
-                    w.slots[w.active].panel.read(cx).session_id,
+                    w.slots[w.active].panel.session_id(cx),
                     format!("file://{}", base.join(path).display()),
                 );
             });
@@ -18195,7 +18235,7 @@ mod accounts_panel_tests {
         click_link(vcx, "markdown-link:report.md");
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(
-                w.slots[w.active].panel.read(cx).session_id,
+                w.slots[w.active].panel.session_id(cx),
                 format!("file://{}", report.display())
             );
         });
@@ -18213,7 +18253,7 @@ mod accounts_panel_tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 3);
             assert_eq!(
-                w.slots[w.active].panel.read(cx).session_id,
+                w.slots[w.active].panel.session_id(cx),
                 format!("file://{}", details.display())
             );
         });
@@ -18258,8 +18298,13 @@ mod accounts_panel_tests {
             assert_eq!(w.slots[0].panel, source);
             assert_eq!(w.active, 1);
             assert_eq!(w.slots[0].row, w.slots[1].row);
-            assert!(w.slots[1].panel.read(cx).is_accounts_panel());
-            assert!(!w.slots[1].panel.read(cx).can_fork());
+            assert!(
+                w.slots[1]
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::is_accounts_panel)
+            );
+            assert!(!w.slots[1].panel.read_chat(cx).is_some_and(Panel::can_fork));
             w.slots[1].panel.clone()
         });
         assert!(vcx.debug_bounds("accounts-panel").is_some());

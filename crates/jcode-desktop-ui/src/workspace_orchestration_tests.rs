@@ -44,7 +44,9 @@ fn orchestration(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext
             .find(|slot| slot.panel.read(cx).session_id == SESSION_ID)
             .expect("orchestration panel is open")
             .panel
-            .clone()
+            .chat()
+            .cloned()
+            .unwrap()
     })
 }
 

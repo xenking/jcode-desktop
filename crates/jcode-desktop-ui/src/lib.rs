@@ -43,6 +43,7 @@ mod native_mermaid;
 mod native_mermaid_integration_tests;
 mod openrig_feed;
 mod panel;
+mod panel_item;
 mod pdf_viewer;
 mod performance;
 mod persisted_history;

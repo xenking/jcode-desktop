@@ -83,9 +83,12 @@ impl Workspace {
         if self.active == 0 {
             return;
         }
-        let panel = self.slots[self.active].panel.clone();
-        if panel.read(cx).is_accounts_panel() {
-            let source = self.slots[0].panel.clone();
+        let accounts = self.slots[self.active]
+            .panel
+            .chat()
+            .filter(|panel| panel.read(cx).is_accounts_panel())
+            .cloned();
+        if let (Some(panel), Some(source)) = (accounts, self.slots[0].panel.chat().cloned()) {
             self.close_accounts(&panel, &source, false, window, cx);
         } else {
             self.close_panel(&ClosePanel, window, cx);
@@ -143,7 +146,7 @@ impl Workspace {
                 // `render_strip`.
                 div()
                     .size_full()
-                    .child(slot.panel.clone())
+                    .child(slot.panel.view())
                     .into_any_element()
             }
         });
@@ -247,8 +250,9 @@ mod tests {
     fn single_panel_voice_hold_press_and_release_reach_focused_chat(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = standalone(cx);
-            workspace.slots[0].panel =
-                cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+            workspace.slots[0].panel = PanelItem::Chat(
+                cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx)),
+            );
             workspace
         });
         vcx.update(|window, cx| {
@@ -445,7 +449,7 @@ mod tests {
                 w.slots[0].width_fraction,
             )
         });
-        open_utility(utility, &workspace, &source, vcx);
+        open_utility(utility, &workspace, source.chat().unwrap(), vcx);
         let child = vcx.update(|_, cx| {
             let windows = cx.windows();
             assert_eq!(windows.len(), 2, "utility must open a separate window");
@@ -464,7 +468,7 @@ mod tests {
             });
             panel
         });
-        open_utility(utility, &workspace, &source, vcx);
+        open_utility(utility, &workspace, source.chat().unwrap(), vcx);
         vcx.update(|_, cx| {
             assert_eq!(cx.windows().len(), 2, "repeated open must reuse the child");
             assert!(cx.windows().contains(&child));
@@ -512,7 +516,7 @@ mod tests {
             assert_eq!(source.read(cx).snapshot(cx).draft, before.draft);
         });
         // A stale child handle must not prevent reopening after close.
-        open_utility(utility, &workspace, &source, vcx);
+        open_utility(utility, &workspace, source.chat().unwrap(), vcx);
         let reopened = vcx.update(|_, cx| {
             let windows = cx.windows();
             assert_eq!(windows.len(), 2);
@@ -589,7 +593,7 @@ mod tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 1, "the source chat stays in place");
             assert_eq!(w.active, 0);
-            assert_eq!(w.slots[0].panel.read(cx).session_id, "source-session");
+            assert_eq!(w.slots[0].panel.session_id(cx), "source-session");
             assert_eq!(
                 w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
                 "keep my draft"

@@ -47,7 +47,7 @@ impl Workspace {
         self.slots.insert(
             insert_at,
             Slot {
-                panel,
+                panel: PanelItem::Chat(panel),
                 row: self.active_row,
                 width_fraction,
                 animated_width: AnimatedValue::new(
@@ -76,9 +76,11 @@ impl Workspace {
     }
 
     pub(super) fn default_directory_panel_index(&self, cx: &App) -> Option<usize> {
-        self.slots
-            .iter()
-            .position(|slot| slot.panel.read(cx).is_default_directory())
+        self.slots.iter().position(|slot| {
+            slot.panel
+                .read_chat(cx)
+                .is_some_and(Panel::is_default_directory)
+        })
     }
 
     /// Remove only the preference panel, preserving the identities and focus of

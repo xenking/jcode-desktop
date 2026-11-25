@@ -20,7 +20,7 @@ impl Workspace {
         else {
             return;
         };
-        let current = self.slots[index].panel.read(cx).working_dir.clone();
+        let current = self.slots[index].panel.working_dir(cx).map(str::to_owned);
         self.set_active(index, cx);
         self.open_folder(&OpenFolder, window, cx);
         self.folder_picker_source = Some(request.source);
@@ -50,7 +50,9 @@ impl Workspace {
         }) else {
             return false;
         };
-        let panel = self.slots[index].panel.clone();
+        let Some(panel) = self.slots[index].panel.chat().cloned() else {
+            return false;
+        };
         self.set_active(index, cx);
         if panel.read(cx).working_dir.as_deref() == Some(directory) {
             return true;
@@ -106,7 +108,7 @@ mod tests {
             workspace.set_test_bridge(bridge);
             workspace.remotes.default_host = None;
             workspace.push_test_panel("existing", cx);
-            workspace.slots[0].panel.update(cx, |panel, cx| {
+            workspace.slots[0].panel.update_chat(cx, |panel, cx| {
                 panel.working_dir = Some(current);
                 panel.load_history(Vec::new(), Vec::new(), cx);
             });
@@ -182,7 +184,7 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         let (workspace, vcx, commands) = setup(cx, &current);
         workspace.update(vcx, |workspace, cx| {
-            workspace.slots[0].panel.update(cx, |panel, cx| {
+            workspace.slots[0].panel.update_chat(cx, |panel, cx| {
                 *panel.items = vec![crate::panel::Item::User("Hello".into())];
                 cx.notify();
             });
@@ -203,10 +205,7 @@ mod tests {
             assert_eq!(original.session_id, "existing");
             assert_eq!(original.working_dir.as_deref(), current.to_str());
             assert_eq!(workspace.active, 1);
-            assert_eq!(
-                workspace.slots[1].panel.read(cx).working_dir.as_deref(),
-                other.to_str()
-            );
+            assert_eq!(workspace.slots[1].panel.working_dir(cx), other.to_str());
         });
     }
 
@@ -224,7 +223,7 @@ mod tests {
         assert!(commands.try_recv().is_err());
         workspace.update(vcx, |workspace, cx| {
             assert!(workspace.folder_picker_source.is_none());
-            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "existing");
+            assert_eq!(workspace.slots[0].panel.session_id(cx), "existing");
         });
     }
 }

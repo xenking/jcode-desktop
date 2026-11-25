@@ -21,17 +21,16 @@ fn validated_title(title: &str) -> Result<String, &'static str> {
 
 impl Workspace {
     pub(super) fn rename_target(&self, cx: &App) -> Option<Entity<Panel>> {
-        self.slots
+        let slot = self
+            .slots
             .get(self.active)
-            .filter(|slot| {
-                let panel = slot.panel.read(cx);
-                slot.row == self.active_row
-                    && !slot.closing
-                    && panel.can_fork()
-                    && (!panel.session_id.contains("://")
-                        || crate::harness::is_remote_session(&panel.session_id))
-            })
-            .map(|slot| slot.panel.clone())
+            .filter(|slot| slot.row == self.active_row && !slot.closing)?;
+        let panel = slot.panel.chat()?;
+        let state = panel.read(cx);
+        (state.can_fork()
+            && (!state.session_id.contains("://")
+                || crate::harness::is_remote_session(&state.session_id)))
+        .then(|| panel.clone())
     }
 
     pub(super) fn rename_session(
@@ -98,7 +97,7 @@ impl Workspace {
         if !self
             .slots
             .iter()
-            .any(|slot| slot.panel == editor.target && !slot.closing)
+            .any(|slot| slot.panel.chat() == Some(&editor.target) && !slot.closing)
         {
             editor.error = Some("This session has been closed.".into());
             cx.notify();

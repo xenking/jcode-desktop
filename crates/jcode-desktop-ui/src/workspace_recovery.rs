@@ -214,7 +214,7 @@ fn restore(checkpoint: &Checkpoint, alive: bool) -> Option<WorkspaceSnapshot> {
         // PTY resource handles and output cursors belong to the dead host.
         // Reopen in its directory without suppressing the new PTY's replies.
         if slot.panel.terminal_resource_id.take().is_some() {
-            slot.panel.session_id = "terminal".into();
+            slot.panel.session_id = crate::panel_item::PanelItem::TERMINAL_SESSION_ID.into();
         }
         slot.panel.terminal_output_cursor = None;
     }

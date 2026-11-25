@@ -61,7 +61,6 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
         }
         panel.run_session_operation(SessionOperation::Clear, "not sent");
         panel.submit_command_prompt("not sent", cx);
-        assert!(panel.terminal.is_none());
         assert!(panel.todoist.is_none());
         assert!(panel.code_file.is_none());
         panel.close_login_picker(cx);
@@ -153,7 +152,6 @@ fn preview_keyboard_and_model_recovery_stay_offline(cx: &mut gpui::TestAppContex
     panel.read_with(vcx, |panel, _| {
         assert_eq!(panel.model.as_deref(), Some("preview-model"));
         assert!(panel.items.iter().any(|item| matches!(item, Item::Assistant(text) if text.contains("Offline preview: selected"))));
-        assert!(panel.terminal.is_none());
     });
     assert!(commands.try_recv().is_err());
 }

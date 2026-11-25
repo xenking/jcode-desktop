@@ -924,7 +924,7 @@ impl Workspace {
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
                         panel.tab_ring,
-                        Some(panel.tab_outline.clone()),
+                        panel.tab_outline.clone(),
                     )
                 }
                 None => ("Empty workspace".into(), "📁", None, None),

@@ -59,11 +59,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(index) = self.slots.iter().position(|slot| {
-            !slot.closing && slot.panel.read(cx).session_id == crate::panel::openrig::SESSION_ID
+            !slot.closing && slot.panel.session_id(cx) == crate::panel::openrig::SESSION_ID
         }) {
             self.slots[index]
                 .panel
-                .update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+                .update_chat(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
             self.set_active(index, cx);
             self.focus_active(window, cx);
         } else {
@@ -73,8 +73,7 @@ impl Workspace {
                     if handle.read(cx).is_ok_and(|other| {
                         other.slots.iter().any(|slot| {
                             !slot.closing
-                                && slot.panel.read(cx).session_id
-                                    == crate::panel::openrig::SESSION_ID
+                                && slot.panel.session_id(cx) == crate::panel::openrig::SESSION_ID
                         })
                     }) {
                         let _ = handle.update(cx, |other, window, cx| {
@@ -118,7 +117,8 @@ impl Workspace {
         let origin = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.downgrade());
+            .and_then(|slot| slot.panel.chat())
+            .map(Entity::downgrade);
         if !cfg!(test) && !action.target.is_local_machine() {
             let target = action.target.clone();
             let native_id = action.native_id.clone();
@@ -201,7 +201,7 @@ mod tests {
             workspace.push_test_panel(seat_id, cx);
             workspace.push_test_panel("ordinary-session", cx);
             for slot in &workspace.slots {
-                slot.panel.update(cx, |panel, cx| {
+                slot.panel.update_chat(cx, |panel, cx| {
                     panel.set_rig_host_id(Some("host-fixture-local".into()), cx);
                 });
             }
@@ -215,8 +215,10 @@ mod tests {
                 .map(|slot| {
                     let count = std::rc::Rc::new(std::cell::Cell::new(0));
                     let observed = count.clone();
-                    cx.observe(&slot.panel, move |_, _, _| observed.set(observed.get() + 1))
-                        .detach();
+                    cx.observe(slot.panel.chat().unwrap(), move |_, _, _| {
+                        observed.set(observed.get() + 1)
+                    })
+                    .detach();
                     count
                 })
                 .collect::<Vec<_>>()
@@ -264,7 +266,7 @@ mod tests {
                 },
                 cx,
             );
-            workspace.slots[0].panel.update(cx, |panel, cx| {
+            workspace.slots[0].panel.update_chat(cx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
                     input.set_content("keep this draft".into(), cx)
                 });
@@ -354,7 +356,7 @@ mod tests {
             });
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel(id, cx);
-            workspace.slots[0].panel.update(cx, |panel, cx| {
+            workspace.slots[0].panel.update_chat(cx, |panel, cx| {
                 panel.set_rig_host_id(Some("host-fixture-local".into()), cx);
             });
             workspace
@@ -439,7 +441,7 @@ mod tests {
         let local_button = "openrig-chat:host-fixture-local:Operator:open";
         click(vcx, local_button);
         let panel = workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, native);
+            assert_eq!(w.slots[w.active].panel.session_id(cx), native);
             w.slots[w.active].panel.entity_id()
         });
         open_chat(vcx);
@@ -453,7 +455,7 @@ mod tests {
         let remote = format!("ssh://worker-east.example.test/{native}");
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 4);
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, remote);
+            assert_eq!(w.slots[w.active].panel.session_id(cx), remote);
         });
         let commands: Vec<_> = commands.try_iter().collect();
         for session in [native, &remote] {
@@ -622,7 +624,7 @@ mod tests {
         click(vcx, "work-open-session");
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(
-                workspace.slots[workspace.active].panel.read(cx).session_id,
+                workspace.slots[workspace.active].panel.session_id(cx),
                 "session_fox_1700000000000_0123456789abcdef"
             );
         });
@@ -727,7 +729,7 @@ mod tests {
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         let entity = workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, local);
+            assert_eq!(w.slots[w.active].panel.session_id(cx), local);
             w.slots[w.active].panel.entity_id()
         });
         open(&workspace, vcx);
@@ -748,7 +750,7 @@ mod tests {
         click(vcx, "fleet-open-session");
         let remote = format!("ssh://worker-east.example.test/{local}");
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, remote);
+            assert_eq!(w.slots[w.active].panel.session_id(cx), remote);
             assert_eq!(w.slots.len(), 4);
         });
         let commands: Vec<_> = commands.try_iter().collect();

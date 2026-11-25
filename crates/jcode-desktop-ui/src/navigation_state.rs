@@ -17,27 +17,26 @@ impl Workspace {
             .get(self.active)
             .filter(|slot| slot.row == self.active_row)
             .map(|_| self.active);
-        let keyboard_panel = self.slots.iter().position(|slot| {
-            slot.panel
-                .read(cx)
-                .input_focus_handle(cx)
-                .is_focused(window)
-        });
+        let keyboard_panel = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.input_focus_handle(cx).is_focused(window));
         let rows: Vec<_> = (0..STRIP_COUNT)
             .map(|row| {
                 let panels: Vec<_> = self
                     .row_indices(row)
                     .map(|index| {
                         let slot = &self.slots[index];
+                        let chat = slot.panel.read_chat(cx);
                         serde_json::json!({
                             "slot": index,
                             "id": slot.panel.entity_id().as_u64(),
-                            "session": slot.panel.read(cx).session_id,
-                            "history_loaded": slot.panel.read(cx).history_loaded(),
-                            "history_items": slot.panel.read(cx).items.len(),
+                            "session": slot.panel.session_id(cx),
+                            "history_loaded": chat.is_some_and(Panel::history_loaded),
+                            "history_items": chat.map_or(0, |panel| panel.items.len()),
                             // Length only: the dump must never contain draft text.
-                            "draft_chars": slot.panel.read(cx).input.read(cx).snapshot().content.chars().count(),
-                            "terminal": slot.panel.read(cx).terminal_debug_snapshot(cx),
+                            "draft_chars": chat.map_or(0, |panel| panel.input.read(cx).snapshot().content.chars().count()),
+                            "terminal": slot.panel.terminal_debug_snapshot(cx),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),
                             "closing": slot.closing,

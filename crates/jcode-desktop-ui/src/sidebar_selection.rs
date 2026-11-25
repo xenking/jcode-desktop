@@ -57,7 +57,7 @@ impl Workspace {
             if let Some(index) = self
                 .slots
                 .iter()
-                .position(|s| !s.closing && s.panel.read(cx).session_id == id)
+                .position(|s| !s.closing && s.panel.session_id(cx) == id)
             {
                 self.set_active(index, cx);
                 self.close_panel(&ClosePanel, window, cx);
@@ -216,7 +216,7 @@ mod interaction_tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.sidebar_selection.ids.len(), 3);
             assert_eq!(
-                w.slots[w.active].panel.read(cx).session_id,
+                w.slots[w.active].panel.session_id(cx),
                 "first",
                 "range selection must not navigate"
             );
@@ -229,7 +229,7 @@ mod interaction_tests {
                 .slots
                 .iter()
                 .filter(|s| !s.closing)
-                .map(|s| s.panel.read(cx).session_id.clone())
+                .map(|s| s.panel.session_id(cx).to_owned())
                 .collect::<Vec<_>>();
             assert_eq!(live, ["fourth"]);
             assert!(w.sidebar_selection.ids.is_empty());

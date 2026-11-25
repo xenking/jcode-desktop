@@ -67,13 +67,13 @@ impl Workspace {
         let panel = self.slots[self.active].panel.clone();
         if help {
             // Help sends its own first prompt as soon as the session exists.
-            panel.update(cx, |panel, _| panel.mark_session_requested());
+            panel.update_chat(cx, |panel, _| panel.mark_session_requested());
             self.bridge.send(Command::CreateSession {
                 working_dir: directory,
                 request_id: Some(request_id),
             });
         } else {
-            panel.update(cx, |panel, cx| panel.defer_session(cx));
+            panel.update_chat(cx, |panel, cx| panel.defer_session(cx));
         }
     }
 
@@ -82,9 +82,13 @@ impl Workspace {
     pub(super) fn request_deferred_sessions(&mut self, cx: &mut Context<Self>) -> usize {
         let mut requested = 0;
         for slot in &self.slots {
-            if slot.panel.read(cx).session_deferred() {
+            if slot
+                .panel
+                .read_chat(cx)
+                .is_some_and(Panel::session_deferred)
+            {
                 slot.panel
-                    .update(cx, |panel, cx| panel.request_deferred_session(cx));
+                    .update_chat(cx, |panel, cx| panel.request_deferred_session(cx));
                 requested += 1;
             }
         }
@@ -129,7 +133,7 @@ impl Workspace {
             cx,
         );
         let panel = self.slots[self.active].panel.clone();
-        panel.update(cx, |panel, cx| {
+        panel.update_chat(cx, |panel, cx| {
             panel.status = format!("Preparing connection to {}…", remotes::machine_label(&host));
             cx.notify();
         });

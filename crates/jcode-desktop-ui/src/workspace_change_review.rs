@@ -13,14 +13,16 @@ impl Workspace {
         let Some(index) = self.slots.iter().position(|slot| {
             !slot.closing
                 && slot.panel.entity_id() == request.panel
-                && slot.panel.read(cx).is_change_review()
+                && slot
+                    .panel
+                    .read_chat(cx)
+                    .is_some_and(Panel::is_change_review)
         }) else {
             return;
         };
         let source_id = self.slots[index]
             .panel
-            .read(cx)
-            .session_id
+            .session_id(cx)
             .trim_start_matches("review://")
             .to_owned();
         self.set_active(index, cx);
@@ -28,7 +30,7 @@ impl Workspace {
         if let Some(source) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == source_id)
+            .position(|slot| !slot.closing && slot.panel.session_id(cx) == source_id)
         {
             self.set_active(source, cx);
             self.focus_active(window, cx);
@@ -51,19 +53,16 @@ impl Workspace {
         if request.selected >= crate::diff::tool_diffs(&request.name, &request.input).len() {
             return;
         }
-        let source = self.slots[source_index].panel.read(cx);
-        let session_id = format!("review://{}", source.session_id);
-        let working_dir = source.working_dir.clone();
+        let Some(source) = self.slots[source_index].panel.chat().cloned() else {
+            return;
+        };
+        let session_id = format!("review://{}", source.read(cx).session_id);
+        let working_dir = source.read(cx).working_dir.clone();
         if self.single_panel {
             let panel = cx.new(|cx| {
                 Panel::new_change_review(session_id, working_dir, request, self.bridge.clone(), cx)
             });
-            match panel_window::open_panel_window(
-                panel,
-                Some(self.slots[source_index].panel.clone()),
-                window,
-                cx,
-            ) {
+            match panel_window::open_panel_window(panel, Some(source), window, cx) {
                 Ok(panel) => panel.update(cx, |panel, cx| panel.set_change_review(request, cx)),
                 Err(error) => eprintln!("failed to open change review window: {error:#}"),
             }
@@ -75,11 +74,11 @@ impl Workspace {
         let index = if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+            .position(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
         {
             self.slots[index]
                 .panel
-                .update(cx, |panel, cx| panel.set_change_review(request, cx));
+                .update_chat(cx, |panel, cx| panel.set_change_review(request, cx));
             index
         } else {
             let panel = cx.new(|cx| {
@@ -96,7 +95,7 @@ impl Workspace {
             self.slots.insert(
                 index,
                 Slot {
-                    panel,
+                    panel: PanelItem::Chat(panel),
                     row,
                     width_fraction,
                     animated_width: AnimatedValue::new(
@@ -185,7 +184,7 @@ mod tests {
         let review = workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 3);
             assert_eq!(workspace.slots[0].panel, source);
-            assert_eq!(workspace.slots[2].panel.read(cx).session_id, "neighbour");
+            assert_eq!(workspace.slots[2].panel.session_id(cx), "neighbour");
             assert_eq!(workspace.active, 1);
             assert_eq!(workspace.slots[1].row, workspace.slots[0].row);
             let review = workspace.slots[1].panel.clone();

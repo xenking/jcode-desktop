@@ -576,13 +576,20 @@ impl Workspace {
     ) {
         self.continue_account_sign_in(window, cx);
         let usable = self.slots.get(self.active).is_some_and(|slot| {
-            let panel = slot.panel.read(cx);
-            panel.preview_state.is_none() && !panel.is_default_directory() && !panel.is_machines()
+            slot.panel.read_chat(cx).is_some_and(|panel| {
+                panel.preview_state.is_none()
+                    && !panel.is_default_directory()
+                    && !panel.is_machines()
+            })
         });
         if !usable {
             self.open_new_session(cx);
         }
-        let Some(panel) = self.slots.get(self.active).map(|slot| slot.panel.clone()) else {
+        let Some(panel) = self
+            .slots
+            .get(self.active)
+            .and_then(|slot| slot.panel.chat().cloned())
+        else {
             return;
         };
         let input = panel.read(cx).input.clone();

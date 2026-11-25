@@ -375,7 +375,8 @@ impl Workspace {
         eprintln!("global voice: press");
         self.global_voice.pending_target = self
             .voice_target(cx)
-            .map(|index| self.slots[index].panel.downgrade());
+            .and_then(|index| self.slots[index].panel.chat())
+            .map(Entity::downgrade);
         if window.is_window_active()
             && let Some(panel) = self.global_voice.pending_target.as_ref().and_then(|p| p.upgrade())
         {
@@ -526,7 +527,7 @@ impl Workspace {
         if !self
             .slots
             .iter()
-            .any(|slot| !slot.closing && slot.panel == panel)
+            .any(|slot| !slot.closing && slot.panel.chat() == Some(&panel))
         {
             return;
         }
@@ -580,7 +581,7 @@ impl Workspace {
         if !self
             .slots
             .iter()
-            .any(|slot| !slot.closing && slot.panel == panel)
+            .any(|slot| !slot.closing && slot.panel.chat() == Some(&panel))
         {
             panel.update(cx, |panel, cx| {
                 panel.cancel_global_voice(
@@ -744,7 +745,9 @@ mod host_action_tests {
             // Preview panels never open a microphone.
             for slot in &mut workspace.slots {
                 slot.panel =
-                    cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+                    PanelItem::Chat(cx.new(|cx| {
+                        Panel::new_preview(crate::preview_state::PreviewState::Empty, cx)
+                    }));
             }
             workspace
         })

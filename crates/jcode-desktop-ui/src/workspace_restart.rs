@@ -289,7 +289,7 @@ fn decode_restore(bytes: &[u8]) -> Option<WorkspaceSnapshot> {
 fn clear_terminal_handle(panel: &mut crate::panel::PanelSnapshot) {
     // PTYs belonged to the stopped process. Reopen in the same directory.
     if panel.terminal_resource_id.take().is_some() {
-        panel.session_id = "terminal".into();
+        panel.session_id = crate::panel_item::PanelItem::TERMINAL_SESSION_ID.into();
     }
     panel.terminal_output_cursor = None;
 }

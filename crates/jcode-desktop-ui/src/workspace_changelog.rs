@@ -20,7 +20,9 @@ impl Workspace {
             });
             if let Err(error) = panel_window::open_panel_window(
                 panel,
-                self.slots.get(self.active).map(|slot| slot.panel.clone()),
+                self.slots
+                    .get(self.active)
+                    .and_then(|slot| slot.panel.chat().cloned()),
                 window,
                 cx,
             ) {
@@ -32,10 +34,9 @@ impl Workspace {
             .slots
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
-        let existing = self
-            .slots
-            .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).is_changelog());
+        let existing = self.slots.iter().position(|slot| {
+            !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_changelog)
+        });
         let index = existing.unwrap_or_else(|| {
             let panel = cx.new(|cx| {
                 Panel::new(
@@ -51,7 +52,7 @@ impl Workspace {
             self.slots.insert(
                 index,
                 Slot {
-                    panel,
+                    panel: PanelItem::Chat(panel),
                     row: self.active_row,
                     width_fraction: width,
                     animated_width: AnimatedValue::new(
@@ -87,11 +88,11 @@ impl Workspace {
             self.active = index;
         }
         let row = self.slots[0].row;
-        if let Some(chat) = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.row == row && !slot.closing && slot.panel.read(cx).supports_voice())
-        {
+        if let Some(chat) = self.slots.iter_mut().find(|slot| {
+            slot.row == row
+                && !slot.closing
+                && slot.panel.read_chat(cx).is_some_and(Panel::supports_voice)
+        }) {
             chat.width_fraction = DEFAULT_WIDTH;
             chat.animated_width.set(DEFAULT_WIDTH, Instant::now());
             chat.restore_fraction = None;
@@ -112,10 +113,9 @@ impl Workspace {
     /// camera are exactly as they were restored, and nothing on screen moves.
     pub(crate) fn open_changelog_in_background(&mut self, cx: &mut Context<Self>) {
         if self.single_panel
-            || self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).is_changelog())
+            || self.slots.iter().any(|slot| {
+                !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_changelog)
+            })
         {
             return;
         }
@@ -130,7 +130,7 @@ impl Workspace {
         });
         let width = DEFAULT_WIDTH;
         self.slots.push(Slot {
-            panel,
+            panel: PanelItem::Chat(panel),
             row: self.active_row,
             width_fraction: width,
             animated_width: AnimatedValue::new(
@@ -172,7 +172,12 @@ mod tests {
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert_eq!(w.active, 0);
-                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert!(
+                    w.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_changelog)
+                );
                 assert!(w.snapshot(window, cx).unwrap().slots.is_empty());
             })
         });
@@ -206,11 +211,16 @@ mod tests {
                 let source = w.slots[4].panel.entity_id();
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.active, 0);
-                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert!(
+                    w.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_changelog)
+                );
                 assert_eq!(w.slots[0].row, 1);
                 assert_eq!(w.slots[0].width_fraction, 0.5);
                 assert_eq!(w.slots[1].width_fraction, 1.0);
-                assert_eq!(w.slots[4].panel.read(cx).session_id, "first-chat");
+                assert_eq!(w.slots[4].panel.session_id(cx), "first-chat");
                 assert_eq!(w.slots[4].width_fraction, 0.5);
                 assert_eq!(w.slots[4].animated_width.sample(Instant::now()), 0.5);
                 assert_eq!(w.slots[4].restore_fraction, None);
@@ -224,7 +234,12 @@ mod tests {
                 w.active = 4;
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 6);
-                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert!(
+                    w.slots[0]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_changelog)
+                );
                 assert_eq!(w.previous, Some(source));
             })
         });
@@ -248,8 +263,18 @@ mod tests {
                 assert_eq!(w.slots.len(), 2);
                 assert_eq!(w.active, 0);
                 assert_eq!(w.slots[1].width_fraction, 0.5);
-                assert!(w.slots[w.active].panel.read(cx).is_changelog());
-                assert!(!w.slots[w.active].panel.read(cx).can_fork());
+                assert!(
+                    w.slots[w.active]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_changelog)
+                );
+                assert!(
+                    !w.slots[w.active]
+                        .panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::can_fork)
+                );
                 assert!(
                     w.slots[w.active]
                         .panel
@@ -267,10 +292,7 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(
-                w.slots[w.active].panel.read(cx).session_id,
-                "existing-session"
-            );
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "existing-session");
         });
         assert!(
             commands.try_recv().is_err(),
@@ -316,7 +338,7 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "draft-session");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "draft-session");
         });
     }
 
@@ -358,7 +380,7 @@ mod tests {
         });
         vcx.run_until_parked();
         workspace.update_in(vcx, |w, window, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "d");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "d");
             assert_eq!(w.active_row, 0);
             assert!(
                 w.slots[w.active]
@@ -371,7 +393,7 @@ mod tests {
             assert!(
                 w.slots
                     .iter()
-                    .any(|slot| slot.panel.read(cx).is_changelog())
+                    .any(|slot| slot.panel.read_chat(cx).is_some_and(Panel::is_changelog))
             );
         });
         let after_bounds = vcx
@@ -389,7 +411,7 @@ mod tests {
             w.apply_snapshot(snapshot, cx);
             w.restore_focus(window, cx);
             assert_eq!(w.slots.len(), 5);
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "d");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "d");
             assert!(
                 w.slots[w.active]
                     .panel

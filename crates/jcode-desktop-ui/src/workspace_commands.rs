@@ -32,7 +32,9 @@ impl Workspace {
         let Some(command) = parse(&action.content) else {
             return;
         };
-        let source = self.slots[index].panel.clone();
+        let Some(source) = self.slots[index].panel.chat().cloned() else {
+            return;
+        };
         if source.read(cx).is_side_document() || source.read(cx).preview_state.is_some() {
             return;
         }
@@ -131,8 +133,7 @@ impl Workspace {
                             .slots
                             .iter()
                             .position(|slot| {
-                                !slot.closing
-                                    && slot.panel.read(cx).session_id == session.session_id
+                                !slot.closing && slot.panel.session_id(cx) == session.session_id
                             })
                             .unwrap_or_else(|| self.open_session(session, cx));
                         self.set_active(index, cx);
@@ -240,8 +241,8 @@ impl Workspace {
 
     pub(super) fn side_question_owner(&self, session_id: &str, cx: &App) -> Option<Entity<Panel>> {
         self.slots.iter().find(|slot| {
-            !slot.closing && slot.panel.read(cx).side_question_child() == Some(session_id)
-        }).map(|slot| slot.panel.clone())
+            !slot.closing && slot.panel.read_chat(cx).and_then(Panel::side_question_child) == Some(session_id)
+        }).and_then(|slot| slot.panel.chat().cloned())
     }
 
     /// Feed a side question's events into its card. Only an open full chat for
@@ -256,7 +257,7 @@ impl Workspace {
             return false;
         };
         owner.update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
-        !self.slots.iter().any(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+        !self.slots.iter().any(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
     }
 
     /// Promote a `/btw` answer into a real chat. The hidden fork keeps its
@@ -274,7 +275,9 @@ impl Workspace {
         else {
             return;
         };
-        let source = self.slots[source_index].panel.clone();
+        let Some(source) = self.slots[source_index].panel.chat().cloned() else {
+            return;
+        };
         let Some(card) = source.update(cx, |panel, cx| {
             if panel.side_question_child() == Some(action.session.session_id.as_str()) {
                 panel.take_side_question(cx)
@@ -314,7 +317,7 @@ impl Workspace {
         if let Some(identity) = card.identity {
             self.slots[self.active]
                 .panel
-                .update(cx, |panel, cx| panel.apply(&identity, cx));
+                .update_chat(cx, |panel, cx| panel.apply(&identity, cx));
         }
     }
 
@@ -325,7 +328,8 @@ impl Workspace {
             .slots
             .iter()
             .filter_map(|slot| {
-                let panel = slot.panel.read(cx);
+                let document = slot.panel.chat()?;
+                let panel = document.read(cx);
                 let owner = panel
                     .side_document_owner()?
                     .strip_prefix("desktop-live://")?
@@ -335,15 +339,15 @@ impl Workspace {
                     "desktop-splitview" => false,
                     _ => return None,
                 };
-                Some((slot.panel.clone(), owner, observe))
+                Some((document.clone(), owner, observe))
             })
             .collect();
         for (document, owner, observe) in documents {
             let source = self
                 .slots
                 .iter()
-                .find(|slot| !slot.closing && slot.panel.read(cx).session_id == owner)
-                .map(|slot| slot.panel.clone());
+                .find(|slot| !slot.closing && slot.panel.session_id(cx) == owner)
+                .and_then(|slot| slot.panel.chat().cloned());
             if let Some(source) = source {
                 document.update(cx, |panel, cx| {
                     panel.observe_workspace_source(source, observe, cx)
@@ -373,8 +377,16 @@ impl Workspace {
         let owner = format!("desktop-live://{}", source.read(cx).session_id);
         let existing = self.slots.iter().position(|slot| {
             !slot.closing
-                && slot.panel.read(cx).side_document_owner() == Some(owner.as_str())
-                && slot.panel.read(cx).side_document_page_id() == Some(page.id.as_str())
+                && slot
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_owner)
+                    == Some(owner.as_str())
+                && slot
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_page_id)
+                    == Some(page.id.as_str())
         });
         let native = cx
             .windows()

@@ -52,7 +52,7 @@ impl Workspace {
         let Some(source) = self
             .slots
             .iter()
-            .find(|slot| !slot.closing && slot.panel.read(cx).session_id == owner)
+            .find(|slot| !slot.closing && slot.panel.session_id(cx) == owner)
         else {
             // Late events must not create orphan panels after their session closes.
             return false;
@@ -111,12 +111,13 @@ impl Workspace {
 
         // Deleting a tool page removes only that owner's document, never the chat.
         self.slots.retain(|slot| {
-            let panel = slot.panel.read(cx);
-            panel.side_document_owner() != Some(owner)
-                || snapshot
-                    .pages
-                    .iter()
-                    .any(|page| panel.side_document_page_id() == Some(page.id.as_str()))
+            slot.panel.read_chat(cx).is_none_or(|panel| {
+                panel.side_document_owner() != Some(owner)
+                    || snapshot
+                        .pages
+                        .iter()
+                        .any(|page| panel.side_document_page_id() == Some(page.id.as_str()))
+            })
         });
         let mut newly_opened = HashSet::new();
         let mut seen = HashSet::new();
@@ -133,19 +134,28 @@ impl Workspace {
                 focus_changed && snapshot.focused_page_id.as_deref() == Some(&page.id);
             let absent_or_closing = !self.slots.iter().any(|slot| {
                 !slot.closing
-                    && slot.panel.read(cx).side_document_owner() == Some(owner)
-                    && slot.panel.read(cx).side_document_page_id() == Some(&page.id)
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .and_then(Panel::side_document_owner)
+                        == Some(owner)
+                    && slot
+                        .panel
+                        .read_chat(cx)
+                        .and_then(Panel::side_document_page_id)
+                        == Some(&page.id)
             });
             if unchanged && absent_or_closing && !explicitly_focused {
                 continue;
             }
             if let Some(slot) = self.slots.iter_mut().find(|slot| {
-                let panel = slot.panel.read(cx);
-                panel.side_document_owner() == Some(owner)
-                    && panel.side_document_page_id() == Some(page.id.as_str())
+                slot.panel.read_chat(cx).is_some_and(|panel| {
+                    panel.side_document_owner() == Some(owner)
+                        && panel.side_document_page_id() == Some(page.id.as_str())
+                })
             }) {
                 slot.panel
-                    .update(cx, |panel, cx| panel.update_side_document(page, cx));
+                    .update_chat(cx, |panel, cx| panel.update_side_document(page, cx));
                 if slot.closing {
                     slot.closing = false;
                     slot.close_progress.set(1.0, Instant::now());
@@ -163,7 +173,12 @@ impl Workspace {
                 .iter()
                 .enumerate()
                 .skip(source_index + 1)
-                .take_while(|(_, slot)| slot.panel.read(cx).side_document_owner() == Some(owner))
+                .take_while(|(_, slot)| {
+                    slot.panel
+                        .read_chat(cx)
+                        .and_then(Panel::side_document_owner)
+                        == Some(owner)
+                })
                 .last()
                 .map_or(source_index + 1, |(index, _)| index + 1);
             let width_fraction = DEFAULT_WIDTH;
@@ -171,7 +186,7 @@ impl Workspace {
             self.slots.insert(
                 insert_at,
                 Slot {
-                    panel,
+                    panel: PanelItem::Chat(panel),
                     row,
                     width_fraction,
                     animated_width: AnimatedValue::new(
@@ -240,9 +255,10 @@ impl Workspace {
             })
             .and_then(|id| {
                 self.slots.iter().position(|slot| {
-                    let panel = slot.panel.read(cx);
-                    panel.side_document_owner() == Some(owner)
-                        && panel.side_document_page_id() == Some(id.as_str())
+                    slot.panel.read_chat(cx).is_some_and(|panel| {
+                        panel.side_document_owner() == Some(owner)
+                            && panel.side_document_page_id() == Some(id.as_str())
+                    })
                 })
             });
         if let Some(index) = focus_target {
@@ -276,8 +292,8 @@ impl Workspace {
         let Some(source) = self
             .slots
             .iter()
-            .find(|slot| !slot.closing && slot.panel.read(cx).session_id == owner)
-            .map(|slot| slot.panel.clone())
+            .find(|slot| !slot.closing && slot.panel.session_id(cx) == owner)
+            .and_then(|slot| slot.panel.chat().cloned())
         else {
             return;
         };
@@ -411,7 +427,10 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 assert_eq!(
-                    w.slots[w.active].panel.read(cx).side_document_page_id(),
+                    w.slots[w.active]
+                        .panel
+                        .read_chat(cx)
+                        .and_then(Panel::side_document_page_id),
                     Some("notes")
                 );
                 w.close_panel(&ClosePanel, window, cx);
@@ -451,12 +470,15 @@ mod tests {
                 "replay must not resurrect a locally closed document"
             );
             assert_eq!(
-                w.slots[w.active].panel.read(cx).session_id,
+                w.slots[w.active].panel.session_id(cx),
                 "owner",
                 "replay must preserve restored chat focus"
             );
             assert_eq!(
-                w.slots[1].panel.read(cx).side_document_page_id(),
+                w.slots[1]
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_page_id),
                 Some("retained")
             );
             state.focus_revision += 1;
@@ -467,7 +489,10 @@ mod tests {
                 "fresh focus intent still reopens a dismissed document"
             );
             assert_eq!(
-                w.slots[w.active].panel.read(cx).side_document_page_id(),
+                w.slots[w.active]
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_page_id),
                 Some("notes")
             );
         });
@@ -517,7 +542,10 @@ mod tests {
                 "unrelated spawn must not resurrect a dismissed panel"
             );
             assert_eq!(
-                w.slots[1].panel.read(cx).side_document_page_id(),
+                w.slots[1]
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_page_id),
                 Some("second")
             );
             state.focus_revision += 1;
@@ -528,7 +556,10 @@ mod tests {
                 "explicit focus can reopen a dismissed document"
             );
             assert_eq!(
-                w.slots[w.active].panel.read(cx).side_document_page_id(),
+                w.slots[w.active]
+                    .panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_page_id),
                 Some("notes")
             );
         });
@@ -594,7 +625,7 @@ mod tests {
             let panel = w.slots[1].panel.clone();
             assert_eq!(panel.read(cx).side_document_owner(), Some("owner"));
             assert_eq!(panel.read(cx).side_document_page_id(), Some("notes"));
-            assert_eq!(w.slots[2].panel.read(cx).session_id, "other");
+            assert_eq!(w.slots[2].panel.session_id(cx), "other");
             panel
         });
         vcx.run_until_parked();
@@ -631,7 +662,7 @@ mod tests {
             assert_eq!(w.active, 1);
             w.apply(event("owner", SidePanelSnapshot::default()), cx);
             assert_eq!(w.slots.len(), 2);
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "owner");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "owner");
         });
         assert!(
             !commands.try_iter().any(|command| matches!(
@@ -655,25 +686,30 @@ mod tests {
         });
         workspace.update(vcx, |w, cx| {
             w.apply(event("one", snapshot("one", false)), cx);
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "two");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "two");
             w.apply(event("two", snapshot("two", false)), cx);
             assert_eq!(w.slots.len(), 4);
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "two");
+            assert_eq!(w.slots[w.active].panel.session_id(cx), "two");
             let docs: Vec<_> = w
                 .slots
                 .iter()
-                .filter(|slot| slot.panel.read(cx).is_side_document())
-                .map(|slot| slot.panel.read(cx).session_id.clone())
+                .filter(|slot| {
+                    slot.panel
+                        .read_chat(cx)
+                        .is_some_and(Panel::is_side_document)
+                })
+                .map(|slot| slot.panel.session_id(cx).to_owned())
                 .collect();
             assert_eq!(docs.len(), 2);
             assert_ne!(docs[0], docs[1]);
             w.apply(event("one", SidePanelSnapshot::default()), cx);
             assert_eq!(w.slots.len(), 3);
-            assert!(
-                w.slots
-                    .iter()
-                    .any(|slot| slot.panel.read(cx).side_document_owner() == Some("two"))
-            );
+            assert!(w.slots.iter().any(|slot| {
+                slot.panel
+                    .read_chat(cx)
+                    .and_then(Panel::side_document_owner)
+                    == Some("two")
+            }));
             assert!(!w.apply(event("not-open", snapshot("orphan", true)), cx));
             assert_eq!(w.slots.len(), 3);
         });

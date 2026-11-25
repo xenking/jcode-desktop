@@ -12,7 +12,6 @@ use gpui::{
     ScrollHandle, SharedString, StyledImage, Task, Window, div, img, list, point, prelude::*, px,
     relative,
 };
-use jcode_desktop_api::HostHandle;
 use jcode_desktop_model::markdown_file::{self, LinkTarget};
 use jcode_sdk::ApiEvent;
 use serde::{Deserialize, Serialize};
@@ -22,7 +21,6 @@ use crate::harness::{Bridge, Command, SessionOperation};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
 use crate::preview_state::PreviewState;
-use crate::terminal::TerminalPanel;
 use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
@@ -966,7 +964,6 @@ pub struct Panel {
         u64,
         std::rc::Rc<HashMap<String, gmail_draft_card::Superseded>>,
     )>,
-    terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     unfinished_session_opener: Option<SessionOpener>,
     /// A read-only source file opened from the workspace file browser.
@@ -1313,7 +1310,6 @@ impl Panel {
             || self.todoist.is_some()
             || self.orchestration.is_some()
             || self.openrig.is_some()
-            || self.terminal.is_some()
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
@@ -1963,7 +1959,6 @@ impl Panel {
             codemode_summaries: fixture_codemode_summaries,
             running_tool_tickers: Default::default(),
             superseded_drafts: Default::default(),
-            terminal: None,
             unfinished_work: None,
             unfinished_session_opener: None,
             code_file: None,
@@ -2812,27 +2807,6 @@ impl Panel {
             .into_any_element()
     }
 
-    pub fn new_terminal(
-        working_dir: Option<String>,
-        bridge: Bridge,
-        host: HostHandle,
-        resource_id: Option<u64>,
-        replay_until: Option<u64>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let terminal = cx
-            .new(|cx| TerminalPanel::new(working_dir.clone(), resource_id, replay_until, host, cx));
-        let mut panel = Self::new(
-            "terminal".into(),
-            Some("terminal".into()),
-            working_dir,
-            bridge,
-            cx,
-        );
-        panel.terminal = Some(terminal);
-        panel
-    }
-
     pub(crate) fn can_fork(&self) -> bool {
         self.preview_state.is_none()
             && !self.is_default_directory()
@@ -2840,7 +2814,6 @@ impl Panel {
             && !self.is_change_review()
             && !self.is_accounts_panel()
             && !self.is_changelog()
-            && self.terminal.is_none()
             && self.code_file.is_none()
             && !self.is_side_document()
             && self.session_id != "unfinished-work"
@@ -2907,14 +2880,8 @@ impl Panel {
                 .startup_layout
                 .clone()
                 .filter(|layout| layout.committed),
-            terminal_resource_id: self
-                .terminal
-                .as_ref()
-                .and_then(|terminal| terminal.read(cx).resource_id()),
-            terminal_output_cursor: self
-                .terminal
-                .as_ref()
-                .map(|terminal| terminal.read(cx).output_cursor()),
+            terminal_resource_id: None,
+            terminal_output_cursor: None,
         }
     }
 
@@ -7092,8 +7059,8 @@ impl Panel {
           Some(self.transcript_selection.read(cx).focus_handle().clone())], self.focus_handle.clone())
     }
 
-    pub(crate) fn workspace_surface_state(&self) -> (bool, bool, bool, bool) {
-        (self.surface_focused, self.finished_unseen, self.openrig.is_some(), self.terminal.is_some())
+    pub(crate) fn workspace_surface_state(&self) -> (bool, bool, bool) {
+        (self.surface_focused, self.finished_unseen, self.openrig.is_some())
     }
 
     pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
@@ -7120,8 +7087,6 @@ impl Panel {
         }
         if self.image_preview.is_some() || self.diff_review.is_some() || self.is_accounts_panel() {
             self.focus_handle.clone()
-        } else if let Some(terminal) = &self.terminal {
-            terminal.read(cx).focus_handle(cx)
         } else if let Some(file) = &self.code_file
             && !file.markdown.as_ref().is_some_and(|preview| preview.visible)
         {
@@ -7146,13 +7111,8 @@ impl Panel {
     /// Whether `set_surface_focused(focused)` would change anything. Callers
     /// drawing a frame check this first, since GPUI counts any update made
     /// while drawing as a change to the views reading it.
-    pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
-        self.surface_focused != focused
-            || (focused && self.finished_unseen)
-            || self
-                .terminal
-                .as_ref()
-                .is_some_and(|terminal| terminal.read(cx).surface_focused() != focused)
+    pub(crate) fn needs_surface_update(&self, focused: bool) -> bool {
+        self.surface_focused != focused || (focused && self.finished_unseen)
     }
 
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
@@ -7165,28 +7125,6 @@ impl Panel {
             self.finished_unseen = false;
             cx.notify();
         }
-        if let Some(terminal) = &self.terminal {
-            terminal.update(cx, |terminal, cx| terminal.set_surface_focused(focused, cx));
-        }
-    }
-
-    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
-    pub fn terminal_debug_snapshot(&self, cx: &App) -> Option<serde_json::Value> {
-        self.terminal
-            .as_ref()
-            .map(|terminal| terminal.read(cx).debug_snapshot())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_terminal(&self) -> Option<Entity<TerminalPanel>> {
-        self.terminal.clone()
-    }
-
-    #[cfg(test)]
-    pub fn test_terminal_contents(&self, cx: &App) -> Option<String> {
-        self.terminal
-            .as_ref()
-            .map(|terminal| terminal.read(cx).screen_contents())
     }
 
     /// Give this panel a settled conversation, so its composer is docked
@@ -7300,13 +7238,6 @@ impl Render for Panel {
                     this.close_diff_review(window, cx);
                 }))
                 .children(self.render_diff_review(cx))
-                .into_any_element();
-        }
-        if let Some(terminal) = &self.terminal {
-            return div()
-                .size_full()
-                .track_focus(&self.focus_handle)
-                .child(terminal.clone())
                 .into_any_element();
         }
         if let Some(file) = &self.code_file {

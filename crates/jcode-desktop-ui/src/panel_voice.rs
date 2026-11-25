@@ -256,7 +256,6 @@ impl Panel {
             || self.is_pending_session()
             || self.session_id.starts_with("preview://")
             || crate::harness::remote_host(&self.session_id).is_some())
-            && self.terminal.is_none()
             && self.code_file.is_none()
             && !self.is_side_document()
             && self.todoist.is_none()

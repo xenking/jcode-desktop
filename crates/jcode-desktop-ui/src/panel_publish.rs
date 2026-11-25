@@ -20,7 +20,6 @@ impl Panel {
         if self.transcript_only
             || self.preview_state.is_some()
             || self.is_side_document()
-            || self.terminal.is_some()
             || crate::harness::remote_host(&self.session_id).is_some()
         {
             return None;

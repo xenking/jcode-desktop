@@ -13,7 +13,7 @@ impl Workspace {
             .slots
             .iter()
             .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
-            .and_then(|slot| slot.panel.read(cx).working_dir.clone())
+            .and_then(|slot| slot.panel.working_dir(cx).map(str::to_owned))
             .and_then(|dir| publish::checkout_root(&dir))
         else {
             return;
@@ -22,11 +22,12 @@ impl Workspace {
         // One pipeline per checkout. A second press returns to the live
         // tracker instead of racing two release orchestrators.
         if let Some(index) = self.slots.iter().position(|slot| {
-            let panel = slot.panel.read(cx);
-            !slot.closing
-                && panel.is_publish_tracker()
-                && panel.working_dir.as_deref() == Some(directory.as_str())
-                && (panel.is_pending_session() || panel.is_busy())
+            slot.panel.read_chat(cx).is_some_and(|panel| {
+                !slot.closing
+                    && panel.is_publish_tracker()
+                    && panel.working_dir.as_deref() == Some(directory.as_str())
+                    && (panel.is_pending_session() || panel.is_busy())
+            })
         }) {
             self.set_active(index, cx);
             self.focus_active(window, cx);
@@ -42,7 +43,7 @@ impl Workspace {
             cx,
         );
         let panel = self.slots[self.active].panel.clone();
-        panel.update(cx, |panel, cx| {
+        panel.update_chat(cx, |panel, cx| {
             panel.set_publish_tracker(true);
             panel.status = "Starting publish…".into();
             cx.notify();
@@ -59,7 +60,7 @@ impl Workspace {
             .display()
             .to_string();
         if let Some(slot) = self.slots.get(self.active) {
-            slot.panel.update(cx, |panel, cx| {
+            slot.panel.update_chat(cx, |panel, cx| {
                 panel.working_dir = Some(checkout.clone());
                 cx.notify();
             });
@@ -70,7 +71,7 @@ impl Workspace {
         session.working_dir = Some(checkout);
         self.sessions.push(session.clone());
         self.active = self.open_session(session, cx);
-        self.slots[self.active].panel.update(cx, |panel, cx| {
+        self.slots[self.active].panel.update_chat(cx, |panel, cx| {
             panel.set_publish_tracker(true);
             panel.seed_publish_fixture();
             cx.notify();

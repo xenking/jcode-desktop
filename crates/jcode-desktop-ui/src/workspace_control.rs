@@ -50,8 +50,8 @@ pub(super) fn handle_window_request(
                 "fixture input requires the isolated control fixture and allow_user_window",
             );
         }
-        let index = match workspace.read(cx).control_target(target, window, cx) {
-            Ok(index) => index,
+        let panel = match workspace.read(cx).control_chat(target, window, cx) {
+            Ok(panel) => panel,
             Err(response) => return response,
         };
         if matches!(
@@ -60,12 +60,7 @@ pub(super) fn handle_window_request(
         ) {
             window.refresh();
             window.draw(cx).clear(cx);
-            let position = workspace.read(cx).slots[index]
-                .panel
-                .read(cx)
-                .input
-                .read(cx)
-                .composer_wheel_position();
+            let position = panel.read(cx).input.read(cx).composer_wheel_position();
             let y = if selector == "composer:wheel-up" {
                 12_000.
             } else {
@@ -107,18 +102,14 @@ pub(super) fn handle_window_request(
                 "fixture keys require the isolated fixture",
             );
         }
-        let index = match workspace.read(cx).control_target(target, window, cx) {
-            Ok(index) => index,
+        let panel = match workspace.read(cx).control_chat(target, window, cx) {
+            Ok(panel) => panel,
             Err(response) => return response,
         };
         if let Some(text) = key.strip_prefix("follow-up-text:")
             && crate::fixture_control_targets::side_questions()
         {
-            let Some(editor) = workspace.read(cx).slots[index]
-                .panel
-                .read(cx)
-                .side_question_test_editor()
-            else {
+            let Some(editor) = panel.read(cx).side_question_test_editor() else {
                 return error(
                     "selector_not_visible",
                     "side question follow-up is not open",
@@ -136,7 +127,7 @@ pub(super) fn handle_window_request(
         if key == "seed-composer-image"
             && crate::fixture_control_targets::transcript_scroll_fixture()
         {
-            let input = workspace.read(cx).slots[index].panel.read(cx).input.clone();
+            let input = panel.read(cx).input.clone();
             input.update(cx, |input, cx| {
                 input.attach_image(
                     crate::clipboard_image::ClipboardImage {
@@ -183,7 +174,7 @@ pub(super) fn handle_window_request(
         // Never read or change the system pasteboard from a hidden smoke run.
         #[cfg(target_os = "macos")]
         if key == "super-v" {
-            let input = &workspace.read(cx).slots[index].panel.read(cx).input;
+            let input = &panel.read(cx).input;
             if !input.read(cx).focus_handle.is_focused(window) {
                 return error(
                     "selector_not_focused",
@@ -286,9 +277,7 @@ impl Workspace {
             .slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| {
-                !slot.closing && slot.panel.read(cx).session_id == target.session_id
-            })
+            .filter(|(_, slot)| !slot.closing && slot.panel.session_id(cx) == target.session_id)
             .map(|(i, _)| i);
         let Some(index) = found.next() else {
             return Err(error(
@@ -303,6 +292,21 @@ impl Workspace {
             ));
         }
         Ok(index)
+    }
+
+    /// The conversation behind `target`, for actions on its transcript or composer.
+    fn control_chat(
+        &self,
+        target: &DesktopTarget,
+        window: &Window,
+        cx: &App,
+    ) -> Result<Entity<Panel>, DesktopResponse> {
+        let index = self.control_target(target, window, cx)?;
+        self.slots[index]
+            .panel
+            .chat()
+            .cloned()
+            .ok_or_else(|| error("unsupported_panel", "this panel has no conversation"))
     }
 
     pub(super) fn handle_desktop_request(
@@ -375,7 +379,7 @@ impl Workspace {
                 if self
                     .slots
                     .iter()
-                    .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
+                    .any(|slot| !slot.closing && slot.panel.session_id(cx) == session_id)
                 {
                     return error("already_open", "session is already open in this window");
                 }
@@ -434,25 +438,21 @@ impl Workspace {
                 ok(json!({"window_id": target.window_id, "session_id": target.session_id}))
             }
             DesktopAction::Reveal { target, row } => {
-                let index = match self.control_target(&target, window, cx) {
-                    Ok(index) => index,
+                let panel = match self.control_chat(&target, window, cx) {
+                    Ok(panel) => panel,
                     Err(response) => return response,
                 };
-                match self.slots[index]
-                    .panel
-                    .update(cx, |panel, cx| panel.control_reveal(row, cx))
-                {
+                match panel.update(cx, |panel, cx| panel.control_reveal(row, cx)) {
                     Ok(range) => ok(json!({"index": range.start(), "end_index": range.end()})),
                     Err((code, message)) => error(code, message),
                 }
             }
             DesktopAction::State { target } => {
-                let index = match self.control_target(&target, window, cx) {
-                    Ok(index) => index,
+                let entity = match self.control_chat(&target, window, cx) {
+                    Ok(panel) => panel,
                     Err(error) => return error,
                 };
-                let slot = &self.slots[index];
-                let panel = slot.panel.read(cx);
+                let panel = entity.read(cx);
                 let input = panel.input.read(cx);
                 let draft = input.snapshot();
                 let mut state = match panel.control_state(window, cx) {
@@ -464,13 +464,13 @@ impl Workspace {
                     Err(err) => return error("state_serialization", &err.to_string()),
                 };
                 state["agent_owned_draft"] = json!(
-                    self.control_drafts.get(&slot.panel.entity_id())
+                    self.control_drafts.get(&entity.entity_id())
                         == Some(&(draft.content, input.control_revision()))
                         && draft.attachments.is_empty()
                         && draft.stashed_prompt.is_none()
                 );
                 ok(
-                    json!({"window_id":target.window_id, "panel_id":slot.panel.entity_id().as_u64(), "panel":state, "search_open":self.resume_open(), "search":search, "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": (crate::fixture_control_targets::draft_session() || crate::fixture_control_targets::side_questions()).then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
+                    json!({"window_id":target.window_id, "panel_id":entity.entity_id().as_u64(), "panel":state, "search_open":self.resume_open(), "search":search, "navigation":self.navigation_state(window,cx), "fixture_sidebar_sessions": (crate::fixture_control_targets::draft_session() || crate::fixture_control_targets::side_questions()).then(|| self.sidebar_session_layout.iter().map(|row| row.session_id.as_str()).collect::<Vec<_>>())}),
                 )
             }
             DesktopAction::Search {
@@ -513,13 +513,11 @@ impl Workspace {
                             "choosing an ask option changes focus and user selections; set allow_user_window to permit it",
                         );
                     }
-                    let index = match self.control_target(&target, window, cx) {
-                        Ok(index) => index,
+                    let panel = match self.control_chat(&target, window, cx) {
+                        Ok(panel) => panel,
                         Err(error) => return error,
                     };
-                    return if self.slots[index]
-                        .panel
-                        .update(cx, |panel, cx| panel.control_click_ask(ask, window, cx))
+                    return if panel.update(cx, |panel, cx| panel.control_click_ask(ask, window, cx))
                     {
                         ok(json!({"selector": selector}))
                     } else {
@@ -529,14 +527,11 @@ impl Workspace {
                         )
                     };
                 } else if let Some(call_id) = selector.strip_prefix("tool:") {
-                    let index = match self.control_target(&target, window, cx) {
-                        Ok(index) => index,
+                    let panel = match self.control_chat(&target, window, cx) {
+                        Ok(panel) => panel,
                         Err(error) => return error,
                     };
-                    return if self.slots[index]
-                        .panel
-                        .update(cx, |panel, cx| panel.control_toggle_tool(call_id, cx))
-                    {
+                    return if panel.update(cx, |panel, cx| panel.control_toggle_tool(call_id, cx)) {
                         ok(json!({"selector": selector}))
                     } else {
                         error(
@@ -603,25 +598,19 @@ impl Workspace {
                 text,
                 allow_user_window,
             } => {
-                let index = match self.control_target(&target, window, cx) {
-                    Ok(index) => index,
+                let panel = match self.control_chat(&target, window, cx) {
+                    Ok(panel) => panel,
                     Err(error) => return error,
                 };
-                if self.slots[index]
-                    .panel
-                    .read(cx)
-                    .input_focus_handle(cx)
-                    .is_focused(window)
-                    && !allow_user_window
-                {
+                if panel.read(cx).input_focus_handle(cx).is_focused(window) && !allow_user_window {
                     return error(
                         "user_window_focused",
                         "refusing to modify the user's focused composer without allow_user_window",
                     );
                 }
-                let input = self.slots[index].panel.read(cx).input.clone();
+                let input = panel.read(cx).input.clone();
                 let draft = input.read(cx).snapshot();
-                let panel_id = self.slots[index].panel.entity_id();
+                let panel_id = panel.entity_id();
                 let owned = self.control_drafts.get(&panel_id)
                     == Some(&(draft.content.clone(), input.read(cx).control_revision()))
                     && draft.attachments.is_empty()
@@ -650,11 +639,10 @@ impl Workspace {
                 target,
                 allow_user_window,
             } => {
-                let index = match self.control_target(&target, window, cx) {
-                    Ok(index) => index,
+                let panel = match self.control_chat(&target, window, cx) {
+                    Ok(panel) => panel,
                     Err(error) => return error,
                 };
-                let panel = &self.slots[index].panel;
                 if panel.read(cx).input_focus_handle(cx).is_focused(window) && !allow_user_window {
                     return error(
                         "user_window_focused",
@@ -685,14 +673,11 @@ impl Workspace {
             DesktopAction::ExpandTool {
                 target, selector, ..
             } => {
-                let index = match self.control_target(&target, window, cx) {
-                    Ok(index) => index,
+                let panel = match self.control_chat(&target, window, cx) {
+                    Ok(panel) => panel,
                     Err(error) => return error,
                 };
-                if self.slots[index]
-                    .panel
-                    .update(cx, |panel, cx| panel.control_expand_tool(&selector, cx))
-                {
+                if panel.update(cx, |panel, cx| panel.control_expand_tool(&selector, cx)) {
                     ok(json!({"selector": selector, "expanded": true}))
                 } else {
                     error(
@@ -713,8 +698,8 @@ impl Workspace {
                 let bounds = match selector.as_deref() {
                     Some(selector) => match self.slots[index]
                         .panel
-                        .read(cx)
-                        .control_element_bounds(selector, window)
+                        .read_chat(cx)
+                        .and_then(|panel| panel.control_element_bounds(selector, window))
                     {
                         Some(bounds) => Some(bounds),
                         None => {

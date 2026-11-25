@@ -68,6 +68,7 @@ struct CachedImage {
 
 pub struct TerminalPanel {
     focus: FocusHandle,
+    working_dir: Option<String>,
     surface_focused: bool,
     terminal: Terminal,
     host: HostHandle,
@@ -187,6 +188,7 @@ impl TerminalPanel {
         .detach();
         Self {
             focus: cx.focus_handle(),
+            working_dir,
             surface_focused: false,
             terminal: Terminal::new_with_scrollback(
                 COLS,
@@ -240,6 +242,10 @@ impl TerminalPanel {
         self.terminal.take_osc52_clipboard();
         self.terminal.take_title();
         self.terminal.take_bell();
+    }
+
+    pub(crate) fn working_dir(&self) -> Option<&str> {
+        self.working_dir.as_deref()
     }
 
     pub fn resource_id(&self) -> Option<u64> {

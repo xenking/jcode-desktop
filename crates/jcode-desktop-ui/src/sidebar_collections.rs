@@ -483,7 +483,7 @@ impl Workspace {
         let draft = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.read(cx).session_id.clone());
+            .map(|slot| slot.panel.session_id(cx).to_owned());
         match (draft, self.pending_collection_drafts.last_mut()) {
             (Some(draft), Some(pending)) if Panel::is_pending_session_id(&draft) => {
                 pending.0 = draft;

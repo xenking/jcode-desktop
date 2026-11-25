@@ -1,6 +1,40 @@
 //! Native utility windows for standalone mode. The originating workspace is never rearranged.
 use super::*;
-use gpui::{AnyWindowHandle, WeakEntity, WindowOptions};
+use gpui::{AnyWindowHandle, Focusable, WeakEntity, WindowOptions};
+
+/// Open a terminal in its own native window, or activate the open one.
+pub(crate) fn open_terminal_window(
+    working_dir: Option<String>,
+    host: HostHandle,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    if let Some(handle) = cx
+        .windows()
+        .into_iter()
+        .find_map(|handle| handle.downcast::<TerminalPanel>())
+    {
+        return handle.update(cx, |terminal, window, cx| {
+            terminal.focus(window, cx);
+            window.activate_window();
+        });
+    }
+    cx.open_window(
+        WindowOptions {
+            app_id: Some(crate::APP_ID.into()),
+            focus: true,
+            ..Default::default()
+        },
+        move |window, cx| {
+            window.set_window_title("terminal · Jcode");
+            window.activate_window();
+            let terminal = cx.new(|cx| TerminalPanel::new(working_dir, None, None, host, cx));
+            let focus = terminal.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            terminal
+        },
+    )?;
+    Ok(())
+}
 
 pub(crate) struct PanelWindow {
     pub(crate) panel: Entity<Panel>,
@@ -149,10 +183,9 @@ impl PanelWindow {
                             .iter()
                             .find(|slot| {
                                 !slot.closing
-                                    && source_session.as_deref()
-                                        == Some(slot.panel.read(cx).session_id.as_str())
+                                    && source_session.as_deref() == Some(slot.panel.session_id(cx))
                             })
-                            .map(|slot| slot.panel.clone())
+                            .and_then(|slot| slot.panel.chat().cloned())
                     })
                     .or_else(|| source.and_then(|source| source.upgrade()));
                 let Some(source) = source else {

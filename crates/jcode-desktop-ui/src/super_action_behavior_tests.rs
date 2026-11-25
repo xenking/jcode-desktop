@@ -218,11 +218,11 @@ fn super_t_inserts_and_focuses_an_inert_terminal(cx: &mut gpui::TestAppContext) 
             let w = workspace.read(cx);
             assert_eq!(w.slots.len(), 3 + iteration);
             assert_eq!(w.active, 1, "terminal is inserted immediately right");
-            let panel = w.slots[1].panel.read(cx);
-            assert_eq!(panel.session_id, "terminal");
-            assert!(panel.test_terminal_contents(cx).is_some());
+            let panel = &w.slots[1].panel;
+            assert_eq!(panel.session_id(cx), "terminal");
+            assert!(panel.terminal().is_some());
             assert_eq!(
-                panel.snapshot(cx).terminal_resource_id,
+                panel.snapshot(false, cx).terminal_resource_id,
                 None,
                 "inert host never creates a PTY"
             );
