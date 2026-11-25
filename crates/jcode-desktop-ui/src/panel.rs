@@ -5626,6 +5626,33 @@ impl Panel {
         self.applet_rows_version = self.applet_rows_version.wrapping_add(1);
     }
 
+    /// Focus and scroll handles are created when a tool or agent-message row
+    /// first renders. Drop the ones whose row left the transcript, so a history
+    /// reload or rewind does not leave a handle behind for every past call.
+    fn prune_row_state(&self) {
+        if self.swarm_row_focus.borrow().is_empty() && self.swarm_scrolls.borrow().is_empty() {
+            return;
+        }
+        let mut live: std::collections::HashSet<std::borrow::Cow<str>> = Default::default();
+        for (index, item) in self.items.iter().enumerate() {
+            match item {
+                Item::Tool { call_id, .. } => {
+                    live.insert(call_id.as_str().into());
+                }
+                Item::AgentMessage { .. } => {
+                    live.insert(expandable::key::details(index).into());
+                }
+                _ => {}
+            }
+        }
+        self.swarm_row_focus
+            .borrow_mut()
+            .retain(|key, _| live.contains(key.as_str()));
+        self.swarm_scrolls
+            .borrow_mut()
+            .retain(|key, _| live.contains(key.as_str()));
+    }
+
     /// Rows, pinnable prompt rows and the latest todo snapshot, rebuilt only
     /// when the transcript, live text, applet rows or disclosure state change.
     /// The selectable text document is synced on the same schedule.
@@ -5709,6 +5736,13 @@ impl Panel {
                             .collect(),
                     )
                 });
+            if self
+                .transcript_derived
+                .as_ref()
+                .is_none_or(|derived| derived.key.items_revision != key.items_revision)
+            {
+                self.prune_row_state();
+            }
             // Live text and disclosure changes rebuild rows, not settled todo
             // state. Do not rescan history, clone the payload or format its
             // fingerprint for every streaming chunk.
@@ -9635,6 +9669,9 @@ fn acknowledge_next(
 #[cfg(test)]
 #[path = "panel_expandable_tests.rs"]
 mod expandable_tests;
+#[cfg(test)]
+#[path = "panel_row_state_tests.rs"]
+mod row_state_tests;
 #[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
