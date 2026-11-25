@@ -80,6 +80,7 @@ gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 # Enables GPUI's Metal scene-to-image implementation for native control.
 gpui_platform = { workspace = true, features = ["test-support"] }
 async-channel = "2"
+dispatch2 = "0.3"
 global-hotkey = "0.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]

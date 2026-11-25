@@ -15,6 +15,8 @@ mod host {
     pub mod window_placement;
 }
 mod diagnostics;
+#[cfg(target_os = "macos")]
+mod main_watchdog;
 #[cfg(test)]
 mod voice_command_tests;
 #[cfg(test)]
@@ -686,7 +688,23 @@ fn main() {
                 }
         }
     });
+    #[cfg(target_os = "macos")]
+    if let Err(error) = main_watchdog::start() {
+        log::warn!("Could not start Desktop main-thread watchdog: {error}");
+    }
     app.run(move |cx: &mut App| {
+        #[cfg(target_os = "macos")]
+        if control_fixture
+            && env::var_os("JCODE_TEST_SESSION").is_some_and(|v| v == "1")
+            && env::var_os("JCODE_DESKTOP_TEST_MAIN_HANG").is_some_and(|v| v == "1")
+        {
+            let timer = cx.background_executor().timer(std::time::Duration::from_secs(1));
+            cx.spawn(async move |_| {
+                timer.await;
+                main_watchdog::block_main_for_test();
+            })
+            .detach();
+        }
         if !screenshot && let Some(dir) = jcode_desktop_model::platform_dirs::state_dir() {
             window_placement::install(dir, cx);
         }

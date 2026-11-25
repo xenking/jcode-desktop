@@ -3682,6 +3682,7 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "dispatch2",
  "global-hotkey",
  "gpui",
  "gpui_platform",
@@ -4046,6 +4047,7 @@ dependencies = [
  "httpdate",
  "jcode-logging",
  "jcode-message-types",
+ "jcode-routing-policy",
  "jcode-schema-dialect",
  "jcode-usage-types",
  "rand 0.9.5",
