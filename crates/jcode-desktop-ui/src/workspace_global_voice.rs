@@ -541,16 +541,7 @@ impl Workspace {
                 }
             }
         }
-        self.global_voice.finish_expired_hold(cx);
-        #[cfg(target_os = "linux")]
-        let cli_recording = self
-            .global_voice
-            .cli
-            .as_ref()
-            .is_some_and(|c| c.recording());
-        #[cfg(not(target_os = "linux"))]
-        let cli_recording = false;
-        if self.global_voice.permission().due(cli_recording) {
+        if self.global_voice.poll_hold(cx) {
             self.check_global_voice_permission(false, window, cx);
         }
         #[cfg(target_os = "linux")]
@@ -573,18 +564,7 @@ impl Workspace {
             .voice_target(cx)
             .and_then(|index| self.slots[index].panel.chat())
             .cloned();
-        if window.is_window_active()
-            && let Some(panel) = target.as_ref()
-        {
-            panel.update(cx, |panel, cx| {
-                if !panel.voice_active() {
-                    panel.capture_focused_ask_voice_target(window, cx);
-                }
-            });
-        }
-        self.global_voice
-            .hold()
-            .begin_press(target.as_ref().map(Entity::downgrade));
+        self.global_voice.press(target, window, cx);
         self.check_global_voice_permission(true, window, cx);
     }
 
@@ -597,26 +577,25 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        let active = window.is_window_active();
-        self.global_voice.set_active(active);
-        if !host_press_uses_global_owner(active, overlay::available(cx)) {
-            if !active {
-                // Never record invisibly: no OS pill exists on this backend.
+        match self
+            .global_voice
+            .host_press(window.is_window_active(), overlay::available(cx))
+        {
+            HostPress::Focused => {
+                self.begin_voice_hold(&BeginVoiceHold, window, cx);
+                return;
+            }
+            HostPress::NoIndicator => {
                 eprintln!(
                     "global voice: no non-focusing overlay on the {:?} backend; focus Jcode to dictate",
                     cx.compositor_name()
                 );
                 return;
             }
-            // Focused: behave exactly like the in-app hold shortcut.
-            self.begin_voice_hold(&BeginVoiceHold, window, cx);
-            return;
-        }
-        if self.global_voice.held {
-            return;
+            HostPress::AlreadyHeld => return,
+            HostPress::Global => {}
         }
         self.ensure_global_voice_task(window, cx);
-        self.global_voice.hold().note_host_hold();
         self.global_voice_press(window, cx);
     }
 
@@ -629,9 +608,7 @@ impl Workspace {
         cx.stop_propagation();
         // Release both possible owners. Neither path ever refocuses.
         self.end_voice_hold(&EndVoiceHold, window, cx);
-        if self.global_voice.hold().active() {
-            self.global_voice.release_hold(cx);
-        }
+        self.global_voice.release_host_hold(cx);
     }
 
     fn check_global_voice_permission(
@@ -647,14 +624,10 @@ impl Workspace {
             cx.spawn_in(window, async move |this, cx| {
                 let allowed = check.await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    if !this.global_voice.permission().answered(serial) {
-                        return;
-                    }
-                    if !allowed {
-                        eprintln!("global voice: denied by session check");
-                        this.global_voice
-                            .cancel_capture("session check denied voice", cx);
-                    } else if start && this.global_voice.held {
+                    if this
+                        .global_voice
+                        .permission_answered(serial, allowed, start, cx)
+                    {
                         this.begin_global_voice(window, cx);
                     }
                 });
@@ -679,7 +652,76 @@ impl Workspace {
     }
 }
 
+enum HostPress {
+    Focused,
+    NoIndicator,
+    AlreadyHeld,
+    Global,
+}
+
 impl State {
+    fn host_press(&mut self, active: bool, indicator: bool) -> HostPress {
+        self.set_active(active);
+        if active {
+            return HostPress::Focused;
+        }
+        if !host_press_uses_global_owner(active, indicator) {
+            return HostPress::NoIndicator;
+        }
+        if self.held {
+            return HostPress::AlreadyHeld;
+        }
+        self.hold().note_host_hold();
+        HostPress::Global
+    }
+
+    fn press(&mut self, target: Option<Entity<Panel>>, window: &mut Window, cx: &mut App) {
+        if window.is_window_active()
+            && let Some(panel) = target.as_ref()
+        {
+            panel.update(cx, |panel, cx| {
+                if !panel.voice_active() {
+                    panel.capture_focused_ask_voice_target(window, cx);
+                }
+            });
+        }
+        self.hold()
+            .begin_press(target.as_ref().map(Entity::downgrade));
+    }
+
+    fn release_host_hold(&mut self, cx: &mut App) {
+        if self.hold().active() {
+            self.release_hold(cx);
+        }
+    }
+
+    fn poll_hold(&mut self, cx: &mut App) -> bool {
+        self.finish_expired_hold(cx);
+        #[cfg(target_os = "linux")]
+        let cli_recording = self.cli.as_ref().is_some_and(|capture| capture.recording());
+        #[cfg(not(target_os = "linux"))]
+        let cli_recording = false;
+        self.permission().due(cli_recording)
+    }
+
+    fn permission_answered(
+        &mut self,
+        serial: u64,
+        allowed: bool,
+        start: bool,
+        cx: &mut App,
+    ) -> bool {
+        if !self.permission().answered(serial) {
+            return false;
+        }
+        if !allowed {
+            eprintln!("global voice: denied by session check");
+            self.cancel_capture("session check denied voice", cx);
+            return false;
+        }
+        start && self.held
+    }
+
     fn finish_expired_hold(&mut self, cx: &mut App) {
         if self.hold().take_expired() {
             eprintln!("global voice: host shortcut hold exceeded its deadline, finishing it");
