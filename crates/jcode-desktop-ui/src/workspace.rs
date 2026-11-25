@@ -7015,10 +7015,9 @@ impl Workspace {
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         let collection_order = self
             .collections
-            .store()
-            .collections
-            .iter()
-            .map(|c| c.id.clone())
+            .all()
+            .into_iter()
+            .map(|c| c.id)
             .collect::<Vec<_>>();
         let rank_collection = |session: &jcode_sdk::SessionInfo| {
             self.collections
@@ -7276,15 +7275,13 @@ impl Workspace {
         // Collections with no chats yet have no row to carry a header.
         let empty_collections = self
             .collections
-            .store()
-            .collections
-            .iter()
+            .all()
+            .into_iter()
             .filter(|c| {
                 !groups
                     .iter()
                     .any(|(p, _, _)| p.key == sidebar_collections::key(&c.id))
             })
-            .cloned()
             .collect::<Vec<_>>();
         if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
             list = list.child(empty);
@@ -7522,7 +7519,7 @@ impl Workspace {
                                         window.prevent_default();
                                         cx.stop_propagation();
                                         this.sidebar_gesture = None;
-                                        this.collections.open_menu(context_id.clone());
+                                        this.collections.show_menu(&context_id);
                                         cx.notify();
                                     }))
                                     .on_scroll_wheel(cx.listener(|this, _, _, _| {

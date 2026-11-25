@@ -263,6 +263,14 @@ impl Focusable for FolderPicker {
 }
 
 impl Workspace {
+    pub(super) fn default_directory_panel_index(&self, cx: &App) -> Option<usize> {
+        self.slots.iter().position(|slot| {
+            slot.panel
+                .read_chat(cx)
+                .is_some_and(Panel::is_default_directory)
+        })
+    }
+
     /// The picker on screen, whichever surface shows it.
     pub(super) fn folder_picker(&self, cx: &App) -> Option<Entity<FolderPicker>> {
         self.default_directory_picker

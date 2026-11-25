@@ -496,8 +496,10 @@ impl TabMotion {
         changed
     }
 
-    fn hovered(&self) -> Option<u64> {
+    /// Where the popped-out tab sits among `keys`, if it is still shown.
+    fn hovered_position(&self, keys: &[u64]) -> Option<usize> {
         self.hovered
+            .and_then(|key| keys.iter().position(|k| *k == key))
     }
 
     /// Start recording where the tab header paints this frame.
@@ -905,8 +907,7 @@ impl Workspace {
         // coach space) still uses the resting geometry.
         let hovered = self
             .live_tabs
-            .hovered
-            .and_then(|key| keys.iter().position(|k| *k == key))
+            .hovered_position(&keys)
             .filter(|&position| entries[position].0.is_some());
         let focused_width = layout.get(selected).map_or(0.0, |tab| tab.width);
         let targets: Vec<_> = keys

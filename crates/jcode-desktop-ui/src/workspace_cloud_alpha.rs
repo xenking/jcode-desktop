@@ -150,7 +150,6 @@ struct State {
     error: Option<String>,
     refreshing: bool,
     last_refresh: Option<Instant>,
-    updates: Vec<(String, bool, Option<String>)>,
     ready: Option<Ready>,
     ready_generation: u64,
     waking: bool,
@@ -328,23 +327,6 @@ impl State {
         self.check_result = Some((check, result));
     }
 
-    /// Queue a progress line, keeping only the newest for its request.
-    /// Never relabel a stale request as a newer panel's update.
-    #[allow(dead_code)]
-    fn replace_update(&mut self, message: String, failed: bool, request_id: Option<String>) {
-        self.updates.retain(|(_, _, id)| id != &request_id);
-        self.updates.push((message, failed, request_id));
-    }
-
-    #[allow(dead_code)]
-    fn push_update(&mut self, message: String, failed: bool, request_id: Option<String>) {
-        self.updates.push((message, failed, request_id));
-    }
-
-    fn take_updates(&mut self) -> Vec<(String, bool, Option<String>)> {
-        std::mem::take(&mut self.updates)
-    }
-
     #[allow(dead_code)]
     fn model_sync_supported(&self) -> bool {
         self.ready
@@ -355,15 +337,8 @@ impl State {
     /// Record how a connect ended. A fresh wake also forgets the last status
     /// refresh so the next one is not rate limited.
     #[allow(dead_code)]
-    fn finish_connect(
-        &mut self,
-        message: String,
-        failed: bool,
-        request_id: Option<String>,
-        reused: bool,
-    ) {
-        self.error = failed.then(|| message.clone());
-        self.replace_update(message, failed, request_id);
+    fn finish_connect(&mut self, failure: Option<String>, reused: bool) {
+        self.error = failure;
         if !reused {
             self.last_refresh = None;
         }
@@ -446,6 +421,8 @@ impl State {
 #[derive(Clone, Default)]
 pub(in crate::workspace) struct Lifecycle {
     state: Arc<Mutex<State>>,
+    /// Connect progress for the UI to pick up, newest per request.
+    updates: Arc<Mutex<Vec<(String, bool, Option<String>)>>>,
     // Concurrent new-panel requests retain their individual request IDs, but
     // never race two wake operations against the configured instance.
     #[allow(dead_code)]
@@ -779,11 +756,11 @@ impl Lifecycle {
     pub(in crate::workspace) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
         let update_request_id = request_id.clone();
-        self.state.lock().unwrap().push_update(
+        self.updates.lock().unwrap().push((
             format!("Waiting for shared VM {HOST}…"),
             false,
             update_request_id.clone(),
-        );
+        ));
         std::thread::spawn(move || {
             let mut reused = false;
             let result = wake_then_connect(&bridge, request_id, || {
@@ -791,11 +768,7 @@ impl Lifecycle {
                     runtime_identity,
                     |message| {
                         // Retain only the newest pending phase for this request.
-                        lifecycle.state.lock().unwrap().replace_update(
-                            message,
-                            false,
-                            update_request_id.clone(),
-                        );
+                        lifecycle.replace_update(message, false, update_request_id.clone());
                     },
                     |progress| {
                         run_helper_with_progress("wake-ready", progress)
@@ -809,7 +782,6 @@ impl Lifecycle {
                     run_helper("sync-models").map(|_| ())
                 })
             });
-            let mut state = lifecycle.state.lock().unwrap();
             let (message, failed) = match result {
                 Ok(()) if reused => (REUSING_READY.into(), false),
                 Ok(()) => (format!("{HOST} is awake. Connecting…"), false),
@@ -818,12 +790,26 @@ impl Lifecycle {
                     true,
                 ),
             };
-            state.finish_connect(message, failed, update_request_id, reused);
+            lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .finish_connect(failed.then(|| message.clone()), reused);
+            lifecycle.replace_update(message, failed, update_request_id);
         });
     }
 
+    /// Queue a progress line, keeping only the newest for its request.
+    /// Never relabel a stale request as a newer panel's update.
+    #[allow(dead_code)]
+    fn replace_update(&self, message: String, failed: bool, request_id: Option<String>) {
+        let mut updates = self.updates.lock().unwrap();
+        updates.retain(|(_, _, id)| id != &request_id);
+        updates.push((message, failed, request_id));
+    }
+
     pub(in crate::workspace) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
-        self.state.lock().unwrap().take_updates()
+        std::mem::take(&mut self.updates.lock().unwrap())
     }
 
     pub(in crate::workspace) fn refresh(&self) {

@@ -77,14 +77,6 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn default_directory_panel_index(&self, cx: &App) -> Option<usize> {
-        self.slots.iter().position(|slot| {
-            slot.panel
-                .read_chat(cx)
-                .is_some_and(Panel::is_default_directory)
-        })
-    }
-
     /// Remove only the preference panel, preserving the identities and focus of
     /// every conversation, including when saving after moving it to another row.
     pub(super) fn remove_default_directory_panel(&mut self, cx: &mut Context<Self>) {
