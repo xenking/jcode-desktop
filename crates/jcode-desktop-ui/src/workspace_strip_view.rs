@@ -332,7 +332,7 @@ impl Workspace {
             let machines = metadata.session_id == Panel::MACHINES_SESSION_ID;
             let needs_surface_update = metadata.surface_focused != focused
                 || (focused && metadata.finished_unseen)
-                || (metadata.terminal && slot.panel.needs_surface_update(focused, cx));
+                || (metadata.terminal && slot.panel.surface().needs_update(focused, cx));
             if openrig
                 && slot
                     .panel
@@ -346,7 +346,7 @@ impl Workspace {
             // Update only on a real change: GPUI retains views between frames and
             // treats any update while drawing as a change to what they read.
             if needs_surface_update {
-                slot.panel.set_surface_focused(focused, cx);
+                slot.panel.surface().set_focused(focused, cx);
             }
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
@@ -451,7 +451,7 @@ impl Workspace {
                     // A `.cached` view would opt out of the latter.
                     div()
                         .size_full()
-                        .child(slot.panel.view())
+                        .child(slot.panel.surface().view())
                         .into_any_element()
                 });
             if focused {
@@ -612,7 +612,7 @@ impl Workspace {
         let empty_panel = hovered_panel
             .and_then(|index| self.slots.get(index))
             .filter(|slot| slot.row == row)
-            .is_some_and(|slot| !slot.panel.has_scrollable_conversation(cx));
+            .is_some_and(|slot| !slot.panel.surface().scrollable(cx));
         // Use the platform clock for both gesture continuity and presentation.
         // In tests it advances explicitly, so a busy test runner cannot turn
         // consecutive touchpad events into a new gesture or expire the reticle.
