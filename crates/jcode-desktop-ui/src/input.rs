@@ -62,7 +62,7 @@ mod suggestions;
 mod types;
 
 pub(crate) use keys::*;
-pub(crate) use suggestions::*;
+use suggestions::*;
 pub(crate) use types::*;
 
 use crate::commands::registered_command_entries;
