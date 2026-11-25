@@ -619,7 +619,7 @@ impl Workspace {
                 workspace.sessions[0].title = Some(title.clone());
                 if let Some(slot) = workspace.slots.first() {
                     slot.panel
-                        .update_chat(cx, |panel, _| panel.title = title.into());
+                        .update_chat(cx, |panel, cx| panel.set_title(title, cx));
                 }
             }
             for index in 1..panel_count {
