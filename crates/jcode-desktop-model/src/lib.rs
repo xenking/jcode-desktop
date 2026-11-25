@@ -18,6 +18,7 @@ pub mod platform_dirs;
 pub mod probe_cache;
 pub mod prompt_completion;
 pub mod text_buffer;
+pub mod text_field;
 pub mod todoist;
 pub mod window_placement;
 
