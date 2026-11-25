@@ -3,7 +3,7 @@ use super::*;
 
 impl Panel {
     pub(super) fn seed_mode_picker_fixture(&mut self, cx: &mut Context<Self>) {
-        self.apply_event(&ApiEvent::RuntimeCommandResult {
+        self.apply(&ApiEvent::RuntimeCommandResult {
             session_id: self.session_id.clone(), command: jcode_sdk::api::RuntimeCommand::Skills,
             data: serde_json::json!({"pinned_skills": ["selfdev", "swarm", "poteto-mode"], "skills": [
                 {"name": "selfdev", "description": "Work on Jcode"},
