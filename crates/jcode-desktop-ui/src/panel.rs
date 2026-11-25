@@ -72,7 +72,7 @@ mod todoist;
 mod render;
 #[path = "panel_items.rs"]
 mod items;
-pub use items::{Item, TodoCardPayload, Transcript, TranscriptImage};
+pub use items::{AssistantOutputPhase, Item, TodoCardPayload, Transcript, TranscriptImage};
 use items::*;
 #[path = "panel_live.rs"]
 pub(crate) mod live;
@@ -81,7 +81,7 @@ use live::Live;
 mod clean_chat;
 #[path = "panel_assistant_output.rs"]
 mod assistant_output;
-pub use assistant_output::AssistantOutputPhase;
+
 
 #[cfg(test)]
 #[path = "panel_command_workflow_tests.rs"]

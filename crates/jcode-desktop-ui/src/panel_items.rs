@@ -568,3 +568,31 @@ pub(in crate::panel) fn inline_close(items: &mut Transcript, child_session_id: &
         question.outcome = Some(Outcome::Closed);
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssistantOutputPhase {
+    Pending,
+    Update,
+    Final,
+}
+
+impl Item {
+    pub(super) fn assistant_text(&self) -> Option<&str> {
+        match self {
+            Self::Assistant(text) | Self::AssistantOutput { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
+    pub(super) fn history_assistant(text: String, final_marker: bool) -> Self {
+        if final_marker {
+            Self::AssistantOutput {
+                text,
+                phase: AssistantOutputPhase::Final,
+                stream_id: None,
+            }
+        } else {
+            Self::Assistant(text)
+        }
+    }
+}

@@ -22,14 +22,6 @@ pub(super) fn tool_summary_full(input: &str) -> String {
     }
 }
 
-pub(super) fn json_scalar(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(text) => Some(text.clone()),
-        serde_json::Value::Number(number) => Some(number.to_string()),
-        serde_json::Value::Bool(flag) => Some(flag.to_string()),
-        _ => None,
-    }
-}
 
 pub(super) fn tool_row_summary(name: &str, input: &str) -> String {
     if name.trim_start_matches("functions.") == "memory" {
@@ -110,12 +102,6 @@ pub(super) fn memory_tool_summary(input: &str) -> String {
     }
 }
 
-pub(super) fn tool_argument_visible(key: &str) -> bool {
-    !matches!(
-        key,
-        "intent" | "label" | "id" | "task_id" | "call_id" | "session_id" | "request_id"
-    ) && !key.ends_with("_id")
-}
 
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 pub(super) fn tool_detail(name: &str, input: &str, output: &str) -> String {
@@ -161,6 +147,7 @@ pub(super) fn tool_clock_label(ms: i64) -> Option<String> {
     )
 }
 
+#[cfg(test)]
 #[test]
 pub(super) fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
     let detail = tool_detail(
@@ -174,6 +161,7 @@ pub(super) fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
     assert!(!detail.contains("notify"));
 }
 
+#[cfg(test)]
 #[test]
 pub(super) fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
     let rows: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([

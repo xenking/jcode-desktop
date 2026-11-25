@@ -1,37 +1,9 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AssistantOutputPhase {
-    Pending,
-    Update,
-    Final,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct LiveAssistantOutput {
     id: String,
     closed: bool,
-}
-
-impl Item {
-    pub(super) fn assistant_text(&self) -> Option<&str> {
-        match self {
-            Self::Assistant(text) | Self::AssistantOutput { text, .. } => Some(text),
-            _ => None,
-        }
-    }
-
-    pub(super) fn history_assistant(text: String, final_marker: bool) -> Self {
-        if final_marker {
-            Self::AssistantOutput {
-                text,
-                phase: AssistantOutputPhase::Final,
-                stream_id: None,
-            }
-        } else {
-            Self::Assistant(text)
-        }
-    }
 }
 
 impl Panel {

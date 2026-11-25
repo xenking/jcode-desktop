@@ -306,3 +306,19 @@ pub(super) fn strip_ansi(text: &str) -> String {
     }
     output
 }
+
+pub(super) fn json_scalar(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+pub(super) fn tool_argument_visible(key: &str) -> bool {
+    !matches!(
+        key,
+        "intent" | "label" | "id" | "task_id" | "call_id" | "session_id" | "request_id"
+    ) && !key.ends_with("_id")
+}
