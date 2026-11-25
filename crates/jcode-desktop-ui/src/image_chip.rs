@@ -7,6 +7,24 @@ use gpui::{
 };
 use std::{borrow::Cow, ops::Range, rc::Rc, sync::Arc};
 
+/// Where the image markers (`[#image 3]`, `[#img_<hash>]`) sit in `content`.
+pub(crate) fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
+    content
+        .match_indices("[#")
+        .filter_map(|(start, _)| {
+            let rest = &content[start..];
+            let end = rest.find(']')?;
+            let marker = &rest[2..end];
+            let valid = marker.strip_prefix("image ").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            }) || marker.strip_prefix("img_").is_some_and(|hash| {
+                hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            valid.then_some(start..start + end + 1)
+        })
+        .collect()
+}
+
 /// Replace marker glyphs while preserving byte offsets used by selection and IME.
 pub(crate) fn mask_markers(text: &str, ranges: impl IntoIterator<Item = Range<usize>>) -> String {
     let mut display = text.to_owned();
@@ -110,7 +128,7 @@ mod tests {
     #[test]
     fn masked_markers_preserve_offsets_without_visible_marker_glyphs() {
         let source = "café [#image 1] and [#image 22]";
-        let ranges = crate::input::image_marker_ranges(source);
+        let ranges = image_marker_ranges(source);
         let masked = super::mask_markers(source, ranges.clone());
         assert_eq!(masked.len(), source.len());
         assert!(!masked.contains("[#image"));
@@ -128,7 +146,7 @@ pub(crate) fn numbered_text(text: &str, image_count: usize) -> (Cow<'_, str>, Ve
     } else {
         text
     };
-    let ranges = crate::input::image_marker_ranges(text);
+    let ranges = image_marker_ranges(text);
     let markers: Vec<_> = (1..=ranges.len().max(image_count))
         .map(|number| format!("[#image {number}]"))
         .collect();

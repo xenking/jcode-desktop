@@ -59,6 +59,7 @@ mod resize;
 pub(crate) use resize::VerticalResize;
 
 use crate::commands::registered_command_entries;
+use crate::image_chip::image_marker_ranges;
 use crate::theme::{Theme, to_hsla};
 
 const PENDING_COMMAND_NOTICE: &str =
@@ -216,10 +217,10 @@ enum PasteMode {
 
 pub struct PromptInput {
     session_image_base: usize,
-    pub focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     #[cfg(target_os = "macos")]
     ime_log_focus_subscriptions: Option<Vec<gpui::Subscription>>,
-    pub content: SharedString,
+    pub(crate) content: SharedString,
     placeholder: SharedString,
     pub(crate) external_picker_open: bool,
     /// Byte-offset selection and IME composition in `content`.
@@ -868,23 +869,6 @@ fn ensure_visible_chips(content: &mut String, attachments: &mut [Attachment]) {
     }
 }
 
-pub(crate) fn image_marker_ranges(content: &str) -> Vec<Range<usize>> {
-    content
-        .match_indices("[#")
-        .filter_map(|(start, _)| {
-            let rest = &content[start..];
-            let end = rest.find(']')?;
-            let marker = &rest[2..end];
-            let valid = marker.strip_prefix("image ").is_some_and(|digits| {
-                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
-            }) || marker.strip_prefix("img_").is_some_and(|hash| {
-                hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
-            });
-            valid.then_some(start..start + end + 1)
-        })
-        .collect()
-}
-
 pub(crate) struct PickerSettings {
     models: Vec<String>,
     details: HashMap<String, model_menu::ModelDetails>,
@@ -1529,6 +1513,48 @@ impl PromptInput {
     /// Put the caret at a byte offset for dictation fixtures.
     pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.move_to(offset, cx);
+    }
+
+    /// The draft text.
+    pub(crate) fn text(&self) -> SharedString {
+        self.content.clone()
+    }
+
+    /// The draft text as an owned string.
+    pub(crate) fn text_owned(&self) -> String {
+        self.content.to_string()
+    }
+
+    /// The draft text without surrounding whitespace.
+    pub(crate) fn trimmed(&self) -> &str {
+        self.content.trim()
+    }
+
+    /// Nothing typed at all, whitespace included.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    /// Nothing but whitespace typed.
+    pub(crate) fn is_blank(&self) -> bool {
+        self.content.trim().is_empty()
+    }
+
+    /// The handle that routes keyboard focus to this editor.
+    pub(crate) fn editor_focus(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    pub(crate) fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
+    /// A picker the composer's owner shows hides the example prompts.
+    pub(crate) fn set_external_picker_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.external_picker_open != open {
+            self.external_picker_open = open;
+            cx.notify();
+        }
     }
 
     /// Test hook: current caret byte offset.

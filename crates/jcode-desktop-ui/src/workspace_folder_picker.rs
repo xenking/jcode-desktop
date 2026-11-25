@@ -258,7 +258,7 @@ impl ModalView for FolderPicker {}
 
 impl Focusable for FolderPicker {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.search.read(cx).focus_handle.clone()
+        self.search.read(cx).editor_focus()
     }
 }
 
@@ -283,7 +283,7 @@ impl Workspace {
 impl Render for FolderPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let directory = self.dir.clone();
-        let query = self.search.read(cx).content.trim().to_lowercase();
+        let query = self.search.read(cx).trimmed().to_lowercase();
         let entries = self.matches(query, cx);
         let (pinned, description) = self
             .workspace
@@ -424,7 +424,7 @@ impl Render for FolderPicker {
                         }
                         workspace.focus_pending = false;
                     });
-                    window.focus(&this.search.read(cx).focus_handle.clone(), cx);
+                    window.focus(&this.search.read(cx).editor_focus(), cx);
                 }),
             )
             .when(inline, |el| el.size_full())
@@ -587,7 +587,7 @@ impl Render for FolderPicker {
                                 // newly repositioned strip and steal draft focus.
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    let query = this.search.read(cx).content.trim().to_string();
+                                    let query = this.search.read(cx).trimmed().to_string();
                                     if this.sets_default && !query.is_empty() {
                                         this.set_searched_default(&query, cx);
                                     } else {

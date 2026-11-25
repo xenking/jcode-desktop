@@ -17,7 +17,40 @@ pub(crate) fn logo_id(provider: Option<&str>, model: Option<&str>) -> &'static s
     if let Some(family) = model.and_then(family_logo) {
         return family;
     }
-    crate::input::model_menu::provider_logo(provider.unwrap_or_default(), "")
+    provider_logo(provider.unwrap_or_default(), "")
+}
+
+/// Logo id (see `accounts::logo`) for the service a route goes through.
+pub(crate) fn provider_logo(provider: &str, api_method: &str) -> &'static str {
+    let haystack = format!("{provider} {api_method}").to_ascii_lowercase();
+    for (needle, logo) in [
+        ("openrouter", "openrouter"),
+        ("copilot", "copilot"),
+        ("cursor", "cursor"),
+        ("bedrock", "bedrock"),
+        ("azure", "azure"),
+        ("antigravity", "antigravity"),
+        ("jcode", "jcode"),
+        ("anthropic", "anthropic-api"),
+        ("claude", "anthropic-api"),
+        ("openai", "openai"),
+        ("chatgpt", "openai"),
+        ("gemini", "gemini"),
+        ("code-assist", "gemini"),
+        ("google", "gemini"),
+        ("grok", "xai"),
+        ("xai", "xai"),
+        ("mistral", "mistral"),
+        ("deepseek", "deepseek"),
+        ("groq", "groq"),
+        ("ollama", "ollama"),
+        ("lmstudio", "lmstudio"),
+    ] {
+        if haystack.contains(needle) {
+            return logo;
+        }
+    }
+    ""
 }
 
 /// The model family's mark, from the leading word of the model id.

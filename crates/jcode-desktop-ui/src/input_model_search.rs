@@ -13,9 +13,12 @@
 //! Every query word must match somewhere. Words may match different fields in
 //! any order, so `anthropic opus`, `opus api`, and `4.8 opus` all work.
 
-use std::collections::HashMap;
-
-use super::model_menu::ModelDetails;
+/// The text of one route that search looks at besides its spec.
+pub(super) struct RouteText<'a> {
+    pub model: &'a str,
+    pub provider: &'a str,
+    pub api_method: &'a str,
+}
 
 /// Prepared search text for one model route.
 pub(super) struct SearchEntry {
@@ -28,9 +31,9 @@ pub(super) struct SearchEntry {
 }
 
 impl SearchEntry {
-    pub(super) fn new(spec: &str, details: Option<&ModelDetails>, group_label: &str) -> Self {
+    pub(super) fn new(spec: &str, details: Option<RouteText<'_>>, group_label: &str) -> Self {
         let mut fields = Vec::with_capacity(6);
-        let raw = details.map_or(spec, |detail| detail.model.as_str());
+        let raw = details.as_ref().map_or(spec, |detail| detail.model);
         fields.push(jcode_provider_core::model_names::pretty_picker_model_name(raw).to_lowercase());
         fields.push(raw.to_lowercase());
         if raw != spec {
@@ -205,9 +208,9 @@ impl QueryWord {
 /// literally, other models may not satisfy that word through a typo, so `opus`
 /// does not also list `plus`. A word that nothing matches literally (`sonet`)
 /// may match through typo correction.
-pub(super) fn rank_matches<'a>(
+pub(super) fn rank_matches<'a, 'd>(
     models: impl IntoIterator<Item = &'a String>,
-    details: &HashMap<String, ModelDetails>,
+    details: impl Fn(&str) -> Option<RouteText<'d>>,
     group_label: impl Fn(&str) -> String,
     query: &ModelQuery,
 ) -> Vec<(&'a String, i32)> {
@@ -217,7 +220,7 @@ pub(super) fn rank_matches<'a>(
     let per_word: Vec<(&String, Vec<Option<i32>>)> = models
         .into_iter()
         .map(|model| {
-            let entry = SearchEntry::new(model, details.get(model), &group_label(model));
+            let entry = SearchEntry::new(model, details(model), &group_label(model));
             let scores = query.words.iter().map(|word| word.score(&entry)).collect();
             (model, scores)
         })
@@ -254,6 +257,9 @@ pub(super) fn rank_matches<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use super::super::model_menu::ModelDetails;
     use super::*;
 
     fn detail(model: &str, provider: &str, method: &str) -> ModelDetails {
@@ -339,10 +345,21 @@ mod tests {
     fn search(query: &str) -> Vec<String> {
         let (models, details) = catalog();
         let query = ModelQuery::new(query);
-        rank_matches(&models, &details, |_| String::new(), &query)
-            .into_iter()
-            .map(|(model, _)| model.clone())
-            .collect()
+        rank_matches(
+            &models,
+            |model| {
+                details.get(model).map(|detail| RouteText {
+                    model: &detail.model,
+                    provider: &detail.provider,
+                    api_method: &detail.api_method,
+                })
+            },
+            |_| String::new(),
+            &query,
+        )
+        .into_iter()
+        .map(|(model, _)| model.clone())
+        .collect()
     }
 
     fn top(query: &str) -> String {

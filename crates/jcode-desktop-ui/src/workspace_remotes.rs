@@ -285,7 +285,7 @@ impl Workspace {
                 .remotes
                 .input
                 .as_ref()
-                .is_some_and(|input| input.read(cx).focus_handle.is_focused(window))
+                .is_some_and(|input| input.read(cx).is_focused(window))
         {
             self.focus_active(window, cx);
         }
@@ -784,7 +784,7 @@ impl Workspace {
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
                                 if let Some(input) = &this.remotes.input {
-                                    let focus = input.read(cx).focus_handle.clone();
+                                    let focus = input.read(cx).editor_focus();
                                     if let Some(index) = this.machines_panel_index(cx) {
                                         this.set_active(index, cx);
                                     }
@@ -1084,7 +1084,7 @@ impl Workspace {
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
                                 if let Some(input) = this.remotes.path_inputs.get(&focus_host) {
-                                    let focus = input.read(cx).focus_handle.clone();
+                                    let focus = input.read(cx).editor_focus();
                                     if let Some(i) = this.machines_panel_index(cx) {
                                         this.set_active(i, cx);
                                     }

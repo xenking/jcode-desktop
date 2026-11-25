@@ -399,6 +399,40 @@ impl PromptInput {
         }
     }
 
+    pub(super) fn accept_context_row(
+        &mut self,
+        alternate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let standalone = self.standalone_context();
+        if !standalone && self.mention_token().is_none() {
+            return false;
+        }
+        let selected = self
+            .command_suggestions()
+            .get(self.command_selection)
+            .and_then(|row| row.context_action.clone());
+        if let Some(action) = selected {
+            self.apply_context_action(action, alternate, window, cx);
+            true
+        } else {
+            standalone
+                || (self.mention_token().is_some() && self.current_command_menu_close().is_none())
+        }
+    }
+
+    pub(super) fn alternate_context(
+        &mut self,
+        _: &AlternateContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.accept_context_row(true, window, cx) {
+            cx.propagate();
+        }
+    }
+
     /// Hover changes selection, not the catalog. Retain rows across repaints and
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {

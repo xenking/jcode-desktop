@@ -534,7 +534,7 @@ impl Workspace {
             window,
             cx,
         );
-        window.focus(&name.read(cx).focus_handle.clone(), cx);
+        window.focus(&name.read(cx).editor_focus(), cx);
         self.focus_pending = false;
         self.collection_menu.hide();
         self.collections.open_form(Form {
@@ -560,9 +560,9 @@ impl Workspace {
             return;
         };
         let input = FormInput {
-            name: form.name.read(cx).content.to_string(),
-            default_dir: optional(&form.directory.read(cx).content),
-            instructions: optional(&form.instructions.read(cx).content),
+            name: form.name.read(cx).text_owned(),
+            default_dir: optional(form.directory.read(cx).trimmed()),
+            instructions: optional(form.instructions.read(cx).trimmed()),
         };
         let Some(Drafted { change, id, assign }) = self.collections.draft_change(input) else {
             cx.notify();

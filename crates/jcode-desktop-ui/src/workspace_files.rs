@@ -103,7 +103,7 @@ impl Workspace {
             if pane
                 .search
                 .as_ref()
-                .is_some_and(|input| input.read(cx).focus_handle.is_focused(window))
+                .is_some_and(|input| input.read(cx).is_focused(window))
             {
                 self.focus_active(window, cx);
             }

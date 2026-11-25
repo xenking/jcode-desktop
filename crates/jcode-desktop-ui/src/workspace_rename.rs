@@ -80,7 +80,7 @@ impl Rename {
     }
 
     fn save_current(&mut self, cx: &mut Context<Self>) {
-        let title = self.input.read(cx).content.to_string();
+        let title = self.input.read(cx).text_owned();
         self.save(&title, cx);
     }
 }
@@ -90,7 +90,7 @@ impl ModalView for Rename {}
 
 impl Focusable for Rename {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.input.read(cx).focus_handle.clone()
+        self.input.read(cx).editor_focus()
     }
 }
 

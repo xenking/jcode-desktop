@@ -1150,7 +1150,7 @@ fn text_input(
     });
     // Provider-driven resets (e.g. clearing a field after submit) flow back in.
     let current = state_str(cx, bind);
-    if input.read(app).content.as_ref() != current {
+    if input.read(app).text() != current {
         input.update(app, |input, icx| input.set_content(current, icx));
     }
     div()

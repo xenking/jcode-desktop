@@ -83,7 +83,7 @@ impl Workspace {
                 true
             })
         });
-        window.focus(&input.read(cx).focus_handle.clone(), cx);
+        window.focus(&input.read(cx).editor_focus(), cx);
         self.focus_pending = false;
         self.worktrees.input = Some(input);
         self.worktrees.input_directory = Some(directory);
@@ -170,7 +170,7 @@ impl Workspace {
                 .capture_action(cx.listener(|this, _: &crate::input::Submit, _, cx| {
                     cx.stop_propagation();
                     if let Some(input) = &this.worktrees.input {
-                        let branch = input.read(cx).content.to_string();
+                        let branch = input.read(cx).text_owned();
                         this.create_worktree(&branch, cx);
                     }
                 }))

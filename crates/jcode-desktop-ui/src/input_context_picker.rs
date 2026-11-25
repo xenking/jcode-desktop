@@ -45,7 +45,10 @@ pub(super) struct Picker {
 
 #[derive(Clone)]
 struct Target {
-    draft: gpui::WeakEntity<PromptInput>,
+    /// The prompt the chosen context lands in, once the standalone picker
+    /// closes. Held type-erased: the picker is a part of the prompt, not
+    /// something the prompt's own editor type can be named from.
+    draft: gpui::AnyWeakEntity,
     accept: std::rc::Rc<dyn Fn(&mut App)>,
 }
 
@@ -109,7 +112,7 @@ impl PromptInput {
         self.enable_context_picker();
         self.set_context_root(root, cx);
         self.context_picker.as_mut().expect("enabled").target = Some(Target {
-            draft,
+            draft: draft.into(),
             accept: std::rc::Rc::new(accept),
         });
     }
@@ -241,40 +244,6 @@ impl PromptInput {
         Some(rows)
     }
 
-    pub(super) fn accept_context_row(
-        &mut self,
-        alternate: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let standalone = self.standalone_context();
-        if !standalone && self.mention_token().is_none() {
-            return false;
-        }
-        let selected = self
-            .command_suggestions()
-            .get(self.command_selection)
-            .and_then(|row| row.context_action.clone());
-        if let Some(action) = selected {
-            self.apply_context_action(action, alternate, window, cx);
-            true
-        } else {
-            standalone
-                || (self.mention_token().is_some() && self.current_command_menu_close().is_none())
-        }
-    }
-
-    pub(super) fn alternate_context(
-        &mut self,
-        _: &AlternateContext,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.accept_context_row(true, window, cx) {
-            cx.propagate();
-        }
-    }
-
     pub(super) fn apply_context_action(
         &mut self,
         action: Action,
@@ -299,12 +268,18 @@ impl PromptInput {
             .and_then(|picker| picker.target.clone())
         {
             (target.accept)(cx);
-            let _ = target.draft.update(cx, |input, cx| {
-                window.focus(&input.focus_handle, cx);
-                if let Some(action) = draft_action {
-                    input.apply_to_draft(action, alternate, false, window, cx);
-                }
-            });
+            if let Some(draft) = target
+                .draft
+                .upgrade()
+                .and_then(|draft| draft.downcast::<Self>().ok())
+            {
+                draft.update(cx, |input, cx| {
+                    window.focus(&input.focus_handle, cx);
+                    if let Some(action) = draft_action {
+                        input.apply_to_draft(action, alternate, false, window, cx);
+                    }
+                });
+            }
         } else if let Some(action) = draft_action {
             self.apply_to_draft(action, alternate, true, window, cx);
         }

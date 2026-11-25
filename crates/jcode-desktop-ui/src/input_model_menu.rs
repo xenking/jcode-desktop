@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::provider_mark::provider_logo;
 use jcode_sdk::{ModelRouteInfo, ModelUsage, compare_model_usage};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,6 +17,17 @@ pub(super) struct ModelDetails {
     /// What the saved login behind this route is called (`team · Max 20x`),
     /// from the catalog. `None` for routes that are not a saved OAuth login.
     pub account_name: Option<String>,
+}
+
+impl ModelDetails {
+    /// The fields model search matches words against.
+    pub(super) fn search_text(&self) -> super::model_search::RouteText<'_> {
+        super::model_search::RouteText {
+            model: &self.model,
+            provider: &self.provider,
+            api_method: &self.api_method,
+        }
+    }
 }
 
 /// Route identity: everything that decides its spec and recommendation.
@@ -604,39 +616,6 @@ pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>)
     }
 }
 
-/// Logo id (see `accounts::logo`) for the service a route goes through.
-pub(crate) fn provider_logo(provider: &str, api_method: &str) -> &'static str {
-    let haystack = format!("{provider} {api_method}").to_ascii_lowercase();
-    for (needle, logo) in [
-        ("openrouter", "openrouter"),
-        ("copilot", "copilot"),
-        ("cursor", "cursor"),
-        ("bedrock", "bedrock"),
-        ("azure", "azure"),
-        ("antigravity", "antigravity"),
-        ("jcode", "jcode"),
-        ("anthropic", "anthropic-api"),
-        ("claude", "anthropic-api"),
-        ("openai", "openai"),
-        ("chatgpt", "openai"),
-        ("gemini", "gemini"),
-        ("code-assist", "gemini"),
-        ("google", "gemini"),
-        ("grok", "xai"),
-        ("xai", "xai"),
-        ("mistral", "mistral"),
-        ("deepseek", "deepseek"),
-        ("groq", "groq"),
-        ("ollama", "ollama"),
-        ("lmstudio", "lmstudio"),
-    ] {
-        if haystack.contains(needle) {
-            return logo;
-        }
-    }
-    ""
-}
-
 /// Logo id for the model's own family, so an OpenAI model reads as OpenAI
 /// whether it is served directly or through OpenRouter. Unknown families
 /// fall back to the serving provider's logo.
@@ -1179,7 +1158,7 @@ pub(super) fn grouped_rows(
         // their best hit so Enter always selects the strongest match.
         let ranked = super::model_search::rank_matches(
             groups.iter().flat_map(|(_, members)| members.iter()),
-            details,
+            |model| details.get(model).map(ModelDetails::search_text),
             |model| {
                 format!(
                     "{} {}",

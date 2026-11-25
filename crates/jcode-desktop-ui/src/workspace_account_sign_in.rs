@@ -597,7 +597,7 @@ impl Workspace {
         };
         let input = panel.read(cx).input.clone();
         input.update(cx, |input, cx| {
-            let content = format!("{}{text}", input.content);
+            let content = format!("{}{text}", input.text_owned());
             input.set_content(content, cx);
         });
         let focus = panel.read(cx).input_focus_handle(cx);
@@ -733,13 +733,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let input = self.new_account_input(content, cx);
-        let focus = input.read(cx).focus_handle.clone();
+        let focus = input.read(cx).editor_focus();
         self.account_sign_in.input = Some(input);
         window.focus(&focus, cx);
     }
 
     fn focus_account_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self.ensure_account_input(cx).read(cx).focus_handle.clone();
+        let focus = self.ensure_account_input(cx).read(cx).editor_focus();
         window.focus(&focus, cx);
     }
 
@@ -767,7 +767,7 @@ impl Workspace {
     fn account_sign_in_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.account_sign_in.stage {
             Stage::Welcome | Stage::Code { .. } => {
-                let text = self.ensure_account_input(cx).read(cx).content.to_string();
+                let text = self.ensure_account_input(cx).read(cx).text_owned();
                 self.submit_account_field(text, window, cx);
             }
             Stage::Complete { .. } => self.continue_account_sign_in(window, cx),
@@ -1067,7 +1067,7 @@ impl Workspace {
                     .account_sign_in
                     .input
                     .as_ref()
-                    .is_some_and(|input| input.read(cx).focus_handle.is_focused(window));
+                    .is_some_and(|input| input.read(cx).is_focused(window));
                 match event.keystroke.key.as_str() {
                     "escape" => this.finish_account_sign_in(window, cx),
                     // The field owns Enter (submit) and Space (text).
@@ -1101,7 +1101,7 @@ impl Workspace {
                         }
                         let input = this.ensure_account_input(cx);
                         input.update(cx, |input, cx| {
-                            let content = format!("{}{text}", input.content);
+                            let content = format!("{}{text}", input.text_owned());
                             input.set_content(content, cx);
                         });
                         this.focus_account_input(window, cx);

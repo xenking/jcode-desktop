@@ -918,7 +918,7 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
         // above)` made the marker a link to "see above", hid its chip and sent
         // the OS an invalid URL on click (Finder error -50).
         if bytes[i] == b'['
-            && let Some(marker) = crate::input::image_marker_ranges(&source[i..])
+            && let Some(marker) = crate::image_chip::image_marker_ranges(&source[i..])
                 .into_iter()
                 .find(|range| range.start == 0)
         {
@@ -1833,7 +1833,7 @@ fn styled_inline_layout(
     };
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
     let markers = images.as_ref().map_or_else(Vec::new, |images| {
-        crate::input::image_marker_ranges(&inline.plain)
+        crate::image_chip::image_marker_ranges(&inline.plain)
             .into_iter()
             .filter_map(|range| {
                 if inline.links
@@ -2050,7 +2050,7 @@ impl PinnedPromptPreview {
     pub(crate) fn visible_prefix(&self, width: gpui::Pixels, window: &gpui::Window) -> &str {
         let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
         let markers = images.as_ref().map_or_else(Vec::new, |images| {
-            crate::input::image_marker_ranges(&self.0)
+            crate::image_chip::image_marker_ranges(&self.0)
                 .into_iter()
                 .filter_map(|range| {
                     let image = images.attachments.get(&self.0[range.clone()])?;
@@ -2287,7 +2287,7 @@ pub(crate) fn code_block_with_selection(
     let mut highlights = highlights;
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());
     let markers = images.as_ref().map_or_else(Vec::new, |images| {
-        crate::input::image_marker_ranges(&plain)
+        crate::image_chip::image_marker_ranges(&plain)
             .into_iter()
             .filter_map(|range| Some((range.clone(), images.attachments.get(&plain[range])?)))
             .collect()
