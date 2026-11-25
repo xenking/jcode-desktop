@@ -84,6 +84,25 @@ fn streaming(backend: DictationBackend) -> Option<StreamingBackend> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests pick the `[dictation]` snapshot Settings renders, and read back what
+    /// Settings asked to save, without touching the shared config file.
+    static TEST_DICTATION: std::cell::RefCell<Option<jcode_base::config::DictationConfig>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_SAVED: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The `[dictation]` settings Settings shows and edits.
+fn dictation_snapshot() -> jcode_base::config::DictationConfig {
+    #[cfg(test)]
+    if let Some(config) = TEST_DICTATION.with(|c| c.borrow().clone()) {
+        return config;
+    }
+    jcode_base::config::config().dictation.clone()
+}
+
 /// The model a backend will request: the saved one, else its default.
 fn model_label(backend: StreamingBackend, saved: &str) -> String {
     let saved = saved.trim();
@@ -145,6 +164,8 @@ fn pill(id: &'static str, label: impl Into<gpui::SharedString>, selected: bool) 
 
 impl Workspace {
     fn save_dictation(&mut self, key: &str, value: &str, cx: &mut Context<Self>) -> bool {
+        #[cfg(test)]
+        TEST_SAVED.with(|saved| saved.borrow_mut().push((key.to_owned(), value.to_owned())));
         match crate::config::persist_dictation_value(key, value) {
             Ok(()) => {
                 jcode_base::config::Config::invalidate_cache();
@@ -159,7 +180,7 @@ impl Workspace {
     }
 
     fn select_voice_backend(&mut self, backend: DictationBackend, cx: &mut Context<Self>) {
-        let changed = jcode_base::config::config().dictation.backend != backend;
+        let changed = dictation_snapshot().backend != backend;
         if self.save_dictation("backend", backend_slug(backend), cx) {
             // A model name belongs to one provider. Carrying it to another
             // backend would request a model that provider does not have.
@@ -205,7 +226,7 @@ impl Workspace {
     }
 
     fn open_voice_text_input(&mut self, field: &'static str, cx: &mut Context<Self>) {
-        let dictation = &jcode_base::config::config().dictation;
+        let dictation = dictation_snapshot();
         let current = match field {
             "command" => dictation.command.clone(),
             "model" => dictation.model.clone(),
@@ -257,7 +278,7 @@ impl Workspace {
 
     pub(super) fn render_voice_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
-        let dictation = jcode_base::config::config().dictation.clone();
+        let dictation = dictation_snapshot();
         let selected = dictation.backend;
         let mut backends = div().flex().flex_wrap().gap_1();
         for (backend, slug, label) in BACKENDS {
@@ -435,6 +456,90 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn show(dictation: jcode_base::config::DictationConfig) {
+        TEST_DICTATION.with(|c| *c.borrow_mut() = Some(dictation));
+        TEST_SAVED.with(|s| s.borrow_mut().clear());
+    }
+
+    fn soniox_with_model(model: &str) -> jcode_base::config::DictationConfig {
+        jcode_base::config::DictationConfig {
+            backend: DictationBackend::Soniox,
+            model: model.into(),
+            ..Default::default()
+        }
+    }
+
+    fn settings_window(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_view = SidebarView::Settings;
+            workspace
+        });
+        vcx.run_until_parked();
+        (workspace, vcx)
+    }
+
+    /// The Model pill shows the model that will be requested, only for a backend
+    /// that has one, and opens an editor prefilled with the saved value.
+    #[gpui::test]
+    fn settings_show_and_edit_the_model_of_the_selected_backend(cx: &mut gpui::TestAppContext) {
+        show(jcode_base::config::DictationConfig::default());
+        let (workspace, vcx) = settings_window(cx);
+        assert!(vcx.debug_bounds("settings-voice-soniox").is_some());
+        assert!(
+            vcx.debug_bounds("settings-voice-model").is_none(),
+            "auto has no single model to pick"
+        );
+
+        show(soniox_with_model("stt-rt-chosen"));
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        let pill = vcx
+            .debug_bounds("settings-voice-model")
+            .expect("a streaming backend shows its model");
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            let (field, input) = workspace.voice_settings.text_input.as_ref().unwrap();
+            assert_eq!(*field, "model");
+            assert_eq!(input.read(cx).content.as_ref(), "stt-rt-chosen");
+        });
+
+        // An empty model is shown as the backend default, not as a blank.
+        assert_eq!(model_label(StreamingBackend::Soniox, ""), "stt-rt-v6 (default)");
+        assert_eq!(model_label(StreamingBackend::Soniox, " stt-x "), "stt-x");
+        TEST_DICTATION.with(|c| *c.borrow_mut() = None);
+    }
+
+    /// A model name belongs to one provider: switching backend saves the
+    /// backend and clears the model, picking the same backend again does not.
+    #[gpui::test]
+    fn switching_backend_clears_the_model_and_reselecting_keeps_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        show(soniox_with_model("stt-rt-chosen"));
+        let (_workspace, vcx) = settings_window(cx);
+        let nari = vcx.debug_bounds("settings-voice-nari").unwrap();
+        vcx.simulate_click(nari.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            TEST_SAVED.with(|s| s.borrow().clone()),
+            [("backend".into(), "nari".into()), ("model".into(), "".into())]
+        );
+
+        show(soniox_with_model("stt-rt-chosen"));
+        let soniox = vcx.debug_bounds("settings-voice-soniox").unwrap();
+        vcx.simulate_click(soniox.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            TEST_SAVED.with(|s| s.borrow().clone()),
+            [("backend".into(), "soniox".into())]
+        );
+        TEST_DICTATION.with(|c| *c.borrow_mut() = None);
+    }
 
     #[test]
     fn backend_slugs_match_the_shared_config_names() {

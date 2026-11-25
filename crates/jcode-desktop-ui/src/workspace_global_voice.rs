@@ -756,6 +756,30 @@ mod host_action_tests {
         })
     }
 
+    /// A host hold that outlives its deadline is finished like a key-up, so
+    /// the words spoken so far are delivered. Canceling it would discard them.
+    #[gpui::test]
+    fn host_hold_deadline_finishes_the_dictation_instead_of_canceling_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = workspace_with_two_chats(cx);
+        let serial = workspace.read_with(vcx, |w, _| w.global_voice.press_serial);
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.global_voice.held = true;
+                workspace.global_voice.host_held_since =
+                    Some(Instant::now() - HOST_HOLD_DEADLINE - Duration::from_secs(1));
+                workspace.poll_global_voice(window, cx);
+            })
+        });
+        workspace.read_with(vcx, |workspace, _| {
+            assert!(!workspace.global_voice.held);
+            assert!(workspace.global_voice.host_held_since.is_none());
+            // Canceling bumps the serial (it invalidates the attempt). Releasing does not.
+            assert_eq!(workspace.global_voice.press_serial, serial);
+        });
+    }
+
     // On Linux, GPUI's fake platform reports no compositor, so no overlay
     // backend exists, like GNOME/Mutter Wayland. macOS/Windows always have one.
     #[cfg(target_os = "linux")]
