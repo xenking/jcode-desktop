@@ -174,11 +174,7 @@ fn spawn_cpu_monitor() {
             }
             let mut previous = read_process_ticks();
             let mut high_windows = 0_u32;
-            let mut memory = MemoryMonitor::default();
-            if let Some(sample) = MemorySample::read() {
-                eprintln!("{} memory startup: {}", timestamp(), sample);
-                memory.last_logged_rss = sample.rss;
-            }
+            let mut memory = MemoryMonitor::started();
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
                 memory.tick();
@@ -240,15 +236,7 @@ fn spawn_cpu_monitor() {
     if let Err(error) = std::thread::Builder::new()
         .name("jcode-memory-monitor".into())
         .spawn(|| {
-            let mut memory = MemoryMonitor::default();
-            if let Some(sample) = MemorySample::read() {
-                eprintln!("{} memory startup: {}", timestamp(), sample);
-                memory.last_logged_rss = sample.pressure_bytes();
-            } else {
-                for line in memory.observe_read(None) {
-                    eprintln!("{} {line}", timestamp());
-                }
-            }
+            let mut memory = MemoryMonitor::started();
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
                 memory.tick();
@@ -402,6 +390,21 @@ struct MemoryMonitor {
 }
 
 impl MemoryMonitor {
+    /// A monitor whose baseline is the process's memory right now, with the
+    /// startup line logged. Without a first sample it reports that instead.
+    fn started() -> Self {
+        let mut monitor = Self::default();
+        if let Some(sample) = MemorySample::read() {
+            eprintln!("{} memory startup: {}", timestamp(), sample);
+            monitor.last_logged_rss = sample.pressure_bytes();
+        } else {
+            for line in monitor.observe_read(None) {
+                eprintln!("{} {line}", timestamp());
+            }
+        }
+        monitor
+    }
+
     fn tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
         for line in self.observe_read(MemorySample::read()) {

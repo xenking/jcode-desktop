@@ -195,10 +195,8 @@ impl Workspace {
         } else {
             self.coach_expiry_task = None;
         }
-        if self.coach.take_dirty()
-            && let Some(persistence) = &self.learning_persistence
-        {
-            persistence.save(&self.coach);
+        if let Some(persistence) = &self.learning_persistence {
+            self.coach.save_changes(persistence);
         }
         cx.notify();
     }

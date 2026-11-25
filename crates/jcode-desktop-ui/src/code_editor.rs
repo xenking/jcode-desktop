@@ -200,56 +200,57 @@ impl DisplayLine {
             Err(column) => column.saturating_sub(1),
         }
     }
-}
 
-/// Map highlight tokens (byte ranges of the source line) to display runs.
-fn runs_for(
-    source: &str,
-    display: &DisplayLine,
-    tokens: &[(Range<usize>, u8)],
-    font: &gpui::Font,
-    theme: &Palette,
-) -> Vec<TextRun> {
-    let run = |len: usize, color: gpui::Rgba| TextRun {
-        len,
-        font: font.clone(),
-        color: to_hsla(color),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let total = display.text.len();
-    if tokens.is_empty() {
-        return vec![run(total, theme.CODE_TEXT)];
-    }
-    // Source byte -> char column -> display byte.
-    let mut byte_to_column = Vec::with_capacity(source.len() + 1);
-    for (column, ch) in source.chars().enumerate() {
-        byte_to_column.extend(std::iter::repeat_n(column, ch.len_utf8()));
-    }
-    byte_to_column.push(source.chars().count());
-    let display_byte = |source_byte: usize| {
-        let column = byte_to_column[source_byte.min(byte_to_column.len() - 1)];
-        display.byte_for_column(column)
-    };
-    let mut runs = Vec::new();
-    let mut cursor = 0;
-    for (range, id) in tokens {
-        let start = display_byte(range.start).max(cursor);
-        let end = display_byte(range.end).min(total);
-        if start >= end {
-            continue;
+    /// Map highlight tokens (byte ranges of `source`, the line before tab
+    /// expansion) to runs covering the display text exactly.
+    fn runs(
+        &self,
+        source: &str,
+        tokens: &[(Range<usize>, u8)],
+        font: &gpui::Font,
+        theme: &Palette,
+    ) -> Vec<TextRun> {
+        let run = |len: usize, color: gpui::Rgba| TextRun {
+            len,
+            font: font.clone(),
+            color: to_hsla(color),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let total = self.text.len();
+        if tokens.is_empty() {
+            return vec![run(total, theme.CODE_TEXT)];
         }
-        if start > cursor {
-            runs.push(run(start - cursor, theme.CODE_TEXT));
+        // Source byte -> char column -> display byte.
+        let mut byte_to_column = Vec::with_capacity(source.len() + 1);
+        for (column, ch) in source.chars().enumerate() {
+            byte_to_column.extend(std::iter::repeat_n(column, ch.len_utf8()));
         }
-        runs.push(run(end - start, token_color(*id, theme)));
-        cursor = end;
+        byte_to_column.push(source.chars().count());
+        let display_byte = |source_byte: usize| {
+            let column = byte_to_column[source_byte.min(byte_to_column.len() - 1)];
+            self.byte_for_column(column)
+        };
+        let mut runs = Vec::new();
+        let mut cursor = 0;
+        for (range, id) in tokens {
+            let start = display_byte(range.start).max(cursor);
+            let end = display_byte(range.end).min(total);
+            if start >= end {
+                continue;
+            }
+            if start > cursor {
+                runs.push(run(start - cursor, theme.CODE_TEXT));
+            }
+            runs.push(run(end - start, token_color(*id, theme)));
+            cursor = end;
+        }
+        if cursor < total || runs.is_empty() {
+            runs.push(run(total - cursor, theme.CODE_TEXT));
+        }
+        runs
     }
-    if cursor < total || runs.is_empty() {
-        runs.push(run(total - cursor, theme.CODE_TEXT));
-    }
-    runs
 }
 
 /// What the last paint drew, for hit testing and IME geometry.
@@ -379,8 +380,7 @@ impl CodeEditor {
             return;
         };
         f(buffer);
-        if let Some(offset) = buffer.take_changed_from() {
-            let (line, _) = buffer.position(offset);
+        if let Some(line) = buffer.take_changed_line() {
             self.highlighter.invalidate_from(line);
             self.marked = None;
             if matches!(self.save, SaveState::Failed(_)) {
@@ -1022,13 +1022,7 @@ impl Element for EditorElement {
             for (row, line) in (first_line..=last_line).enumerate() {
                 let source = buffer.line_prefix(line, MAX_DISPLAY_CHARS);
                 let display = DisplayLine::new(&source);
-                let runs = runs_for(
-                    &source,
-                    &display,
-                    editor.highlighter.tokens(line),
-                    &font,
-                    theme,
-                );
+                let runs = display.runs(&source, editor.highlighter.tokens(line), &font, theme);
                 let shaped = shape(display.text.clone(), &runs);
                 widest = widest.max(shaped.width());
                 let top = first_top + line_height * row as f32;
@@ -1349,7 +1343,7 @@ mod tests {
         // "let" keyword and "1" number, as byte ranges of the source.
         let one = source.find('1').unwrap();
         let tokens = vec![(1..4, 1u8), (one..one + 1, 4u8)];
-        let runs = runs_for(source, &display, &tokens, &font, theme);
+        let runs = display.runs(source, &tokens, &font, theme);
         assert_eq!(
             runs.iter().map(|run| run.len).sum::<usize>(),
             display.text.len()
@@ -1357,6 +1351,6 @@ mod tests {
         assert_eq!(runs[0].len, 4, "the expanded tab is default colored");
         assert_eq!(runs[1].len, 3);
         assert_eq!(runs[1].color, to_hsla(theme.CODE_KEYWORD));
-        assert!(runs_for("", &DisplayLine::new(""), &[], &font, theme)[0].len == 0);
+        assert!(DisplayLine::new("").runs("", &[], &font, theme)[0].len == 0);
     }
 }

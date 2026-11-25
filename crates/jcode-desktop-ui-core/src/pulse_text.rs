@@ -78,6 +78,12 @@ impl Ticker {
         }
     }
 
+    /// Show `kind` from the next frame on.
+    fn show(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.kind = kind;
+        cx.notify();
+    }
+
     fn arm(&self, period: Duration, cx: &mut Context<Self>) {
         if self.tick_pending.replace(true) {
             return;
@@ -171,10 +177,7 @@ impl Tickers {
         if let Some((ticker, shown)) = self.0.get_mut(key) {
             if *shown != kind {
                 *shown = kind.clone();
-                ticker.update(cx, |ticker, cx| {
-                    ticker.kind = kind;
-                    cx.notify();
-                });
+                ticker.update(cx, |ticker, cx| ticker.show(kind, cx));
             }
             return ticker.clone();
         }

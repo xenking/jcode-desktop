@@ -94,6 +94,16 @@ impl Tokens {
         self.not_read()?.checked_sub(self.written?)
     }
 
+    /// What the cache did not serve, with its name: the tokens neither read
+    /// nor written when the provider reports writes, else everything unread.
+    pub fn remainder(self) -> (Option<u64>, &'static str) {
+        if self.written.is_none() {
+            (self.not_read(), "not read")
+        } else {
+            (self.uncached(), "uncached")
+        }
+    }
+
     fn add(self, next: Self) -> Self {
         fn sum(a: Option<u64>, b: Option<u64>) -> Option<u64> {
             a?.checked_add(b?)
@@ -126,6 +136,11 @@ impl Usage {
 
     pub fn count(&self) -> usize {
         self.requests.len()
+    }
+
+    /// How much of the latest request's prompt the cache served.
+    pub fn last_hit_rate(&self) -> Option<f32> {
+        self.last?.percent()
     }
 }
 

@@ -204,6 +204,10 @@ fn class(ch: char) -> CharClass {
     }
 }
 
+/// The undo state a save captured, handed back once that text is on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavePoint(u64);
+
 pub struct BufferSnapshot {
     rope: Rope,
     line_ending: LineEnding,
@@ -239,7 +243,7 @@ pub struct TextBuffer {
     revision: u64,
     line_ending: LineEnding,
     indent_unit: String,
-    /// Lowest offset touched since [`TextBuffer::take_changed_from`].
+    /// Lowest offset touched since [`TextBuffer::take_changed_line`].
     changed_from: Option<usize>,
 }
 
@@ -338,24 +342,25 @@ impl TextBuffer {
 
     /// Identifies the current undo state; pass it to
     /// [`TextBuffer::mark_saved_at`] once that text is on disk.
-    pub fn begin_save(&mut self) -> (u64, BufferSnapshot) {
+    pub fn begin_save(&mut self) -> (SavePoint, BufferSnapshot) {
         let state = self.state_id();
         if let Some(last) = self.undo.last_mut() {
             last.kind = EditKind::Other;
         }
-        (state, self.snapshot())
+        (SavePoint(state), self.snapshot())
     }
 
-    /// Record that the text at `token` reached disk. Edits made while the save
+    /// Record that the text at `point` reached disk. Edits made while the save
     /// was running keep the buffer dirty.
-    pub fn mark_saved_at(&mut self, token: u64) {
-        self.saved_state = token;
+    pub fn mark_saved_at(&mut self, point: SavePoint) {
+        self.saved_state = point.0;
     }
 
-    /// The lowest char offset changed since the last call, for invalidating
-    /// per-line caches. Offsets before it are unaffected.
-    pub fn take_changed_from(&mut self) -> Option<usize> {
-        self.changed_from.take()
+    /// The line of the lowest char offset changed since the last call, for
+    /// invalidating per-line caches. Lines before it are unaffected.
+    pub fn take_changed_line(&mut self) -> Option<usize> {
+        let offset = self.changed_from.take()?;
+        Some(self.position(offset).0)
     }
 
     fn note_change(&mut self, offset: usize) {
@@ -1082,19 +1087,19 @@ mod tests {
     #[test]
     fn saving_marks_the_state_at_save_start_and_reports_changed_offsets() {
         let mut b = buffer("abc\ndef", 5);
-        assert_eq!(b.take_changed_from(), None);
+        assert_eq!(b.take_changed_line(), None);
         b.insert("X");
         let (token, _) = b.begin_save();
         b.set_selection(Selection::caret(1));
         b.backspace();
-        assert_eq!(b.take_changed_from(), Some(0));
-        assert_eq!(b.take_changed_from(), None);
+        assert_eq!(b.take_changed_line(), Some(0));
+        assert_eq!(b.take_changed_line(), None);
         // The save finished after more typing: still dirty.
         b.mark_saved_at(token);
         assert!(b.is_dirty());
         b.undo();
         assert!(!b.is_dirty());
-        assert_eq!(b.take_changed_from(), Some(0));
+        assert_eq!(b.take_changed_line(), Some(0));
     }
 
     #[test]
