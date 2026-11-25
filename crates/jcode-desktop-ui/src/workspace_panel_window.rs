@@ -288,7 +288,7 @@ impl Render for PanelWindow {
         let theme = Theme::global();
         let width = window.viewport_size().width;
         self.item.update_chat(cx, |panel, cx| {
-            if panel.openrig_width_changed(width) {
+            if panel.openrig_width_changed(width, cx) {
                 panel.set_openrig_width(width, cx);
             }
         });

@@ -1,10 +1,16 @@
 //! Native OpenRig mission control.
 use super::Panel;
-use crate::theme::{Palette, Theme};
-use gpui::{Context, FontWeight, MouseButton, ScrollHandle, Task, Window, div, prelude::*, px};
+use crate::{
+    openrig_feed::Feed,
+    theme::{Palette, Theme},
+};
+use gpui::{
+    App, Context, Entity, FocusHandle, FontWeight, MouseButton, ScrollHandle, Task, Window, div,
+    prelude::*, px,
+};
 use jcode_desktop_openrig::{
-    LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url,
-    fetch_stream_tail, subscribe_events,
+    LiveEvent, Meter, SectionKind, Snapshot, Tone, default_base_url, fetch_stream_tail,
+    subscribe_events,
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -98,6 +104,9 @@ fn detail_lines(key: &str, value: &serde_json::Value, out: &mut Vec<(String, Str
     }
 }
 
+/// The OpenRig mission-control pane: what it shows, where the user is in it, and what it
+/// is waiting for. The panel hosts it as a view of its own, so nothing here reaches back
+/// into the panel. Everything outside the pane goes through `Panel`'s few methods below.
 pub(super) struct State {
     snapshot: Snapshot,
     fleet: fleet::FleetView,
@@ -120,35 +129,34 @@ pub(super) struct State {
     scroll: ScrollHandle,
     events: VecDeque<LiveEvent>,
     event_lifetime: std::sync::Arc<()>,
+    /// The hosting panel's focus handle, so keys reach this pane.
+    focus: FocusHandle,
+    session_id: String,
     _poll: Option<Task<()>>,
     _events: Option<Task<()>>,
 }
 impl State {
-    pub(super) fn screenshot_fixture() -> Self {
-        let mut state = Self::fixture();
+    pub(super) fn screenshot_fixture(focus: FocusHandle, session_id: String) -> Self {
+        let mut state = Self::fixture(focus, session_id);
         state.configure_attention_capture();
         state.configure_chat_capture();
         state
     }
 
-    pub(super) fn fixture() -> Self {
+    pub(super) fn fixture(focus: FocusHandle, session_id: String) -> Self {
         let snapshot = Snapshot::fixture();
-        let mut work = work::WorkView::default();
         let destination_fixture = !live_verification();
-        work.data = destination_fixture.then(jcode_desktop_openrig::work::Work::fixture);
-        let mut build = build::BuildView::default();
-        build.data = destination_fixture.then(jcode_desktop_openrig::build::Build::fixture);
         Self {
             snapshot,
             fleet: fleet::FleetView::fixture(
                 std::env::var_os("JCODE_DESKTOP_SCREENSHOT_FLEET_INSPECTOR").is_some(),
             ),
-            inbox: inbox::InboxView::default(),
-            work,
-            build,
+            inbox: inbox::InboxView::new(inbox::Page::Inbox),
+            work: work::WorkView::new(destination_fixture),
+            build: build::BuildView::new(destination_fixture),
             chat: chat::ChatView::default(),
             destination_fixture,
-            attention: inbox::InboxView::default(),
+            attention: inbox::InboxView::new(inbox::Page::Attention),
             attention_action: attention::ActionState::default(),
             compact: false,
             show_sections: false,
@@ -167,10 +175,199 @@ impl State {
             }]
             .into(),
             event_lifetime: std::sync::Arc::new(()),
+            focus,
+            session_id,
             _poll: None,
             _events: None,
         }
     }
+
+    /// The pane for a panel: fixture data in screenshots and tests, otherwise live reads
+    /// of the daemon's event stream and of `feed`'s snapshot.
+    pub(super) fn open(
+        feed: Entity<Feed>,
+        focus: FocusHandle,
+        session_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut state = Self::fixture(focus, session_id);
+        if crate::harness::screenshot_mode() || cfg!(test) {
+            return state;
+        }
+        state.destination_fixture = false;
+        state.work = work::WorkView::new(false);
+        state.build = build::BuildView::new(false);
+        state.events.clear();
+        let (tx, rx) = std::sync::mpsc::sync_channel(128);
+        let lifetime = std::sync::Arc::downgrade(&state.event_lifetime);
+        std::thread::spawn(move || {
+            let mut delay = 1;
+            // Reads time out every 15 s, so a closed pane ends this thread promptly.
+            while lifetime.upgrade().is_some() {
+                let mut received = false;
+                let result = subscribe_events(
+                    &default_base_url(),
+                    // Checked on every frame, keepalives included: an idle
+                    // stream must not outlive a closed pane.
+                    || lifetime.upgrade().is_none(),
+                    |event| {
+                        received = true;
+                        tx.send(event).is_ok()
+                    },
+                );
+                if result.is_ok() || lifetime.upgrade().is_none() {
+                    break;
+                }
+                if received {
+                    delay = 1;
+                }
+                std::thread::sleep(Duration::from_secs(delay));
+                delay = (delay * 2).min(30);
+            }
+        });
+        state._events = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let events: Vec<_> = rx.try_iter().collect();
+                if this
+                    .update(cx, |state, cx| {
+                        if !events.is_empty() {
+                            state.push_events(events);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+            }
+        }));
+        state.snapshot = Snapshot::default();
+        state._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok((read_attention, writing, revision, shared)) =
+                    this.update(cx, |state, cx| {
+                        (
+                            state.attention_page().is_some(),
+                            state.attention_action.running(),
+                            state.attention_action.revision,
+                            feed.read(cx).snapshot.clone(),
+                        )
+                    })
+                else {
+                    break;
+                };
+                let Some(mut snapshot) = shared else {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    continue;
+                };
+                let (snapshot, tail) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let base = default_base_url();
+                        if read_attention && !writing {
+                            snapshot.load_attention();
+                        }
+                        (snapshot, fetch_stream_tail(&base, 5))
+                    })
+                    .await;
+                if this
+                    .update(cx, |state, cx| {
+                        state.absorb(snapshot, tail.ok(), writing, revision);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+            }
+        }));
+        state
+    }
+
+    /// Keep the newest 50 live events.
+    fn push_events(&mut self, events: Vec<LiveEvent>) {
+        for event in events {
+            self.events.push_back(event);
+        }
+        while self.events.len() > 50 {
+            self.events.pop_front();
+        }
+    }
+
+    /// Take a polled snapshot, keeping the queue the user is acting on if an action
+    /// started or finished while it was being read.
+    fn absorb(
+        &mut self,
+        mut snapshot: Snapshot,
+        tail: Option<Vec<LiveEvent>>,
+        writing: bool,
+        revision: u64,
+    ) {
+        if self.attention_action.running() || writing || self.attention_action.revision != revision
+        {
+            snapshot.inbox = self.snapshot.inbox.take().or(snapshot.inbox);
+        }
+        self.attention_action
+            .keep_confirmation_for(snapshot.inbox.as_ref());
+        self.snapshot = snapshot;
+        if let Some(tail) = tail {
+            self.events = tail.into();
+        }
+        self.section = self
+            .section
+            .min(self.snapshot.sections.len().saturating_sub(1));
+        self.selected = self.selected.min(self.visible().len().saturating_sub(1));
+    }
+
+    pub(super) fn width_changed(&self, width: gpui::Pixels) -> bool {
+        self.compact != (width < px(740.))
+    }
+
+    pub(super) fn set_width(&mut self, width: gpui::Pixels, cx: &mut Context<Self>) {
+        self.compact = width < px(740.);
+        cx.notify();
+    }
+
+    pub(super) fn inspect_fleet_seat(
+        &mut self,
+        action: &crate::ui_actions::InspectFleetSeat,
+        cx: &mut Context<Self>,
+    ) {
+        self.section = self
+            .snapshot
+            .sections
+            .iter()
+            .position(|s| s.kind == SectionKind::Fleet)
+            .unwrap_or(0);
+        self.filter.clear();
+        self.command = None;
+        self.fleet.inspect(
+            &self.snapshot.fleet,
+            &action.host_id,
+            &action.rig_id,
+            &action.seat_id,
+        );
+        cx.notify();
+    }
+
+    fn load_destination(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if self.destination_fixture {
+            return;
+        }
+        let started = match self.kind() {
+            Some(SectionKind::Work) => self.work.reload(refresh, cx, |this| &mut this.work),
+            Some(SectionKind::Build) => self.build.reload(refresh, cx, |this| &mut this.build),
+            _ => false,
+        };
+        if started {
+            cx.notify();
+        }
+    }
+
     fn is_fleet(&self) -> bool {
         self.snapshot
             .sections
@@ -328,87 +525,127 @@ impl State {
         }
     }
 }
+
+impl State {
+    fn select_row(&mut self, position: usize) {
+        self.selected = position;
+        self.explorer = false;
+    }
+
+    #[cfg(test)]
+    fn inspected_fleet_key(&self) -> Option<&str> {
+        self.fleet.selected_key()
+    }
+
+    /// Keys for whichever pane is showing. True when the pane used the key.
+    fn pane_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_fleet()
+            && !self.explorer
+            && self.command.is_none()
+            && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
+        {
+            if let Some(action) = self.fleet.key(&self.snapshot.fleet, &self.filter, key) {
+                window.dispatch_action(Box::new(action), cx);
+            }
+            return true;
+        }
+        if self.attention_page().is_some() && self.attention_action.handle_key(key) {
+            window.focus(&self.focus, cx);
+            return true;
+        }
+        if let Some(page) = self.attention_page()
+            && !self.explorer
+            && self.command.is_none()
+            && self.inbox_key(page, key)
+        {
+            return true;
+        }
+        if !self.explorer && self.command.is_none() {
+            let kind = self.kind();
+            if kind == Some(SectionKind::Work) && self.work.key(&self.filter, key) {
+                return true;
+            }
+            if kind == Some(SectionKind::Build) && self.build_key(key, cx) {
+                return true;
+            }
+            if kind == Some(SectionKind::Chat) && self.chat_key(key, window, cx) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn on_key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.kind() == Some(SectionKind::Chat) && self.chat.composer_focused(window, cx) {
+            return;
+        }
+        if self.attention_action.input_focused(window, cx) {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let text = event.keystroke.key_char.as_deref();
+        let key = if self.command.is_none() {
+            text.filter(|t| *t == ":" || *t == "/").unwrap_or(key)
+        } else {
+            key
+        };
+        if self.pane_key(key, window, cx) {
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if self.is_fleet()
+            && self.command.is_none()
+            && self.fleet.properties
+            && matches!(key, "escape" | "left")
+        {
+            self.fleet.close_properties();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        self.key(key, text);
+        if !self.explorer && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right") {
+            self.scroll.scroll_to_item(self.selected);
+        }
+        self.load_destination(false, cx);
+        cx.notify();
+        cx.stop_propagation();
+    }
+}
+
+/// What the rest of the panel may ask of the pane.
 impl Panel {
     #[cfg(test)]
-    pub(crate) fn inspected_fleet_key(&self) -> Option<&str> {
-        self.openrig.as_ref()?.fleet.selected_key()
+    pub(crate) fn inspected_fleet_key<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        self.openrig.as_ref()?.read(cx).inspected_fleet_key()
     }
+
     pub(crate) fn inspect_fleet_seat(
         &mut self,
         action: &crate::ui_actions::InspectFleetSeat,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = self.openrig.as_mut() else {
-            return;
-        };
-        state.section = state.snapshot.sections.iter().position(|s| s.kind == SectionKind::Fleet).unwrap_or(0);
-        state.filter.clear();
-        state.command = None;
-        state.fleet.inspect(&state.snapshot.fleet, &action.host_id, &action.rig_id, &action.seat_id);
-        cx.notify();
-    }
-    fn load_openrig_destination(&mut self, refresh: bool, cx: &mut Context<Self>) {
-        let Some(state) = self.openrig.as_mut() else {
-            return;
-        };
-        if state.destination_fixture {
-            return;
-        }
-        match state.kind() {
-            Some(SectionKind::Work)
-                if state.work.load.is_none() && (refresh || state.work.data.is_none()) =>
-            {
-                state.work.load = Some(cx.spawn(async |panel, cx| {
-                    let work = cx
-                        .background_executor()
-                        .spawn(async {
-                            jcode_desktop_openrig::work::fetch_work(&destination_base_url())
-                        })
-                        .await;
-                    let _ = panel.update(cx, |panel, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.work.data = Some(work);
-                            state.work.load = None;
-                            cx.notify();
-                        }
-                    });
-                }));
-                cx.notify();
-            }
-            Some(SectionKind::Build)
-                if state.build.load.is_none() && (refresh || state.build.data.is_none()) =>
-            {
-                state.build.load = Some(cx.spawn(async |panel, cx| {
-                    let build = cx
-                        .background_executor()
-                        .spawn(async {
-                            jcode_desktop_openrig::build::fetch_build(&destination_base_url())
-                        })
-                        .await;
-                    let _ = panel.update(cx, |panel, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.build.data = Some(build);
-                            state.build.load = None;
-                            cx.notify();
-                        }
-                    });
-                }));
-                cx.notify();
-            }
-            _ => {}
+        if let Some(pane) = &self.openrig {
+            pane.update(cx, |pane, cx| pane.inspect_fleet_seat(action, cx));
         }
     }
 
-    pub(crate) fn openrig_width_changed(&self, width: gpui::Pixels) -> bool {
+    pub(crate) fn openrig_width_changed(&self, width: gpui::Pixels, cx: &App) -> bool {
         self.openrig
             .as_ref()
-            .is_some_and(|state| state.compact != (width < px(740.)))
+            .is_some_and(|pane| pane.read(cx).width_changed(width))
     }
 
     pub(crate) fn set_openrig_width(&mut self, width: gpui::Pixels, cx: &mut Context<Self>) {
-        if let Some(state) = self.openrig.as_mut() {
-            state.compact = width < px(740.);
-            cx.notify();
+        if let Some(pane) = &self.openrig {
+            pane.update(cx, |pane, cx| pane.set_width(width, cx));
+        }
+    }
+
+    pub(crate) fn show_chat_open_error(&mut self, cx: &mut Context<Self>) {
+        if let Some(pane) = &self.openrig {
+            pane.update(cx, |pane, cx| pane.show_chat_open_error(cx));
         }
     }
 
@@ -416,154 +653,37 @@ impl Panel {
         let mut panel = Self::new(SESSION_ID.into(), Some("OpenRig".into()), None, bridge, cx);
         panel.rig_demand = Some(panel.rig_feed.read(cx).demand(None));
         panel.items.clear();
-        let fixture = crate::harness::screenshot_mode() || cfg!(test);
-        let mut state = State::fixture();
-        if !fixture {
-            state.destination_fixture = false;
-            state.work.data = None;
-            state.build.data = None;
-            state.events.clear();
-            let (tx, rx) = std::sync::mpsc::sync_channel(128);
-            let lifetime = std::sync::Arc::downgrade(&state.event_lifetime);
-            std::thread::spawn(move || {
-                let mut delay = 1;
-                // Reads time out every 15 s, so a closed pane ends this thread promptly.
-                while lifetime.upgrade().is_some() {
-                    let mut received = false;
-                    let result = subscribe_events(
-                        &default_base_url(),
-                        // Checked on every frame, keepalives included: an idle
-                        // stream must not outlive a closed pane.
-                        || lifetime.upgrade().is_none(),
-                        |event| {
-                            received = true;
-                            tx.send(event).is_ok()
-                        },
-                    );
-                    if result.is_ok() || lifetime.upgrade().is_none() {
-                        break;
-                    }
-                    if received {
-                        delay = 1;
-                    }
-                    std::thread::sleep(Duration::from_secs(delay));
-                    delay = (delay * 2).min(30);
-                }
-            });
-            state._events = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    let events: Vec<_> = rx.try_iter().collect();
-                    if this
-                        .update(cx, |panel, cx| {
-                            if events.is_empty() {
-                                return;
-                            }
-                            if let Some(state) = panel.openrig.as_mut() {
-                                for event in events {
-                                    state.events.push_back(event);
-                                }
-                                while state.events.len() > 50 {
-                                    state.events.pop_front();
-                                }
-                                cx.notify();
-                            }
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(250))
-                        .await;
-                }
-            }));
-            state.snapshot = Snapshot::default();
-            state._poll = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    let Ok((read_attention, writing, revision, shared)) = this.update(cx, |panel, cx| {
-                        let shared = panel.rig_feed.read(cx).snapshot.clone();
-                        panel.openrig.as_ref().map_or((false, false, 0, shared.clone()), |state| {
-                            (
-                                state.attention_page().is_some(),
-                                state.attention_action.running(),
-                                state.attention_action.revision,
-                                shared,
-                            )
-                        })
-                    }) else {
-                        break;
-                    };
-                    let Some(mut snapshot) = shared else {
-                        cx.background_executor().timer(Duration::from_secs(2)).await;
-                        continue;
-                    };
-                    let (snapshot, tail) = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let base = default_base_url();
-                            if read_attention && !writing {
-                                snapshot.load_attention();
-                            }
-                            (snapshot, fetch_stream_tail(&base, 5))
-                        })
-                        .await;
-                    if this
-                        .update(cx, |panel, cx| {
-                            if let Some(state) = panel.openrig.as_mut() {
-                                let mut snapshot = snapshot;
-                                if state.attention_action.running()
-                                    || writing
-                                    || state.attention_action.revision != revision
-                                {
-                                    snapshot.inbox = state.snapshot.inbox.take().or(snapshot.inbox);
-                                }
-                                state
-                                    .attention_action
-                                    .keep_confirmation_for(snapshot.inbox.as_ref());
-                                state.snapshot = snapshot;
-                                if let Ok(tail) = tail {
-                                    state.events = tail.into();
-                                }
-                                state.section = state
-                                    .section
-                                    .min(state.snapshot.sections.len().saturating_sub(1));
-                                state.selected =
-                                    state.selected.min(state.visible().len().saturating_sub(1));
-                                cx.notify();
-                            }
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
-                }
-            }));
-        }
-        panel.openrig = Some(state);
+        let (feed, focus) = (panel.rig_feed.clone(), panel.focus_handle.clone());
+        let session = panel.session_id.clone();
+        panel.openrig = Some(cx.new(|cx| State::open(feed, focus, session, cx)));
         panel
     }
-    pub(super) fn render_openrig(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let state = self.openrig.as_ref().expect("openrig state");
+
+    pub(super) fn render_openrig(&self) -> gpui::AnyElement {
+        self.openrig
+            .clone()
+            .expect("openrig pane")
+            .into_any_element()
+    }
+}
+
+impl Render for State {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
-        let is_fleet = state.is_fleet();
-        let is_work = state.kind() == Some(SectionKind::Work);
-        let is_build = state.kind() == Some(SectionKind::Build);
-        let is_chat = state.kind() == Some(SectionKind::Chat);
-        let attention_page = state.attention_page();
-        let compact = state.compact;
+        let is_fleet = self.is_fleet();
+        let is_work = self.kind() == Some(SectionKind::Work);
+        let is_build = self.kind() == Some(SectionKind::Build);
+        let is_chat = self.kind() == Some(SectionKind::Chat);
+        let attention_page = self.attention_page();
+        let compact = self.compact;
         let mut explorer = div().flex_none().flex().gap_1().p_2().overflow_hidden();
         explorer = if compact {
             explorer.w_full().flex_wrap()
         } else {
             explorer.w(px(143.)).flex_col()
         };
-        for (index, section) in state.snapshot.sections.iter().enumerate() {
-            let active = index == state.section;
+        for (index, section) in self.snapshot.sections.iter().enumerate() {
+            let active = index == self.section;
             explorer = explorer.child(
                 div()
                     .id(("openrig-section", index))
@@ -587,12 +707,10 @@ impl Panel {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            if let Some(state) = this.openrig.as_mut() {
-                                state.attention_action.cancel();
-                                state.select(index);
-                            }
-                            this.load_openrig_destination(false, cx);
-                            window.focus(&this.focus_handle, cx);
+                            this.attention_action.cancel();
+                            this.select(index);
+                            this.load_destination(false, cx);
+                            window.focus(&this.focus, cx);
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -601,18 +719,18 @@ impl Panel {
             );
         }
         let (top_sections, side_sections) = if compact {
-            (state.show_sections.then_some(explorer), None)
+            (self.show_sections.then_some(explorer), None)
         } else {
             (None, Some(explorer))
         };
-        let visible = state.visible();
-        let section = state.snapshot.sections.get(state.section);
+        let visible = self.visible();
+        let section = self.snapshot.sections.get(self.section);
         let mut list = div()
             .id("openrig-rows")
             .flex_1()
             .min_w_0()
             .overflow_y_scroll()
-            .track_scroll(&state.scroll)
+            .track_scroll(&self.scroll)
             .flex()
             .flex_col()
             .gap_1()
@@ -621,7 +739,7 @@ impl Panel {
             for (position, index) in visible.iter().copied().enumerate() {
                 let row = &section.rows[index];
                 let marker = if row.children_count > 0 {
-                    if state.is_open(row) { "▾ " } else { "▸ " }
+                    if self.is_open(row) { "▾ " } else { "▸ " }
                 } else {
                     ""
                 };
@@ -636,7 +754,7 @@ impl Panel {
                     .gap_3()
                     .text_size(px(12.))
                     .cursor_pointer()
-                    .bg(if position == state.selected {
+                    .bg(if position == self.selected {
                         theme.ACCENT_DIM
                     } else {
                         theme.HEADER_BG
@@ -644,11 +762,8 @@ impl Panel {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            if let Some(state) = this.openrig.as_mut() {
-                                state.selected = position;
-                                state.explorer = false;
-                            }
-                            window.focus(&this.focus_handle, cx);
+                            this.select_row(position);
+                            window.focus(&this.focus, cx);
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -691,7 +806,7 @@ impl Panel {
             .text_size(px(12.))
             .text_color(theme.TEXT_DIM);
         if let Some(row) =
-            section.and_then(|s| visible.get(state.selected).and_then(|i| s.rows.get(*i)))
+            section.and_then(|s| visible.get(self.selected).and_then(|i| s.rows.get(*i)))
         {
             detail = detail.child(
                 div()
@@ -728,11 +843,11 @@ impl Panel {
             }
         }
         let status = (attention_page.is_none() && !is_work && !is_build && !is_chat)
-            .then_some(state.snapshot.error.as_ref())
+            .then_some(self.snapshot.error.as_ref())
             .flatten()
             .cloned()
             .unwrap_or_else(|| {
-                if (is_work || is_build) && !state.destination_fixture {
+                if (is_work || is_build) && !self.destination_fixture {
                     "Read-only · Refresh to check for changes".into()
                 } else if crate::harness::screenshot_mode() {
                     if is_chat && live_verification()
@@ -747,11 +862,11 @@ impl Panel {
                     "Live · polling every 2s".into()
                 }
             });
-        let command = state.command.clone().unwrap_or_else(|| {
-            if state.filter.is_empty() {
+        let command = self.command.clone().unwrap_or_else(|| {
+            if self.filter.is_empty() {
                 ":section    /filter".into()
             } else {
-                format!("/{}", state.filter)
+                format!("/{}", self.filter)
             }
         });
         div()
@@ -760,105 +875,9 @@ impl Panel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .track_focus(&self.focus_handle)
+            .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if let Some(state) = this.openrig.as_mut() {
-                    if state.kind() == Some(SectionKind::Chat)
-                        && state.chat.composer_focused(window, cx)
-                    {
-                        return;
-                    }
-                    if state.attention_action.input_focused(window, cx) {
-                        return;
-                    }
-                    let key = event.keystroke.key.as_str();
-                    let text = event.keystroke.key_char.as_deref();
-                    let key = if state.command.is_none() {
-                        text.filter(|t| *t == ":" || *t == "/").unwrap_or(key)
-                    } else {
-                        key
-                    };
-                    if state.is_fleet()
-                        && !state.explorer
-                        && state.command.is_none()
-                        && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
-                    {
-                        if let Some(action) =
-                            state.fleet.key(&state.snapshot.fleet, &state.filter, key)
-                        {
-                            window.dispatch_action(Box::new(action), cx);
-                        }
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if state.attention_page().is_some() && state.attention_action.handle_key(key) {
-                        window.focus(&this.focus_handle, cx);
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if let Some(page) = state.attention_page()
-                        && !state.explorer
-                        && state.command.is_none()
-                    {
-                        let view = match page {
-                            inbox::Page::Inbox => &mut state.inbox,
-                            inbox::Page::Attention => &mut state.attention,
-                        };
-                        if view.key(page, state.snapshot.inbox.as_ref(), &state.filter, key) {
-                            cx.notify();
-                            cx.stop_propagation();
-                            return;
-                        }
-                    }
-                    if !state.explorer && state.command.is_none() {
-                        let kind = state.kind();
-                        if kind == Some(SectionKind::Work) && state.work.key(&state.filter, key) {
-                            cx.notify();
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if kind == Some(SectionKind::Build) && this.build_key(key, cx) {
-                            cx.notify();
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if kind == Some(SectionKind::Chat) && this.chat_key(key, window, cx) {
-                            cx.notify();
-                            cx.stop_propagation();
-                            return;
-                        }
-                    }
-                }
-                if let Some(state) = this.openrig.as_mut() {
-                    let key = event.keystroke.key.as_str();
-                    let text = event.keystroke.key_char.as_deref();
-                    let key = if state.command.is_none() {
-                        text.filter(|t| *t == ":" || *t == "/").unwrap_or(key)
-                    } else {
-                        key
-                    };
-                    if state.is_fleet()
-                        && state.command.is_none()
-                        && state.fleet.properties
-                        && matches!(key, "escape" | "left")
-                    {
-                        state.fleet.properties = false;
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    state.key(key, text);
-                    if !state.explorer
-                        && matches!(key, "j" | "k" | "up" | "down" | "enter" | "right")
-                    {
-                        state.scroll.scroll_to_item(state.selected);
-                    }
-                    this.load_openrig_destination(false, cx);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
+                this.on_key(event, window, cx)
             }))
             .child(
                 div()
@@ -885,11 +904,9 @@ impl Panel {
                                 .text_size(px(11.))
                                 .cursor_pointer()
                                 .child("Sections")
-                                .on_click(cx.listener(|panel, _, window, cx| {
-                                    if let Some(state) = panel.openrig.as_mut() {
-                                        state.show_sections = !state.show_sections;
-                                    }
-                                    window.focus(&panel.focus_handle, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_sections = !this.show_sections;
+                                    window.focus(&this.focus, cx);
                                     cx.notify();
                                 })),
                         )
@@ -914,12 +931,12 @@ impl Panel {
                     .min_h_0()
                     .flex()
                     .children(side_sections)
-                    .when(is_fleet, |el| el.child(self.render_fleet(state, cx)))
-                    .when(is_work, |el| el.child(self.render_work(state, cx)))
-                    .when(is_build, |el| el.child(self.render_build(state, cx)))
-                    .when(is_chat, |el| el.child(self.render_chat(state, cx)))
+                    .when(is_fleet, |el| el.child(self.render_fleet(cx)))
+                    .when(is_work, |el| el.child(self.render_work(cx)))
+                    .when(is_build, |el| el.child(self.render_build(cx)))
+                    .when(is_chat, |el| el.child(self.render_chat(cx)))
                     .when_some(attention_page, |el, page| {
-                        el.child(self.render_inbox(state, page, cx))
+                        el.child(self.render_inbox(page, cx))
                     })
                     .when(
                         !is_fleet && attention_page.is_none() && !is_work && !is_build && !is_chat,
@@ -940,8 +957,7 @@ impl Panel {
                     }),
             )
             .children(
-                state
-                    .events
+                self.events
                     .iter()
                     .rev()
                     .take(if compact { 0 } else { 3 })
@@ -963,7 +979,6 @@ impl Panel {
                             ))
                     }),
             )
-            .into_any_element()
     }
 }
 
@@ -982,9 +997,10 @@ mod openrig_tests {
         }
     }
 
-    #[test]
-    fn default_open_groups_show_children_until_toggled() {
-        let mut state = State::fixture();
+    #[gpui::test]
+    fn default_open_groups_show_children_until_toggled(cx: &mut gpui::TestAppContext) {
+        let focus = cx.update(|cx| cx.focus_handle());
+        let mut state = State::fixture(focus, SESSION_ID.into());
         state.snapshot.sections = vec![jcode_desktop_openrig::Section {
             kind: jcode_desktop_openrig::SectionKind::Usage,
             title: "Usage".into(),

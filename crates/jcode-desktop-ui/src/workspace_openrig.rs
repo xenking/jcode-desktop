@@ -169,7 +169,7 @@ mod tests {
             );
             assert_eq!(w.slots.len(), 2);
             assert_eq!(
-                w.slots[w.active].panel.read(cx).inspected_fleet_key(),
+                w.slots[w.active].panel.read(cx).inspected_fleet_key(cx),
                 Some("seat:\"host-fixture-local\"/\"local-kernel\"/\"local-operator.agent\"")
             );
         });
@@ -195,7 +195,7 @@ mod tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 3);
             assert_eq!(
-                w.slots[w.active].panel.read(cx).inspected_fleet_key(),
+                w.slots[w.active].panel.read(cx).inspected_fleet_key(cx),
                 Some("seat:\"worker-east\"/\"remote-kernel\"/\"remote-operator.agent\"")
             );
         });
@@ -263,7 +263,7 @@ mod tests {
                 workspace.slots[workspace.active]
                     .panel
                     .read(cx)
-                    .inspected_fleet_key(),
+                    .inspected_fleet_key(cx),
                 Some("seat:\"host-fixture-local\"/\"local-kernel\"/\"local-operator.agent\"")
             );
         });

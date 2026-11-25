@@ -5,7 +5,7 @@ use jcode_desktop_openrig::{
     inbox::{Inbox, Item, ItemId},
 };
 
-use super::{Panel, State, Palette, default_base_url};
+use super::{Palette, State, default_base_url};
 use crate::{input::PromptInput, ui_actions::OpenFleetSession};
 
 #[derive(Default)]
@@ -104,47 +104,78 @@ impl ActionState {
     }
 }
 
-impl State {
-    pub(super) fn configure_attention_capture(&mut self) {
-        let mode = std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION");
-        match mode.as_deref() {
-            Ok("live") => {
-                self.snapshot = jcode_desktop_openrig::fetch_snapshot(&default_base_url());
-                self.snapshot.load_attention();
-                self.attention.show_sources = true;
-                self.events.clear();
-            }
-            Ok("inspector" | "confirm") => {
-                if let Some(row) = self
-                    .snapshot
-                    .inbox
-                    .iter()
-                    .flat_map(|inbox| &inbox.items)
-                    .find(|row| !row.actions().is_empty())
-                {
-                    self.attention.selected = Some(row.id.clone());
-                    if mode.as_deref() == Ok("confirm")
-                        && let Some(target) = self.snapshot.attention_target(&row.id).cloned()
-                    {
-                        self.attention_action.phase = Phase::Confirm {
-                            item: row.id.clone(),
-                            action: row.actions()[0].clone(),
-                            target: Box::new(target),
-                            input: None,
-                        };
-                    }
-                }
-            }
-            _ => return,
+/// What the confirmation flow shows on one item.
+pub(super) enum Shown<'a> {
+    Confirming {
+        action: &'a Action,
+        target: &'a HostTarget,
+        input: Option<&'a Entity<PromptInput>>,
+    },
+    Running,
+    Accepted,
+    Failed(&'a str),
+    Quiet,
+}
+
+impl ActionState {
+    pub(super) fn shown_for(&self, id: &ItemId) -> Shown<'_> {
+        match &self.phase {
+            Phase::Confirm {
+                item,
+                action,
+                target,
+                input,
+            } if item == id => Shown::Confirming {
+                action,
+                target,
+                input: input.as_ref(),
+            },
+            Phase::Running { item } if item == id => Shown::Running,
+            Phase::Finished {
+                item,
+                result: Ok(()),
+            } if item == id => Shown::Accepted,
+            Phase::Finished {
+                item,
+                result: Err(error),
+            } if item == id => Shown::Failed(error),
+            _ => Shown::Quiet,
         }
-        if let Some(index) = self
-            .snapshot
-            .sections
-            .iter()
-            .position(|section| section.kind == jcode_desktop_openrig::SectionKind::Needs)
-        {
-            self.section = index;
+    }
+
+    /// Ask the user to confirm `action` on `item`.
+    pub(super) fn stage(
+        &mut self,
+        item: ItemId,
+        action: Action,
+        target: HostTarget,
+        input: Option<Entity<PromptInput>>,
+    ) {
+        self.phase = Phase::Confirm {
+            item,
+            action,
+            target: Box::new(target),
+            input,
+        };
+    }
+
+    /// The item whose confirmation is open.
+    fn confirming_item(&self) -> Option<&ItemId> {
+        match &self.phase {
+            Phase::Confirm { item, .. } => Some(item),
+            _ => None,
         }
+    }
+
+    /// Send the confirmed action: bump the revision and show the item as running.
+    fn start(&mut self, item: ItemId) {
+        self.revision += 1;
+        self.phase = Phase::Running { item };
+    }
+
+    fn finish(&mut self, item: ItemId, result: Result<(), String>) {
+        self.revision += 1;
+        self.phase = Phase::Finished { item, result };
     }
 }
 
@@ -170,15 +201,14 @@ fn pill(
         .child(label)
 }
 
-impl Panel {
+impl State {
     pub(super) fn render_attention_actions(
         &self,
         row: &Item,
         theme: &Palette,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let openrig = self.openrig.as_ref().expect("OpenRig panel");
-        let state = &openrig.attention_action;
+        let state = &self.attention_action;
         let mut content = div().flex().flex_col().gap_2();
         if let Some(session) = &row.session {
             let action = OpenFleetSession {
@@ -199,15 +229,14 @@ impl Panel {
                 ),
             );
         }
-        match &state.phase {
-            Phase::Confirm {
-                item,
+        match state.shown_for(&row.id) {
+            Shown::Confirming {
                 action,
                 target,
                 input,
-            } if item == &row.id => {
+            } => {
                 let stale = !row.actions().contains(action)
-                    || openrig.snapshot.attention_target(item) != Some(target.as_ref());
+                    || self.snapshot.attention_target(&row.id) != Some(target);
                 return content.child(
                     div()
                         .id("openrig-attention-confirmation")
@@ -229,7 +258,7 @@ impl Panel {
                                 .text_color(theme.TEXT_DIM)
                                 .child(action.effect()),
                         )
-                        .when_some(input.clone(), |el, input| el.child(input))
+                        .when_some(input.cloned(), |el, input| el.child(input))
                         .when(stale, |el| {
                             el.child(
                                 div().text_color(theme.WARN).child(
@@ -245,23 +274,23 @@ impl Panel {
                                 .child(
                                     pill(theme, "openrig-attention-cancel", "Cancel", false)
                                         .debug_selector(|| "openrig-attention-cancel".into())
-                                        .on_click(cx.listener(|panel, _, window, cx| {
-                                            panel.cancel_attention_action(window, cx)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel_attention_action(window, cx)
                                         })),
                                 )
                                 .when(!stale, |el| {
                                     el.child(
                                         pill(theme, "openrig-attention-confirm", "Confirm", true)
                                             .debug_selector(|| "openrig-attention-confirm".into())
-                                            .on_click(cx.listener(|panel, _, window, cx| {
-                                                panel.confirm_attention_action(window, cx)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.confirm_attention_action(window, cx)
                                             })),
                                     )
                                 }),
                         ),
                 );
             }
-            Phase::Running { item } if item == &row.id => {
+            Shown::Running => {
                 return content.child(
                     div()
                         .text_size(px(12.))
@@ -269,10 +298,7 @@ impl Panel {
                         .child("Waiting for OpenRig and refreshing…"),
                 );
             }
-            Phase::Finished {
-                item,
-                result: Ok(()),
-            } if item == &row.id => {
+            Shown::Accepted => {
                 content = content.child(
                     div()
                         .text_color(theme.OK)
@@ -280,17 +306,17 @@ impl Panel {
                         .child("OpenRig accepted the action. Item refreshed."),
                 );
             }
-            _ => {}
-        }
-        if let Some(error) = state.error(&row.id) {
-            content = content.child(
-                div()
-                    .id("openrig-attention-action-error")
-                    .debug_selector(|| "openrig-attention-action-error".into())
-                    .text_size(px(12.))
-                    .text_color(theme.ERROR)
-                    .child(error.to_owned()),
-            );
+            Shown::Failed(error) => {
+                content = content.child(
+                    div()
+                        .id("openrig-attention-action-error")
+                        .debug_selector(|| "openrig-attention-action-error".into())
+                        .text_size(px(12.))
+                        .text_color(theme.ERROR)
+                        .child(error.to_owned()),
+                );
+            }
+            Shown::Quiet => {}
         }
         if state.running() || row.actions().is_empty() {
             return content;
@@ -314,8 +340,8 @@ impl Panel {
                     .text_size(px(12.))
                     .child(label)
                     .debug_selector(move || format!("openrig-attention-action:{index}"))
-                    .on_click(cx.listener(move |panel, _, window, cx| {
-                        panel.stage_attention_action(item.clone(), action.clone(), window, cx)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.stage_attention_action(item.clone(), action.clone(), window, cx)
                     }))
             });
         content.child(div().flex().flex_wrap().gap_2().children(buttons))
@@ -328,13 +354,10 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = self.openrig.as_mut() else {
-            return;
-        };
-        if state.attention_action.running() {
+        if self.attention_action.running() {
             return;
         }
-        let Some(target) = state.snapshot.attention_target(&item).cloned() else {
+        let Some(target) = self.snapshot.attention_target(&item).cloned() else {
             return;
         };
         let input = action.input_label().map(|label| {
@@ -343,10 +366,8 @@ impl Panel {
                 PromptInput::new(cx, label, |_, _, _, _| {})
                     .without_command_completion()
                     .with_on_overlay_cancel(move |app| {
-                        let _ = weak.update(app, |panel, cx| {
-                            if let Some(state) = panel.openrig.as_mut() {
-                                state.attention_action.cancel();
-                            }
+                        let _ = weak.update(app, |this, cx| {
+                            this.attention_action.cancel();
                             cx.notify();
                         });
                         true
@@ -356,61 +377,49 @@ impl Panel {
         if let Some(input) = &input {
             window.focus(&input.read(cx).focus_handle.clone(), cx);
         } else {
-            window.focus(&self.focus_handle, cx);
+            window.focus(&self.focus, cx);
         }
-        state.attention_action.phase = Phase::Confirm {
-            item,
-            action,
-            target: Box::new(target),
-            input,
-        };
+        self.attention_action.stage(item, action, target, input);
         cx.notify();
     }
 
     fn cancel_attention_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(state) = self.openrig.as_mut() {
-            state.attention_action.cancel();
-        }
-        window.focus(&self.focus_handle, cx);
+        self.attention_action.cancel();
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
     fn confirm_attention_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(state) = self.openrig.as_mut() else {
+        let Some(item) = self.attention_action.confirming_item().cloned() else {
             return;
         };
-        let Phase::Confirm {
-            item,
+        let Shown::Confirming {
             action,
             target,
             input,
-        } = &state.attention_action.phase
+        } = self.attention_action.shown_for(&item)
         else {
             return;
         };
-        let offered = state.snapshot.inbox.as_ref().is_some_and(|inbox| {
+        let offered = self.snapshot.inbox.as_ref().is_some_and(|inbox| {
             inbox
                 .items
                 .iter()
-                .any(|row| &row.id == item && row.actions().contains(action))
+                .any(|row| row.id == item && row.actions().contains(action))
         });
-        if !offered || state.snapshot.attention_target(item) != Some(target.as_ref()) {
+        if !offered || self.snapshot.attention_target(&item) != Some(target) {
             return;
         }
-        let text = input
-            .as_ref()
-            .map_or("", |input| input.read(cx).content.as_str());
+        let text = input.map_or("", |input| input.read(cx).content.as_str());
         let Some(confirmed) = action.confirm(text) else {
             if let Some(input) = input {
                 window.focus(&input.read(cx).focus_handle.clone(), cx);
             }
             return;
         };
-        let target = target.as_ref().clone();
-        let item = item.clone();
-        state.attention_action.revision += 1;
-        state.attention_action.phase = Phase::Running { item: item.clone() };
-        window.focus(&self.focus_handle, cx);
+        let target = target.clone();
+        self.attention_action.start(item.clone());
+        window.focus(&self.focus, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (result, snapshot) = cx
@@ -427,16 +436,13 @@ impl Panel {
                     (result, Some(snapshot))
                 })
                 .await;
-            let _ = this.update(cx, |panel, cx| {
-                if let Some(state) = panel.openrig.as_mut() {
-                    state.attention_action.revision += 1;
-                    state.attention_action.phase = Phase::Finished { item, result };
-                    if let Some(snapshot) = snapshot {
-                        state.snapshot.fleet = snapshot.fleet;
-                        state.snapshot.inbox = snapshot.inbox;
-                    }
-                    cx.notify();
+            let _ = this.update(cx, |this, cx| {
+                this.attention_action.finish(item, result);
+                if let Some(snapshot) = snapshot {
+                    this.snapshot.fleet = snapshot.fleet;
+                    this.snapshot.inbox = snapshot.inbox;
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -446,6 +452,7 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel::Panel;
 
     #[gpui::test]
     fn typed_reason_reaches_the_confirmation_input(cx: &mut gpui::TestAppContext) {
@@ -469,7 +476,14 @@ mod tests {
         vcx.simulate_keystrokes("o k");
         vcx.run_until_parked();
         let typed = panel.read_with(vcx, |panel, cx| {
-            match &panel.openrig.as_ref().unwrap().attention_action.phase {
+            match &panel
+                .openrig
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .attention_action
+                .phase
+            {
                 Phase::Confirm {
                     input: Some(input), ..
                 } => input.read(cx).content.to_string(),

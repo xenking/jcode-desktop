@@ -1,4 +1,4 @@
-use super::{Panel, State, Theme};
+use super::{State, Theme};
 use crate::ui_actions::OpenFleetSession;
 use chrono::{DateTime, Utc};
 use gpui::{
@@ -99,6 +99,41 @@ pub(super) struct WorkView {
 }
 
 impl WorkView {
+    pub(super) fn new(fixture: bool) -> Self {
+        Self {
+            data: fixture.then(Work::fixture),
+            ..Self::default()
+        }
+    }
+
+    /// Read the queue and workflows when they have not been read or when `refresh` asks
+    /// again, unless a read is already running. True when one started.
+    pub(super) fn reload<V: 'static>(
+        &mut self,
+        refresh: bool,
+        cx: &mut Context<V>,
+        view: fn(&mut V) -> &mut Self,
+    ) -> bool {
+        if self.load.is_some() || !(refresh || self.data.is_none()) {
+            return false;
+        }
+        self.load = Some(cx.spawn(async move |this, cx| {
+            let work = cx
+                .background_executor()
+                .spawn(async {
+                    jcode_desktop_openrig::work::fetch_work(&super::destination_base_url())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let view = view(this);
+                view.data = Some(work);
+                view.load = None;
+                cx.notify();
+            });
+        }));
+        true
+    }
+
     fn rows(&self) -> impl Iterator<Item = Row<'_>> {
         self.data
             .iter()
@@ -168,6 +203,30 @@ impl WorkView {
         self.owner = None;
         self.menu = None;
         self.selected = None;
+        self.scroll.scroll_to_item(0);
+    }
+
+    fn select(&mut self, id: ItemId) {
+        self.selected = Some(id);
+        self.menu = None;
+    }
+
+    fn deselect(&mut self) {
+        self.selected = None;
+    }
+
+    fn toggle_menu(&mut self, menu: Menu) {
+        self.menu = (self.menu != Some(menu)).then_some(menu);
+    }
+
+    /// Filter by `choice` (`None` for all) and return to the top of the list.
+    fn choose(&mut self, menu: Menu, choice: Option<String>) {
+        match menu {
+            Menu::State => self.state = choice,
+            Menu::Owner => self.owner = choice,
+        }
+        self.selected = None;
+        self.menu = None;
         self.scroll.scroll_to_item(0);
     }
 
@@ -373,14 +432,14 @@ fn source_notice<T>(host: &str, result: &Result<ReadWindow<T>, String>) -> Optio
     }
 }
 
-impl Panel {
-    pub(super) fn render_work(&self, state: &State, cx: &mut Context<Self>) -> Div {
-        let view = &state.work;
-        let mut rows = view.filtered(&state.filter).peekable();
+impl State {
+    pub(super) fn render_work(&self, cx: &mut Context<Self>) -> Div {
+        let view = &self.work;
+        let mut rows = view.filtered(&self.filter).peekable();
         let selected = view
             .selected
             .as_ref()
-            .and_then(|id| view.filtered(&state.filter).find(|row| row.key() == *id));
+            .and_then(|id| view.filtered(&self.filter).find(|row| row.key() == *id));
         let mut list = list("work-items", &view.scroll);
         if let Some(data) = &view.data {
             list = list.children(
@@ -458,13 +517,10 @@ impl Panel {
                 .debug_selector(move || selector.clone())
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |panel, _, window, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.work.selected = Some(id.clone());
-                            state.work.menu = None;
-                            state.explorer = false;
-                        }
-                        window.focus(&panel.focus_handle, cx);
+                    cx.listener(move |this, _, window, cx| {
+                        this.work.select(id.clone());
+                        this.explorer = false;
+                        window.focus(&this.focus, cx);
                         cx.stop_propagation();
                         cx.notify();
                     }),
@@ -481,25 +537,19 @@ impl Panel {
                     .map(|(label, tab)| {
                         pill(label, label, view.tab == tab)
                             .debug_selector(move || format!("work-tab:{label}"))
-                            .on_click(cx.listener(move |panel, _, window, cx| {
-                                if let Some(state) = panel.openrig.as_mut() {
-                                    state.work.set_tab(tab);
-                                    state.explorer = false;
-                                }
-                                window.focus(&panel.focus_handle, cx);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.work.set_tab(tab);
+                                this.explorer = false;
+                                window.focus(&this.focus, cx);
                                 cx.notify();
                             }))
                     }),
             )
             .child(
-                pill("work-projects", "Projects", false).on_click(cx.listener(
-                    |panel, _, _, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.select_kind(SectionKind::Scopes);
-                        }
-                        cx.notify();
-                    },
-                )),
+                pill("work-projects", "Projects", false).on_click(cx.listener(|this, _, _, cx| {
+                    this.select_kind(SectionKind::Scopes);
+                    cx.notify();
+                })),
             )
             .child(
                 pill(
@@ -511,7 +561,7 @@ impl Panel {
                     },
                     false,
                 )
-                .on_click(cx.listener(|panel, _, _, cx| panel.load_openrig_destination(true, cx))),
+                .on_click(cx.listener(|this, _, _, cx| this.load_destination(true, cx))),
             );
         let filters = div().flex().flex_wrap().gap_1().children(
             [
@@ -526,12 +576,10 @@ impl Panel {
                     current.is_some() || view.menu == Some(menu),
                 )
                 .debug_selector(move || format!("work-filter:{label}"))
-                .on_click(cx.listener(move |panel, _, window, cx| {
-                    if let Some(state) = panel.openrig.as_mut() {
-                        state.work.menu = (state.work.menu != Some(menu)).then_some(menu);
-                        state.explorer = false;
-                    }
-                    window.focus(&panel.focus_handle, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.work.toggle_menu(menu);
+                    this.explorer = false;
+                    window.focus(&this.focus, cx);
                     cx.notify();
                 }))
             }),
@@ -563,24 +611,15 @@ impl Panel {
                     };
                     pill(("work-filter-option", index), label.clone(), active)
                         .debug_selector(move || format!("work-option:{label}"))
-                        .on_click(cx.listener(move |panel, _, window, cx| {
-                            if let Some(view) = panel.openrig.as_mut().map(|state| &mut state.work)
-                            {
-                                match menu {
-                                    Menu::State => view.state = choice.clone(),
-                                    Menu::Owner => view.owner = choice.clone(),
-                                }
-                                view.selected = None;
-                                view.menu = None;
-                                view.scroll.scroll_to_item(0);
-                            }
-                            window.focus(&panel.focus_handle, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.work.choose(menu, choice.clone());
+                            window.focus(&this.focus, cx);
                             cx.notify();
                         }))
                 }))
         });
-        let pane = selected.map(|row| self.render_work_inspector(state, row, cx));
-        let show_list = !state.compact || pane.is_none();
+        let pane = selected.map(|row| self.render_work_inspector(row, cx));
+        let show_list = !self.compact || pane.is_none();
         div()
             .flex_1()
             .min_w_0()
@@ -606,21 +645,16 @@ impl Panel {
             )
     }
 
-    fn render_work_inspector(
-        &self,
-        state: &State,
-        row: Row<'_>,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    fn render_work_inspector(&self, row: Row<'_>, cx: &mut Context<Self>) -> Stateful<Div> {
         let open = row
             .owner()
-            .and_then(|owner| open_owner(&state.snapshot.fleet, row.host(), owner));
+            .and_then(|owner| open_owner(&self.snapshot.fleet, row.host(), owner));
         let host = row.host();
-        let pane = inspector("work-inspector", state.compact)
+        let pane = inspector("work-inspector", self.compact)
             .child(
                 pill(
                     "work-back",
-                    if state.compact {
+                    if self.compact {
                         "Back to Work"
                     } else {
                         "Close inspector"
@@ -628,11 +662,9 @@ impl Panel {
                     false,
                 )
                 .debug_selector(|| "work-back".into())
-                .on_click(cx.listener(|panel, _, window, cx| {
-                    if let Some(state) = panel.openrig.as_mut() {
-                        state.work.selected = None;
-                    }
-                    window.focus(&panel.focus_handle, cx);
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.work.deselect();
+                    window.focus(&this.focus, cx);
                     cx.notify();
                 })),
             )

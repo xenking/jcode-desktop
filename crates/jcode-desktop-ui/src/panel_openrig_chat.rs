@@ -1,4 +1,4 @@
-use super::{Panel, State};
+use super::State;
 use crate::{
     input::PromptInput,
     theme::{Palette, Theme},
@@ -38,14 +38,53 @@ impl ChatView {
             .as_ref()
             .is_some_and(|relay| relay.input.read(cx).focus_handle.is_focused(window))
     }
+
+    fn relay_sending(&self) -> bool {
+        self.relay
+            .as_ref()
+            .is_some_and(|relay| matches!(relay.phase, RelayPhase::Sending))
+    }
+
+    fn start_relay(&mut self, relay: Relay) {
+        self.relay = Some(relay);
+    }
+
+    fn dismiss_relay(&mut self) {
+        self.relay = None;
+    }
+
+    fn clear_error(&mut self) {
+        self.open_error = None;
+    }
+
+    fn fail_to_open(&mut self) {
+        self.open_error = Some("No SSH destination could be resolved for this seat. Configure its host in Desktop's SSH machines, then try again.".into());
+    }
+
+    /// Mark the seat selected and scroll its host group into view.
+    fn select(&mut self, selected: (String, Role), group: usize) {
+        self.selected = Some(selected);
+        self.scroll.scroll_to_item(group + 1);
+    }
+
+    fn finish_relay(&mut self, result: Result<String, String>) -> bool {
+        let Some(relay) = self.relay.as_mut() else {
+            return false;
+        };
+        relay.phase = RelayPhase::Finished(result);
+        true
+    }
 }
-fn visible_hosts(state: &State) -> impl Iterator<Item = ChatHost<'_>> {
-    let filter = state.filter.to_lowercase();
-    roster(&state.snapshot.fleet).filter(move |host| {
-        host.name.to_lowercase().contains(&filter)
-            || host.id.to_lowercase().contains(&filter)
-            || host.seats.iter().any(|seat| matches_filter(seat, &filter))
-    })
+
+impl State {
+    fn visible_hosts(&self) -> impl Iterator<Item = ChatHost<'_>> {
+        let filter = self.filter.to_lowercase();
+        roster(&self.snapshot.fleet).filter(move |host| {
+            host.name.to_lowercase().contains(&filter)
+                || host.id.to_lowercase().contains(&filter)
+                || host.seats.iter().any(|seat| matches_filter(seat, &filter))
+        })
+    }
 }
 
 fn matches_filter(seat: &ChatSeat<'_>, filter: &str) -> bool {
@@ -128,7 +167,7 @@ impl State {
     }
 }
 
-impl Panel {
+impl State {
     fn compose_chat_relay(
         &mut self,
         host: String,
@@ -137,15 +176,7 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = self.openrig.as_mut() else {
-            return;
-        };
-        if state
-            .chat
-            .relay
-            .as_ref()
-            .is_some_and(|relay| matches!(relay.phase, RelayPhase::Sending))
-        {
+        if self.chat.relay_sending() {
             return;
         }
         let weak = cx.weak_entity();
@@ -153,17 +184,15 @@ impl Panel {
             PromptInput::new(cx, "Message to the OpenRig seat", |_, _, _, _| {})
                 .without_command_completion()
                 .with_on_overlay_cancel(move |app| {
-                    let _ = weak.update(app, |panel, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.chat.relay = None;
-                        }
+                    let _ = weak.update(app, |this, cx| {
+                        this.chat.dismiss_relay();
                         cx.notify();
                     });
                     true
                 })
         });
         window.focus(&input.read(cx).focus_handle.clone(), cx);
-        state.chat.relay = Some(Relay {
+        self.chat.start_relay(Relay {
             host,
             role,
             recipient,
@@ -174,10 +203,7 @@ impl Panel {
     }
 
     fn send_chat_relay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(state) = self.openrig.as_mut() else {
-            return;
-        };
-        let Some(relay) = &mut state.chat.relay else {
+        let Some(relay) = &mut self.chat.relay else {
             return;
         };
         if !matches!(relay.phase, RelayPhase::Editing) {
@@ -187,7 +213,7 @@ impl Panel {
         if message.trim().is_empty() {
             return;
         }
-        if state.destination_fixture || crate::harness::screenshot_mode() {
+        if self.destination_fixture || crate::harness::screenshot_mode() {
             relay.phase =
                 RelayPhase::Finished(Err("This isolated preview does not send messages.".into()));
             cx.notify();
@@ -195,20 +221,15 @@ impl Panel {
         }
         let recipient = relay.recipient.clone();
         relay.phase = RelayPhase::Sending;
-        window.focus(&self.focus_handle, cx);
+        window.focus(&self.focus, cx);
         cx.notify();
-        cx.spawn(async move |panel, cx| {
+        cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { recipient.send(&message) })
                 .await;
-            let _ = panel.update(cx, |panel, cx| {
-                if let Some(relay) = panel
-                    .openrig
-                    .as_mut()
-                    .and_then(|state| state.chat.relay.as_mut())
-                {
-                    relay.phase = RelayPhase::Finished(result);
+            let _ = this.update(cx, |this, cx| {
+                if this.chat.finish_relay(result) {
                     cx.notify();
                 }
             });
@@ -216,11 +237,9 @@ impl Panel {
         .detach();
     }
 
-    pub(crate) fn show_chat_open_error(&mut self, cx: &mut Context<Self>) {
-        if let Some(state) = self.openrig.as_mut() {
-            state.chat.open_error = Some("No SSH destination could be resolved for this seat. Configure its host in Desktop's SSH machines, then try again.".into());
-            cx.notify();
-        }
+    pub(super) fn show_chat_open_error(&mut self, cx: &mut Context<Self>) {
+        self.chat.fail_to_open();
+        cx.notify();
     }
 
     pub(super) fn chat_key(
@@ -232,19 +251,16 @@ impl Panel {
         if !matches!(key, "j" | "k" | "up" | "down" | "enter" | "right") {
             return false;
         }
-        let Some(state) = self.openrig.as_mut() else {
-            return false;
-        };
-        let rows: Vec<_> = visible_hosts(state)
+        let rows: Vec<_> = self
+            .visible_hosts()
             .enumerate()
             .flat_map(|(index, host)| {
                 let host_id = host.id;
-                seats_matching(host, &state.filter).map(move |seat| (index, host_id, seat))
+                seats_matching(host, &self.filter).map(move |seat| (index, host_id, seat))
             })
             .collect();
         let selected = rows.iter().position(|(_, id, seat)| {
-            state
-                .chat
+            self.chat
                 .selected
                 .as_ref()
                 .is_some_and(|(host, role)| host == id && *role == seat.role)
@@ -262,15 +278,14 @@ impl Panel {
             let activate = matches!(key, "enter" | "right");
             let action = activate.then(|| open_action(&seat.access)).flatten();
             let relay = match &seat.access {
-                Access::Relay { recipient, .. } if activate && state.chat.relay.is_none() => {
+                Access::Relay { recipient, .. } if activate && self.chat.relay.is_none() => {
                     Some(recipient.clone())
                 }
                 _ => None,
             };
-            state.chat.selected = Some(selected.clone());
-            state.chat.scroll.scroll_to_item(group + 1);
+            self.chat.select(selected.clone(), group);
             if let Some(action) = action {
-                state.chat.open_error = None;
+                self.chat.clear_error();
                 window.dispatch_action(Box::new(action), cx);
             } else if let Some(recipient) = relay {
                 self.compose_chat_relay(selected.0, selected.1, recipient, window, cx);
@@ -279,9 +294,9 @@ impl Panel {
         true
     }
 
-    pub(super) fn render_chat(&self, state: &State, cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(super) fn render_chat(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
-        let mut hosts = visible_hosts(state).peekable();
+        let mut hosts = self.visible_hosts().peekable();
         let empty = hosts.peek().is_none();
         div()
             .id("openrig-chat")
@@ -289,7 +304,7 @@ impl Panel {
             .min_w_0()
             .flex_1()
             .overflow_y_scroll()
-            .track_scroll(&state.chat.scroll)
+            .track_scroll(&self.chat.scroll)
             .p_3()
             .flex()
             .flex_col()
@@ -304,14 +319,14 @@ impl Panel {
                         theme,
                         "Open the Advisor or Operator session for a host.",
                     ))
-                    .when_some(state.chat.open_error.clone(), |header, error| {
+                    .when_some(self.chat.open_error.clone(), |header, error| {
                         header.child(text(theme, error).text_color(theme.ERROR))
                     }),
             )
             .when(empty, |list| {
                 list.child(text(
                     theme,
-                    if state.filter.is_empty() {
+                    if self.filter.is_empty() {
                         "No hosts loaded. Check the OpenRig connection and try again."
                     } else {
                         "No matching seats. Clear the filter to see all hosts."
@@ -332,8 +347,8 @@ impl Panel {
                             .child(host.name.to_owned()),
                     )
                     .children(
-                        seats_matching(host, &state.filter)
-                            .map(|seat| self.render_chat_seat(state, host_id, seat, theme, cx)),
+                        seats_matching(host, &self.filter)
+                            .map(|seat| self.render_chat_seat(host_id, seat, theme, cx)),
                     )
             }))
             .into_any_element()
@@ -341,7 +356,6 @@ impl Panel {
 
     fn render_chat_seat(
         &self,
-        state: &State,
         host: &str,
         seat: ChatSeat<'_>,
         theme: &Palette,
@@ -349,7 +363,7 @@ impl Panel {
     ) -> gpui::AnyElement {
         let role = seat.role.label();
         let selector = format!("openrig-chat:{host}:{role}");
-        let selected = state
+        let selected = self
             .chat
             .selected
             .as_ref()
@@ -407,7 +421,7 @@ impl Panel {
                         ),
                     )),
             );
-        if let Some(relay) = state
+        if let Some(relay) = self
             .chat
             .relay
             .as_ref()
@@ -438,17 +452,15 @@ impl Panel {
                         .cursor_pointer()
                         .text_size(px(12.))
                         .child("Open Jcode chat")
-                        .on_click(cx.listener(move |panel, _, window, cx| {
-                            if let Some(state) = panel.openrig.as_mut() {
-                                state.chat.open_error = None;
-                            }
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.chat.clear_error();
                             window.dispatch_action(Box::new(action.clone()), cx);
                         })),
                 ),
             );
         } else if let Access::Relay { reason, recipient } = seat.access {
             let compose = format!("{selector}:relay");
-            if state.chat.relay.is_none() {
+            if self.chat.relay.is_none() {
                 let host = host.to_owned();
                 let role = seat.role;
                 row = row.child(
@@ -476,8 +488,8 @@ impl Panel {
                                 )
                                 .debug_selector(move || compose)
                                 .on_click(cx.listener(
-                                    move |panel, _, window, cx| {
-                                        panel.compose_chat_relay(
+                                    move |this, _, window, cx| {
+                                        this.compose_chat_relay(
                                             host.clone(),
                                             role,
                                             recipient.clone(),
@@ -524,11 +536,9 @@ impl Panel {
             theme,
             false,
         )
-        .on_click(cx.listener(|panel, _, window, cx| {
-            if let Some(state) = panel.openrig.as_mut() {
-                state.chat.relay = None;
-            }
-            window.focus(&panel.focus_handle, cx);
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.chat.dismiss_relay();
+            window.focus(&this.focus, cx);
             cx.notify();
         }));
         match &relay.phase {
@@ -550,9 +560,7 @@ impl Panel {
                     |buttons| {
                         buttons.child(
                             pill("openrig-chat-send", "Send via OpenRig", theme, true).on_click(
-                                cx.listener(|panel, _, window, cx| {
-                                    panel.send_chat_relay(window, cx)
-                                }),
+                                cx.listener(|this, _, window, cx| this.send_chat_relay(window, cx)),
                             ),
                         )
                     },
@@ -573,6 +581,7 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panel::Panel;
     use jcode_desktop_openrig::fleet::{Fleet, Runtime};
 
     #[gpui::test]
@@ -595,31 +604,34 @@ mod tests {
             UnknownRuntime,
         ] {
             panel.update_in(vcx, |panel, _, cx| {
-                let state = panel.openrig.as_mut().unwrap();
-                state.snapshot.fleet = Fleet::fixture();
-                let host = &mut state.snapshot.fleet.hosts[0];
-                let rigs = host.rigs.as_mut().unwrap();
-                let seats = rigs[0]
-                    .pods
-                    .as_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .flat_map(|pod| &mut pod.seats);
-                let seat = seats
-                    .into_iter()
-                    .find(|seat| seat.logical_id == "advisor.lead")
-                    .unwrap();
-                match reason {
-                    Inventory => rigs[0].pods = None,
-                    MissingSeat => seat.logical_id = "not-advisor".into(),
-                    AmbiguousSeat => rigs.push(rigs[0].clone()),
-                    Stopped => seat.session_status = Some("stopped".into()),
-                    UnknownState => seat.session_status = None,
-                    MissingNativeRef => (),
-                    UnsupportedRuntime => seat.runtime = Some(Runtime::Other("codex".into())),
-                    UnknownRuntime => seat.runtime = None,
-                }
-                state.select_kind(SectionKind::Chat);
+                let pane = panel.openrig.clone().unwrap();
+                pane.update(cx, |state, cx| {
+                    state.snapshot.fleet = Fleet::fixture();
+                    let host = &mut state.snapshot.fleet.hosts[0];
+                    let rigs = host.rigs.as_mut().unwrap();
+                    let seats = rigs[0]
+                        .pods
+                        .as_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .flat_map(|pod| &mut pod.seats);
+                    let seat = seats
+                        .into_iter()
+                        .find(|seat| seat.logical_id == "advisor.lead")
+                        .unwrap();
+                    match reason {
+                        Inventory => rigs[0].pods = None,
+                        MissingSeat => seat.logical_id = "not-advisor".into(),
+                        AmbiguousSeat => rigs.push(rigs[0].clone()),
+                        Stopped => seat.session_status = Some("stopped".into()),
+                        UnknownState => seat.session_status = None,
+                        MissingNativeRef => (),
+                        UnsupportedRuntime => seat.runtime = Some(Runtime::Other("codex".into())),
+                        UnknownRuntime => seat.runtime = None,
+                    }
+                    state.select_kind(SectionKind::Chat);
+                    cx.notify();
+                });
                 panel.set_openrig_width(px(420.), cx);
             });
             vcx.run_until_parked();

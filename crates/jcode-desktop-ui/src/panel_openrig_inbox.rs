@@ -1,4 +1,4 @@
-use super::{Panel, Palette, State, Theme, detail_lines};
+use super::{Palette, State, Theme, default_base_url, detail_lines};
 use chrono::Utc;
 use gpui::{Context, FontWeight, MouseButton, ScrollHandle, div, prelude::*, px};
 use jcode_desktop_openrig::{
@@ -31,30 +31,89 @@ impl Page {
             Self::Attention => "Needs attention",
         }
     }
-    fn view(self, state: &State) -> &InboxView {
+
+    fn subtitle(self) -> &'static str {
         match self {
-            Self::Inbox => &state.inbox,
-            Self::Attention => &state.attention,
-        }
-    }
-    pub(super) fn view_mut(self, state: &mut State) -> &mut InboxView {
-        match self {
-            Self::Inbox => &mut state.inbox,
-            Self::Attention => &mut state.attention,
+            Self::Inbox => "Requests, approvals, and seat activity across hosts.",
+            Self::Attention => {
+                "Seat issues, permissions, held messages, and parked work across hosts."
+            }
         }
     }
 }
 
-#[derive(Default)]
+/// One page's filter, selection and scroll position.
 pub(super) struct InboxView {
+    page: Page,
     filter: Option<Kind>,
-    pub(super) selected: Option<ItemId>,
-    pub(super) show_sources: bool,
+    selected: Option<ItemId>,
+    show_sources: bool,
     scroll: ScrollHandle,
 }
 
 impl InboxView {
-    fn rows<'a>(&self, page: Page, inbox: &'a Inbox, query: &str) -> Vec<&'a Item> {
+    pub(super) fn new(page: Page) -> Self {
+        Self {
+            page,
+            filter: None,
+            selected: None,
+            show_sources: false,
+            scroll: ScrollHandle::default(),
+        }
+    }
+
+    /// Select `id`. False when it already was.
+    fn select(&mut self, id: ItemId) -> bool {
+        let moved = self.selected.as_ref() != Some(&id);
+        self.selected = Some(id);
+        moved
+    }
+
+    fn close(&mut self) {
+        self.selected = None;
+    }
+
+    /// The row among `rows` that is selected, if it is still listed.
+    fn chosen<'a>(&self, rows: &[&'a Item]) -> Option<&'a Item> {
+        let id = self.selected.as_ref()?;
+        rows.iter().find(|item| &item.id == id).copied()
+    }
+
+    fn is_selected(&self, id: &ItemId) -> bool {
+        self.selected.as_ref() == Some(id)
+    }
+
+    /// The scrolling column the rows are listed in.
+    fn list(&self) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("inbox-items")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+    }
+
+    fn filter_by(&mut self, kind: Option<Kind>) {
+        self.filter = kind;
+        self.selected = None;
+    }
+
+    fn toggle_sources(&mut self) {
+        self.show_sources = !self.show_sources;
+    }
+
+    /// Open with `selected` chosen and the source issues expanded, as a capture shows it.
+    fn staged(&mut self, selected: Option<ItemId>, show_sources: bool) {
+        if selected.is_some() {
+            self.selected = selected;
+        }
+        self.show_sources |= show_sources;
+    }
+
+    fn rows<'a>(&self, inbox: &'a Inbox, query: &str) -> Vec<&'a Item> {
         let query = query.to_lowercase();
         let mut rows: Vec<_> = inbox
             .items
@@ -77,24 +136,18 @@ impl InboxView {
                         .any(|s| s.to_lowercase().contains(&query)))
             })
             .collect();
-        if matches!(page, Page::Attention) {
+        if matches!(self.page, Page::Attention) {
             rows.sort_by_key(|row| row.actions().is_empty());
         }
         rows
     }
 
-    pub(super) fn key(
-        &mut self,
-        page: Page,
-        inbox: Option<&Inbox>,
-        query: &str,
-        key: &str,
-    ) -> bool {
+    pub(super) fn key(&mut self, inbox: Option<&Inbox>, query: &str, key: &str) -> bool {
         if matches!(key, "escape" | "left") {
             return self.selected.take().is_some();
         }
         let Some(inbox) = inbox else { return false };
-        let rows = self.rows(page, inbox, query);
+        let rows = self.rows(inbox, query);
         if rows.is_empty() || !matches!(key, "j" | "down" | "k" | "up" | "enter" | "right") {
             return false;
         }
@@ -159,31 +212,74 @@ fn field(theme: &Palette, name: &str, value: impl Into<gpui::SharedString>) -> g
         .child(div().text_color(theme.TEXT).child(value.into()))
 }
 
-impl Panel {
-    pub(super) fn render_inbox(
-        &self,
-        state: &State,
-        page: Page,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
+impl State {
+    fn inbox_view(&self, page: Page) -> &InboxView {
+        match page {
+            Page::Inbox => &self.inbox,
+            Page::Attention => &self.attention,
+        }
+    }
+
+    fn inbox_view_mut(&mut self, page: Page) -> &mut InboxView {
+        match page {
+            Page::Inbox => &mut self.inbox,
+            Page::Attention => &mut self.attention,
+        }
+    }
+
+    /// Route a key to the page's list. True when the page used it.
+    pub(super) fn inbox_key(&mut self, page: Page, key: &str) -> bool {
+        let inbox = self.snapshot.inbox.as_ref();
+        let view = match page {
+            Page::Inbox => &mut self.inbox,
+            Page::Attention => &mut self.attention,
+        };
+        view.key(inbox, &self.filter, key)
+    }
+
+    /// Set up the Needs attention page for a screenshot capture.
+    pub(super) fn configure_attention_capture(&mut self) {
+        let mode = std::env::var("JCODE_DESKTOP_SCREENSHOT_OPENRIG_ATTENTION");
+        match mode.as_deref() {
+            Ok("live") => {
+                self.snapshot = jcode_desktop_openrig::fetch_snapshot(&default_base_url());
+                self.snapshot.load_attention();
+                self.attention.staged(None, true);
+                self.events.clear();
+            }
+            Ok("inspector" | "confirm") => {
+                if let Some(row) = self
+                    .snapshot
+                    .inbox
+                    .iter()
+                    .flat_map(|inbox| &inbox.items)
+                    .find(|row| !row.actions().is_empty())
+                {
+                    self.attention.staged(Some(row.id.clone()), false);
+                    if mode.as_deref() == Ok("confirm")
+                        && let Some(target) = self.snapshot.attention_target(&row.id).cloned()
+                    {
+                        self.attention_action.stage(
+                            row.id.clone(),
+                            row.actions()[0].clone(),
+                            target,
+                            None,
+                        );
+                    }
+                }
+            }
+            _ => return,
+        }
+        self.select_kind(jcode_desktop_openrig::SectionKind::Needs);
+    }
+
+    pub(super) fn render_inbox(&self, page: Page, cx: &mut Context<Self>) -> gpui::Div {
         let theme = Theme::global();
-        let view = page.view(state);
-        let snapshot = state.snapshot.inbox.as_ref();
-        let rows = snapshot.map_or_else(Vec::new, |inbox| view.rows(page, inbox, &state.filter));
-        let selected = view
-            .selected
-            .as_ref()
-            .and_then(|id| rows.iter().find(|item| &item.id == id))
-            .copied();
-        let mut list = div()
-            .id("inbox-items")
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .overflow_y_scroll()
-            .track_scroll(&view.scroll);
+        let view = self.inbox_view(page);
+        let snapshot = self.snapshot.inbox.as_ref();
+        let rows = snapshot.map_or_else(Vec::new, |inbox| view.rows(inbox, &self.filter));
+        let selected = view.chosen(&rows);
+        let mut list = view.list();
 
         if rows.is_empty() {
             let (heading, message) = match snapshot {
@@ -225,7 +321,7 @@ impl Panel {
 
         for (index, item) in rows.into_iter().enumerate() {
             let id = item.id.clone();
-            let active = view.selected.as_ref() == Some(&id);
+            let active = view.is_selected(&id);
             let seat = item.seat.as_deref().unwrap_or(UNKNOWN);
             let rig = item.rig.as_deref().unwrap_or(UNKNOWN);
             list = list.child(
@@ -248,13 +344,11 @@ impl Panel {
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |panel, _, window, cx| {
-                            if let Some(state) = panel.openrig.as_mut() {
-                                state.attention_action.cancel();
-                                page.view_mut(state).selected = Some(id.clone());
-                                state.explorer = false;
-                            }
-                            window.focus(&panel.focus_handle, cx);
+                        cx.listener(move |this, _, window, cx| {
+                            this.attention_action.cancel();
+                            this.inbox_view_mut(page).select(id.clone());
+                            this.explorer = false;
+                            window.focus(&this.focus, cx);
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -316,20 +410,16 @@ impl Panel {
                         theme.HEADER_BG
                     })
                     .child(kind.map_or("All", Kind::label))
-                    .on_click(cx.listener(move |panel, _, window, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.attention_action.cancel();
-                            let view = page.view_mut(state);
-                            view.filter = kind;
-                            view.selected = None;
-                        }
-                        window.focus(&panel.focus_handle, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.attention_action.cancel();
+                        this.inbox_view_mut(page).filter_by(kind);
+                        window.focus(&this.focus, cx);
                         cx.notify();
                     })),
             );
         }
 
-        let show_list = !state.compact || selected.is_none();
+        let show_list = !self.compact || selected.is_none();
         div()
             .flex_1()
             .min_w_0()
@@ -358,45 +448,83 @@ impl Panel {
                                         .child(page.title()),
                                 )
                                 .child(
-                                    div().text_size(px(12.)).text_color(theme.TEXT_DIM).child(
-                                        match page {
-                                            Page::Inbox => "Requests, approvals, and seat activity across hosts.",
-                                            Page::Attention => "Seat issues, permissions, held messages, and parked work across hosts.",
-                                        },
-                                    ),
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(page.subtitle()),
                                 ),
                         )
-                        .children(state.attention_action.notice(snapshot).map(|(text, error)| {
-                            div().text_size(px(12.)).text_color(if error { theme.ERROR } else { theme.TEXT_DIM }).child(text.to_owned())
+                        .children(self.attention_action.notice(snapshot).map(|(text, error)| {
+                            div()
+                                .text_size(px(12.))
+                                .text_color(if error { theme.ERROR } else { theme.TEXT_DIM })
+                                .child(text.to_owned())
                         }))
-                        .children(
-                            snapshot
-                                .map(|inbox| {
-                                    let hosts = inbox.hosts.iter().filter(|host| host.status == "ok")
-                                        .map(|host| host.host_id.as_str()).collect::<Vec<_>>().join(", ");
-                                    div().flex().flex_col().gap_1().text_size(px(12.))
-                                        .when(!hosts.is_empty(), |el| el.child(div().text_color(theme.TEXT_DIM).child(format!("Queue read: {hosts}"))))
-                                        .when(!inbox.issues.is_empty(), |el| el.child(div().flex().child(div()
-                                            .id("inbox-show-sources")
-                                            .px_3().py_1().rounded_full().bg(theme.HEADER_BG).text_color(theme.WARN).cursor_pointer()
-                                            .child(if view.show_sources { "Hide source issues".into() } else { format!("Source issues ({})", inbox.issues.len()) })
-                                            .on_click(cx.listener(move |panel, _, _, cx| {
-                                                if let Some(state) = panel.openrig.as_mut() {
-                                                    let view = page.view_mut(state);
-                                                    view.show_sources = !view.show_sources;
+                        .children(snapshot.map(|inbox| {
+                            let hosts = inbox
+                                .hosts
+                                .iter()
+                                .filter(|host| host.status == "ok")
+                                .map(|host| host.host_id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_size(px(12.))
+                                .when(!hosts.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .text_color(theme.TEXT_DIM)
+                                            .child(format!("Queue read: {hosts}")),
+                                    )
+                                })
+                                .when(!inbox.issues.is_empty(), |el| {
+                                    el.child(
+                                        div().flex().child(
+                                            div()
+                                                .id("inbox-show-sources")
+                                                .px_3()
+                                                .py_1()
+                                                .rounded_full()
+                                                .bg(theme.HEADER_BG)
+                                                .text_color(theme.WARN)
+                                                .cursor_pointer()
+                                                .child(if view.show_sources {
+                                                    "Hide source issues".into()
+                                                } else {
+                                                    format!(
+                                                        "Source issues ({})",
+                                                        inbox.issues.len()
+                                                    )
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.inbox_view_mut(page).toggle_sources();
                                                     cx.notify();
-                                                }
-                                            })))))
-                                        .when(view.show_sources && !inbox.issues.is_empty(), |el| el.child(div()
-                                            .id("inbox-status").max_h(px(144.)).overflow_y_scroll().p_2()
-                                            .text_color(theme.WARN).child(inbox.issues.join("\n"))))
-                                }),
-                        )
+                                                })),
+                                        ),
+                                    )
+                                })
+                                .when(view.show_sources && !inbox.issues.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .id("inbox-status")
+                                            .max_h(px(144.))
+                                            .overflow_y_scroll()
+                                            .p_2()
+                                            .text_color(theme.WARN)
+                                            .child(inbox.issues.join("\n")),
+                                    )
+                                })
+                        }))
                         .child(filters)
                         .child(list),
                 )
             })
-            .children(selected.map(|item| self.render_inbox_detail(item, page, state.compact, theme, cx)))
+            .children(
+                selected.map(|item| self.render_inbox_detail(item, page, self.compact, theme, cx)),
+            )
     }
 
     fn render_inbox_detail(
@@ -443,12 +571,10 @@ impl Panel {
                             .text_size(px(11.))
                             .cursor_pointer()
                             .child(if compact { "Back to list" } else { "Close" })
-                            .on_click(cx.listener(move |panel, _, window, cx| {
-                                if let Some(state) = panel.openrig.as_mut() {
-                                    state.attention_action.cancel();
-                                    page.view_mut(state).selected = None;
-                                }
-                                window.focus(&panel.focus_handle, cx);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.attention_action.cancel();
+                                this.inbox_view_mut(page).close();
+                                window.focus(&this.focus, cx);
                                 cx.notify();
                             })),
                     ),

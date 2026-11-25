@@ -988,7 +988,7 @@ pub struct Panel {
     todoist: Option<TodoistPanelState>,
     /// Live sessions, their run state and todos. Never shows chat content.
     orchestration: Option<orchestration::State>,
-    openrig: Option<openrig::State>,
+    openrig: Option<Entity<openrig::State>>,
     recovery_picker_open: bool,
     /// Pending `ask` tool questions, answered from an inline card.
     ask_card: Option<ask::AskCard>,
@@ -1784,6 +1784,13 @@ impl Panel {
         }
         let activity_owner = cx.entity();
         let queue_items_scroll = gpui::ScrollHandle::new();
+        let focus_handle = cx.focus_handle();
+        let openrig = (crate::harness::screenshot_mode() && fixture.as_deref() == Some("openrig"))
+            .then(|| {
+                let focus = focus_handle.clone();
+                let session = session_id.clone();
+                cx.new(|_| openrig::State::screenshot_fixture(focus, session))
+            });
         Self {
             session_id,
             title: display_title.into(),
@@ -1869,7 +1876,7 @@ impl Panel {
             image_preview_zoom: 1.0,
             image_preview_scroll: gpui::ScrollHandle::new(),
             image_preview_drag: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             rewind_selection: None,
             transcript_list,
             clean_chat_override: match fixture.as_deref().filter(|_| crate::harness::screenshot_mode()) {
@@ -1947,8 +1954,7 @@ impl Panel {
             applet: None,
             todoist: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos"))
                 .then(|| TodoistPanelState::fixture(80)),
-            openrig: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("openrig"))
-                .then(openrig::State::screenshot_fixture),
+            openrig,
             orchestration: (crate::harness::screenshot_mode()
                 && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
@@ -7028,7 +7034,7 @@ impl Render for Panel {
             return self.render_todoist(window, cx);
         }
         if self.openrig.is_some() {
-            return self.render_openrig(window, cx);
+            return self.render_openrig();
         }
         if self.orchestration.is_some() {
             return self.render_orchestration(window, cx);

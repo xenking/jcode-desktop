@@ -5776,7 +5776,7 @@ impl Workspace {
                 && slot
                     .panel
                     .read_chat(cx)
-                    .is_some_and(|panel| panel.openrig_width_changed(content_width))
+                    .is_some_and(|panel| panel.openrig_width_changed(content_width, cx))
             {
                 slot.panel
                     .update_chat(cx, |panel, cx| panel.set_openrig_width(content_width, cx));

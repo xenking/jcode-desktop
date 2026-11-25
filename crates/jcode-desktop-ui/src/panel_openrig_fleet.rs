@@ -1,6 +1,6 @@
 //! Fleet outline and seat properties for the OpenRig panel.
 
-use super::{Panel, State, tone_color};
+use super::{State, tone_color};
 use crate::{
     theme::{Palette, Theme},
     ui_actions::OpenFleetSession,
@@ -230,6 +230,41 @@ impl FleetView {
         }
     }
 
+    fn is_collapsed(&self, key: &str) -> bool {
+        self.collapsed.contains(key)
+    }
+
+    /// The scrolling column the outline is listed in.
+    fn outline(&self) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("fleet-outline")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .pb_3()
+    }
+
+    pub(super) fn close_properties(&mut self) {
+        self.properties = false;
+    }
+
+    /// A click selects the row, shows a seat's properties, and optionally folds the row.
+    fn click(&mut self, key: String, is_seat: bool, toggles: bool) {
+        self.selected = Some(key.clone());
+        if is_seat {
+            self.properties = true;
+        }
+        if toggles {
+            self.toggle(key);
+        }
+    }
+
     pub(super) fn key(
         &mut self,
         fleet: &Fleet,
@@ -293,36 +328,25 @@ fn status_text(status: &str) -> String {
     label
 }
 
-impl Panel {
-    pub(super) fn render_fleet(&self, state: &State, cx: &Context<Self>) -> gpui::Div {
+impl State {
+    pub(super) fn render_fleet(&self, cx: &Context<Self>) -> gpui::Div {
         let theme = Theme::global();
-        let fleet = &state.snapshot.fleet;
-        let items = state.fleet.visible(fleet, &state.filter);
-        let selected = state.fleet.selected(&items);
+        let fleet = &self.snapshot.fleet;
+        let items = self.fleet.visible(fleet, &self.filter);
+        let selected = self.fleet.selected(&items);
         let seat_item = selected
             .and_then(|index| items.get(index))
             .copied()
             .filter(|item| matches!(item, Item::Seat(..)));
-        let show_properties = state.fleet.properties && seat_item.is_some();
-        let mut list = div()
-            .id("fleet-outline")
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&state.fleet.scroll)
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_3()
-            .pb_3();
-        let filtered = !state.filter.is_empty();
+        let show_properties = self.fleet.properties && seat_item.is_some();
+        let mut list = self.fleet.outline();
+        let filtered = !self.filter.is_empty();
         for (index, item) in items.iter().copied().enumerate() {
             let key = item.key();
             let is_seat = matches!(item, Item::Seat(..));
             let has_children = item.has_children() && !filtered;
             let marker = if has_children {
-                if state.fleet.collapsed.contains(&key) {
+                if self.fleet.is_collapsed(&key) {
                     "▸"
                 } else {
                     "▾"
@@ -355,18 +379,14 @@ impl Panel {
                 })
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |panel, event: &gpui::MouseDownEvent, window, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.fleet.selected = Some(key.clone());
-                            state.explorer = false;
-                            if is_seat {
-                                state.fleet.properties = true;
-                            }
-                            if has_children && event.click_count == 1 {
-                                state.fleet.toggle(key.clone());
-                            }
-                        }
-                        window.focus(&panel.focus_handle, cx);
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        this.explorer = false;
+                        this.fleet.click(
+                            key.clone(),
+                            is_seat,
+                            has_children && event.click_count == 1,
+                        );
+                        window.focus(&this.focus, cx);
                         cx.stop_propagation();
                         cx.notify();
                     }),
@@ -402,7 +422,7 @@ impl Panel {
                 )
                 .child(
                     div()
-                        .max_w(px(if state.compact { 82. } else { 125. }))
+                        .max_w(px(if self.compact { 82. } else { 125. }))
                         .truncate()
                         .text_size(px(11.))
                         .text_color(theme.TEXT_DIM)
@@ -411,7 +431,7 @@ impl Panel {
             let row = if let Some(status) = item.status().or(is_seat.then_some(UNKNOWN)) {
                 row.child(
                     div()
-                        .max_w(px(if state.compact { 70. } else { 125. }))
+                        .max_w(px(if self.compact { 70. } else { 125. }))
                         .truncate()
                         .text_size(px(11.))
                         .text_color(status_color(theme, status))
@@ -431,9 +451,9 @@ impl Panel {
                     .text_color(theme.TEXT_DIM)
                     .child(if filtered {
                         "No fleet entries match your filter."
-                    } else if state.snapshot.error.is_some() {
+                    } else if self.snapshot.error.is_some() {
                         "Fleet inventory is unavailable."
-                    } else if state.snapshot.sections.is_empty() {
+                    } else if self.snapshot.sections.is_empty() {
                         "Loading fleet…"
                     } else {
                         "No hosts reported."
@@ -468,18 +488,17 @@ impl Panel {
             .child(title)
             .child(list);
         let mut body = div().flex().flex_1().min_w_0().min_h_0().overflow_hidden();
-        if !state.compact || !show_properties {
+        if !self.compact || !show_properties {
             body = body.child(outline);
         }
         if show_properties && let Some(Item::Seat(host, rig, pod, seat)) = seat_item {
-            body = body.child(self.render_seat_properties(state, host, rig, pod, seat, cx));
+            body = body.child(self.render_seat_properties(host, rig, pod, seat, cx));
         }
         body
     }
 
     fn render_seat_properties(
         &self,
-        state: &State,
         host: &Host,
         rig: &Rig,
         pod: &Pod,
@@ -531,12 +550,12 @@ impl Panel {
             .gap_3()
             .p_4()
             .overflow_y_scroll();
-        properties = if state.compact {
+        properties = if self.compact {
             properties.flex_1()
         } else {
             properties.w(px(278.)).flex_none()
         };
-        if state.compact {
+        if self.compact {
             properties = properties.child(
                 div()
                     .id("fleet-back")
@@ -548,10 +567,8 @@ impl Panel {
                     .text_size(px(11.))
                     .bg(theme.HEADER_BG)
                     .cursor_pointer()
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        if let Some(state) = panel.openrig.as_mut() {
-                            state.fleet.properties = false;
-                        }
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.fleet.close_properties();
                         cx.notify();
                     }))
                     .child("‹ Fleet"),
