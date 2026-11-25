@@ -411,7 +411,7 @@ impl Workspace {
             {
                 None => resume_preview_notice("Loading conversation…"),
                 Some(Err(error)) => resume_preview_notice(error.clone()),
-                Some(Ok(panel)) if panel.read(cx).items.is_empty() => {
+                Some(Ok(panel)) if !panel.read(cx).has_history() => {
                     resume_preview_notice("No conversation messages yet.")
                 }
                 Some(Ok(panel)) => panel.clone().into_any_element(),
