@@ -74,7 +74,7 @@ impl Workspace {
                     user_connected: false,
                     session_id: panel.session_id.clone(),
                     working_dir: panel.working_dir.clone(),
-                    title: Some(panel.title.to_string()),
+                    title: Some(panel.title_text()),
                     status: "active".into(),
                     transcript_bytes: None,
                     saved: false,
@@ -275,22 +275,21 @@ impl Workspace {
                         let title = session
                             .title
                             .as_ref()
-                            .filter(|title| panel.title.as_ref() != *title);
+                            .filter(|title| !panel.is_titled(title));
                         // Restored panels can predate directory metadata. Refresh it
                         // along with the title so the identity footer stays current.
                         // Missing catalog metadata must not erase a known directory.
                         let directory = session.working_dir.as_ref().filter(|dir| {
-                            !dir.trim().is_empty() && panel.working_dir.as_ref() != Some(*dir)
+                            !dir.trim().is_empty() && !panel.is_in(dir)
                         });
                         if title.is_some() || directory.is_some() {
                             slot.panel.update_chat(cx, |panel, cx| {
                                 if let Some(title) = title {
-                                    panel.title = title.clone().into();
+                                    panel.set_title(title.clone(), cx);
                                 }
                                 if let Some(directory) = directory {
-                                    panel.working_dir = Some(directory.clone());
+                                    panel.set_working_dir(Some(directory.clone()), cx);
                                 }
-                                cx.notify();
                             });
                         }
                         break;
@@ -711,9 +710,7 @@ impl Workspace {
                         slot.panel.update_chat(cx, |panel, cx| {
                             if !panel.session_saved_settled(saved, None, Some(&error)) {
                                 let verb = if saved { "save" } else { "unsave" };
-                                panel.items.push(crate::panel::Item::Error(format!(
-                                    "Failed to {verb} session: {error}"
-                                )));
+                                panel.report_error(format!("Failed to {verb} session: {error}"), cx);
                             }
                             crate::sounds::play(crate::sounds::Cue::Error, cx);
                             cx.notify();
@@ -904,9 +901,9 @@ impl Workspace {
                     if slot.panel.session_id(cx) == session_id {
                         slot.panel.update_chat(cx, |panel, cx| {
                             if panel.is_pending_session() {
-                                panel.status = "Session creation failed · draft retained".into();
+                                panel.set_status("Session creation failed · draft retained", cx);
                             }
-                            panel.items.push(crate::panel::Item::Error(reason.clone()));
+                            panel.report_error(reason.clone(), cx);
                             crate::sounds::play(crate::sounds::Cue::Error, cx);
                             cx.notify();
                         });
