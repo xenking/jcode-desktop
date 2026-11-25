@@ -5720,6 +5720,10 @@ mod submission_tests;
 #[path = "harness_remote_tests.rs"]
 mod remote_tests;
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "harness_paired_gateway_tests.rs"]
+mod paired_gateway_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -33,7 +33,10 @@ impl Destination {
     ) -> Result<Self, String> {
         let url =
             reqwest::Url::parse(endpoint.trim()).map_err(|_| "Enter a valid HTTPS endpoint")?;
-        if url.scheme() != "https"
+        let loopback_http = cfg!(test)
+            && url.scheme() == "http"
+            && url.host_str().is_some_and(|h| h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()));
+        if !(url.scheme() == "https" || loopback_http)
             || url.host_str().is_none()
             || !url.username().is_empty()
             || url.password().is_some()
@@ -91,7 +94,7 @@ pub fn find(host: &str) -> Result<Destination, String> {
     Ok(destination)
 }
 
-fn write_all(destinations: &[Destination]) -> Result<(), String> {
+pub(crate) fn write_all(destinations: &[Destination]) -> Result<(), String> {
     let path = path();
     let dir = path.parent().ok_or("Invalid paired machines path")?;
     fs::create_dir_all(dir).map_err(|_| "Could not create paired machines directory")?;
@@ -158,16 +161,60 @@ pub fn set_working_dir(id: &str, working_dir: &str) -> Result<Destination, Strin
     Ok(updated)
 }
 
+/// Tests keep tokens in memory and never touch the real Keychain.
+#[cfg(test)]
+static TEST_TOKENS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Run `f` with `JCODE_HOME` pointing at a fresh directory. Serialized, because
+/// the environment is process-wide.
+#[cfg(test)]
+pub(crate) fn with_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    // SAFETY: serialized by HOME_LOCK against every other user of this helper.
+    unsafe { std::env::set_var("JCODE_HOME", home.path()) };
+    let result = f(home.path());
+    unsafe { std::env::remove_var("JCODE_HOME") };
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_token(id: &str, token: &str) {
+    let mut tokens = TEST_TOKENS.lock().unwrap();
+    tokens.retain(|(known, _)| known != id);
+    tokens.push((id.to_owned(), token.to_owned()));
+}
+
 #[cfg(target_os = "macos")]
 fn set_token(id: &str, token: &str) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        set_test_token(id, token);
+        return Ok(());
+    }
+    #[cfg(not(test))]
     security_framework::passwords::set_generic_password(SERVICE, id, token.as_bytes())
         .map_err(|_| "Could not save token in Keychain".into())
 }
 #[cfg(target_os = "macos")]
 pub fn token(id: &str) -> Result<String, String> {
-    let bytes = security_framework::passwords::get_generic_password(SERVICE, id)
-        .map_err(|_| "Paired token unavailable in Keychain")?;
-    String::from_utf8(bytes).map_err(|_| "Invalid paired token".into())
+    #[cfg(test)]
+    {
+        TEST_TOKENS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(known, _)| known == id)
+            .map(|(_, token)| token.clone())
+            .ok_or_else(|| "Paired token unavailable in Keychain".into())
+    }
+    #[cfg(not(test))]
+    {
+        let bytes = security_framework::passwords::get_generic_password(SERVICE, id)
+            .map_err(|_| "Paired token unavailable in Keychain")?;
+        String::from_utf8(bytes).map_err(|_| "Invalid paired token".into())
+    }
 }
 #[cfg(target_os = "macos")]
 fn delete_token(id: &str) -> Result<(), String> {
@@ -208,20 +255,18 @@ mod tests {
 
     #[test]
     fn working_dir_is_editable_per_machine_and_validated() {
-        let home = tempfile::tempdir().unwrap();
-        // SAFETY: the only test in this crate touching JCODE_HOME for paired machines.
-        unsafe { std::env::set_var("JCODE_HOME", home.path()) };
-        let a = Destination::new("https://a.example", "A", "/a").unwrap();
-        let b = Destination::new("https://b.example", "B", "/b").unwrap();
-        write_all(&[a.clone(), b.clone()]).unwrap();
-        let updated = set_working_dir(&a.id, " /a/new ").unwrap();
-        assert_eq!(updated.working_dir, "/a/new");
-        assert_eq!(updated.label, "A");
-        assert!(set_working_dir(&a.id, "relative").is_err());
-        let listed = list().unwrap();
-        assert_eq!(listed[0].working_dir, "/a/new");
-        assert_eq!(listed[1].working_dir, "/b");
-        assert!(set_working_dir("missing", "/x").is_err());
-        unsafe { std::env::remove_var("JCODE_HOME") };
+        with_home(|_| {
+            let a = Destination::new("https://a.example", "A", "/a").unwrap();
+            let b = Destination::new("https://b.example", "B", "/b").unwrap();
+            write_all(&[a.clone(), b.clone()]).unwrap();
+            let updated = set_working_dir(&a.id, " /a/new ").unwrap();
+            assert_eq!(updated.working_dir, "/a/new");
+            assert_eq!(updated.label, "A");
+            assert!(set_working_dir(&a.id, "relative").is_err());
+            let listed = list().unwrap();
+            assert_eq!(listed[0].working_dir, "/a/new");
+            assert_eq!(listed[1].working_dir, "/b");
+            assert!(set_working_dir("missing", "/x").is_err());
+        });
     }
 }

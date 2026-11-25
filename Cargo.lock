@@ -3724,6 +3724,7 @@ version = "0.7.0"
 dependencies = [
  "async-channel",
  "base64",
+ "futures",
  "jcode-applet-types",
  "jcode-base",
  "jcode-build-support",
@@ -3738,6 +3739,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml 0.8.23",
  "uuid",
 ]
