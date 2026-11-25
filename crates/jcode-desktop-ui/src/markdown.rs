@@ -753,6 +753,22 @@ fn inline_file_mentions(inline: &Inline, base: &Path) -> Vec<(Range<usize>, Path
     mentions
 }
 
+/// Check unconfirmed mentions in the background. They render as plain text
+/// until the answer lands, then the windows redraw once if any became links.
+fn probe_queued_file_mentions(cx: &gpui::App) {
+    let queued = FILE_REFERENCES.with_borrow_mut(FileReferenceCache::take_queued);
+    crate::background_probe::run(cx, queued, |path| FileReferenceCache::probe(path), |answers, cx| {
+        let changed = FILE_REFERENCES.with_borrow_mut(|cache| {
+            answers
+                .into_iter()
+                .fold(false, |changed, (path, exists)| cache.fill(path, exists) | changed)
+        });
+        if changed {
+            cx.refresh_windows();
+        }
+    });
+}
+
 /// Inline spans: strip `code`, **bold**, *italic*, ~~strike~~ and link syntax,
 /// returning plain text plus highlight ranges (byte offsets into the plain
 /// text) and any link targets.
@@ -1765,7 +1781,11 @@ fn styled_inline_layout(
 ) -> (gpui::AnyElement, gpui::TextLayout) {
     let transcript_links = TRANSCRIPT_LINKS.with_borrow(Clone::clone);
     let mentions = match &transcript_links {
-        Some((handler, true)) => inline_file_mentions(&inline, &handler.base),
+        Some((handler, true)) => {
+            let mentions = inline_file_mentions(&inline, &handler.base);
+            probe_queued_file_mentions(cx);
+            mentions
+        }
         _ => Vec::new(),
     };
     let images = PROMPT_IMAGES.with(|slot| slot.borrow().clone());

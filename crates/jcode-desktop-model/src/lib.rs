@@ -15,6 +15,7 @@ pub mod learning;
 pub mod markdown_file;
 pub mod pdf_render;
 pub mod platform_dirs;
+pub mod probe_cache;
 pub mod prompt_completion;
 pub mod text_buffer;
 pub mod todoist;

@@ -3,6 +3,7 @@
 //! owner-only). Applies to every Jcode client, not just this window.
 use super::*;
 use crate::login_input::LoginInput;
+use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 use jcode_voice::{DictationBackend, StreamingBackend};
 
 /// Where the SuperWhisper bridge script is installed.
@@ -99,8 +100,22 @@ fn install_superwhisper_bridge() -> std::io::Result<String> {
     Ok(crate::panel::voice::bridge_command(&path))
 }
 
-fn superwhisper_installed() -> bool {
-    cfg!(target_os = "macos") && Path::new("/Applications/superwhisper.app").exists()
+thread_local! {
+    static SUPERWHISPER: std::cell::RefCell<ProbeCache<(), bool>> =
+        std::cell::RefCell::new(ProbeCache::new(std::time::Duration::from_secs(30), 1));
+}
+
+/// Whether the app is installed, as of the last background check. The button
+/// appears once the answer lands. Render never touches the disk.
+fn superwhisper_installed(cx: &gpui::App) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    let installed = SUPERWHISPER.with_borrow_mut(|cache| cache.get(&()).copied().unwrap_or(false));
+    crate::background_probe::drain_local(cx, &SUPERWHISPER, |_| {
+        fs_probe::off_main(|| fs_probe::exists(Path::new("/Applications/superwhisper.app")))
+    });
+    installed
 }
 
 fn pill(id: &'static str, selected: bool) -> gpui::Stateful<gpui::Div> {
@@ -338,7 +353,7 @@ impl Workspace {
                     .child("Edit command"),
             );
         }
-        if superwhisper_installed() {
+        if superwhisper_installed(cx) {
             actions = actions.child(
                 pill("settings-voice-superwhisper", false)
                     .on_mouse_down(

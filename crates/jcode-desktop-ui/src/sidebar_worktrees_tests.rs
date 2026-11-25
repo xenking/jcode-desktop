@@ -403,7 +403,7 @@ fn render_frames_probe_filesystem_counts(cx: &mut gpui::TestAppContext) {
         session("src-chat", &format!("{}/src", f.main)),
     ];
     let main = f.main.clone();
-    let (main_probes, background, cold_renders) = {
+    {
         let (m0, b0) = (fs_probe::count(), fs_probe::background_count());
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -432,7 +432,29 @@ fn render_frames_probe_filesystem_counts(cx: &mut gpui::TestAppContext) {
             "FS-PROBES cold(window+settle): main={} background={} | warm 3 frames: main={} bg={} renders={} | ttl-expired 1 frame: main={} bg={} renders={} | next 3 frames: main={} bg={} renders={}",
             cold.0, cold.1, warm.0, warm.1, warm.2, expired.0, expired.1, expired.2, after_expiry.0, after_expiry.1, after_expiry.2
         );
-        (cold.0, cold.1, 0)
-    };
-    let _ = (main_probes, background, cold_renders);
+        // Render never reads the disk. The probes still run, on the background
+        // executor, once per cold key and once per expired key.
+        assert_eq!(cold.0, 0, "cold frames probe on the main thread");
+        assert!(cold.1 > 0, "a cold frame queues background probes");
+        assert_eq!((warm.0, warm.1), (0, 0), "warm frames reuse the cache");
+        assert_eq!(expired.0, 0, "an expired TTL refreshes in the background");
+        assert!(expired.1 > 0, "an expired TTL queues a background refresh");
+        assert_eq!((after_expiry.0, after_expiry.1), (0, 0));
+        // Answers landed: mentions of real files are links, the rest are text.
+        assert!(text(vcx, "markdown-link:docs/report.md"));
+        assert!(text(vcx, "markdown-link:docs/notes.txt:12"));
+        assert!(!text(vcx, "markdown-link:docs/draft.md"));
+        assert!(text(vcx, "sidebar-project-0"));
+        assert!(text(vcx, "sidebar-checkout-0"));
+        // Branch headers came from the background probe: the linked worktree
+        // starts its own checkout group.
+        let headers = workspace.read_with(vcx, |w, _| {
+            w.sidebar_session_layout
+                .iter()
+                .filter(|row| row.checkout_header)
+                .map(|row| row.session_id.clone())
+                .collect::<Vec<_>>()
+        });
+        assert!(headers.contains(&"search-chat".to_owned()), "{headers:?}");
+    }
 }

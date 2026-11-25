@@ -2,7 +2,7 @@
 //! spawned in, or its working directory outside Git. Grouping is presentation
 //! only. It never closes, moves, or reorders panels.
 use super::*;
-use jcode_desktop_model::fs_probe;
+use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 
 /// Key for sessions without any working directory.
 pub(super) const OTHER: &str = "";
@@ -13,6 +13,8 @@ pub(super) struct Project {
     pub label: String,
     /// Full location shown in the header tooltip.
     pub location: Option<String>,
+    /// The key is a Git repository root, as far as the last probe knows.
+    pub git: bool,
 }
 
 /// One Git checkout inside a project: the main working tree or a linked
@@ -24,20 +26,47 @@ pub(super) struct Checkout {
     pub linked: bool,
 }
 
-/// Branches move underneath us (checkout, rebase), so HEAD is re-read after
-/// this interval rather than on every hover repaint.
+/// Branches move underneath us (checkout, rebase), so a directory is probed
+/// again after this interval. The old answer keeps rendering meanwhile.
 const CHECKOUT_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Default)]
+/// What Git says about one directory. Probed in the background, since render
+/// must never read the disk.
+#[derive(Clone, Debug, PartialEq)]
+struct Probe {
+    root: Option<PathBuf>,
+    checkout: Option<Checkout>,
+}
+
+fn probe_directory(directory: &String) -> Probe {
+    fs_probe::off_main(|| {
+        let directory = Path::new(directory);
+        Probe {
+            root: git_root(directory),
+            checkout: probe_checkout(directory),
+        }
+    })
+}
+
 pub(super) struct State {
     /// Explicit disclosure choices. Unset projects use their default.
     pub(super) collapsed: HashMap<String, bool>,
     focused: Option<String>,
-    /// Working directory to repository root. Filesystem probes run once per
-    /// directory, never on every hover repaint.
-    roots: HashMap<String, Option<PathBuf>>,
-    checkouts: HashMap<String, (Option<Checkout>, Instant)>,
+    /// Working directory to its Git state. Render reads this only. Until a
+    /// directory has been probed it is a plain folder with no branch.
+    probes: ProbeCache<String, Probe>,
     paired_labels: HashMap<String, String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            collapsed: HashMap::new(),
+            focused: None,
+            probes: ProbeCache::new(CHECKOUT_TTL, 1024),
+            paired_labels: HashMap::new(),
+        }
+    }
 }
 
 impl State {
@@ -72,26 +101,46 @@ impl State {
             .as_deref()
             .map(str::trim)
             .filter(|d| !d.is_empty())?;
-        if let Some((cached, read)) = self.checkouts.get(directory)
-            && fs_probe::now().duration_since(*read) < CHECKOUT_TTL
-        {
-            return cached.clone();
-        }
-        let value = probe_checkout(Path::new(directory));
-        self.checkouts
-            .insert(directory.to_owned(), (value.clone(), fs_probe::now()));
-        value
+        self.probes.get(directory)?.checkout.clone()
     }
 
     fn root(&mut self, directory: &str) -> Option<PathBuf> {
-        // Borrow the key on cache hits rather than allocating it for entry().
-        // A cached negative result is authoritative too.
-        if let Some(root) = self.roots.get(directory) {
-            return root.clone();
+        self.probes.get(directory)?.root.clone()
+    }
+
+    /// Probe the directories this frame asked about, off the UI thread. When
+    /// the answers land the sidebar redraws if anything differs.
+    pub(super) fn probe_in_background(&mut self, cx: &mut Context<Workspace>) {
+        let directories = self.probes.take_queued();
+        let workspace = cx.entity().downgrade();
+        crate::background_probe::run(cx, directories, probe_directory, move |answers, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    if workspace.sidebar_projects.apply(answers) {
+                        cx.notify();
+                    }
+                })
+                .ok();
+        });
+    }
+
+    /// Store probe answers. Returns whether the sidebar would look different.
+    fn apply(&mut self, answers: Vec<(String, Probe)>) -> bool {
+        let mut changed = false;
+        for (directory, probe) in answers {
+            let project_of = |probe: Option<&Probe>| {
+                probe.and_then(|probe| probe.root.clone()).unwrap_or_else(|| PathBuf::from(&directory))
+            };
+            let moved = project_of(self.probes.peek(&directory)) != project_of(Some(&probe));
+            changed |= self.probes.fill(directory, probe);
+            if moved {
+                // Sessions regroup under the repository root. Reveal the
+                // focused one's project again instead of leaving it collapsed
+                // under the key it briefly had.
+                self.focused = None;
+            }
         }
-        let root = git_root(Path::new(directory));
-        self.roots.insert(directory.to_owned(), root.clone());
-        root
+        changed
     }
 
     /// The session's project and, when it differs, its directory inside it.
@@ -128,6 +177,7 @@ impl State {
                     },
                     label,
                     location: sidebar_session_directory(session),
+                    git: false,
                 },
                 None,
             );
@@ -138,13 +188,14 @@ impl State {
                     key: OTHER.into(),
                     label: "No directory".into(),
                     location: None,
+                    git: false,
                 },
                 None,
             );
         };
-        let root = self
-            .root(directory)
-            .unwrap_or_else(|| PathBuf::from(directory));
+        let git_root = self.root(directory);
+        let git = git_root.is_some();
+        let root = git_root.unwrap_or_else(|| PathBuf::from(directory));
         let root_text = root.to_string_lossy().into_owned();
         let subdirectory = match Path::new(directory).strip_prefix(&root) {
             Ok(relative) if relative.as_os_str().is_empty() => None,
@@ -157,6 +208,7 @@ impl State {
                 label: path_label(&root_text),
                 location: Some(compact_working_dir(&root_text)),
                 key: root_text,
+                git,
             },
             subdirectory,
         )
@@ -260,9 +312,7 @@ impl Workspace {
         let local = Path::new(&project.key)
             .is_absolute()
             .then(|| project.key.clone());
-        let git = local
-            .as_deref()
-            .is_some_and(|dir| fs_probe::exists(&Path::new(dir).join(".git")));
+        let git = project.git && local.is_some();
         let group: &'static str = "sidebar-project-header";
         div()
             .id(("sidebar-project", index))
@@ -492,16 +542,51 @@ impl Workspace {
 mod tests {
     use super::*;
 
+    /// What the background task does, run in place.
+    fn settle(state: &mut State) -> bool {
+        let answers = state
+            .probes
+            .take_queued()
+            .into_iter()
+            .map(|directory| {
+                let probe = probe_directory(&directory);
+                (directory, probe)
+            })
+            .collect();
+        state.apply(answers)
+    }
+
     #[test]
-    fn cached_missing_repository_is_not_probed_again() {
+    fn render_reads_only_cached_git_state_until_a_probe_lands() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().to_str().unwrap();
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+        std::fs::write(temp.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let mut state = State::default();
+        let before = fs_probe::count();
+        assert_eq!(state.root(directory), None);
+        assert_eq!(fs_probe::count(), before, "a miss must not touch the disk");
+        assert!(settle(&mut state));
+        assert_eq!(state.root(directory), Some(temp.path().to_path_buf()));
+        assert_eq!(state.probes.peek(directory).unwrap().checkout.as_ref().unwrap().branch, "main");
+        assert!(!settle(&mut state), "nothing is queued while the answer is fresh");
+    }
+
+    #[test]
+    fn answers_are_not_probed_again_within_the_ttl() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().to_str().unwrap();
         let mut state = State::default();
-        assert_eq!(state.root(directory), None);
+        state.root(directory);
+        settle(&mut state);
         std::fs::create_dir(temp.path().join(".git")).unwrap();
         assert_eq!(git_root(temp.path()), Some(temp.path().to_path_buf()));
         assert_eq!(state.root(directory), None);
-        assert_eq!(state.roots.len(), 1);
+        assert!(state.probes.take_queued().is_empty());
+        fs_probe::advance_clock(CHECKOUT_TTL + Duration::from_secs(1));
+        assert_eq!(state.root(directory), None, "the old answer renders while refreshing");
+        assert!(settle(&mut state));
+        assert_eq!(state.root(directory), Some(temp.path().to_path_buf()));
     }
 
     #[test]
@@ -529,11 +614,22 @@ mod tests {
         assert_eq!(git_root(&feature), Some(repo.clone()));
 
         let mut state = State::default();
-        let mut session = |id: &str, dir: &Path| {
+        let directories = [
+            repo.clone(),
+            repo.join("crates/ui"),
+            feature.clone(),
+            plain.clone(),
+        ];
+        let info = |id: &str, dir: &Path| {
             let mut info = super::super::tests::session_info(id, None);
             info.working_dir = Some(dir.to_string_lossy().into_owned());
-            state.project(&info)
+            info
         };
+        for dir in &directories {
+            state.project(&info("cold", dir));
+        }
+        assert!(settle(&mut state));
+        let mut session = |id: &str, dir: &Path| state.project(&info(id, dir));
         let (root, none) = session("a", &repo);
         let (nested, sub) = session("b", &repo.join("crates/ui"));
         let (linked, _) = session("c", &feature);

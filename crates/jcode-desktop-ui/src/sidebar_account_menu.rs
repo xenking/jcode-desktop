@@ -641,7 +641,7 @@ impl Workspace {
         let theme = Theme::global();
         let menu = &self.account_menu;
         let show_email = sidebar_account::show_email();
-        let account = sidebar_account::JcodeAccount::current();
+        let account = sidebar_account::JcodeAccount::current(cx);
         let snapshot = menu.snapshot.as_ref();
         let title = snapshot
             .map(|s| s.email.clone())

@@ -5,6 +5,7 @@
 use super::*;
 use jcode_base::provider_catalog::load_env_value_from_env_or_config;
 use jcode_base::subscription_catalog as subscription;
+use jcode_desktop_model::{fs_probe, probe_cache::ProbeCache};
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,8 +29,13 @@ pub(super) struct JcodeAccount {
     pub plan: Option<&'static str>,
 }
 
+/// Re-read the account file at most every few seconds, so sign-in and
+/// sign-out from the CLI show up without hitting the disk every frame.
+const STALE: Duration = Duration::from_secs(3);
+
 thread_local! {
-    static CACHE: RefCell<Option<(Instant, JcodeAccount)>> = const { RefCell::new(None) };
+    static CACHE: RefCell<ProbeCache<(), JcodeAccount>> =
+        RefCell::new(ProbeCache::new(STALE, 1));
 }
 
 impl JcodeAccount {
@@ -53,27 +59,27 @@ impl JcodeAccount {
         }
     }
 
-    /// Re-read the account file at most every few seconds, so sign-in and
-    /// sign-out from the CLI show up without hitting the disk every frame.
-    pub(super) fn current() -> Self {
-        const STALE: Duration = Duration::from_secs(3);
-        CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            match &*cache {
-                Some((at, account)) if at.elapsed() < STALE => account.clone(),
-                _ => {
-                    let account = Self::load();
-                    *cache = Some((Instant::now(), account.clone()));
-                    account
-                }
-            }
+    /// Read the account file once, at startup, so the first frame is right.
+    pub(super) fn prime() {
+        CACHE.with_borrow_mut(|cache| cache.fill((), Self::load()));
+    }
+
+    /// The last known account. Render never reads the disk: a stale answer is
+    /// refreshed on the background executor and the windows redraw if it changed.
+    pub(super) fn current(cx: &gpui::App) -> Self {
+        let account = CACHE.with_borrow_mut(|cache| cache.get(&()).cloned());
+        crate::background_probe::drain_local(cx, &CACHE, |_| fs_probe::off_main(Self::load));
+        account.unwrap_or(Self {
+            signed_in: false,
+            email: None,
+            plan: None,
         })
     }
 
-    /// Forget the cached account so the next frame re-reads it, e.g. after
-    /// signing out from the account menu.
+    /// Read the account again now, e.g. after signing out from the account
+    /// menu. Runs in an event handler, never in render.
     pub(super) fn invalidate() {
-        CACHE.with(|cache| *cache.borrow_mut() = None);
+        Self::prime();
     }
 
     fn title(&self, show_email: bool) -> String {
@@ -108,7 +114,7 @@ impl Workspace {
         // already started the release check for this frame.
         let offer = version::offered_update();
         let theme = Theme::global();
-        let account = JcodeAccount::current();
+        let account = JcodeAccount::current(cx);
         let signed_in = account.signed_in;
         let show_email = show_email();
         let ink = if signed_in {

@@ -6,6 +6,7 @@ mod applet_runtime;
 mod applet_surface;
 mod applet_view;
 mod application_menu;
+mod background_probe;
 mod build_info;
 mod bundled_applets;
 mod changelog;

@@ -1,6 +1,7 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::probe_cache::ProbeCache;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
@@ -37,35 +38,44 @@ pub fn resolve(base_dir: &Path, destination: &str) -> Option<LinkTarget> {
     resolve_local(base_dir, destination, is_drive_path(destination))
 }
 
-#[derive(Default)]
+/// Which transcript path mentions name an existing file.
+///
+/// Render only reads answers already in memory. A mention nobody has checked
+/// yet counts as plain text. [`Self::take_queued`] hands the unchecked paths to
+/// a background task, and [`Self::fill`] records what it found.
 pub struct FileReferenceCache {
-    files: HashMap<PathBuf, (Instant, bool)>,
-    last_prune: Option<Instant>,
+    files: ProbeCache<PathBuf, bool>,
+}
+
+impl Default for FileReferenceCache {
+    fn default() -> Self {
+        Self {
+            files: ProbeCache::new(Duration::from_secs(5), 2048),
+        }
+    }
 }
 
 impl FileReferenceCache {
     /// Transcript paths are literal filenames, not URL-encoded destinations.
     pub fn resolve(&mut self, base_dir: &Path, mention: &str) -> Option<PathBuf> {
         let path = reference_path(base_dir, mention, crate::platform_dirs::home_dir)?;
-        let now = crate::fs_probe::now();
-        let freshness = Duration::from_secs(5);
-        if let Some(&(checked, exists)) = self.files.get(&path)
-            && now.duration_since(checked) < freshness
-        {
-            return exists.then_some(path);
-        }
-        if self.files.len() >= 2048
-            && self
-                .last_prune
-                .is_none_or(|time| now.duration_since(time) >= freshness)
-        {
-            self.files
-                .retain(|_, (checked, _)| now.duration_since(*checked) < freshness);
-            self.last_prune = Some(now);
-        }
-        let exists = crate::fs_probe::is_file(&path);
-        self.files.insert(path.clone(), (now, exists));
-        exists.then_some(path)
+        (self.files.get(&path) == Some(&true)).then_some(path)
+    }
+
+    /// Paths that still need a probe. Call [`Self::probe`] for each off the
+    /// UI thread, then [`Self::fill`] with the answer.
+    pub fn take_queued(&mut self) -> Vec<PathBuf> {
+        self.files.take_queued()
+    }
+
+    /// Whether `path` is a file. Blocks on the disk, so never call it from render.
+    pub fn probe(path: &Path) -> bool {
+        crate::fs_probe::off_main(|| crate::fs_probe::is_file(path))
+    }
+
+    /// Record a probe result. Returns whether any mention renders differently.
+    pub fn fill(&mut self, path: PathBuf, exists: bool) -> bool {
+        self.files.fill(path, exists)
     }
 }
 
@@ -202,17 +212,30 @@ mod tests {
         std::fs::write(&extensionless, "Report").unwrap();
         let mut cache = FileReferenceCache::default();
 
-        assert_eq!(cache.resolve(base, "daily #1%.md:12"), Some(report.clone()));
+        assert_eq!(cache.resolve(base, "daily #1%.md:12"), None);
+        let queued = cache.take_queued();
+        assert_eq!(queued, vec![report.clone()]);
+        assert!(cache.fill(report.clone(), FileReferenceCache::probe(&report)));
+        let resolve = |cache: &mut FileReferenceCache, base: &Path, mention: &str| {
+            // Unchecked paths render as plain text and queue a probe, like a first frame.
+            cache.resolve(base, mention);
+            for path in cache.take_queued() {
+                let exists = FileReferenceCache::probe(&path);
+                cache.fill(path, exists);
+            }
+            cache.resolve(base, mention)
+        };
+        assert_eq!(resolve(&mut cache, base, "daily #1%.md:12"), Some(report.clone()));
         assert_eq!(
-            cache.resolve(&directory, report.to_str().unwrap()),
+            resolve(&mut cache, &directory, report.to_str().unwrap()),
             Some(report)
         );
-        assert_eq!(cache.resolve(base, "docs.md/report"), Some(extensionless));
-        assert_eq!(cache.resolve(&directory, "daily #1%.md"), None);
-        assert_eq!(cache.resolve(base, "missing.md"), None);
-        assert_eq!(cache.resolve(base, "docs.md"), None);
-        assert_eq!(cache.resolve(&directory, "report"), None);
-        assert_eq!(cache.resolve(base, "https://example.com/report.md"), None);
+        assert_eq!(resolve(&mut cache, base, "docs.md/report"), Some(extensionless));
+        assert_eq!(resolve(&mut cache, &directory, "daily #1%.md"), None);
+        assert_eq!(resolve(&mut cache, base, "missing.md"), None);
+        assert_eq!(resolve(&mut cache, base, "docs.md"), None);
+        assert_eq!(resolve(&mut cache, &directory, "report"), None);
+        assert_eq!(resolve(&mut cache, base, "https://example.com/report.md"), None);
         assert_eq!(
             reference_path(&directory, "~/daily #1%.md:12", || Some(base.into())),
             Some(base.join("daily #1%.md")),

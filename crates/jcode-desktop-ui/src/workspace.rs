@@ -1004,6 +1004,8 @@ impl Workspace {
         // render-triggered release check would never start the automatic update
         // loop for a user who stays in the session view.
         updates::ensure_release_check();
+        // Read the account file here so the first frame needs no disk access.
+        sidebar_account::JcodeAccount::prime();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let routing_feed = crate::routing::spawn();
@@ -6905,6 +6907,7 @@ impl Workspace {
                         key: sidebar_collections::key(&id),
                         label: name,
                         location: None,
+                        git: false,
                     },
                     sidebar_session_directory(&session),
                 ),
@@ -7108,6 +7111,8 @@ impl Workspace {
         if let Some(index) = newly_opened_active {
             self.sidebar_sessions_list.scroll_to_reveal_item(index);
         }
+        // Render read cached Git state only. Probe what it lacked off-thread.
+        self.sidebar_projects.probe_in_background(cx);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let folder_frame = self.folder_frame.clone();
         let workspace = cx.entity();
