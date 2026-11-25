@@ -5394,7 +5394,7 @@ impl Panel {
 
     /// Compose cards a later Gmail call replaced, recomputed only when the
     /// transcript changes.
-    pub(super) fn superseded_drafts(&self) -> std::rc::Rc<HashMap<String, gmail_draft_card::Superseded>> {
+    fn superseded_drafts(&self) -> std::rc::Rc<HashMap<String, gmail_draft_card::Superseded>> {
         let revision = self.items.revision();
         let mut cache = self.superseded_drafts.borrow_mut();
         if cache.0 != revision {
