@@ -1,5 +1,14 @@
-//! Read-only update summary and versioned history.
-use super::*;
+//! Read-only update summary and versioned history, as its own panel kind. It
+//! is local: no session, composer or runtime, and it is never saved.
+use gpui::{
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
+};
+
+use crate::markdown;
+use crate::text_selection::TextSelection;
+use crate::theme::Theme;
 use crate::update_notes::{self, View};
 
 /// Comfortable reading measure. Long lines are hard to track back to the
@@ -166,7 +175,47 @@ fn pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .text_size(px(12.))
 }
 
-impl Panel {
+pub(crate) struct ChangelogPanel {
+    view: View,
+    focus_handle: FocusHandle,
+    selection: Entity<TextSelection>,
+    surface_focused: bool,
+}
+
+impl ChangelogPanel {
+    pub(crate) const SESSION_ID: &str = "desktop://changelog";
+    pub(crate) const TITLE: &str = "Desktop changelog";
+
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        let selection = cx.new(TextSelection::new_scoped);
+        cx.observe(&selection, |_, _, cx| cx.notify()).detach();
+        Self {
+            view: View::Latest,
+            focus_handle: cx.focus_handle(),
+            selection,
+            surface_focused: false,
+        }
+    }
+
+    pub(crate) fn title(&self) -> SharedString {
+        Self::TITLE.into()
+    }
+
+    pub(crate) fn surface_focused(&self) -> bool {
+        self.surface_focused
+    }
+
+    pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.surface_focused != focused {
+            self.surface_focused = focused;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn selection_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.selection.read(cx).focus_handle().clone()
+    }
+
     fn update_view_button(
         &self,
         view: View,
@@ -175,21 +224,37 @@ impl Panel {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::global();
-        let selected = self.changelog_view == view;
+        let selected = self.view == view;
         pill(id)
             .text_color(if selected { theme.TEXT } else { theme.TEXT_DIM })
             .when(selected, |el| el.bg(theme.HEADER_BG))
             .hover(|el| el.bg(theme.HEADER_BG).text_color(theme.TEXT))
             .on_click(cx.listener(move |panel, _, _, cx| {
-                panel.changelog_view = view;
+                panel.view = view;
                 cx.notify();
             }))
             .child(label)
     }
 
-    pub(super) fn render_changelog(&self, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
+}
+
+impl Focusable for ChangelogPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for ChangelogPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("ChangelogPanel");
+        self.render_changelog(window, cx)
+    }
+}
+
+impl ChangelogPanel {
+    fn render_changelog(&self, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
-        let content_id = match self.changelog_view {
+        let content_id = match self.view {
             View::Latest => "update-summary",
             View::History => "update-history",
         };
@@ -202,7 +267,7 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_8();
-        match self.changelog_view {
+        match self.view {
             View::Latest => {
                 let summary = update_notes::summary();
                 let overview = update_notes::release_overview();
@@ -275,7 +340,7 @@ impl Panel {
                                 el.child(markdown::render(
                                     update_notes::fallback(),
                                     0,
-                                    &self.transcript_selection,
+                                    &self.selection,
                                     window,
                                     cx,
                                 ))
@@ -288,7 +353,7 @@ impl Panel {
                                     .bg(theme.HEADER_BG)
                                     .hover(|el| el.text_color(theme.TEXT))
                                     .on_click(cx.listener(|panel, _, _, cx| {
-                                        panel.changelog_view = View::History;
+                                        panel.view = View::History;
                                         cx.notify();
                                     }))
                                     .child(if summary.remaining > 0 {
@@ -307,7 +372,7 @@ impl Panel {
                         el.child(markdown::render(
                             update_notes::fallback(),
                             0,
-                            &self.transcript_selection,
+                            &self.selection,
                             window,
                             cx,
                         ))
@@ -343,7 +408,7 @@ impl Panel {
                         let views = [View::Latest, View::History];
                         let current = views
                             .iter()
-                            .position(|view| *view == panel.changelog_view)
+                            .position(|view| *view == panel.view)
                             .unwrap_or(0);
                         let next = match event.keystroke.key.as_str() {
                             "right" => Some((current + 1) % views.len()),
@@ -351,7 +416,7 @@ impl Panel {
                             _ => None,
                         };
                         if let Some(next) = next {
-                            panel.changelog_view = views[next];
+                            panel.view = views[next];
                             cx.notify();
                             cx.stop_propagation();
                         }
@@ -407,7 +472,7 @@ impl Panel {
                 div()
                     // Separate scroll state per view avoids landing halfway down
                     // the summary when returning from a long release history.
-                    .id(match self.changelog_view {
+                    .id(match self.view {
                         View::Latest => "updates-scroll-latest",
                         View::History => "updates-scroll-history",
                     })
@@ -419,7 +484,7 @@ impl Panel {
                     .pb_10()
                     .child(crate::text_selection::TextSelection::focus_scope(
                         content,
-                        &self.transcript_selection,
+                        &self.selection,
                         cx,
                     )),
             )
@@ -434,9 +499,8 @@ mod tests {
     #[gpui::test]
     fn update_views_switch_without_editing_or_using_runtime(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
-        let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) = cx.add_window_view(|window, cx| {
-            let panel = Panel::new(Panel::CHANGELOG_SESSION_ID.into(), None, None, bridge, cx);
+            let panel = ChangelogPanel::new(cx);
             window.focus(&panel.focus_handle, cx);
             panel
         });
@@ -465,15 +529,11 @@ mod tests {
                 vcx.debug_bounds(target).is_some(),
                 "{target} did not render"
             );
-            panel.read_with(vcx, |panel, _| assert_eq!(panel.changelog_view, view));
+            panel.read_with(vcx, |panel, _| assert_eq!(panel.view, view));
         }
         vcx.simulate_input("must not submit");
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
-        assert!(
-            commands.try_recv().is_err(),
-            "update controls must remain local"
-        );
         vcx.simulate_keystrokes("left");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("update-summary").is_some());
@@ -481,26 +541,22 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("update-history").is_some());
         panel.read_with(vcx, |panel, _| {
-            assert_eq!(panel.changelog_view, View::History)
+            assert_eq!(panel.view, View::History)
         });
         vcx.simulate_keystrokes("right");
         vcx.run_until_parked();
         // Both development and packaged builds cycle through only two views.
         assert!(vcx.debug_bounds("update-summary").is_some());
         panel.read_with(vcx, |panel, _| {
-            assert_eq!(panel.changelog_view, View::Latest)
+            assert_eq!(panel.view, View::Latest)
         });
         vcx.simulate_keystrokes("left");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("update-history").is_some());
         panel.read_with(vcx, |panel, _| {
-            assert_eq!(panel.changelog_view, View::History)
+            assert_eq!(panel.view, View::History)
         });
         assert!(vcx.debug_bounds("updates-build").is_none());
         assert!(vcx.debug_bounds("update-build").is_none());
-        assert!(
-            commands.try_recv().is_err(),
-            "keyboard navigation must remain local"
-        );
     }
 }

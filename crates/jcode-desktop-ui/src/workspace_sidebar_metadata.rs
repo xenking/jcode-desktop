@@ -1,6 +1,7 @@
 //! Workspace chrome observes a projection of each panel, not its transcript.
 //! Streaming text and transcript scrolling do not replace stable chrome metadata.
 use super::*;
+use crate::panel_item::changelog_panel::ChangelogPanel;
 use crate::panel_item::file_panel::FilePanel;
 use crate::terminal::TerminalPanel;
 use gpui::Focusable;
@@ -103,12 +104,20 @@ impl SidebarPanelMetadata {
         }
     }
 
-    fn from_file(file: &FilePanel, cx: &App) -> Self {
-        let input = file.input_focus_handle(cx);
+    /// Chrome for a kind with no session: idle, never renamed, nothing to run.
+    fn local(
+        session_id: &str,
+        title: gpui::SharedString,
+        working_dir: Option<&str>,
+        input_focus: FocusHandle,
+        selection_focus: FocusHandle,
+        panel_focus: FocusHandle,
+        surface_focused: bool,
+    ) -> Self {
         Self {
-            session_id: file.session_id().into(),
-            title: file.title().clone(),
-            working_dir: file.working_dir().map(str::to_owned),
+            session_id: session_id.into(),
+            title,
+            working_dir: working_dir.map(str::to_owned),
             status: "idle".into(),
             overview_preview: String::new(),
             listable: true,
@@ -118,9 +127,9 @@ impl SidebarPanelMetadata {
             minimap_state: crate::panel::MinimapSessionState::Idle,
             tab_ring: None,
             tab_outline: None,
-            keyboard_focus: [None, Some(input), None, Some(file.selection_focus_handle(cx))],
-            panel_focus: file.panel_focus_handle().clone(),
-            surface_focused: file.surface_focused(),
+            keyboard_focus: [None, Some(input_focus), None, Some(selection_focus)],
+            panel_focus,
+            surface_focused,
             finished_unseen: false,
             openrig: false,
             terminal: false,
@@ -129,11 +138,37 @@ impl SidebarPanelMetadata {
         }
     }
 
+    fn from_file(file: &FilePanel, cx: &App) -> Self {
+        Self::local(
+            file.session_id(),
+            file.title().clone(),
+            file.working_dir(),
+            file.input_focus_handle(cx),
+            file.selection_focus_handle(cx),
+            file.panel_focus_handle().clone(),
+            file.surface_focused(),
+        )
+    }
+
+    fn from_changelog(changelog: &ChangelogPanel, cx: &App) -> Self {
+        let focus = changelog.focus_handle(cx);
+        Self::local(
+            ChangelogPanel::SESSION_ID,
+            changelog.title(),
+            None,
+            focus.clone(),
+            changelog.selection_focus_handle(cx),
+            focus,
+            changelog.surface_focused(),
+        )
+    }
+
     fn from_item(item: &PanelItem, cx: &App) -> Self {
         match item {
             PanelItem::Chat(panel) => Self::from_panel(panel.read(cx), cx),
             PanelItem::Terminal(terminal) => Self::from_terminal(terminal.read(cx), cx),
             PanelItem::File(file) => Self::from_file(file.read(cx), cx),
+            PanelItem::Changelog(changelog) => Self::from_changelog(changelog.read(cx), cx),
         }
     }
 
@@ -148,6 +183,9 @@ impl SidebarPanelMetadata {
                 self.surface_focused == file.surface_focused()
                     && self.title == *file.title()
                     && self.keyboard_focus[1].as_ref() == Some(&file.input_focus_handle(cx))
+            }
+            PanelItem::Changelog(changelog) => {
+                self.surface_focused == changelog.read(cx).surface_focused()
             }
         }
     }
@@ -243,6 +281,9 @@ impl Workspace {
                 }),
                 PanelItem::File(file) => App::observe(cx, file, move |file, cx| {
                     refresh(PanelItem::File(file), cx);
+                }),
+                PanelItem::Changelog(changelog) => App::observe(cx, changelog, move |changelog, cx| {
+                    refresh(PanelItem::Changelog(changelog), cx);
                 }),
             };
             self.panel_metadata_observers.insert(id, observer);

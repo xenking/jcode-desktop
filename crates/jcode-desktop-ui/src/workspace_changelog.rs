@@ -1,5 +1,6 @@
 //! A local, read-only update panel. Never register it as a runtime session.
 use super::*;
+use crate::panel_item::changelog_panel::ChangelogPanel;
 
 impl Workspace {
     pub(crate) fn open_changelog(
@@ -9,21 +10,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.single_panel {
-            let panel = cx.new(|cx| {
-                Panel::new(
-                    Panel::CHANGELOG_SESSION_ID.into(),
-                    Some("Desktop changelog".into()),
-                    None,
-                    self.bridge.clone(),
-                    cx,
-                )
-            });
-            if let Err(error) = panel_window::open_panel_window(
-                panel,
+            let changelog = cx.new(ChangelogPanel::new);
+            if let Err(error) = panel_window::open_item_window(
+                PanelItem::Changelog(changelog),
                 self.slots
                     .get(self.active)
                     .and_then(|slot| slot.panel.chat().cloned()),
-                window,
+                window.window_handle(),
+                true,
                 cx,
             ) {
                 eprintln!("failed to open changelog window: {error:#}");
@@ -34,25 +28,18 @@ impl Workspace {
             .slots
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
-        let existing = self.slots.iter().position(|slot| {
-            !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_changelog)
-        });
+        let existing = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.is_changelog());
         let index = existing.unwrap_or_else(|| {
-            let panel = cx.new(|cx| {
-                Panel::new(
-                    Panel::CHANGELOG_SESSION_ID.into(),
-                    Some("Desktop changelog".into()),
-                    None,
-                    self.bridge.clone(),
-                    cx,
-                )
-            });
+            let changelog = cx.new(ChangelogPanel::new);
             let index = 0;
             let width = DEFAULT_WIDTH;
             self.slots.insert(
                 index,
                 Slot {
-                    panel: PanelItem::Chat(panel),
+                    panel: PanelItem::Changelog(changelog),
                     row: self.active_row,
                     width_fraction: width,
                     animated_width: AnimatedValue::new(
@@ -113,24 +100,17 @@ impl Workspace {
     /// camera are exactly as they were restored, and nothing on screen moves.
     pub(crate) fn open_changelog_in_background(&mut self, cx: &mut Context<Self>) {
         if self.single_panel
-            || self.slots.iter().any(|slot| {
-                !slot.closing && slot.panel.read_chat(cx).is_some_and(Panel::is_changelog)
-            })
+            || self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.is_changelog())
         {
             return;
         }
-        let panel = cx.new(|cx| {
-            Panel::new(
-                Panel::CHANGELOG_SESSION_ID.into(),
-                Some("Desktop changelog".into()),
-                None,
-                self.bridge.clone(),
-                cx,
-            )
-        });
+        let changelog = cx.new(ChangelogPanel::new);
         let width = DEFAULT_WIDTH;
         self.slots.push(Slot {
-            panel: PanelItem::Chat(panel),
+            panel: PanelItem::Changelog(changelog),
             row: self.active_row,
             width_fraction: width,
             animated_width: AnimatedValue::new(
@@ -172,12 +152,7 @@ mod tests {
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert_eq!(w.active, 0);
-                assert!(
-                    w.slots[0]
-                        .panel
-                        .read_chat(cx)
-                        .is_some_and(Panel::is_changelog)
-                );
+                assert!(w.slots[0].panel.is_changelog());
                 assert!(w.snapshot(window, cx).unwrap().slots.is_empty());
             })
         });
@@ -211,12 +186,7 @@ mod tests {
                 let source = w.slots[4].panel.entity_id();
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.active, 0);
-                assert!(
-                    w.slots[0]
-                        .panel
-                        .read_chat(cx)
-                        .is_some_and(Panel::is_changelog)
-                );
+                assert!(w.slots[0].panel.is_changelog());
                 assert_eq!(w.slots[0].row, 1);
                 assert_eq!(w.slots[0].width_fraction, 0.5);
                 assert_eq!(w.slots[1].width_fraction, 1.0);
@@ -234,12 +204,7 @@ mod tests {
                 w.active = 4;
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 6);
-                assert!(
-                    w.slots[0]
-                        .panel
-                        .read_chat(cx)
-                        .is_some_and(Panel::is_changelog)
-                );
+                assert!(w.slots[0].panel.is_changelog());
                 assert_eq!(w.previous, Some(source));
             })
         });
@@ -263,22 +228,10 @@ mod tests {
                 assert_eq!(w.slots.len(), 2);
                 assert_eq!(w.active, 0);
                 assert_eq!(w.slots[1].width_fraction, 0.5);
+                assert!(w.slots[w.active].panel.is_changelog());
                 assert!(
                     w.slots[w.active]
                         .panel
-                        .read_chat(cx)
-                        .is_some_and(Panel::is_changelog)
-                );
-                assert!(
-                    !w.slots[w.active]
-                        .panel
-                        .read_chat(cx)
-                        .is_some_and(Panel::can_fork)
-                );
-                assert!(
-                    w.slots[w.active]
-                        .panel
-                        .read(cx)
                         .input_focus_handle(cx)
                         .is_focused(window)
                 );
@@ -393,16 +346,11 @@ mod tests {
             assert!(
                 w.slots[w.active]
                     .panel
-                    .read(cx)
                     .input_focus_handle(cx)
                     .is_focused(window),
                 "keyboard focus stays on the panel the user was on"
             );
-            assert!(
-                w.slots
-                    .iter()
-                    .any(|slot| slot.panel.read_chat(cx).is_some_and(Panel::is_changelog))
-            );
+            assert!(w.slots.iter().any(|slot| slot.panel.is_changelog()));
         });
         let after_bounds = vcx
             .debug_bounds("panel-3")
@@ -423,7 +371,6 @@ mod tests {
             assert!(
                 w.slots[w.active]
                     .panel
-                    .read(cx)
                     .input_focus_handle(cx)
                     .is_focused(window)
             );

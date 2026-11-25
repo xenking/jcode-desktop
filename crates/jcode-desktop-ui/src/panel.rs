@@ -881,7 +881,6 @@ pub struct Panel {
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
-    changelog_view: crate::update_notes::View,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1175,19 +1174,10 @@ impl TodoistPanelState {
     }
 }
 
-#[path = "panel_changelog.rs"]
-mod changelog_panel;
-
 #[path = "panel_publish.rs"]
 mod publish_panel;
 
 impl Panel {
-    pub(crate) const CHANGELOG_SESSION_ID: &str = "desktop://changelog";
-
-    pub(crate) fn is_changelog(&self) -> bool {
-        self.session_id == Self::CHANGELOG_SESSION_ID
-    }
-
     /// Activity painted over the tab. The session emoji stays still.
     pub(crate) fn tab_ring(&self) -> Option<TabRing> {
         // Only a live turn animates. `minimap_state` treats any non-idle
@@ -1278,7 +1268,6 @@ impl Panel {
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
             || self.is_machines()
-            || self.is_changelog()
             || self.is_change_review()
             || self.is_accounts_panel()
             || self.is_side_document()
@@ -1887,7 +1876,6 @@ impl Panel {
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
-            changelog_view: crate::update_notes::View::Latest,
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -2559,7 +2547,6 @@ impl Panel {
             && !self.is_machines()
             && !self.is_change_review()
             && !self.is_accounts_panel()
-            && !self.is_changelog()
             && !self.is_side_document()
             && self.session_id != "unfinished-work"
             && self.orchestration.is_none()
@@ -6869,7 +6856,6 @@ impl Panel {
         } else if self.unfinished_work.is_some()
             || self.orchestration.is_some()
             || self.openrig.is_some()
-            || self.is_changelog()
             || self.is_side_document()
             || self.applet.is_some()
         {
@@ -6984,9 +6970,6 @@ impl Render for Panel {
         crate::render_stats::test_renders::record(cx.entity_id());
         if self.is_side_document() {
             return self.render_side_document(window, cx);
-        }
-        if self.is_changelog() {
-            return self.render_changelog(window, cx);
         }
         if self.is_accounts_panel() {
             return div()

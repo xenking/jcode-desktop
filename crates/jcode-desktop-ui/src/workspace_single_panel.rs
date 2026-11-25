@@ -452,20 +452,20 @@ mod tests {
         });
         let hosted = vcx.update(|_, cx| {
             let root = child.downcast::<panel_window::PanelWindow>().unwrap();
-            let panel = root.read(cx).unwrap().chat().unwrap().clone();
+            let item = root.read(cx).unwrap().item.clone();
             assert!(match utility {
-                Utility::Accounts => panel.read(cx).is_accounts_panel(),
-                Utility::Review => panel.read(cx).is_change_review(),
-                Utility::Changelog => panel.read(cx).is_changelog(),
+                Utility::Accounts => item.read_chat(cx).is_some_and(Panel::is_accounts_panel),
+                Utility::Review => item.read_chat(cx).is_some_and(Panel::is_change_review),
+                Utility::Changelog => item.is_changelog(),
             });
-            panel
+            item
         });
         open_utility(utility, &workspace, source.chat().unwrap(), vcx);
         vcx.update(|_, cx| {
             assert_eq!(cx.windows().len(), 2, "repeated open must reuse the child");
             assert!(cx.windows().contains(&child));
             let root = child.downcast::<panel_window::PanelWindow>().unwrap();
-            assert_eq!(root.read(cx).unwrap().chat(), Some(&hosted));
+            assert_eq!(root.read(cx).unwrap().item, hosted);
         });
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 1);
@@ -523,7 +523,7 @@ mod tests {
         vcx.update(|_, cx| assert_eq!(cx.windows(), vec![source_window]));
         assert!(commands.try_iter().all(|command| !matches!(command,
             Command::Watch { session_id } | Command::Unwatch { session_id }
-                if session_id.starts_with("review://") || session_id == Panel::CHANGELOG_SESSION_ID
+                if session_id.starts_with("review://") || session_id == ChangelogPanel::SESSION_ID
         )));
     }
 

@@ -121,6 +121,7 @@ use crate::learning;
 use crate::modal_layer::{HiddenWithoutFocus, ModalLayer, ModalView};
 use crate::panel::{Panel, PanelSnapshot};
 use crate::panel_item::PanelItem;
+use crate::panel_item::changelog_panel::ChangelogPanel;
 use crate::panel_item::file_panel::FilePanel;
 use crate::performance::{
     ActionCapture, GpuiSnapshot as GpuiPerformanceSnapshot, Health as PerformanceHealth,
@@ -2027,10 +2028,10 @@ impl Workspace {
             .iter()
             .filter(|slot| {
                 !slot.closing
+                    && !slot.panel.is_changelog()
                     && slot.panel.read_chat(cx).is_none_or(|panel| {
                         !panel.is_change_review()
                             && !panel.is_accounts_panel()
-                            && !panel.is_changelog()
                             && panel.preview_state.is_none()
                     })
             })
@@ -2038,10 +2039,10 @@ impl Workspace {
         let index_for_id =
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
-            let panel = slot.panel.read_chat(cx)?;
-            if panel.is_changelog() {
+            if slot.panel.is_changelog() {
                 return self.previous.and_then(index_for_id);
             }
+            let panel = slot.panel.read_chat(cx)?;
             let source_id = panel
                 .session_id
                 .strip_prefix("review://")
@@ -2140,7 +2141,7 @@ impl Workspace {
             // Preview fixture IDs are never runtime sessions, including old snapshots.
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
-                || panel_state.session_id == Panel::CHANGELOG_SESSION_ID
+                || panel_state.session_id == ChangelogPanel::SESSION_ID
                 // The retired native inbox. Gmail is now an applet panel.
                 || panel_state.session_id == "gmail://inbox"
             {
@@ -4986,7 +4987,6 @@ impl Workspace {
                 && !panel.is_side_document()
                 && !panel.is_change_review()
                 && !panel.is_accounts_panel()
-                && !panel.is_changelog()
                 && !panel.is_machines()
                 && panel.preview_state.is_none()
         });
@@ -5017,11 +5017,7 @@ impl Workspace {
         }
         self.active = if self.single_panel {
             0
-        } else if self.slots[closed]
-            .panel
-            .read_chat(cx)
-            .is_some_and(Panel::is_changelog)
-        {
+        } else if self.slots[closed].panel.is_changelog() {
             self.previous
                 .and_then(|id| {
                     remaining

@@ -91,7 +91,7 @@ pub(crate) fn open_file_window(
     .ok_or_else(|| anyhow::anyhow!("the window for this file hosts another kind"))
 }
 
-fn open_item_window(
+pub(crate) fn open_item_window(
     item: PanelItem,
     source: Option<Entity<Panel>>,
     origin: AnyWindowHandle,
