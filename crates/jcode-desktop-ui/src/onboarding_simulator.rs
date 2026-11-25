@@ -95,14 +95,14 @@ impl Workspace {
         div()
             .debug_selector(|| "onboarding-launch-error".into())
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                cx.stop_propagation();
-                if event.keystroke.key == "escape" {
-                    this.onboarding_launch.error = None;
-                    this.focus_active(window, cx);
-                    cx.notify();
-                }
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                this.onboarding_launch.error = None;
+                this.focus_active(window, cx);
+                cx.notify();
             }))
+            // The error replaces the whole canvas, so no other key reaches it.
+            .on_key_down(|_, _, cx| cx.stop_propagation())
             .size_full()
             .flex()
             .flex_col()
@@ -191,6 +191,7 @@ mod tests {
 
     #[gpui::test]
     fn launcher_error_is_dismissible_without_changing_workspace(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.push_test_panel("existing", cx);

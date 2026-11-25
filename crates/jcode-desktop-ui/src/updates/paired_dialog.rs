@@ -111,10 +111,9 @@ pub(crate) fn render(window: &Window, cx: &App) -> Option<AnyElement> {
         .id("paired-update-overlay")
         .debug_selector(|| "paired-update-overlay".into())
         .track_focus(&dialog.focus)
-        .on_key_down(|event, window, cx| {
-            if event.keystroke.key == "escape" {
-                choose(BlockedAction::Cancel, window, cx);
-            }
+        .key_context(crate::menu::CONTEXT)
+        .on_action(|_: &crate::menu::Cancel, window, cx| {
+            choose(BlockedAction::Cancel, window, cx);
         })
         .absolute()
         .inset_0()
@@ -184,6 +183,22 @@ mod tests {
             );
         }
         updates::set(UpdateState::Idle);
+    }
+
+    #[gpui::test]
+    fn escape_cancels_the_drain_dialog(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (_workspace, vcx) = cx.add_window_view(|_, cx| {
+            crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx)
+        });
+        let (actions, _closing) =
+            vcx.update(|window, cx| show(vec!["turkey has an active turn".into()], window, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("paired-update-overlay").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert_eq!(actions.try_recv(), Ok(BlockedAction::Cancel));
+        assert!(vcx.debug_bounds("paired-update-overlay").is_none());
     }
 
     #[gpui::test]

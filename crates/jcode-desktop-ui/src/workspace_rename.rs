@@ -119,6 +119,16 @@ impl Workspace {
         self.close_rename_editor(cx);
     }
 
+    /// The rename dialog and the compact sidebar are dismissed with
+    /// `menu::Cancel` while they are open, wherever focus is.
+    pub(super) fn key_context(&self) -> gpui::KeyContext {
+        let mut context = gpui::KeyContext::new_with_defaults();
+        if self.rename_editor.is_some() || self.compact_sidebar_open {
+            context.add(crate::menu::CONTEXT);
+        }
+        context
+    }
+
     pub(super) fn close_rename_editor(&mut self, cx: &mut Context<Self>) {
         self.rename_editor = None;
         self.focus_pending = true;

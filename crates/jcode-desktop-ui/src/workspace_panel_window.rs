@@ -257,11 +257,9 @@ impl Render for PanelWindow {
                     cx.stop_propagation();
                 },
             ))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close(false, window, cx);
-                    cx.stop_propagation();
-                }
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                this.close(false, window, cx);
             }))
             .child(self.panel.clone())
     }
@@ -270,6 +268,27 @@ impl Render for PanelWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn escape_closes_the_panel_window(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let (window_view, vcx) = cx.add_window_view(|window, cx| PanelWindow {
+            panel: cx.new(|cx| Panel::new_code_file(path, crate::harness::spawn_inert(), cx)),
+            source: None,
+            source_session: None,
+            source_window: window.window_handle(),
+            finished: false,
+            window_background: None,
+        });
+        vcx.run_until_parked();
+        let panel = window_view.read_with(vcx, |view, _| view.panel.clone());
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| panel.focus_input(window, cx)));
+        vcx.simulate_keystrokes("escape");
+        assert!(window_view.read_with(vcx, |view, _| view.finished));
+    }
 
     #[gpui::test]
     fn accounts_return_resolves_reloaded_source_by_session(cx: &mut gpui::TestAppContext) {

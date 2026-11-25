@@ -678,15 +678,13 @@ impl Workspace {
                     this.live_tabs.overflow_open = false;
                     cx.notify();
                 }))
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        cx.stop_propagation();
-                        this.live_tabs.overflow_open = false;
-                        if let Some(focus) = &this.live_tabs.overflow_focus {
-                            focus.focus(window, cx);
-                        }
-                        cx.notify();
+                .key_context(crate::menu::CONTEXT)
+                .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                    this.live_tabs.overflow_open = false;
+                    if let Some(focus) = &this.live_tabs.overflow_focus {
+                        focus.focus(window, cx);
                     }
+                    cx.notify();
                 }))
                 .child(
                     div()
@@ -2658,6 +2656,7 @@ mod tests {
     fn overflow_keeps_workspace_labels_and_promotes_the_chosen_session(
         cx: &mut gpui::TestAppContext,
     ) {
+        cx.update(crate::bind_workspace_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for index in 0..16 {

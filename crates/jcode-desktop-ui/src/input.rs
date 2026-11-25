@@ -5683,7 +5683,7 @@ mod tests {
 
     #[gpui::test]
     fn image_chip_opens_from_tab_and_escape_returns_to_editor(cx: &mut TestAppContext) {
-        cx.update(bind_keys);
+        cx.update(crate::bind_workspace_keys);
         let (input, vcx) = cx.add_window_view(|window, cx| {
             let mut input = PromptInput::new(cx, "test", |_, _, _, _| {});
             input.attach_image(

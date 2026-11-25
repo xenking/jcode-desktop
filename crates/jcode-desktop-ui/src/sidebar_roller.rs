@@ -60,6 +60,18 @@ impl Roller {
 }
 
 impl Workspace {
+    fn focus_sidebar_roller_row(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::keyboard::row_peer(&self.sidebar_roller.rows, forward, window, cx) {
+            Some(next) => window.focus(&next, cx),
+            None => cx.propagate(),
+        }
+    }
+
     fn hover_sidebar_roller(
         &mut self,
         event: &gpui::MouseMoveEvent,
@@ -429,22 +441,20 @@ impl Workspace {
                 div()
                     .debug_selector(|| "sidebar-section-menu".into())
                     .track_focus(self.sidebar_roller.menu_focus.as_ref().unwrap())
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "escape" {
-                            this.sidebar_roller.expanded = false;
-                            window.focus(this.sidebar_roller.trigger_focus.as_ref().unwrap(), cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        } else if let Some(next) = crate::keyboard::arrow_peer(
-                            event,
-                            &this.sidebar_roller.rows,
-                            window,
-                            cx,
-                        ) {
-                            window.focus(&next, cx);
-                            cx.stop_propagation();
-                        }
+                    .key_context(crate::menu::CONTEXT)
+                    .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                        this.sidebar_roller.expanded = false;
+                        window.focus(this.sidebar_roller.trigger_focus.as_ref().unwrap(), cx);
+                        cx.notify();
                     }))
+                    .on_action(cx.listener(|this, _: &crate::menu::SelectNext, window, cx| {
+                        this.focus_sidebar_roller_row(true, window, cx);
+                    }))
+                    .on_action(
+                        cx.listener(|this, _: &crate::menu::SelectPrevious, window, cx| {
+                            this.focus_sidebar_roller_row(false, window, cx);
+                        }),
+                    )
                     .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();

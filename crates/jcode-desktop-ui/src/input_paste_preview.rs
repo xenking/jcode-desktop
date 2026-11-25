@@ -76,11 +76,12 @@ impl PromptInput {
             .border_color(Theme::global().PANEL_BORDER_FOCUS)
             .shadow_lg()
             .occlude()
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                this.close_attachment_preview(window, cx);
+            }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_attachment_preview(window, cx);
-                    cx.stop_propagation();
-                } else if crate::keyboard::tab_direction(event).is_some() {
+                if crate::keyboard::tab_direction(event).is_some() {
                     let next = if this.preview_close_focus.is_focused(window) {
                         &this.preview_remove_focus
                     } else {

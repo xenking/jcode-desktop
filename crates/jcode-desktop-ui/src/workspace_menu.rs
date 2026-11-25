@@ -46,11 +46,9 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &ClosePanel, window, cx| {
                 this.close_single_panel_settings(window, cx);
             }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_single_panel_settings(window, cx);
-                    cx.stop_propagation();
-                }
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                this.close_single_panel_settings(window, cx);
             }))
             .child(
                 div().p_3().child(
@@ -125,6 +123,32 @@ mod tests {
             assert_eq!(w.slots.len(), 1);
             assert_eq!(w.slots[0].panel.entity_id(), original);
         });
+    }
+
+    #[gpui::test]
+    fn standalone_settings_escape_returns_to_same_chat(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.single_panel = true;
+            workspace.open_startup_draft(cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let original = workspace.read_with(vcx, |w, _| w.slots[0].panel.entity_id());
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| w.focus_active(window, cx));
+            window.dispatch_action(Box::new(OpenSettings), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("standalone-settings").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("standalone-settings").is_none());
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.slots[0].panel.entity_id()),
+            original
+        );
     }
 
     #[gpui::test]

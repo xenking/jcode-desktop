@@ -32,6 +32,7 @@ mod ime_log;
 mod inline_image;
 mod input;
 mod keyboard;
+mod menu;
 mod live_profile;
 mod markdown;
 mod markdown_inline_code;
@@ -144,6 +145,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         cx.bind_keys(host_bindings);
     }
     code_editor::bind_keys(cx);
+    menu::bind_keys(cx);
     terminal::bind_keys(cx);
     panel::voice::bind_keys(cx);
     panel::shortcuts::bind_keys(cx);

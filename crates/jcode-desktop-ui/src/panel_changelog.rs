@@ -333,12 +333,13 @@ impl Panel {
             .text_size(px(14.))
             .text_color(theme.TEXT)
             .track_focus(&self.focus_handle)
+            .key_context(crate::menu::CONTEXT)
+            .on_action(cx.listener(|_, _: &crate::menu::Cancel, window, cx| {
+                window.dispatch_action(Box::new(crate::ui_actions::ClosePanel), cx);
+            }))
             .on_key_down(
-                cx.listener(|panel, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        window.dispatch_action(Box::new(crate::ui_actions::ClosePanel), cx);
-                        cx.stop_propagation();
-                    } else if event.keystroke.modifiers == gpui::Modifiers::default() {
+                cx.listener(|panel, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.modifiers == gpui::Modifiers::default() {
                         let views = [View::Latest, View::History];
                         let current = views
                             .iter()

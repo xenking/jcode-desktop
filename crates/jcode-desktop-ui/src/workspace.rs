@@ -10195,18 +10195,18 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.rename_editor.is_some() && event.keystroke.key == "escape" {
+            .key_context(self.key_context())
+            .capture_action(cx.listener(|this, _: &crate::menu::Cancel, window, cx| {
+                if this.rename_editor.is_some() {
                     this.close_rename_editor(cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if this.compact_sidebar_open && event.keystroke.key == "escape" {
+                } else if this.compact_sidebar_open {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
-                    cx.stop_propagation();
                     cx.notify();
+                } else {
+                    return;
                 }
+                cx.stop_propagation();
             }))
             // Navigation belongs to the canvas, regardless of which control in
             // the active panel currently owns keyboard focus. Capture these at

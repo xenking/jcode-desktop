@@ -168,8 +168,9 @@ impl Workspace {
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(Self::rename_session))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if this.rename_editor.is_some() && event.keystroke.key == "escape" {
+            .key_context(self.key_context())
+            .capture_action(cx.listener(|this, _: &crate::menu::Cancel, _, cx| {
+                if this.rename_editor.is_some() {
                     this.close_rename_editor(cx);
                     cx.stop_propagation();
                 }

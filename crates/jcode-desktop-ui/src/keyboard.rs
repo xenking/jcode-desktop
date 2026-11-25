@@ -64,24 +64,41 @@ pub(crate) fn tab_navigation(root: Div) -> Div {
         })
 }
 
+/// The row after (or before) the focused one, wrapping at the ends. Starts at
+/// the first (or last) row when none is focused.
+pub(crate) fn row_peer(
+    rows: &[FocusHandle],
+    forward: bool,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> Option<FocusHandle> {
+    if rows.is_empty() {
+        return None;
+    }
+    let current = rows.iter().position(|row| row.contains_focused(window, cx));
+    let next = match (forward, current) {
+        (true, current) => current.map_or(0, |index| (index + 1) % rows.len()),
+        (false, current) => current.map_or(rows.len() - 1, |index| {
+            (index + rows.len() - 1) % rows.len()
+        }),
+    };
+    Some(rows[next].clone())
+}
+
 pub(crate) fn arrow_peer(
     event: &gpui::KeyDownEvent,
     rows: &[FocusHandle],
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> Option<FocusHandle> {
-    if rows.is_empty() || event.keystroke.modifiers != gpui::Modifiers::default() {
+    if event.keystroke.modifiers != gpui::Modifiers::default() {
         return None;
     }
-    let current = rows.iter().position(|row| row.contains_focused(window, cx));
-    let next = match event.keystroke.key.as_str() {
-        "down" => current.map_or(0, |index| (index + 1) % rows.len()),
-        "up" => current.map_or(rows.len() - 1, |index| {
-            (index + rows.len() - 1) % rows.len()
-        }),
-        _ => return None,
-    };
-    Some(rows[next].clone())
+    match event.keystroke.key.as_str() {
+        "down" => row_peer(rows, true, window, cx),
+        "up" => row_peer(rows, false, window, cx),
+        _ => None,
+    }
 }
 
 pub(crate) fn tab_direction(event: &gpui::KeyDownEvent) -> Option<bool> {
