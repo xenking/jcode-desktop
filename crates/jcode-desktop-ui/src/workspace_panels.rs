@@ -15,7 +15,7 @@ impl Workspace {
     pub(super) fn fork_panel(&mut self, _: &ForkPanel, _: &mut Window, cx: &mut Context<Self>) {
         let Some(session_id) = self.slots.get(self.active).and_then(|slot| {
             let panel = slot.panel.read_chat(cx)?;
-            (panel.preview_state.is_none() && panel.can_fork()).then(|| panel.session_id.clone())
+            (!panel.is_preview() && panel.can_fork()).then(|| panel.session_id.clone())
         }) else {
             return;
         };
@@ -675,7 +675,7 @@ impl Workspace {
                 && !panel.is_change_review()
                 && !panel.is_accounts_panel()
                 && !panel.is_machines()
-                && panel.preview_state.is_none()
+                && !panel.is_preview()
         });
         if watched {
             self.sidebar_closed_sessions.insert(session_id.clone());
