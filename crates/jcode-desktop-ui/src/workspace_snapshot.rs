@@ -36,7 +36,7 @@ impl Workspace {
                     && slot.panel.read_chat(cx).is_none_or(|panel| {
                         !panel.is_change_review()
                             && !panel.is_accounts_panel()
-                            && panel.preview_state.is_none()
+                            && !panel.is_preview()
                     })
             })
             .collect();
@@ -47,10 +47,7 @@ impl Workspace {
                 return self.previous.and_then(index_for_id);
             }
             let panel = slot.panel.read_chat(cx)?;
-            let source_id = panel
-                .session_id
-                .strip_prefix("review://")
-                .or_else(|| panel.session_id.strip_prefix("accounts://"))?;
+            let source_id = panel.review_source_id()?;
             slots
                 .iter()
                 .position(|slot| slot.panel.session_id(cx) == source_id)
@@ -274,7 +271,7 @@ impl Workspace {
             };
             if panel.read(cx).is_machines() {
                 let input = self.create_machine_input(cx);
-                panel.update(cx, |panel, _| panel.input = input.clone());
+                panel.update(cx, |panel, cx| panel.replace_input(input.clone(), cx));
                 self.remotes.input = Some(input);
             } else if !panel.read(cx).is_default_directory() {
                 Self::wire_session_panel(&panel, cx);
@@ -286,21 +283,18 @@ impl Workspace {
                     panel.resume_draft_session(needs_session, cx);
                 }
             });
-            if panel
-                .read(cx)
-                .session_id
-                .starts_with("startup://draft/remote/")
-            {
+            if panel.read(cx).is_remote_draft() {
                 panel.update(cx, |panel, cx| {
-                    panel.status = match pending::remote_draft_host(&panel.session_id) {
+                    let host = pending::remote_draft_host(&panel.session_id).map(str::to_owned);
+                    let status = match host.as_deref() {
                         Some(host) if machines::managed_destination(host) => {
-                            panel.title = machines::machine_label(host).to_owned().into();
+                            panel.set_title(machines::machine_label(host).to_owned(), cx);
                             format!("{} Your queued prompts are preserved.", machines::MANAGED_CLOUD_STARTING)
                         }
                         Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
                         None => "Session creation failed: invalid saved remote destination. No local session was opened.".into(),
                     };
-                    cx.notify();
+                    panel.set_status(status, cx);
                 });
             }
             *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
@@ -379,7 +373,7 @@ impl Workspace {
                     let search = picker.read(cx).search.clone();
                     self.slots[index]
                         .panel
-                        .update_chat(cx, |panel, _| panel.input = search);
+                        .update_chat(cx, |panel, cx| panel.replace_input(search, cx));
                 }
                 self.adopt_default_directory_picker(picker, cx);
             } else {
