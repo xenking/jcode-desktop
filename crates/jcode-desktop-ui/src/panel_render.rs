@@ -488,7 +488,7 @@ impl Render for Panel {
                 .working_dir
                 .as_deref()
                 .filter(|_| !crate::harness::is_remote_session(&self.session_id))
-                .map(|base| crate::panel_item::file_panel::link_handler(PathBuf::from(base), None));
+                .map(|base| markdown::FileLinkHandler::for_transcript(PathBuf::from(base)));
             transcript_shell
                 .child(
                     list(

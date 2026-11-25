@@ -21,17 +21,60 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::{Palette, Theme, to_hsla};
 use jcode_desktop_model::markdown_file::{self, FileReferenceCache, LinkTarget};
 
-type OpenFileLink = dyn Fn(LinkTarget, &mut gpui::Window, &mut gpui::App);
+type OpenHeading = dyn Fn(&str, &mut gpui::App);
 
 pub(crate) struct FileLinkHandler {
-    pub base: PathBuf,
-    pub open: Box<OpenFileLink>,
+    base: PathBuf,
+    document: Option<(PathBuf, Box<OpenHeading>)>,
 }
 
 impl FileLinkHandler {
+    pub(crate) fn for_transcript(base: PathBuf) -> Rc<Self> {
+        Rc::new(Self {
+            base,
+            document: None,
+        })
+    }
+
+    pub(crate) fn for_document(
+        base: PathBuf,
+        path: PathBuf,
+        heading: impl Fn(&str, &mut gpui::App) + 'static,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            base,
+            document: Some((path, Box::new(heading))),
+        })
+    }
+
+    fn open(&self, target: LinkTarget, window: &mut gpui::Window, cx: &mut gpui::App) {
+        match target {
+            LinkTarget::External(url) => cx.open_url(&url),
+            LinkTarget::Local { path, fragment } => {
+                if let Some((current, heading)) = &self.document
+                    && current == &path
+                {
+                    if let Some(fragment) = fragment {
+                        heading(&fragment, cx);
+                    }
+                } else {
+                    window.dispatch_action(
+                        Box::new(crate::ui_actions::OpenDocumentFile { path, fragment }),
+                        cx,
+                    );
+                }
+            }
+            LinkTarget::Anchor(fragment) => {
+                if let Some((_, heading)) = &self.document {
+                    heading(&fragment, cx);
+                }
+            }
+        }
+    }
+
     fn open_markdown(&self, destination: &str, window: &mut gpui::Window, cx: &mut gpui::App) {
         if let Some(target) = markdown_file::resolve(&self.base, destination) {
-            (self.open)(target, window, cx);
+            self.open(target, window, cx);
         }
     }
 }
@@ -1899,7 +1942,7 @@ fn styled_inline_layout(
                     (Some(handler), InlineDestination::Markdown(url)) => {
                         handler.open_markdown(url, window, cx);
                     }
-                    (Some(handler), InlineDestination::Mention(path)) => (handler.open)(
+                    (Some(handler), InlineDestination::Mention(path)) => handler.open(
                         LinkTarget::Local {
                             path: path.clone(),
                             fragment: None,

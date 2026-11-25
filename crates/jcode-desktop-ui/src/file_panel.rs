@@ -198,9 +198,13 @@ impl FilePanel {
     ) -> AnyElement {
         let base = self.path.parent().unwrap_or(Path::new("/")).to_path_buf();
         let selection = self.selection.clone();
-        let on_link = link_handler(
+        let owner = cx.entity().downgrade();
+        let on_link = markdown::FileLinkHandler::for_document(
             base.clone(),
-            Some((self.path.clone(), cx.entity().downgrade())),
+            self.path.clone(),
+            move |heading, cx| {
+                let _ = owner.update(cx, |panel, cx| panel.show_heading(heading, cx));
+            },
         );
         let resolve_image = Rc::new(move |destination: &str| {
             let LinkTarget::Local { path, .. } = markdown_file::resolve(&base, destination)? else {
@@ -303,40 +307,6 @@ impl Focusable for FilePanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-/// Opens links found in Markdown: external ones in the browser, local ones as
-/// documents. `document` names the file being shown, so links back into it
-/// scroll instead of opening a second panel.
-pub(crate) fn link_handler(
-    base: PathBuf,
-    document: Option<(PathBuf, gpui::WeakEntity<FilePanel>)>,
-) -> Rc<markdown::FileLinkHandler> {
-    Rc::new(markdown::FileLinkHandler {
-        base,
-        open: Box::new(move |target, window, cx| match target {
-            LinkTarget::External(url) => cx.open_url(&url),
-            LinkTarget::Local { path, fragment } => {
-                if let Some((current, panel)) = &document
-                    && current == &path
-                {
-                    if let Some(fragment) = fragment {
-                        let _ = panel.update(cx, |panel, cx| panel.show_heading(&fragment, cx));
-                    }
-                } else {
-                    window.dispatch_action(
-                        Box::new(crate::ui_actions::OpenDocumentFile { path, fragment }),
-                        cx,
-                    );
-                }
-            }
-            LinkTarget::Anchor(fragment) => {
-                if let Some((_, panel)) = &document {
-                    let _ = panel.update(cx, |panel, cx| panel.show_heading(&fragment, cx));
-                }
-            }
-        }),
-    })
 }
 
 impl Render for FilePanel {
