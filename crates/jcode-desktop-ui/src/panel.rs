@@ -6125,12 +6125,12 @@ impl Panel {
         &self,
         index: usize,
         item: &Item,
+        display: &crate::config::DisplayConfig,
         _show_avatar: bool,
         _response_viewport_height: gpui::Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let display = crate::config::display();
         if display.screenshot_mode
             && matches!(
                 item,
@@ -7537,6 +7537,7 @@ impl Render for Panel {
             .map(|derived| derived.rows.clone());
         let derived = self.transcript_derived(cx);
         let rows = derived.rows.clone();
+        let display = derived.key.display.clone();
         let prompt_rows = derived.prompt_rows.clone();
         let latest_todo = (!clean_chat).then(|| derived.latest_todo.clone()).flatten();
         let tail_headers = if clean_chat {
@@ -7824,7 +7825,6 @@ impl Render for Panel {
                                         };
                                         matches!(previous, Item::Tool { .. })
                                     });
-                                let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
                                     && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
                                     || matches!(item, Item::ResponseStats(_) | Item::AgentMessage { .. } | Item::SideQuestion(_))
@@ -7844,6 +7844,7 @@ impl Render for Panel {
                                     panel.render_item(
                                         row.index,
                                         item,
+                                        &display,
                                         row.show_label,
                                         response_viewport_height,
                                         window,

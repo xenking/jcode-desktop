@@ -58,3 +58,34 @@ fn row_handles_follow_the_tool_calls_still_in_the_transcript(cx: &mut gpui::Test
     assert_eq!(focus, ["fourth", "third"]);
     assert_eq!(scrolls, ["third"]);
 }
+
+#[gpui::test]
+fn display_config_is_read_once_per_frame_not_per_row(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let reads_for_one_frame = |cx: &mut gpui::TestAppContext, rows: usize| {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "display-reads".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            *panel.items = (0..rows).map(|row| tool(&format!("call-{row}"))).collect();
+            panel.stick_to_bottom = false;
+            panel
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |_, cx| cx.notify());
+        let before = crate::config::display_reads();
+        vcx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        crate::config::display_reads() - before
+    };
+    let few = reads_for_one_frame(cx, 3);
+    let many = reads_for_one_frame(cx, 40);
+    assert!(few > 0, "the frame must read the display config");
+    assert_eq!(many, few, "reads per frame must not grow with visible rows");
+}

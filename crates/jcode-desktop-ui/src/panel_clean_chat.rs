@@ -289,7 +289,15 @@ impl Panel {
                     )
                 })
                 .when_some(error, |el, index| {
-                    el.child(self.render_item(index, &self.items[index], false, px(1.), window, cx))
+                    el.child(self.render_item(
+                        index,
+                        &self.items[index],
+                        &crate::config::display(),
+                        false,
+                        px(1.),
+                        window,
+                        cx,
+                    ))
                 })
                 .into_any_element(),
         )

@@ -274,7 +274,19 @@ impl Default for DisplayConfig {
 
 static DISPLAY: OnceLock<std::sync::RwLock<DisplayConfig>> = OnceLock::new();
 
+thread_local! {
+    static DISPLAY_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has read the display config. Render code must
+/// read it once per frame, and tests hold it to that by differencing this.
+#[doc(hidden)]
+pub fn display_reads() -> u64 {
+    DISPLAY_READS.with(std::cell::Cell::get)
+}
+
 pub fn display() -> DisplayConfig {
+    DISPLAY_READS.with(|reads| reads.set(reads.get() + 1));
     DISPLAY
         .get_or_init(|| std::sync::RwLock::new(get().display.clone()))
         .read()
