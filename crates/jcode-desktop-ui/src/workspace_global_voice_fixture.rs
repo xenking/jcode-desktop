@@ -22,7 +22,7 @@ impl Workspace {
         let path = PathBuf::from(path);
         cx.on_release(|this, cx| this.global_voice.shutdown(cx))
             .detach();
-        self.global_voice.task = Some(cx.spawn_in(window, async move |this, cx| {
+        self.global_voice.run_task(|| cx.spawn_in(window, async move |this, cx| {
             let mut applied = None;
             loop {
                 cx.background_executor().timer(Duration::from_millis(40)).await;
@@ -41,11 +41,7 @@ impl Workspace {
                         _ => anyhow::bail!("unknown fixture state"),
                     };
                     if let Some(snapshot) = snapshot {
-                        if let Some(handle) = this.global_voice.overlay {
-                            handle.update(cx, |overlay, _, cx| overlay.set_snapshot(snapshot, cx))?;
-                        } else {
-                            this.global_voice.overlay = Some(overlay::open(snapshot, cx)?);
-                        }
+                        this.global_voice.show_snapshot(snapshot, cx)?;
                     } else {
                         this.global_voice.close_overlay(cx);
                     }
