@@ -143,7 +143,7 @@ impl Workspace {
             send_task: None,
         };
         // Prove a visible indicator exists before opening the microphone.
-        if !self.show_global_voice_overlay(capture.snapshot(), cx) {
+        if !self.global_voice.show_overlay(capture.snapshot(), cx) {
             return;
         }
         voice::timing::begin();
@@ -268,12 +268,7 @@ impl Workspace {
             return true;
         }
         let snapshot = capture.snapshot();
-        let shown = match self.global_voice.overlay {
-            Some(handle) => handle
-                .update(cx, |overlay, _, cx| overlay.set_snapshot(snapshot, cx))
-                .is_ok(),
-            None => self.show_global_voice_overlay(snapshot, cx),
-        };
+        let shown = self.global_voice.show_overlay(snapshot, cx);
         if !shown {
             // Never keep recording without a visible indicator.
             self.global_voice.cli = None;

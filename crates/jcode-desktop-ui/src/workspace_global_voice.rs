@@ -219,7 +219,10 @@ impl Hold<'_> {
 
     /// The chat the press aimed at, handed over once.
     pub(super) fn take_target(&mut self) -> Option<Entity<Panel>> {
-        self.0.pending_target.take().and_then(|panel| panel.upgrade())
+        self.0
+            .pending_target
+            .take()
+            .and_then(|panel| panel.upgrade())
     }
 }
 
@@ -228,7 +231,10 @@ pub(super) struct Owner<'a>(&'a mut State);
 
 impl Owner<'_> {
     pub(super) fn panel(&self) -> Option<Entity<Panel>> {
-        self.0.owner.as_ref().and_then(|owner| owner.panel.upgrade())
+        self.0
+            .owner
+            .as_ref()
+            .and_then(|owner| owner.panel.upgrade())
     }
 
     pub(super) fn attempt(&self) -> Option<Arc<AtomicBool>> {
@@ -254,7 +260,8 @@ impl Owner<'_> {
         self.0.held = false;
         self.0.host_held_since = None;
         self.0.pending_target = None;
-        self.0.owner
+        self.0
+            .owner
             .as_ref()
             .and_then(|owner| Some((owner.panel.upgrade()?, owner.attempt.clone())))
     }
@@ -272,7 +279,8 @@ impl Owner<'_> {
         self.0.pending_target = None;
         self.0.press_serial = self.0.press_serial.wrapping_add(1);
         self.0.permission_task = None;
-        self.0.owner
+        self.0
+            .owner
             .as_ref()
             .and_then(|owner| Some((owner.panel.upgrade()?, owner.attempt.clone())))
     }
@@ -431,36 +439,38 @@ impl Workspace {
         }
         cx.on_release(|this, cx| this.global_voice.shutdown(cx))
             .detach();
-        self.global_voice.poller().run_once(|| cx.spawn_in(window, async move |this, cx| {
-            let mut interval = IDLE_POLL;
-            loop {
-                let slept = Instant::now();
-                cx.background_executor().timer(interval).await;
-                let late = slept.elapsed().saturating_sub(interval);
-                let result = cx.update(|window, cx| {
-                    this.update(cx, |this, cx| {
-                        if this.global_voice.held && late >= Duration::from_millis(250) {
-                            eprintln!(
-                                "global voice: key poll stalled {}ms during a hold",
-                                late.as_millis()
-                            );
-                        }
-                        this.poll_global_voice(window, cx);
-                        // A held key is about to be released: poll faster so
-                        // key-up reaches the recorder without a visible lag.
-                        interval = if this.global_voice.held {
-                            HELD_POLL
-                        } else {
-                            IDLE_POLL
-                        };
-                    })
-                });
-                if !matches!(result, Ok(Ok(()))) {
-                    let _ = this.update(cx, |this, cx| this.global_voice.shutdown(cx));
-                    break;
+        self.global_voice.poller().run_once(|| {
+            cx.spawn_in(window, async move |this, cx| {
+                let mut interval = IDLE_POLL;
+                loop {
+                    let slept = Instant::now();
+                    cx.background_executor().timer(interval).await;
+                    let late = slept.elapsed().saturating_sub(interval);
+                    let result = cx.update(|window, cx| {
+                        this.update(cx, |this, cx| {
+                            if this.global_voice.held && late >= Duration::from_millis(250) {
+                                eprintln!(
+                                    "global voice: key poll stalled {}ms during a hold",
+                                    late.as_millis()
+                                );
+                            }
+                            this.poll_global_voice(window, cx);
+                            // A held key is about to be released: poll faster so
+                            // key-up reaches the recorder without a visible lag.
+                            interval = if this.global_voice.held {
+                                HELD_POLL
+                            } else {
+                                IDLE_POLL
+                            };
+                        })
+                    });
+                    if !matches!(result, Ok(Ok(()))) {
+                        let _ = this.update(cx, |this, cx| this.global_voice.shutdown(cx));
+                        break;
+                    }
                 }
-            }
-        }));
+            })
+        });
     }
 
     fn poll_global_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -522,18 +532,16 @@ impl Workspace {
                         self.global_voice.cli_resolve = None;
                         self.cli_release()
                     }
-                    Edge::Release => self.global_voice_release(cx),
+                    Edge::Release => self.global_voice.release_hold(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
-                        self.cancel_global_voice_capture("input listener canceled the hold", cx)
+                        self.global_voice
+                            .cancel_capture("input listener canceled the hold", cx)
                     }
                 }
             }
         }
-        if self.global_voice.hold().take_expired() {
-            eprintln!("global voice: host shortcut hold exceeded its deadline, finishing it");
-            self.global_voice_release(cx);
-        }
+        self.global_voice.finish_expired_hold(cx);
         #[cfg(target_os = "linux")]
         let cli_recording = self
             .global_voice
@@ -549,7 +557,14 @@ impl Workspace {
         if self.poll_cli_capture(cx) {
             return;
         }
-        self.update_global_voice_overlay(cx);
+        self.global_voice.update_overlay(
+            |panel| {
+                self.slots
+                    .iter()
+                    .any(|slot| !slot.closing && slot.panel.chat() == Some(panel))
+            },
+            cx,
+        );
     }
 
     fn global_voice_press(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -567,15 +582,10 @@ impl Workspace {
                 }
             });
         }
-        self.global_voice.hold().begin_press(target.as_ref().map(Entity::downgrade));
+        self.global_voice
+            .hold()
+            .begin_press(target.as_ref().map(Entity::downgrade));
         self.check_global_voice_permission(true, window, cx);
-    }
-
-    fn global_voice_release(&mut self, cx: &mut Context<Self>) {
-        eprintln!("global voice: release");
-        if let Some((panel, attempt)) = self.global_voice.owner().end_hold() {
-            panel.update(cx, |panel, cx| panel.end_global_voice_hold(&attempt, cx));
-        }
     }
 
     /// Host global shortcut press (macOS Carbon / Windows RegisterHotKey).
@@ -620,17 +630,8 @@ impl Workspace {
         // Release both possible owners. Neither path ever refocuses.
         self.end_voice_hold(&EndVoiceHold, window, cx);
         if self.global_voice.hold().active() {
-            self.global_voice_release(cx);
+            self.global_voice.release_hold(cx);
         }
-    }
-
-    fn cancel_global_voice_capture(&mut self, reason: &'static str, cx: &mut Context<Self>) {
-        if let Some((panel, attempt)) = self.global_voice.owner().abort() {
-            panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&attempt, reason, cx)
-            });
-        }
-        self.global_voice.overlay().close(cx);
     }
 
     fn check_global_voice_permission(
@@ -642,50 +643,92 @@ impl Workspace {
         let check = cx
             .background_executor()
             .spawn(crate::global_voice_session::permitted());
-        self.global_voice.permission().start(|serial| cx.spawn_in(window, async move |this, cx| {
-            let allowed = check.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if !this.global_voice.permission().answered(serial) {
-                    return;
-                }
-                if !allowed {
-                    eprintln!("global voice: denied by session check");
-                    this.cancel_global_voice_capture("session check denied voice", cx);
-                } else if start && this.global_voice.held {
-                    this.begin_global_voice(window, cx);
-                }
-            });
-        }));
+        self.global_voice.permission().start(|serial| {
+            cx.spawn_in(window, async move |this, cx| {
+                let allowed = check.await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if !this.global_voice.permission().answered(serial) {
+                        return;
+                    }
+                    if !allowed {
+                        eprintln!("global voice: denied by session check");
+                        this.global_voice
+                            .cancel_capture("session check denied voice", cx);
+                    } else if start && this.global_voice.held {
+                        this.begin_global_voice(window, cx);
+                    }
+                });
+            })
+        });
     }
 
     fn begin_global_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.account_sign_in_visible {
             return;
         }
-        if let Some(owner) = self.global_voice.owner().panel()
-            && owner.read(cx).voice_active() {
-                return;
-            }
-        self.global_voice.overlay().close(cx);
-        let Some(panel) = self.global_voice.hold().take_target() else {
-            eprintln!("global voice: no eligible chat to receive the transcript");
-            return;
-        };
-        if !self
-            .slots
-            .iter()
-            .any(|slot| !slot.closing && slot.panel.chat() == Some(&panel))
+        if let Some(panel) = self.global_voice.begin_capture(
+            |panel| {
+                self.slots
+                    .iter()
+                    .any(|slot| !slot.closing && slot.panel.chat() == Some(panel))
+            },
+            cx,
+        ) {
+            self.configure_voice_navigation(&panel, window, cx);
+        }
+    }
+}
+
+impl State {
+    fn finish_expired_hold(&mut self, cx: &mut App) {
+        if self.hold().take_expired() {
+            eprintln!("global voice: host shortcut hold exceeded its deadline, finishing it");
+            self.release_hold(cx);
+        }
+    }
+
+    fn release_hold(&mut self, cx: &mut App) {
+        eprintln!("global voice: release");
+        if let Some((panel, attempt)) = self.owner().end_hold() {
+            panel.update(cx, |panel, cx| panel.end_global_voice_hold(&attempt, cx));
+        }
+    }
+
+    fn cancel_capture(&mut self, reason: &'static str, cx: &mut App) {
+        if let Some((panel, attempt)) = self.owner().abort() {
+            panel.update(cx, |panel, cx| {
+                panel.cancel_global_voice(&attempt, reason, cx)
+            });
+        }
+        self.overlay().close(cx);
+    }
+
+    fn begin_capture(
+        &mut self,
+        is_open: impl FnOnce(&Entity<Panel>) -> bool,
+        cx: &mut App,
+    ) -> Option<Entity<Panel>> {
+        if let Some(owner) = self.owner().panel()
+            && owner.read(cx).voice_active()
         {
-            return;
+            return None;
+        }
+        self.overlay().close(cx);
+        let Some(panel) = self.hold().take_target() else {
+            eprintln!("global voice: no eligible chat to receive the transcript");
+            return None;
+        };
+        if !is_open(&panel) {
+            return None;
         }
         if panel.read(cx).voice_active() {
-            return;
+            return None;
         }
         // Prove a visible indicator exists before opening the microphone.
         // Focused: the chat's in-panel pill. Unfocused: a non-focusing OS pill.
         // Unsupported compositors must not record invisibly.
-        if os_pill_wanted(self.global_voice.window_active, true, false)
-            && !self.show_global_voice_overlay(
+        if os_pill_wanted(self.window_active, true, false)
+            && !self.show_overlay(
                 Snapshot {
                     title: "Connecting…".into(),
                     levels: None,
@@ -696,82 +739,75 @@ impl Workspace {
         {
             // Restore native focused-key handling instead of swallowing
             // every future Copilot press on an unsupported compositor.
-            self.global_voice.owner().disable_source();
-            return;
+            self.owner().disable_source();
+            return None;
         }
         // No activate_window, set_active or focus_input here. The source draft
         // receives the result while the user's other application keeps focus.
         if let Some(attempt) = panel.update(cx, |panel, cx| panel.begin_global_voice_hold(cx)) {
-            // Same Jev routing as a focused hold: the last 20 sessions plus
-            // quick actions. The OS pill then shows what Jev decided.
-            self.configure_voice_navigation(&panel, window, cx);
-            self.global_voice.owner().start(panel.downgrade(), attempt);
+            self.owner().start(panel.downgrade(), attempt);
+            Some(panel)
         } else {
-            self.global_voice.overlay().close(cx);
+            self.overlay().close(cx);
+            None
         }
     }
 
-    fn update_global_voice_overlay(&mut self, cx: &mut Context<Self>) {
-        let (Some(panel), Some(attempt)) =
-            (self.global_voice.owner().panel(), self.global_voice.owner().attempt())
-        else {
-            self.global_voice.overlay().close(cx);
+    fn update_overlay(&mut self, is_open: impl FnOnce(&Entity<Panel>) -> bool, cx: &mut App) {
+        let (Some(panel), Some(attempt)) = (self.owner().panel(), self.owner().attempt()) else {
+            self.overlay().close(cx);
             return;
         };
-        if !self
-            .slots
-            .iter()
-            .any(|slot| !slot.closing && slot.panel.chat() == Some(&panel))
-        {
+        if !is_open(&panel) {
             panel.update(cx, |panel, cx| {
                 panel.cancel_global_voice(&attempt, "owning chat panel is closing", cx)
             });
-            self.global_voice.overlay().close(cx);
+            self.overlay().close(cx);
             return;
         }
         let snapshot = panel.read(cx).global_voice_snapshot(&attempt);
         if snapshot.is_none() {
-            self.global_voice.overlay().close(cx);
+            self.overlay().close(cx);
             return;
         }
         if !panel.read(cx).voice_active() {
-            if self.global_voice.owner().pill_expired() {
+            if self.owner().pill_expired() {
                 // The result pill expires in both places, so focusing this
                 // window later never reveals a stale "Sent to agent".
                 panel.update(cx, |panel, cx| {
                     panel.cancel_global_voice(&attempt, "result pill expired", cx)
                 });
-                self.global_voice.overlay().close(cx);
+                self.overlay().close(cx);
                 return;
             }
         }
         let Some(snapshot) = snapshot else { return };
         let decided = snapshot.decided;
-        if !os_pill_wanted(self.global_voice.window_active, true, decided) {
+        if !os_pill_wanted(self.window_active, true, decided) {
             // Focus moved to this window mid-hold: the in-panel pill takes over.
-            self.global_voice.overlay().hide(cx);
+            self.overlay().hide(cx);
             return;
         }
-        if decided && !self.global_voice.overlay().is_open() {
+        if decided && !self.overlay().is_open() {
             // Route only, never transcript content.
             eprintln!("global voice: showing decision: {}", snapshot.title);
         }
         // Focus left mid-hold: mirror the in-panel pill at the OS level.
-        let shown = self.show_global_voice_overlay(snapshot, cx);
+        let shown = self.show_overlay(snapshot, cx);
         if !shown && decided {
             // Nothing is recording. Keep the in-panel decision intact.
-            self.global_voice.overlay().hide(cx);
+            self.overlay().hide(cx);
         } else if !shown {
             // Never keep recording without a visible indicator.
             panel.update(cx, |panel, cx| {
                 panel.cancel_global_voice(&attempt, "OS voice pill could not be shown", cx)
             });
-            self.global_voice.overlay().close(cx);
+            self.overlay().close(cx);
         }
     }
 
-    fn show_global_voice_overlay(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) -> bool {
-        match self.global_voice.overlay().show(snapshot, cx) {
+    fn show_overlay(&mut self, snapshot: Snapshot, cx: &mut App) -> bool {
+        match self.overlay().show(snapshot, cx) {
             Ok(opened) => {
                 if opened {
                     eprintln!("global voice: OS pill shown");
