@@ -390,7 +390,13 @@ class Instance:
         if action == "list":
             return self.native({"action": action})
         if action == "open_session":
-            return self.native({"action": action, **params, "destination": {"background_panel": {"window_id": target["window_id"]}}})
+            panel = {"window_id": target["window_id"]}
+            if "workspace" in params:
+                workspace = params.pop("workspace")
+                if not isinstance(workspace, int) or isinstance(workspace, bool) or workspace < 1:
+                    raise ValueError("workspace must be a one-based integer")
+                panel["workspace"] = workspace
+            return self.native({"action": action, **params, "destination": {"background_panel": panel}})
         request = {"action": action, **params, "target": target}
         if action in ("set_composer", "send", "press_key", "search", "click", "focus"):
             request["allow_user_window"] = True  # Only this supervisor's hidden window.

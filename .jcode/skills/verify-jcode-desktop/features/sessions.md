@@ -41,6 +41,10 @@ the user's real history.
   `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action open_session --params '{"session_id":"swarm-fixture-0"}'`,
   then `python3 scripts/verify-jcode-desktop.py drive --run "$RUN" --action state --session swarm-fixture-0`.
   Require the exact session. This is not clicking a search result.
+- **Background attachment to another workspace:** add `"workspace":4` (one-based)
+  to the `open_session` params. Require `result.workspace == 4`, an unchanged
+  `navigation` active row and focus in `list`, and the panel listed in that row.
+  Reopening the same session must answer `already_open`.
 - **Sidebar todo counts:** launch with `--fixture sidebar-todos`. Capture the
   sidebar with two project headers and no duplicate dock above the account footer.
   Click `sidebar-todos:screenshot-fixture`, then
