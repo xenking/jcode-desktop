@@ -148,38 +148,41 @@ pub(super) fn tool_clock_label(ms: i64) -> Option<String> {
 }
 
 #[cfg(test)]
-#[test]
-pub(super) fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
-    let detail = tool_detail(
-        "bash",
-        r#"{"command":"pwd","notify":null,"wake":false,"timeout":0}"#,
-        "",
-    );
-    assert!(detail.contains("command: pwd"));
-    assert!(detail.contains("wake: false"));
-    assert!(detail.contains("timeout: 0"));
-    assert!(!detail.contains("notify"));
-}
+mod tests {
+    use super::*;
 
-#[cfg(test)]
-#[test]
-pub(super) fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
-    let rows: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
-        {"role":"tool", "content":"", "timestamp_ms":20000,
-         "tool":{"id":"a", "name":"bash", "input":{}, "duration_ms":7000}},
-        {"role":"tool", "content":"", "timestamp_ms":30000,
-         "tool":{"id":"b", "name":"read", "input":{}}}
-    ]))
-    .unwrap();
-    let (items, _) = crate::panel::history_items::build(rows.clone(), Vec::new());
-    assert!(matches!(&items[0], Item::Tool { name, .. } if name == "bash"));
-    assert!(matches!(&items[1], Item::Tool { name, .. } if name == "read"));
-    let times = history_tool_times(&rows);
-    assert_eq!(
-        times.get("a"),
-        Some(&(Some(13000), Some(20000), Some(Duration::from_secs(7))))
-    );
-    assert_eq!(times.get("b"), Some(&(None, Some(30000), None)));
+    #[test]
+    fn tool_detail_omits_null_arguments_but_keeps_false_and_zero() {
+        let detail = tool_detail(
+            "bash",
+            r#"{"command":"pwd","notify":null,"wake":false,"timeout":0}"#,
+            "",
+        );
+        assert!(detail.contains("command: pwd"));
+        assert!(detail.contains("wake: false"));
+        assert!(detail.contains("timeout: 0"));
+        assert!(!detail.contains("notify"));
+    }
+
+    #[test]
+    fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
+        let rows: Vec<jcode_sdk::HistoryMessage> = serde_json::from_value(serde_json::json!([
+            {"role":"tool", "content":"", "timestamp_ms":20000,
+             "tool":{"id":"a", "name":"bash", "input":{}, "duration_ms":7000}},
+            {"role":"tool", "content":"", "timestamp_ms":30000,
+             "tool":{"id":"b", "name":"read", "input":{}}}
+        ]))
+        .unwrap();
+        let (items, _) = crate::panel::history_items::build(rows.clone(), Vec::new());
+        assert!(matches!(&items[0], Item::Tool { name, .. } if name == "bash"));
+        assert!(matches!(&items[1], Item::Tool { name, .. } if name == "read"));
+        let times = history_tool_times(&rows);
+        assert_eq!(
+            times.get("a"),
+            Some(&(Some(13000), Some(20000), Some(Duration::from_secs(7))))
+        );
+        assert_eq!(times.get("b"), Some(&(None, Some(30000), None)));
+    }
 }
 
 pub(super) fn tool_bg_status(name: &str, output: &str) -> Option<String> {
