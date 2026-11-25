@@ -313,7 +313,7 @@ impl Workspace {
                     self.bridge.clone(),
                     cx,
                 );
-                panel.input = input;
+                panel.replace_input(input, cx);
                 panel
             });
             let width_fraction = 0.5;
