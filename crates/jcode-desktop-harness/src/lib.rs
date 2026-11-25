@@ -10,6 +10,7 @@ mod edit_stats_watch;
 pub mod harness;
 pub mod managed_cloud;
 pub mod managed_cloud_parity;
+pub mod network;
 pub mod paired;
 pub mod platform;
 pub mod remote_targets;

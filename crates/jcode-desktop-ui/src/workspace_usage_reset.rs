@@ -64,18 +64,8 @@ enum PrepareResult {
     Nothing(String),
 }
 
-// Reqwest needs Tokio, GPUI has its own executor. Run each bounded provider
-// call on a private runtime off the UI thread.
-fn network<T>(operation: impl std::future::Future<Output = T>) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| "Could not start the reset check. Please try again.".to_string())
-        .map(|runtime| runtime.block_on(operation))
-}
-
-fn prepare(provider: ResetProvider, label: Option<String>) -> Result<PrepareResult, String> {
-    network(async move {
+async fn prepare(provider: ResetProvider, label: Option<String>) -> Result<PrepareResult, String> {
+    jcode_desktop_harness::network::run(async move {
         match provider {
             ResetProvider::OpenAi => {
                 match jcode_base::usage::prepare_openai_usage_reset_for_account(label).await {
@@ -94,7 +84,9 @@ fn prepare(provider: ResetProvider, label: Option<String>) -> Result<PrepareResu
                 }
             }
         }
-    })?
+    })
+    .await
+    .map_err(|_| "Could not start the reset check. Please try again.".to_string())?
 }
 
 /// Provider errors carry a retry hint on later lines written for the TUI.
@@ -107,9 +99,9 @@ enum RedeemResult {
     Uncertain(String),
 }
 
-fn redeem(pending: &Pending) -> RedeemResult {
+async fn redeem(pending: &Pending) -> RedeemResult {
     let pending = pending.clone();
-    let outcome = network(async move {
+    let outcome = jcode_desktop_harness::network::run(async move {
         match &pending {
             Pending::OpenAi(pending) => jcode_base::usage::consume_openai_usage_reset(pending)
                 .await
@@ -125,7 +117,9 @@ fn redeem(pending: &Pending) -> RedeemResult {
                 .await
                 .map(|outcome| (outcome.message(), outcome.limits_cleared())),
         }
-    });
+    })
+    .await
+    .map_err(|_| "Could not start the reset check. Please try again.".to_string());
     match outcome {
         Ok(Ok((message, ok))) => RedeemResult::Done { message, ok },
         Ok(Err(error)) => RedeemResult::Uncertain(first_line(&error.to_string())),
@@ -197,7 +191,7 @@ impl Workspace {
             let check = {
                 let label = label.clone();
                 cx.background_executor()
-                    .spawn(async move { prepare(provider, label) })
+                    .spawn(async move { prepare(provider, label).await })
             };
             cx.spawn(async move |this, cx| {
                 let result = check.await;
@@ -252,7 +246,7 @@ impl Workspace {
         dialog.stage = Stage::Redeeming(pending.clone());
         if live() {
             let work = cx.background_executor().spawn(async move {
-                let result = redeem(&pending);
+                let result = redeem(&pending).await;
                 // Invalidate even when uncertain: the reset may have applied.
                 notify_daemon(provider, label.as_deref());
                 (result, pending)

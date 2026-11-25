@@ -249,15 +249,12 @@ impl State {
     }
 }
 
-// Reqwest needs Tokio, whereas GPUI uses its own executor. Each bounded request
-// runs off the UI thread. Dropping the owning GPUI task prevents stale results
-// from opening a browser or storing a credential after Skip, Back, or reload.
-fn network<T>(operation: impl std::future::Future<Output = T>) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+async fn network<T: Send + 'static>(
+    operation: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, String> {
+    jcode_desktop_harness::network::run(operation)
+        .await
         .map_err(|_| "Could not start sign-in. Please try again.".to_string())
-        .map(|runtime| runtime.block_on(operation))
 }
 
 impl Workspace {
@@ -536,13 +533,14 @@ impl Workspace {
         if !selected.is_empty() && live() {
             let count = selected.len();
             let import = cx.background_executor().spawn(async move {
-                network(async {
+                network(async move {
                     external_auth::run_external_auth_import_candidates_preserving_existing(
                         &candidates,
                         &selected,
                     )
                     .await
                 })
+                .await
             });
             self.account_sign_in.import_task = Some(cx.spawn(async move |this, cx| {
                 let result = import.await;
@@ -815,12 +813,14 @@ impl Workspace {
         let address = email.clone();
         let request = cx.background_executor().spawn(async move {
             #[cfg(test)]
-            let result = network(async {
+            let result = network(async move {
                 auth::start_email_with_api_base(&reqwest::Client::new(), &api_base, &address).await
-            });
+            })
+            .await;
             #[cfg(not(test))]
             let result =
-                network(async { auth::start_email(&reqwest::Client::new(), &address).await });
+                network(async move { auth::start_email(&reqwest::Client::new(), &address).await })
+                    .await;
             result?.map_err(|error| auth::email_start_error_message(&error))
         });
         self.account_sign_in.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -863,7 +863,10 @@ impl Workspace {
         };
         let pending = login.clone();
         let request = cx.background_executor().spawn(async move {
-            network(async { auth::verify_email(&reqwest::Client::new(), &pending, &code).await })
+            network(
+                async move { auth::verify_email(&reqwest::Client::new(), &pending, &code).await },
+            )
+            .await
         });
         self.account_sign_in.task = Some(cx.spawn(async move |this, cx| {
             let result = request.await;

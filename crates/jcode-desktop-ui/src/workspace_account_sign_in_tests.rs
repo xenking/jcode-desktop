@@ -846,11 +846,32 @@ fn submit_email(
     workspace.update(vcx, |w, _| w.account_sign_in.test_api_base = Some(endpoint));
     type_into_field(vcx, "local@example.invalid");
     vcx.simulate_keystrokes("enter");
-    vcx.run_until_parked();
+    wait_for_account_request(workspace, vcx);
+}
+
+fn wait_for_account_request(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        if workspace.read_with(vcx, |w, _| {
+            !matches!(
+                w.account_sign_in.stage,
+                Stage::Sending | Stage::Verifying { .. }
+            )
+        }) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "account request timed out"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[gpui::test]
 fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     let (endpoint, requests) = account_http_server(vec![
         (200, HTTP_STARTED),
         (
@@ -865,6 +886,7 @@ fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext)
         assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, login: Some(_) } if email == "local@example.invalid"));
     });
     type_into_field(vcx, "000000");
+    wait_for_account_request(&workspace, vcx);
     workspace.read_with(vcx, |w, cx| {
         assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }));
         assert!(
@@ -885,6 +907,7 @@ fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext)
         );
     });
     type_into_field(vcx, "123456");
+    wait_for_account_request(&workspace, vcx);
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(&w.account_sign_in.stage, Stage::Complete { email } if email == "local@example.invalid"));
         assert!(w.account_sign_in.connected);
@@ -903,6 +926,7 @@ fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext)
 
 #[gpui::test]
 fn real_http_send_failure_and_expired_code_are_recoverable(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     let (workspace, vcx) = setup(cx);
     let (endpoint, _requests) = account_http_server(vec![(
         429,
@@ -936,6 +960,7 @@ fn real_http_send_failure_and_expired_code_are_recoverable(cx: &mut gpui::TestAp
     });
     submit_email(&workspace, vcx, endpoint);
     type_into_field(vcx, "123456");
+    wait_for_account_request(&workspace, vcx);
     workspace.read_with(vcx, |w, cx| {
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
         assert!(

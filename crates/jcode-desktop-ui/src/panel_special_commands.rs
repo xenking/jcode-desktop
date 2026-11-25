@@ -189,10 +189,9 @@ impl Panel {
             }
             SpecialCommand::Dictation => {
                 let task = cx.background_executor().spawn(async {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?
-                        .block_on(jcode_voice::dictation::run_configured())
+                    jcode_desktop_harness::network::run(jcode_voice::dictation::run_configured())
+                        .await
+                        .map_err(anyhow::Error::msg)?
                 });
                 self.items.push(Item::Assistant("Running the configured local dictation command. The transcript is applied per `[dictation] mode`: the default `insert` puts it at the cursor for review, and only `send` submits it automatically.".into()));
                 cx.spawn(async move |this, cx| {

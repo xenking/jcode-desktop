@@ -26,6 +26,7 @@ jcode-build-support = { path = "../../../jcode/crates/jcode-build-support" }
 jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
 jcode-session-types = { path = "../../../jcode/crates/jcode-session-types" }
 async-channel = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
 log = "0.4"
 base64 = "0.22"
 libc = { version = "0.2", features = ["extra_traits"] }

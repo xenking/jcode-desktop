@@ -476,11 +476,11 @@ impl Panel {
         };
         self.voice.started = Some(Instant::now());
         let task = cx.background_executor().spawn(async move {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(anyhow::Error::from)?
-                .block_on(voice::dictation::run_command(&command, cfg.timeout_secs))
+            jcode_desktop_harness::network::run(async move {
+                voice::dictation::run_command(&command, cfg.timeout_secs).await
+            })
+            .await
+            .map_err(anyhow::Error::msg)?
         });
         let attempt = attempt.clone();
         self.voice.task = Some(cx.spawn(async move |this, cx| {
@@ -1067,9 +1067,11 @@ impl Panel {
             usage: None,
         });
         let work = cx.background_executor().spawn(async move {
-            tokio::runtime::Runtime::new()
-                .map_err(anyhow::Error::from)?
-                .block_on(voice_intent::classify_with_report(&text, &candidates))
+            jcode_desktop_harness::network::run(async move {
+                voice_intent::classify_with_report(&text, &candidates).await
+            })
+            .await
+            .map_err(anyhow::Error::msg)?
         });
         self.voice.task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;

@@ -103,12 +103,11 @@ fn fixture() -> Option<Snapshot> {
     })
 }
 
-/// Run one async SDK call to completion off the UI thread.
-fn run<T>(operation: impl std::future::Future<Output = T>) -> Result<T, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map(|runtime| runtime.block_on(operation))
+async fn run<T: Send + 'static>(
+    operation: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, String> {
+    jcode_desktop_harness::network::run(operation)
+        .await
         .map_err(|_| "Could not start a network request. Please try again.".to_string())
 }
 
@@ -154,10 +153,10 @@ fn describe(error: AccountApiError) -> String {
     }
 }
 
-fn load_snapshot() -> Result<Snapshot, String> {
-    let (base, key) = credentials()?;
-    let client = client()?;
+async fn load_snapshot() -> Result<Snapshot, String> {
     run(async {
+        let (base, key) = credentials()?;
+        let client = client()?;
         let me: SubscriptionMe = api::fetch_subscription_me_with(&client, &base, &key)
             .await
             .map_err(describe)?;
@@ -171,7 +170,8 @@ fn load_snapshot() -> Result<Snapshot, String> {
             used_usd: me.usage.used_usd,
             billing,
         })
-    })?
+    })
+    .await?
 }
 
 fn checkout_notice(plan_usd: u64) -> String {
@@ -302,7 +302,9 @@ impl Workspace {
         }
         self.account_menu.busy = Some(Busy::Loading);
         self.account_menu.error = None;
-        let load = cx.background_executor().spawn(async { load_snapshot() });
+        let load = cx
+            .background_executor()
+            .spawn(async { load_snapshot().await });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = load.await;
             let _ = this.update(cx, |this, cx| {
@@ -340,15 +342,14 @@ impl Workspace {
         self.account_menu.error = None;
         self.account_menu.notice = None;
         let update = cx.background_executor().spawn(async move {
-            let (base, key) = credentials()?;
-            let client = client()?;
-            run(api::set_monthly_hard_cap_with(
-                &client,
-                &base,
-                &key,
-                dollars_limit * 100,
-            ))?
-            .map_err(describe)
+            run(async move {
+                let (base, key) = credentials()?;
+                let client = client()?;
+                api::set_monthly_hard_cap_with(&client, &base, &key, dollars_limit * 100)
+                    .await
+                    .map_err(describe)
+            })
+            .await?
         });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = update.await;
@@ -418,9 +419,14 @@ impl Workspace {
         self.account_menu.error = None;
         self.account_menu.notice = None;
         let change = cx.background_executor().spawn(async move {
-            let (base, key) = credentials()?;
-            let client = client()?;
-            run(api::change_plan_with(&client, &base, &key, plan_usd))?.map_err(describe)
+            run(async move {
+                let (base, key) = credentials()?;
+                let client = client()?;
+                api::change_plan_with(&client, &base, &key, plan_usd)
+                    .await
+                    .map_err(describe)
+            })
+            .await?
         });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = change.await;
@@ -456,12 +462,14 @@ impl Workspace {
         self.account_menu.error = None;
         self.account_menu.notice = None;
         let checkout = cx.background_executor().spawn(async move {
-            let (base, key) = credentials()?;
-            let client = client()?;
-            run(api::start_subscription_checkout_with(
-                &client, &base, &key, plan_usd,
-            ))?
-            .map_err(describe)
+            run(async move {
+                let (base, key) = credentials()?;
+                let client = client()?;
+                api::start_subscription_checkout_with(&client, &base, &key, plan_usd)
+                    .await
+                    .map_err(describe)
+            })
+            .await?
         });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = checkout.await;
@@ -489,7 +497,9 @@ impl Workspace {
         self.account_menu.watch_task = Some(cx.spawn(async move |this, cx| {
             while started.elapsed() < CHECKOUT_WATCH {
                 cx.background_executor().timer(CHECKOUT_POLL).await;
-                let load = cx.background_executor().spawn(async { load_snapshot() });
+                let load = cx
+                    .background_executor()
+                    .spawn(async { load_snapshot().await });
                 let Ok(snapshot) = load.await else { continue };
                 let activated = snapshot.plan_usd().is_some();
                 let keep_going = this
@@ -553,9 +563,14 @@ impl Workspace {
         self.account_menu.busy = Some(Busy::Portal);
         self.account_menu.error = None;
         let portal = cx.background_executor().spawn(async {
-            let (base, key) = credentials()?;
-            let client = client()?;
-            run(api::billing_portal_url_with(&client, &base, &key))?.map_err(describe)
+            run(async {
+                let (base, key) = credentials()?;
+                let client = client()?;
+                api::billing_portal_url_with(&client, &base, &key)
+                    .await
+                    .map_err(describe)
+            })
+            .await?
         });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = portal.await;
@@ -586,8 +601,13 @@ impl Workspace {
         self.account_menu.busy = Some(Busy::SigningOut);
         self.account_menu.error = None;
         let sign_out = cx.background_executor().spawn(async {
-            let client = client()?;
-            run(api::sign_out_current_account(&client))?.map_err(|error| error.to_string())
+            run(async {
+                let client = client()?;
+                api::sign_out_current_account(&client)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await?
         });
         self.account_menu.task = Some(cx.spawn(async move |this, cx| {
             let result = sign_out.await;
