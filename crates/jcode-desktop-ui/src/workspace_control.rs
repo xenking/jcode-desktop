@@ -60,7 +60,7 @@ pub(super) fn handle_window_request(
         ) {
             window.refresh();
             window.draw(cx).clear(cx);
-            let position = panel.read(cx).input.read(cx).composer_wheel_position();
+            let position = panel.read(cx).composer_wheel_position(cx);
             let y = if selector == "composer:wheel-up" {
                 12_000.
             } else {
@@ -174,8 +174,7 @@ pub(super) fn handle_window_request(
         // Never read or change the system pasteboard from a hidden smoke run.
         #[cfg(target_os = "macos")]
         if key == "super-v" {
-            let input = &panel.read(cx).input;
-            if !input.read(cx).focus_handle.is_focused(window) {
+            if !panel.read(cx).composer_focused(window, cx) {
                 return error(
                     "selector_not_focused",
                     "image paste requires composer focus",
