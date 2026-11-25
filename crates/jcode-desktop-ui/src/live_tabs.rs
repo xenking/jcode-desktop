@@ -162,7 +162,7 @@ struct TabCloseColors {
 
 impl TabCloseColors {
     fn for_tab(ring: Option<crate::panel::TabRing>, workspace_accent: gpui::Rgba) -> Self {
-        let accent = ring.map_or(workspace_accent, |ring| ring.color);
+        let accent = ring.map_or(workspace_accent, crate::panel::TabRing::color);
         let text = Theme::global().TEXT;
         Self {
             background: accent.opacity(0.16),
@@ -705,7 +705,7 @@ impl Workspace {
                         .border_color(theme.PANEL_BORDER)
                         .occlude()
                         .children(hidden.iter().map(|&index| {
-                            let panel = self.slots[index].panel.read(cx);
+                            let panel = self.panel_metadata(&self.slots[index], cx);
                             let title =
                                 folder_session_title(&panel.session_id, panel.title.as_ref());
                             let entity = cx.weak_entity();
@@ -788,7 +788,9 @@ impl Workspace {
         };
         let mut available =
             (canvas_width - right - track_left - controls_width - drag_width).max(0.0);
-        let can_rename = self.rename_target(cx).is_some();
+        let can_rename = self.slots.get(self.active).is_some_and(|slot| {
+            slot.row == self.active_row && !slot.closing && self.panel_metadata(slot, cx).can_rename
+        });
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
             // Closing surfaces stay mounted for their fade, but their tabs
@@ -927,14 +929,14 @@ impl Workspace {
             let padding = (visible / 12.0).min(6.0);
             let (title, emoji, ring, outline) = match index {
                 Some(index) => {
-                    let panel = self.slots[index].panel.read(cx);
+                    let panel = self.panel_metadata(&self.slots[index], cx);
                     (
                         folder_session_title(&panel.session_id, panel.title.as_ref()),
                         jcode_core::id::extract_session_name(&panel.session_id)
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
-                        panel.tab_ring(),
-                        Some(panel.tab_outline()),
+                        panel.tab_ring,
+                        Some(panel.tab_outline.clone()),
                     )
                 }
                 None => ("Empty workspace".into(), "📁", None, None),

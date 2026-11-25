@@ -60,10 +60,64 @@ struct Frame {
 }
 
 fn sidebar_renders() -> u64 {
+    view_renders("SidebarChrome")
+}
+
+fn view_renders(view: &str) -> u64 {
     crate::render_stats::snapshot()
         .into_iter()
-        .find(|(name, _)| *name == "SidebarChrome")
+        .find(|(name, _)| *name == view)
         .map_or(0, |(_, stat)| stat.renders)
+}
+
+#[gpui::test]
+fn workspace_and_sidebar_stay_retained_during_bridge_text_deltas(cx: &mut gpui::TestAppContext) {
+    const DELTAS: usize = 12;
+    let (workspace, vcx) = loaded_workspace(cx);
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.clone());
+    let send_delta = |vcx: &mut gpui::VisualTestContext, text: &str| {
+        let session_id = "nav-0".to_owned();
+        vcx.update(|_, cx| {
+            Workspace::dispatch_bridge_batch(
+                &workspace,
+                vec![Update::Event {
+                    event: jcode_sdk::ApiEvent::TextDelta {
+                        session_id: session_id.clone(),
+                        text: text.into(),
+                        message_id: None,
+                    },
+                    session_id,
+                }],
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+    };
+    send_delta(vcx, "Starting answer.");
+    let before = (view_renders("Workspace"), sidebar_renders());
+    assert!(before.0 > 0 && before.1 > 0, "both views must be mounted");
+    let panel_renders = crate::render_stats::test_renders::count(panel.entity_id());
+    for _ in 0..DELTAS {
+        send_delta(vcx, " More.");
+    }
+    let renders = (
+        view_renders("Workspace") - before.0,
+        sidebar_renders() - before.1,
+    );
+    eprintln!(
+        "{DELTAS} text deltas: Workspace={}, SidebarChrome={}",
+        renders.0, renders.1
+    );
+    vcx.update(|window, cx| {
+        let state = panel.read(cx).control_state(window, cx).unwrap();
+        assert_eq!(
+            state["streaming_text"],
+            format!("Starting answer.{}", " More.".repeat(DELTAS))
+        );
+    });
+    assert!(crate::render_stats::test_renders::count(panel.entity_id()) >= panel_renders + DELTAS);
+    assert!(vcx.debug_bounds("transcript-with-response").is_some());
+    assert_eq!(renders, (0, 0), "streaming text rebuilt retained chrome");
 }
 
 #[gpui::test]

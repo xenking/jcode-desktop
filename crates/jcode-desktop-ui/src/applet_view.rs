@@ -50,12 +50,20 @@ pub(crate) struct RenderCx<'a> {
     pub session_tasks: Option<&'a dyn Fn(&App) -> SessionTasks>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct CatalogTasks {
-    pub rows: std::collections::HashMap<String, Vec<(String, String)>>,
-    pub progress: std::collections::HashMap<String, (usize, usize)>,
+    pub rows: Rc<std::collections::HashMap<String, Vec<(String, String)>>>,
+    pub progress: Rc<std::collections::HashMap<String, (usize, usize)>>,
 }
 impl Global for CatalogTasks {}
+
+impl CatalogTasks {
+    pub(crate) fn session(&self, id: &str) -> Option<(&[(String, String)], (usize, usize))> {
+        let rows = self.rows.get(id)?;
+        let progress = self.progress.get(id).copied().unwrap_or_default();
+        Some((rows, progress))
+    }
+}
 
 pub(crate) struct SessionTasks {
     pub rows: Vec<Vec<String>>,

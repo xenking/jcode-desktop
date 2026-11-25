@@ -23,7 +23,7 @@ impl Workspace {
         // Scope strings are only read synchronously. Borrow them instead of
         // copying both on every sidebar/overlay/settings render, including
         // frames where there are no matching applets.
-        let active = self.slots.get(self.active).map(|slot| slot.panel.read(cx));
+        let active = self.slots.get(self.active).map(|slot| self.panel_metadata(slot, cx));
         let dir = active.and_then(|panel| panel.working_dir.as_deref());
         let session = active.map(|panel| panel.session_id.as_str());
         runtime

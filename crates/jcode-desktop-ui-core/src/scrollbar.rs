@@ -195,22 +195,21 @@ impl RenderOnce for InteractiveListScrollbar {
                 cx.stop_propagation();
                 window.refresh();
             })
-            .child(
-                div()
+            .child(ScrollbarThumb {
+                element: div()
                     .debug_selector(move || selector.into())
-                    .absolute()
-                    .top(px(geometry.top))
-                    .right(px(INSET))
-                    .w(px(WIDTH))
-                    .h(px(geometry.thumb))
+                    .size_full()
                     .rounded_full()
                     .bg(if active {
                         Theme::global().TEXT_DIM
                     } else {
                         Theme::global().TEXT_FAINT
                     })
-                    .group_hover(selector, |style| style.bg(Theme::global().TEXT_DIM)),
-            )
+                    .group_hover(selector, |style| style.bg(Theme::global().TEXT_DIM))
+                    .into_any_element(),
+                top: px(geometry.top),
+                height: px(geometry.thumb),
+            })
             .child(
                 canvas(
                     |_, _, _| (),
@@ -260,6 +259,83 @@ impl RenderOnce for InteractiveListScrollbar {
                 .size_full(),
             )
             .into_any_element()
+    }
+}
+
+/// The thumb's size follows the measured list, not the viewport layout.
+/// Lay it out in prepaint so wrapping a line doesn't relayout the panel.
+struct ScrollbarThumb {
+    element: AnyElement,
+    top: gpui::Pixels,
+    height: gpui::Pixels,
+}
+
+impl IntoElement for ScrollbarThumb {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for ScrollbarThumb {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        let size = gpui::size(gpui::relative(1.).into(), gpui::relative(1.).into());
+        let style = gpui::Style {
+            position: gpui::Position::Absolute,
+            size,
+            ..Default::default()
+        };
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let size = gpui::size(px(WIDTH), self.height);
+        self.element
+            .layout_as_root(size.map(gpui::AvailableSpace::Definite), window, cx);
+        self.element.prepaint_at(
+            point(bounds.right() - px(INSET + WIDTH), bounds.top() + self.top),
+            window,
+            cx,
+        );
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.paint(window, cx);
     }
 }
 

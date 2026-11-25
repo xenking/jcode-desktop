@@ -116,12 +116,8 @@ impl Workspace {
     }
 
     fn files_root(&self, cx: &App) -> Option<PathBuf> {
-        let panel = self
-            .slots
-            .get(self.active)
-            .filter(|slot| !slot.closing)?
-            .panel
-            .read(cx);
+        let slot = self.slots.get(self.active).filter(|slot| !slot.closing)?;
+        let panel = self.panel_metadata(slot, cx);
         if harness::is_remote_session(&panel.session_id) {
             return None;
         }

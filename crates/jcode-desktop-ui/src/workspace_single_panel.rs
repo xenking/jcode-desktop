@@ -133,9 +133,10 @@ impl Workspace {
             self.focus_active(window, cx);
         }
         let content = self.slots.get(self.active).map(|slot| {
-            if slot.panel.read(cx).is_pending_session() {
+            let panel = self.panel_metadata(slot, cx);
+            if panel.pending {
                 self.render_pending_session(self.active, cx)
-            } else if slot.panel.read(cx).is_default_directory() {
+            } else if panel.session_id == Panel::DEFAULT_DIRECTORY_SESSION_ID {
                 self.render_folder_picker(cx)
             } else {
                 // Retained, and rebuilt on its own inside the chrome: see

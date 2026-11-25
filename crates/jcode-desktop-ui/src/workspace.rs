@@ -817,6 +817,7 @@ pub struct Workspace {
     sidebar_applets: Option<gpui::AnyElement>,
     sidebar_chrome: Option<Entity<SidebarChrome>>,
     sidebar_panel_metadata: Option<Entity<HashMap<gpui::EntityId, SidebarPanelMetadata>>>,
+    panel_metadata_observers: HashMap<gpui::EntityId, gpui::Subscription>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -940,6 +941,7 @@ pub struct Workspace {
     /// Persisted todo progress (completed, total) per session, refreshed in
     /// the background with the session list. Open panels override it live.
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
+    catalog_tasks: crate::applet_view::CatalogTasks,
     unfinished_sessions: Vec<harness::UnfinishedSession>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
@@ -1045,23 +1047,14 @@ impl Workspace {
         let bridge_task = cx.spawn(async move |this, cx| {
             while let Some(first) = update_bridge.recv().await {
                 let updates = update_bridge.extend_batch(vec![first], 127);
-                let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
-                    let mut changed = false;
-                    for update in updates {
-                        match &update {
-                            Update::Event { event, .. } => {
-                                crate::render_stats::note_variant("event:", event)
-                            }
-                            other => crate::render_stats::note_variant("update:", other),
-                        }
-                        changed |= workspace.apply(update, cx);
-                    }
-                    if changed {
-                        crate::render_stats::note("workspace-notify:bridge");
-                        cx.notify();
-                    }
+                let alive = cx.update(|cx| {
+                    let Some(workspace) = this.upgrade() else {
+                        return false;
+                    };
+                    Self::dispatch_bridge_batch(&workspace, updates, cx);
+                    true
                 });
-                if outcome.is_err() {
+                if !alive {
                     break;
                 }
                 // recv() is immediately ready while a producer has a backlog.
@@ -1239,6 +1232,7 @@ impl Workspace {
             sidebar_applets: None,
             sidebar_chrome: None,
             sidebar_panel_metadata: None,
+            panel_metadata_observers: HashMap::new(),
             bridge,
             host,
             single_panel,
@@ -1328,6 +1322,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            catalog_tasks: Default::default(),
             unfinished_sessions: Vec::new(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
@@ -1837,6 +1832,7 @@ impl Workspace {
             sidebar_applets: None,
             sidebar_chrome: None,
             sidebar_panel_metadata: None,
+            panel_metadata_observers: HashMap::new(),
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -1923,6 +1919,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
+            catalog_tasks: Default::default(),
             unfinished_sessions: Vec::new(),
             sidebar_title_pulses: Default::default(),
             swarm_marks: Default::default(),
@@ -2474,6 +2471,42 @@ impl Workspace {
             .position(|index| index == self.active)
     }
 
+    fn dispatch_bridge_batch(workspace: &Entity<Self>, updates: Vec<Update>, cx: &mut App) {
+        let mut changed = false;
+        for update in updates {
+            match &update {
+                Update::Event { session_id, event } => {
+                    crate::render_stats::note_variant("event:", event);
+                    if matches!(event, jcode_sdk::ApiEvent::TextDelta { .. }
+                        | jcode_sdk::ApiEvent::ReasoningDelta { .. }
+                        | jcode_sdk::ApiEvent::ToolInputDelta { .. })
+                    {
+                        let workspace = workspace.read(cx);
+                        let owner = workspace.side_question_owner(session_id, cx);
+                        let panel = workspace.slots.iter().find(|slot| {
+                            (owner.is_none() || !slot.closing)
+                                && slot.panel.read(cx).session_id == *session_id
+                        }).map(|slot| slot.panel.clone());
+                        let _no_blocking_sdk_read = jcode_sdk::forbid_blocking_local_io();
+                        if let Some(owner) = owner {
+                            owner.update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
+                        }
+                        if let Some(panel) = panel {
+                            panel.update(cx, |panel, cx| panel.apply(event, cx));
+                        }
+                        continue;
+                    }
+                }
+                other => crate::render_stats::note_variant("update:", other),
+            }
+            changed |= workspace.update(cx, |workspace, cx| workspace.apply(update, cx));
+        }
+        if changed {
+            crate::render_stats::note("workspace-notify:bridge");
+            cx.notify(workspace.entity_id());
+        }
+    }
+
     /// Apply a bridge update and report whether it changed visible workspace state.
     ///
     /// Session refreshes arrive every two seconds. Most contain the exact same
@@ -2549,7 +2582,12 @@ impl Workspace {
                         .update(cx, |panel, cx| panel.seed_draft_models(cx));
                 }
             }
-            Update::Status(status) => self.status = status,
+            Update::Status(status) => {
+                if self.status == status {
+                    return false;
+                }
+                self.status = status;
+            }
             Update::RemoteStatus {
                 host,
                 message,
@@ -2600,8 +2638,27 @@ impl Workspace {
             }
             Update::CatalogTodos(todos) => {
                 let progress_changed = self.sidebar_todo_progress != todos.progress;
-                cx.set_global(crate::applet_view::CatalogTasks { rows: todos.rows, progress: todos.progress.clone() });
-                for slot in &self.slots { slot.panel.update(cx, |_, cx| cx.notify()); }
+                let catalog = crate::applet_view::CatalogTasks {
+                    rows: std::rc::Rc::new(todos.rows),
+                    progress: std::rc::Rc::new(todos.progress.clone()),
+                };
+                if cx.try_global::<crate::applet_view::CatalogTasks>() != Some(&catalog) {
+                    cx.set_global(catalog.clone());
+                }
+                if self.catalog_tasks != catalog {
+                    // Another window may already have written the global.
+                    // Compare with what this window last displayed.
+                    for slot in &self.slots {
+                        let panel = slot.panel.read(cx);
+                        let id = &panel.session_id;
+                        if self.catalog_tasks.session(id) != catalog.session(id)
+                            && panel.uses_catalog_todos()
+                        {
+                            App::notify(cx, slot.panel.entity_id());
+                        }
+                    }
+                    self.catalog_tasks = catalog;
+                }
                 self.sidebar_todo_progress = todos.progress;
                 if self.unfinished_sessions == todos.unfinished {
                     return progress_changed;
@@ -2922,13 +2979,12 @@ impl Workspace {
                     return false;
                 }
                 if self.route_side_question_event(&session_id, &event, cx) {
-                    return true;
+                    return false;
                 }
                 if let jcode_sdk::ApiEvent::FocusRequested { .. } = &event {
                     // Another session (an agent) asked the user to look at this
                     // one: select its tab and bring the app forward.
-                    self.raise_session(&session_id, cx);
-                    return true;
+                    return self.raise_session(&session_id, cx);
                 }
                 if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
                     return self.apply_side_panel(&session_id, snapshot, cx);
@@ -2942,15 +2998,24 @@ impl Workspace {
                 if sidebar_edits::refresh_after(&event) {
                     self.bridge.send(Command::RefreshSessions);
                 }
-                if let Some(session) = self
+                let mut changed = false;
+                if matches!(event, jcode_sdk::ApiEvent::MessageAccepted { .. }
+                    | jcode_sdk::ApiEvent::PeerUserMessage { .. }
+                    | jcode_sdk::ApiEvent::ToolDone { .. }
+                    | jcode_sdk::ApiEvent::TurnDone { .. }
+                    | jcode_sdk::ApiEvent::TurnStopped { .. })
+                    && let Some(session) = self
                     .sessions
                     .iter_mut()
                     .find(|session| session.session_id == session_id)
                 {
-                    // Live SDK events arrive before the next persisted metadata
-                    // refresh. Advance recency immediately so active work moves
-                    // exactly as it does in the TUI picker.
-                    session.updated_at_ms = Some(unix_now_ms());
+                    // Keep active work near the top like the TUI picker, but
+                    // use message, tool and turn boundaries instead of tokens.
+                    let now = unix_now_ms();
+                    if session.updated_at_ms.is_none_or(|previous| previous < now) {
+                        session.updated_at_ms = Some(now);
+                        changed = true;
+                    }
                 }
                 let updated_title = match &event {
                     jcode_sdk::ApiEvent::SessionRenamed { display_title, .. } => {
@@ -2972,10 +3037,12 @@ impl Workspace {
                         .sessions
                         .iter_mut()
                         .find(|session| session.session_id == session_id)
+                    && session.title.as_ref() != Some(&display_title)
                 {
                     // SessionInfo carries the effective display title, so keep
                     // the sidebar's cached copy in sync with the live panel.
-                    session.title = Some(display_title.clone());
+                    session.title = Some(display_title);
+                    changed = true;
                     if session.parent_session_id.is_some() {
                         self.sync_swarm_strips(cx);
                     }
@@ -2993,15 +3060,17 @@ impl Workspace {
                         if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. }) {
                             let panel = slot.panel.read(cx);
                             if let Some(provider) = panel.provider.as_deref() {
-                                accounts::record_use(
-                                    &mut self.recent_accounts,
-                                    accounts::credential_id(provider, panel.auth_method.as_deref()),
-                                );
+                                let id = accounts::credential_id(provider, panel.auth_method.as_deref());
+                                if self.recent_accounts.first() != Some(&id) {
+                                    accounts::record_use(&mut self.recent_accounts, id);
+                                    changed = true;
+                                }
                             }
                         }
                         break;
                     }
                 }
+                return changed;
             }
             Update::SendFailed { session_id, reason } => {
                 for slot in &self.slots {
@@ -3498,18 +3567,18 @@ impl Workspace {
     /// Select an open session's tab and activate the app, so an agent that
     /// messages the user about another session can raise it. No-op when the
     /// session has no open panel here.
-    fn raise_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+    fn raise_session(&mut self, session_id: &str, cx: &mut Context<Self>) -> bool {
         let Some(index) = self
             .slots
             .iter()
             .position(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
         else {
-            return;
+            return false;
         };
         self.set_active(index, cx);
         self.overview = false;
         cx.activate(true);
-        cx.notify();
+        true
     }
 
     /// `JCODE_DESKTOP_SCREENSHOT_SWARM=real`: the user's real coordinator and
@@ -5308,7 +5377,12 @@ impl Workspace {
         let owner = self
             .slots
             .iter()
-            .position(|slot| !slot.closing && slot.panel.read(cx).owns_keyboard_focus(window, cx));
+            .position(|slot| {
+                if slot.closing { return false; }
+                let panel = self.panel_metadata(slot, cx);
+                panel.keyboard_focus.iter().flatten().any(|handle| handle.is_focused(window))
+                    || panel.panel_focus.contains_focused(window, cx)
+            });
         if let Some(index) = owner
             && index != self.active
         {
@@ -5680,14 +5754,22 @@ impl Workspace {
             let slot = &self.slots[index];
             let focused = index == self.active;
             let content_width = px((width - if folders { 0. } else { 12. }).max(1.));
-            if slot.panel.read(cx).openrig_width_changed(content_width) {
+            let metadata = self.panel_metadata(slot, cx);
+            let openrig = metadata.openrig;
+            let pending = metadata.pending;
+            let default_directory = metadata.session_id == Panel::DEFAULT_DIRECTORY_SESSION_ID;
+            let machines = metadata.session_id == Panel::MACHINES_SESSION_ID;
+            let needs_surface_update = metadata.surface_focused != focused
+                || (focused && metadata.finished_unseen)
+                || (metadata.terminal && slot.panel.read(cx).needs_surface_update(focused, cx));
+            if openrig && slot.panel.read(cx).openrig_width_changed(content_width) {
                 slot.panel
                     .update(cx, |panel, cx| panel.set_openrig_width(content_width, cx));
             }
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             // Update only on a real change: GPUI retains views between frames and
             // treats any update while drawing as a change to what they read.
-            if slot.panel.read(cx).needs_surface_update(focused, cx) {
+            if needs_surface_update {
                 slot.panel.update(cx, |panel, cx| {
                     panel.set_surface_focused(focused, cx);
                 });
@@ -5781,11 +5863,11 @@ impl Workspace {
                     .absolute()
                     .size_full(),
                 )
-                .child(if slot.panel.read(cx).is_default_directory() {
+                .child(if default_directory {
                     self.render_folder_picker(cx)
-                } else if slot.panel.read(cx).is_machines() {
+                } else if machines {
                     self.render_machines(cx)
-                } else if slot.panel.read(cx).is_pending_session() {
+                } else if pending {
                     self.render_pending_session(index, cx)
                 } else {
                     // GPUI retains every view: a panel is drawn again from the
@@ -6141,21 +6223,11 @@ impl Workspace {
         let mut columns = [0usize; STRIP_COUNT];
 
         for (index, slot) in self.slots.iter().enumerate() {
-            let panel = slot.panel.read(cx);
+            let panel = self.panel_metadata(slot, cx);
             let focused = index == self.active;
             let title = panel.title.clone();
             let status = panel.status.clone();
-            let preview: String = panel
-                .items
-                .iter()
-                .rev()
-                .find_map(|item| match item {
-                    crate::panel::Item::Assistant(text) | crate::panel::Item::User(text) => {
-                        Some(text.chars().take(220).collect())
-                    }
-                    _ => None,
-                })
-                .unwrap_or_default();
+            let preview = panel.overview_preview.clone();
 
             let column = columns[slot.row];
             columns[slot.row] += 1;
@@ -6289,14 +6361,9 @@ impl Workspace {
         }
         self.slots
             .get(self.active)
-            .filter(|slot| !harness::is_remote_session(&slot.panel.read(cx).session_id))
-            .and_then(|slot| {
-                slot.panel
-                    .read(cx)
-                    .working_dir
-                    .as_deref()
-                    .map(PathBuf::from)
-            })
+            .map(|slot| self.panel_metadata(slot, cx))
+            .filter(|panel| !harness::is_remote_session(&panel.session_id))
+            .and_then(|panel| panel.working_dir.as_deref().map(PathBuf::from))
             .unwrap_or_else(|| self.file_tree.borrow().fallback.clone())
     }
 
@@ -6524,7 +6591,7 @@ impl Workspace {
         if self
             .slots
             .get(self.active)
-            .is_some_and(|slot| harness::is_remote_session(&slot.panel.read(cx).session_id))
+            .is_some_and(|slot| harness::is_remote_session(&self.panel_metadata(slot, cx).session_id))
         {
             return div().debug_selector(|| "remote-file-browser-notice".into()).p_3().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM)
                 .child("This panel runs on a remote machine. Ask Jcode to inspect its files in chat. The local file browser is available on local panels.")
@@ -9120,11 +9187,11 @@ impl Workspace {
                 let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
                 let focused = active_row && index == self.active;
                 let (state, todo_progress) = {
-                    let panel = self.slots[index].panel.read(cx);
+                    let panel = self.panel_metadata(&self.slots[index], cx);
                     let progress = panel.latest_todo_progress().and_then(|(done, total)| {
                         (total > 0).then_some(done as f32 / total as f32)
                     });
-                    (panel.minimap_state(), progress)
+                    (panel.minimap_state, progress)
                 };
                 let (state_name, state_color) = match state {
                     crate::panel::MinimapSessionState::Idle => {
@@ -9875,12 +9942,10 @@ impl Render for Workspace {
         updates::ensure_release_check();
         let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
-        if self.show_sidebar {
-            self.refresh_sidebar_panel_metadata(cx);
-        }
+        self.refresh_sidebar_panel_metadata(cx);
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing
-            && slot.panel.read(cx).supports_voice()
+            && self.panel_metadata(slot, cx).supports_voice()
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
@@ -12162,7 +12227,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_sdk_events_advance_sidebar_recency(cx: &mut gpui::TestAppContext) {
+    fn live_sdk_events_advance_sidebar_recency_at_turn_boundaries(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         let mut session = session_info("session_fox_1234567890000_deadbeef", None);
@@ -12175,7 +12240,7 @@ mod tests {
                 },
                 cx,
             );
-            workspace.apply(
+            assert!(!workspace.apply(
                 Update::Event {
                     session_id: "session_fox_1234567890000_deadbeef".into(),
                     event: jcode_sdk::ApiEvent::TextDelta {
@@ -12185,7 +12250,18 @@ mod tests {
                     },
                 },
                 cx,
-            );
+            ));
+            assert_eq!(workspace.sessions[0].updated_at_ms, Some(1));
+            assert!(workspace.apply(
+                Update::Event {
+                    session_id: "session_fox_1234567890000_deadbeef".into(),
+                    event: jcode_sdk::ApiEvent::TurnDone {
+                        session_id: "session_fox_1234567890000_deadbeef".into(),
+                        pending_soft_interrupts: None,
+                    },
+                },
+                cx,
+            ));
             assert!(
                 workspace.sessions[0]
                     .updated_at_ms

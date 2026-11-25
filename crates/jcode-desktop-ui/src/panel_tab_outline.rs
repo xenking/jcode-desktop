@@ -79,7 +79,6 @@ impl TabMode {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TabRing {
-    pub(crate) color: Rgba,
     /// Completed fraction of the latest todo list, if there is one.
     pub(crate) progress: Option<f32>,
     pub(crate) mode: TabMode,
@@ -90,23 +89,17 @@ impl TabRing {
         state: MinimapSessionState,
         todos: Option<(usize, usize)>,
     ) -> Option<Self> {
-        let theme = Theme::global();
         let progress = todos
             .filter(|(_, total)| *total > 0)
             .map(|(done, total)| (done as f32 / total as f32).clamp(0.0, 1.0));
-        let (color, mode) = match state {
-            MinimapSessionState::Working | MinimapSessionState::Streaming => {
-                (theme.WARN, TabMode::Working)
-            }
-            MinimapSessionState::Complete => (theme.OK, TabMode::Done),
-            MinimapSessionState::Error => (theme.ERROR, TabMode::Error),
-            MinimapSessionState::Idle if progress.is_some_and(|p| p < 1.0) => {
-                (theme.TEXT_DIM, TabMode::Paused)
-            }
+        let mode = match state {
+            MinimapSessionState::Working | MinimapSessionState::Streaming => TabMode::Working,
+            MinimapSessionState::Complete => TabMode::Done,
+            MinimapSessionState::Error => TabMode::Error,
+            MinimapSessionState::Idle if progress.is_some_and(|p| p < 1.0) => TabMode::Paused,
             MinimapSessionState::Idle => return None,
         };
         Some(Self {
-            color,
             progress: match mode {
                 TabMode::Working | TabMode::Paused => progress,
                 TabMode::Done | TabMode::Error | TabMode::Waiting | TabMode::Question => None,
@@ -117,7 +110,6 @@ impl TabRing {
 
     pub(super) fn waiting() -> Self {
         Self {
-            color: Theme::global().LINK,
             progress: None,
             mode: TabMode::Waiting,
         }
@@ -125,7 +117,6 @@ impl TabRing {
 
     pub(super) fn question() -> Self {
         Self {
-            color: Theme::global().CODE_CONTROL,
             progress: None,
             mode: TabMode::Question,
         }
@@ -140,10 +131,22 @@ impl TabRing {
         matches!(self.mode, TabMode::Working | TabMode::Done)
     }
 
+    pub(crate) fn color(self) -> Rgba {
+        let theme = Theme::global();
+        match self.mode {
+            TabMode::Working => theme.WARN,
+            TabMode::Waiting => theme.LINK,
+            TabMode::Question => theme.CODE_CONTROL,
+            TabMode::Done => theme.OK,
+            TabMode::Error => theme.ERROR,
+            TabMode::Paused => theme.TEXT_DIM,
+        }
+    }
+
     /// Faint background tint so state reads even on tabs too narrow to show
     /// much of the fill.
     pub(crate) fn tint(&self) -> Rgba {
-        self.color.opacity(0.04)
+        self.color().opacity(0.04)
     }
 }
 
@@ -265,6 +268,7 @@ fn paint(
     reduce_motion: bool,
 ) {
     let radius = tab_corner_radius(bounds.size);
+    let color = ring.color();
     let rounded = |color: Rgba| gpui::fill(bounds, color).corner_radii(radius);
     let outline = |color: Rgba| {
         gpui::quad(
@@ -292,7 +296,7 @@ fn paint(
                 let filled = width * progress;
                 let fill = Bounds::new(bounds.origin, size(px(filled), bounds.size.height));
                 clipped(window, fill, |window| {
-                    window.paint_quad(rounded(ring.color.opacity(0.20)));
+                    window.paint_quad(rounded(color.opacity(0.20)));
                 });
                 // Brighter leading edge so the fill reads as a bar, not a tint.
                 if progress < 1.0 {
@@ -302,7 +306,7 @@ fn paint(
                         radius,
                         left + filled - 3.0,
                         6.0,
-                        ring.color.opacity(0.28),
+                        color.opacity(0.28),
                     );
                 }
             }
@@ -319,10 +323,10 @@ fn paint(
                     radius,
                     center,
                     band_width,
-                    ring.color.opacity(0.22),
+                    color.opacity(0.22),
                 );
             }
-            window.paint_quad(outline(ring.color.opacity(0.55)));
+            window.paint_quad(outline(color.opacity(0.55)));
         }
         TabMode::Done => {
             let breath = if reduce_motion {
@@ -330,16 +334,16 @@ fn paint(
             } else {
                 0.5 - 0.5 * (now / BREATH_SECONDS * std::f32::consts::TAU).cos()
             };
-            window.paint_quad(rounded(ring.color.opacity(0.10 + 0.12 * breath)));
-            window.paint_quad(outline(ring.color.opacity(0.45 + 0.45 * breath)));
+            window.paint_quad(rounded(color.opacity(0.10 + 0.12 * breath)));
+            window.paint_quad(outline(color.opacity(0.45 + 0.45 * breath)));
         }
         TabMode::Waiting | TabMode::Question => {
-            window.paint_quad(rounded(ring.color.opacity(0.11)));
-            window.paint_quad(outline(ring.color.opacity(0.90)));
+            window.paint_quad(rounded(color.opacity(0.11)));
+            window.paint_quad(outline(color.opacity(0.90)));
         }
         TabMode::Error => {
-            window.paint_quad(rounded(ring.color.opacity(0.12)));
-            window.paint_quad(outline(ring.color.opacity(0.70)));
+            window.paint_quad(rounded(color.opacity(0.12)));
+            window.paint_quad(outline(color.opacity(0.70)));
         }
         TabMode::Paused => {
             if let Some(progress) = progress.filter(|p| *p > 0.0) {
@@ -348,10 +352,10 @@ fn paint(
                     size(px(width * progress), bounds.size.height),
                 );
                 clipped(window, fill, |window| {
-                    window.paint_quad(rounded(ring.color.opacity(0.12)));
+                    window.paint_quad(rounded(color.opacity(0.12)));
                 });
             }
-            window.paint_quad(outline(ring.color.opacity(0.40)));
+            window.paint_quad(outline(color.opacity(0.40)));
         }
     }
 }

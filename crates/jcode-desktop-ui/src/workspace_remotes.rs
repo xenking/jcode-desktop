@@ -549,7 +549,8 @@ impl Workspace {
     ) {
         if (self.overview
             || self.slots.get(self.active).is_none_or(|slot| {
-                slot.closing || slot.row != self.active_row || !slot.panel.read(cx).is_machines()
+                slot.closing || slot.row != self.active_row
+                    || self.panel_metadata(slot, cx).session_id != Panel::MACHINES_SESSION_ID
             }))
             && self
                 .remotes

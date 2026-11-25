@@ -3620,13 +3620,21 @@ impl Panel {
         })
     }
 
+    pub(crate) fn uses_catalog_todos(&self) -> bool {
+        self.latest_todo_card().is_none()
+    }
+
     fn applet_session_tasks(&self, app: &App) -> crate::applet_view::SessionTasks {
-        if let Some(catalog) = app.try_global::<crate::applet_view::CatalogTasks>()
-            && let Some(rows) = catalog.rows.get(&self.session_id)
-            && self.latest_todo_card().is_none()
+        if let Some((rows, (completed, total))) = app
+            .try_global::<crate::applet_view::CatalogTasks>()
+            .and_then(|catalog| catalog.session(&self.session_id))
+            && self.uses_catalog_todos()
         {
-            let (completed, total) = catalog.progress.get(&self.session_id).copied().unwrap_or_default();
-            return crate::applet_view::SessionTasks { rows: rows.iter().map(|(name,status)| vec![name.clone(),status.clone()]).collect(), completed, total };
+            return crate::applet_view::SessionTasks {
+                rows: rows.iter().map(|(name, status)| vec![name.clone(), status.clone()]).collect(),
+                completed,
+                total,
+            };
         }
         let fallback;
         let payload = if let Some(derived) = self.transcript_derived.as_ref()
@@ -7078,6 +7086,16 @@ impl Panel {
 
     /// Whether keys typed now are delivered to this panel: its composer, its
     /// current primary surface, or its selectable transcript.
+    pub(crate) fn workspace_focus_handles(&self, cx: &App) -> ([Option<FocusHandle>; 4], FocusHandle) {
+        ([Some(self.input.read(cx).focus_handle.clone()), Some(self.input_focus_handle(cx)),
+          self.image_pane_open.then(|| self.image_pane_focus.clone()),
+          Some(self.transcript_selection.read(cx).focus_handle().clone())], self.focus_handle.clone())
+    }
+
+    pub(crate) fn workspace_surface_state(&self) -> (bool, bool, bool, bool) {
+        (self.surface_focused, self.finished_unseen, self.openrig.is_some(), self.terminal.is_some())
+    }
+
     pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
         self.input.read(cx).focus_handle.is_focused(window)
             || self.input_focus_handle(cx).is_focused(window)

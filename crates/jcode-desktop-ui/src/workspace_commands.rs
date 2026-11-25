@@ -238,6 +238,12 @@ impl Workspace {
         }
     }
 
+    pub(super) fn side_question_owner(&self, session_id: &str, cx: &App) -> Option<Entity<Panel>> {
+        self.slots.iter().find(|slot| {
+            !slot.closing && slot.panel.read(cx).side_question_child() == Some(session_id)
+        }).map(|slot| slot.panel.clone())
+    }
+
     /// Feed a side question's events into its card. Only an open full chat for
     /// the same child should also receive them through normal routing.
     pub(crate) fn route_side_question_event(
@@ -246,23 +252,11 @@ impl Workspace {
         event: &jcode_sdk::ApiEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        for slot in &self.slots {
-            if slot.closing {
-                continue;
-            }
-            let panel = slot.panel.clone();
-            if panel.read(cx).side_question_child() != Some(session_id) {
-                continue;
-            }
-            panel.update(cx, |panel, cx| {
-                panel.apply_side_question_event(event, cx);
-            });
-            return !self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id);
-        }
-        false
+        let Some(owner) = self.side_question_owner(session_id, cx) else {
+            return false;
+        };
+        owner.update(cx, |panel, cx| panel.apply_side_question_event(event, cx));
+        !self.slots.iter().any(|slot| !slot.closing && slot.panel.read(cx).session_id == session_id)
     }
 
     /// Promote a `/btw` answer into a real chat. The hidden fork keeps its
