@@ -13,7 +13,7 @@ impl Workspace {
             .slots
             .iter()
             .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
-            .and_then(|slot| slot.panel.working_dir(cx).map(str::to_owned))
+            .and_then(|slot| slot.panel.profile().working_dir(cx).map(str::to_owned))
             .and_then(|dir| publish::checkout_root(&dir))
         else {
             return;
