@@ -274,7 +274,7 @@ impl Marks {
     pub(crate) fn cache_pill<T: 'static>(
         &mut self,
         value: crate::panel::cache_timer::CachePillValue,
-        panel: gpui::WeakEntity<crate::panel::Panel>,
+        source: crate::panel::cache_timer::CacheSource,
         cx: &mut Context<T>,
     ) -> AnyElement {
         match self.cache.clone() {
@@ -283,7 +283,7 @@ impl Marks {
                 view.into_any_element()
             }
             None => {
-                let view = cx.new(|cx| crate::panel::cache_timer::CachePill::new(value, panel, cx));
+                let view = cx.new(|cx| crate::panel::cache_timer::CachePill::new(value, source, cx));
                 self.cache = Some(view.clone());
                 view.into_any_element()
             }

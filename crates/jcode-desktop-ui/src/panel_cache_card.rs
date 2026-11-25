@@ -1,11 +1,12 @@
 //! The composer pill's prompt-cache hover card.
 use super::*;
+use crate::panel::live::Live;
 use crate::panel::{cache_miss::CacheMissNotice, meter};
 use super as cache_timer;
 use jcode_desktop_model::prompt_cache::{CacheFacts, Tokens, Usage};
 use std::collections::{BTreeMap, VecDeque};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(in crate::panel) struct CacheTelemetry {
     usage: Usage,
     keepalive: jcode_sdk::api::CacheKeepaliveUsage,
@@ -67,17 +68,22 @@ impl CacheTelemetry {
         self.misses.record(notice);
     }
 
-    pub(in crate::panel) fn retention(&self, panel: &Panel) -> Option<CacheFacts> {
+    /// Whether the session runs on the route the figures were recorded on.
+    pub(in crate::panel) fn is_on_route(&self, provider: Option<&str>, model: Option<&str>) -> bool {
+        self.route.as_ref().is_some_and(|(recorded_provider, recorded_model)| {
+            provider == Some(recorded_provider.as_str()) && model == Some(recorded_model.as_str())
+        })
+    }
+
+    /// Retention for the recorded route. `live` is the in-flight response's
+    /// own touch, when the session still runs on that route.
+    pub(in crate::panel) fn retention(&self, live: Option<(i64, Option<u64>)>) -> Option<CacheFacts> {
         let route = self.route.as_ref()?;
         let (provider, model) = route;
         let completed = self
             .touches
             .get(route)
             .map(|&(at, tokens)| (at, Some(tokens)));
-        let live = (panel.provider.as_deref() == Some(provider.as_str())
-            && panel.model.as_deref() == Some(model.as_str()))
-        .then(|| panel.response_stats.cache_touch())
-        .flatten();
         let latest = completed.into_iter().chain(live).max_by_key(|&(at, _)| at);
         if let Some(facts) =
             self.keepalive_retention(provider, Some(model), latest.map(|(at, _)| at))
@@ -192,7 +198,7 @@ impl Panel {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Misses {
     count: u64,
     tokens: u64,
@@ -224,27 +230,49 @@ fn tokens(provider: &str, input: Option<u64>, read: Option<u64>, write: Option<u
     Tokens::new(prompt, read, write)
 }
 
+/// Everything the hover card draws of the panel, read when it is shown.
+pub(in crate::panel) struct CacheView {
+    provider: Option<String>,
+    model: Option<String>,
+    previous_route: Option<String>,
+    facts: Option<CacheFacts>,
+    telemetry: CacheTelemetry,
+}
+
+impl Panel {
+    pub(in crate::panel) fn cache_view(&self) -> CacheView {
+        let telemetry = self.cache_telemetry.clone();
+        // The title names the model the session runs now, the same one the
+        // composer chip shows. The cache below belongs to the last request,
+        // which may have run on a model the session has since left.
+        let (provider, model) = match (self.model.as_deref(), telemetry.route.as_ref()) {
+            (Some(_), _) => (self.provider.clone(), self.model.clone()),
+            (None, Some((provider, model))) => (Some(provider.clone()), Some(model.clone())),
+            (None, None) => (self.provider.clone(), None),
+        };
+        CacheView {
+            provider,
+            model,
+            previous_route: self.cache_route_left_behind(),
+            facts: self.cache_facts(),
+            telemetry,
+        }
+    }
+}
+
 pub(in crate::panel) struct CacheTooltip {
-    pub(in crate::panel) panel: gpui::WeakEntity<Panel>,
+    pub(in crate::panel) view: Live<CacheView>,
     pub(in crate::panel) pill: gpui::WeakEntity<cache_timer::CachePill>,
 }
 
 impl Render for CacheTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(panel) = self.panel.upgrade() else {
+        let Some(view) = self.view.get(cx) else {
             return div();
         };
-        let panel = panel.read(cx);
-        let telemetry = &panel.cache_telemetry;
-        // The title names the model the session runs now, the same one the
-        // composer chip shows. The cache below belongs to the last request,
-        // which may have run on a model the session has since left.
-        let (provider, model) = match (panel.model.as_deref(), telemetry.route.as_ref()) {
-            (Some(_), _) => (panel.provider.as_deref(), panel.model.as_deref()),
-            (None, Some((provider, model))) => (Some(provider.as_str()), Some(model.as_str())),
-            (None, None) => (panel.provider.as_deref(), None),
-        };
-        let previous_route = panel.cache_route_left_behind();
+        let telemetry = &view.telemetry;
+        let (provider, model) = (view.provider.as_deref(), view.model.as_deref());
+        let previous_route = view.previous_route.clone();
         let title = [Some("Prompt cache"), provider, model]
             .into_iter()
             .flatten()
@@ -288,7 +316,7 @@ impl Render for CacheTooltip {
                 theme,
             ))
             .child(retention_row(
-                pill.map_or_else(|| panel.cache_facts(), |pill| pill.retention(now)),
+                pill.map_or(view.facts, |pill| pill.retention(now)),
                 theme,
             ))
             .children(keepalive_label(&telemetry.keepalive).map(|text| {

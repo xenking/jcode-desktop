@@ -106,7 +106,7 @@ impl Tokens {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Usage {
     requests: HashSet<String>,
     pub session: Option<Tokens>,

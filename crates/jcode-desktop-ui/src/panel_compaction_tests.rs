@@ -5,7 +5,7 @@
 //! 2. a collapsed divider is one rule line and a click reveals the summary;
 //! 3. the running divider is replaced by the completed one, never stacked.
 
-use super::super::{ApiEvent, Item, Panel};
+use super::super::{ApiEvent, Item};
 use super::{CompactionRow, CompactionState};
 
 const DIVIDER_BODY: &str = "compacted · snapcompact · 180k→26k · 12s\n\n\
@@ -86,7 +86,7 @@ fn a_stored_compaction_renders_a_divider_after_a_reload() {
     // Render → wire shape → items, which is exactly the path a resumed panel and
     // the provisional on-disk preview both take.
     let (messages, images) = crate::persisted_history::render(&session);
-    let (items, _) = Panel::history_items(messages, images);
+    let (items, _) = crate::panel::history_items::build(messages, images);
     let rows = compaction_rows(&items);
     assert_eq!(rows.len(), 1, "one stored compaction, one divider");
     assert_eq!(rows[0].label(), "compacted · snapcompact · 180k→26k · 12s");

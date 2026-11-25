@@ -61,7 +61,7 @@ impl SideQuestionCard {
         session: SessionInfo,
         question: String,
         editor: Entity<PromptInput>,
-        cx: &mut Context<Panel>,
+        cx: &mut App,
     ) -> Self {
         Self {
             child_session_id: session.session_id.clone(),

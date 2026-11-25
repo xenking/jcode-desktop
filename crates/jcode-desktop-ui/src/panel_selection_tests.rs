@@ -512,7 +512,7 @@ fn clean_chat_filters_mixed_transcript_and_clipboard(cx: &mut gpui::TestAppConte
             {"role":"assistant","content":"Answer without a heading","response_stats":{"output_tokens":32}}
         ]))
         .expect("valid SDK history");
-        let (items, times) = Panel::history_items(history, vec![]);
+        let (items, times) = crate::panel::history_items::build(history, vec![]);
         panel.user_times = times;
         *panel.items = items;
         panel

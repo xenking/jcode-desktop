@@ -215,7 +215,7 @@ impl AskCard {
         self.attempt_id.is_some()
     }
 
-    pub fn restore_draft(&mut self, draft: AskDraft, cx: &mut Context<Panel>) {
+    pub fn restore_draft(&mut self, draft: AskDraft, cx: &mut App) {
         if draft.questions != self.questions
             || draft.chosen.len() != self.questions.len()
             || draft.other.len() != self.questions.len()

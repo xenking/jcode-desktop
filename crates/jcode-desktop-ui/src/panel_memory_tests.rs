@@ -32,7 +32,7 @@ fn organization_tool_rows_are_restored_after_a_reload() {
         content: MEMORY_BODY.into(),
         tool: None,
     };
-    let (items, _) = Panel::history_items(vec![message], Vec::new());
+    let (items, _) = crate::panel::history_items::build(vec![message], Vec::new());
     let rows = memory_rows(&items);
     assert_eq!(rows.len(), 1, "one stored injection, one row: {items:?}");
     assert_eq!(rows[0].label(), "auto-recalled 2 memories");
@@ -58,7 +58,7 @@ fn stored_memory_tool_calls_survive_a_reload() {
             input: serde_json::json!({"action": "remember", "content": "keep replies terse"}),
         }),
     };
-    let (items, _) = Panel::history_items(vec![message], Vec::new());
+    let (items, _) = crate::panel::history_items::build(vec![message], Vec::new());
     assert!(
         matches!(&items[..], [Item::Tool { name, done: true, .. }] if name == "memory"),
         "{items:?}"

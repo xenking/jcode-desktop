@@ -613,7 +613,7 @@ mod tests {
             }}
         ]))
         .unwrap();
-        let (items, _) = super::Panel::history_items(history, vec![]);
+        let (items, _) = super::history_items::build(history, vec![]);
         assert!(items.iter().any(
             |item| matches!(item, super::Item::Tool { name, input, output, .. }
             if super::parse(name, input, output).is_some())

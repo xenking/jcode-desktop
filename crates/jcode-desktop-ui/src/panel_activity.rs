@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use gpui::{Context, Render, Task, Window, canvas, div, prelude::*, px};
 use gpui_thinking_orbs::{Frame, OrbSize, OrbState, Resolved, draw_mode_into, resolve_preset};
 
+use crate::panel::live::Live;
 use crate::theme::{Palette, Theme};
 
 #[path = "activity_donut.rs"]
@@ -48,10 +49,17 @@ impl Activity {
     }
 }
 
+/// What a spinner reads of the panel that owns it.
+#[derive(Clone)]
+pub(super) struct Readings {
+    pub(super) activity: Live<Activity>,
+    pub(super) status: Live<String>,
+}
+
 pub(super) struct Spinner {
     activity: Activity,
     sidebar_mark: bool,
-    panel: Option<gpui::WeakEntity<super::Panel>>,
+    readings: Option<Readings>,
     elapsed: Duration,
     motion_elapsed: Duration,
     lease_started: Option<Instant>,
@@ -70,7 +78,7 @@ impl Spinner {
         Self {
             activity: Activity::Idle,
             sidebar_mark: false,
-            panel: None,
+            readings: None,
             elapsed: Duration::ZERO,
             motion_elapsed: Duration::ZERO,
             lease_started: None,
@@ -85,37 +93,31 @@ impl Spinner {
         }
     }
 
-    pub(super) fn for_panel(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
+    pub(super) fn for_panel(readings: Readings, cx: &mut Context<Self>) -> Self {
         // Observe the owner, not just its render: the sidebar may be visible
         // while the conversation panel is clipped or not rendered at all.
-        cx.observe(&panel, |spinner, panel, cx| {
-            let activity = panel.read(cx).orb_activity();
-            spinner.set_activity(activity, cx);
-        })
-        .detach();
+        readings.activity.watch(
+            cx,
+            |_, _| true,
+            |spinner, activity, cx| spinner.set_activity(activity, cx),
+        );
         let mut spinner = Self::new(cx);
-        spinner.panel = Some(panel.downgrade());
+        spinner.readings = Some(readings);
         spinner
     }
 
-    pub(super) fn for_sidebar(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
-        // Context::observe leases (writes) this spinner on every panel notify,
-        // even if set_activity is a no-op. Read before leasing instead so text
-        // deltas do not dirty the retained sidebar through this leaf. The panel
-        // owns the spinner, so this detached observer ends with the same panel.
-        let owner = cx.weak_entity();
-        gpui::App::observe(cx, &panel, move |panel, cx| {
-            let activity = panel.read(cx).orb_activity();
-            if owner
-                .read_with(cx, |spinner, _| spinner.activity != activity)
-                .unwrap_or(false)
-            {
-                let _ = owner.update(cx, |spinner, cx| spinner.set_activity(activity, cx));
-            }
-        })
-        .detach();
+    pub(super) fn for_sidebar(readings: Readings, cx: &mut Context<Self>) -> Self {
+        // Leasing this spinner on every panel notify would dirty the retained
+        // sidebar through this leaf even when set_activity is a no-op, so the
+        // answer is compared before the spinner is touched. The panel owns the
+        // spinner, so this observer ends with the same panel.
+        readings.activity.watch(
+            cx,
+            |spinner, activity| spinner.activity != *activity,
+            |spinner, activity, cx| spinner.set_activity(activity, cx),
+        );
         let mut spinner = Self::new(cx);
-        spinner.panel = Some(panel.downgrade());
+        spinner.readings = Some(readings);
         spinner.sidebar_mark = true;
         spinner
     }
@@ -355,11 +357,11 @@ impl Render for Spinner {
         // The first draw still samples the owner for restored/fixture panels
         // which have not emitted a notification yet.
         if (!self.sidebar_mark || self.reduced_motion.is_none())
-            && let Some(panel) = self.panel.as_ref().and_then(|panel| panel.upgrade())
+            && let Some(readings) = self.readings.clone()
+            && let Some(activity) = readings.activity.get(cx)
         {
-            let activity = panel.read(cx).orb_activity();
             if !self.sidebar_mark {
-                label = Some(panel.read(cx).status_line());
+                label = readings.status.get(cx);
             }
             self.set_activity(activity, cx);
         }

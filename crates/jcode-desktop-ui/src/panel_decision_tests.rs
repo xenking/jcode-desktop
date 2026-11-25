@@ -43,7 +43,7 @@ fn history_restores_decision_and_counts_it_as_a_user_turn(cx: &mut gpui::TestApp
         "role": "tool", "content": "User answers:\n1. Which? -> B\n", "timestamp_ms": 1234,
         "tool": {"id": "ask-1", "name": "ask", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}
     })).unwrap();
-    let (items, _) = Panel::history_items(vec![message], vec![]);
+    let (items, _) = crate::panel::history_items::build(vec![message], vec![]);
     assert!(
         matches!(&items[0], Item::Tool { name, output, .. } if name == "ask" && output.contains("B"))
     );

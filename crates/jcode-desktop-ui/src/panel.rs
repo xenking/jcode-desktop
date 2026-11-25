@@ -50,6 +50,9 @@ mod turn;
 use turn::{AutoRetry, StopNotice};
 #[path = "panel_meter.rs"]
 pub(crate) mod meter;
+#[path = "panel_live.rs"]
+pub(crate) mod live;
+use live::Live;
 #[path = "panel_clean_chat.rs"]
 mod clean_chat;
 #[path = "panel_assistant_output.rs"]
@@ -122,6 +125,8 @@ pub(crate) mod compaction;
 mod compaction_render;
 #[path = "panel_history_paging.rs"]
 mod history_paging;
+#[path = "panel_history_items.rs"]
+mod history_items;
 
 #[path = "panel_activity.rs"]
 mod activity;
@@ -1279,6 +1284,14 @@ impl Panel {
             .then(|| self.sidebar_spinner.clone().into())
     }
 
+    /// What the spinners of this panel read of it.
+    fn activity_readings(owner: &Entity<Self>) -> activity::Readings {
+        activity::Readings {
+            activity: Live::of(owner, |panel: &Panel, _| panel.orb_activity()),
+            status: Live::of(owner, |panel: &Panel, _| panel.status_line()),
+        }
+    }
+
     fn orb_activity(&self) -> activity::Activity {
         if self.activity_active() {
             activity::Activity::from_status_line(&self.status_line())
@@ -1696,7 +1709,7 @@ impl Panel {
                     fixture_tool_durations.insert(id, duration);
                 }
             }
-            (Self::history_items(history, Vec::new()).0, codemode)
+            (crate::panel::history_items::build(history, Vec::new()).0, codemode)
         } else {
             (demo_items(fixture.as_deref()), HashMap::new())
         };
@@ -1843,7 +1856,7 @@ impl Panel {
             #[cfg(test)]
             animate_stream_in_tests: false,
             sound_events: crate::sound_events::SoundEvents::default(),
-            activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
+            activity_spinner: cx.new(|cx| activity::Spinner::for_panel(Self::activity_readings(&activity_owner), cx)),
             swarm_workers: Vec::new(),
             background_jobs: Default::default(),
             pending_awaits: Vec::new(),
@@ -1861,13 +1874,16 @@ impl Panel {
             swarm_usage: Default::default(),
             swarm_row_focus: Default::default(),
             latest_activity_spinner: cx
-                .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
-            tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
+                .new(|cx| activity::Spinner::for_panel(Self::activity_readings(&activity_owner), cx)),
+            tab_outline: cx.new(|cx| tab_outline::TabOutline::new(
+                    Live::of(&activity_owner, |panel: &Panel, _| panel.tab_ring()),
+                    cx,
+                )),
             // The completed-plan fixture shows a turn that finished unseen.
             finished_unseen: crate::harness::screenshot_mode()
                 && fixture.as_deref() == Some("todos-completed"),
             sidebar_spinner: cx
-                .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
+                .new(|cx| activity::Spinner::for_sidebar(Self::activity_readings(&activity_owner), cx)),
             surface_focused: true,
             input,
             voice: voice_state::VoiceState::default(),
@@ -2927,7 +2943,7 @@ impl Panel {
             let provider = match command {
                 commands::ResetCommand::OpenAi => crate::accounts::ResetProvider::OpenAi,
                 commands::ResetCommand::Claude => crate::accounts::ResetProvider::Claude,
-                commands::ResetCommand::Current => reset_provider_for(panel.read(app)),
+                commands::ResetCommand::Current => panel.read(app).reset_provider(),
             };
             window.dispatch_action(Box::new(ui_actions::OpenUsageReset { provider }), app);
             return;
@@ -3153,7 +3169,9 @@ impl Panel {
                     }
                 }
                 "/model" | "/models" => self.open_model_picker_deferred(cx),
-                "/update" if crate::updates::request_paired(cx) => {
+                "/update" if crate::updates::paired_configured() => {
+                    // The workspace owns the update flow, so the panel asks it.
+                    cx.dispatch_action(&crate::ui_actions::CheckForUpdates);
                     self.items.push(Item::Assistant("Checking for a paired CLI and Desktop update…".into()));
                 }
                 "/update" => {
@@ -3690,161 +3708,6 @@ impl Panel {
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
 
-    /// Convert protocol history into transcript items. Shared by the
-    /// authoritative reply and the provisional on-disk prefix so both paint
-    /// identically.
-    fn history_items(
-        messages: Vec<jcode_sdk::HistoryMessage>,
-        images: Vec<jcode_sdk::RenderedImage>,
-    ) -> (Vec<Item>, HashMap<usize, i64>) {
-        let mut user_times = HashMap::new();
-        let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
-        let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
-        let mut trailing_images = Vec::new();
-        for image in images {
-            if matches!(image.source, jcode_sdk::RenderedImageSource::UserInput) {
-                if let Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor {
-                    images_by_prompt.entry(ordinal).or_default().push(image);
-                }
-                continue;
-            }
-            if let Some(index) = image.history_message_index {
-                // The boundary counts protocol messages, including hidden tool
-                // rows, rather than visible desktop transcript items.
-                images_by_message
-                    .entry(index.min(messages.len()))
-                    .or_default()
-                    .push(image);
-                continue;
-            }
-            match &image.anchor {
-                Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) => {
-                    images_by_prompt.entry(*ordinal).or_default().push(image);
-                }
-                _ => trailing_images.push(image),
-            }
-        }
-        let mut items = Vec::with_capacity(messages.len() + trailing_images.len());
-        let mut user_ordinal = 0;
-        let mut assistant_before_tool = None;
-        let message_count = messages.len();
-        for (index, message) in messages.into_iter().enumerate() {
-            if let Some(images) = images_by_message.remove(&index) {
-                items.extend(
-                    images
-                        .into_iter()
-                        .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
-                );
-            }
-            match message.role.as_str() {
-                "user" => {
-                    assistant_before_tool = None;
-                    let prompt = agent_message::history_user_item(
-                        message.content,
-                        !message.attachments.is_empty()
-                            || images_by_prompt.contains_key(&user_ordinal),
-                        message.timestamp_ms,
-                    );
-                    if let Some(at) = message.timestamp_ms
-                        && matches!(prompt, Item::User(_))
-                    {
-                        user_times.insert(items.len(), at);
-                    }
-                    let is_prompt = classify::is_pinnable_prompt(&prompt);
-                    items.push(prompt);
-                    if let Some(images) = images_by_prompt.remove(&user_ordinal)
-                        && is_prompt
-                    {
-                        items.extend(
-                            images
-                                .into_iter()
-                                .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
-                        );
-                    }
-                    user_ordinal += 1;
-                }
-                "assistant" => {
-                    assistant_before_tool = None;
-                    if !message.content.trim().is_empty() {
-                        if message.response_stats.is_none() {
-                            assistant_before_tool = Some(items.len());
-                        }
-                        items.push(Item::history_assistant(
-                            message.content,
-                            message.response_stats.is_some(),
-                        ));
-                    }
-                    if let Some(stats) = message.response_stats {
-                        let mut stats: response_stats::ResponseStats = stats.into();
-                        stats.at_ms = message.timestamp_ms;
-                        if !stats.is_empty() {
-                            items.push(Item::ResponseStats(stats));
-                        }
-                    }
-                }
-                "tool" => {
-                    if let Some(index) = assistant_before_tool.take()
-                        && message.tool.is_some()
-                        && let Item::Assistant(text) = &mut items[index]
-                    {
-                        items[index] = Item::AssistantOutput {
-                            text: std::mem::take(text),
-                            phase: AssistantOutputPhase::Update,
-                            stream_id: None,
-                        };
-                    }
-                    if let Some(tool) = message.tool {
-                        if tool.name == "ask"
-                            && let Some(at) = message.timestamp_ms
-                        {
-                            user_times.insert(items.len(), at);
-                        }
-                        items.push(Item::Tool {
-                            call_id: tool.id,
-                            name: tool.name,
-                            input: tool.input.to_string(),
-                            output: message.content,
-                            done: true,
-                            error: None,
-                        });
-                    }
-                }
-                // A stored compaction divider. Its body already carries the
-                // label and the expandable detail, so it renders identically
-                // before and after a reload.
-                "compaction" => {
-                    if !message.content.trim().is_empty() {
-                        items.push(Item::Compaction(compaction::CompactionRow::complete(
-                            message.content,
-                        )));
-                    }
-                }
-                "swarm_worker_notice" if !message.content.trim().is_empty() => {
-                    items.push(Item::SwarmWorkerNotice(message.content));
-                }
-                // A stored automatic memory injection. Like the compaction
-                // divider, its body already carries the label and the
-                // expandable detail, so the reloaded row matches the live one.
-                "memory" => {
-                    if !message.content.trim().is_empty() {
-                        items.push(Item::Memory(compaction::CompactionRow::complete(
-                            message.content,
-                        )));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(images) = images_by_message.remove(&message_count) {
-            trailing_images.splice(0..0, images);
-        }
-        items.extend(
-            trailing_images
-                .into_iter()
-                .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
-        );
-        (items, user_times)
-    }
 
     fn restore_tool_times(&mut self, messages: &[jcode_sdk::HistoryMessage]) {
         for (id, (start, finish, duration)) in history_tool_times(messages) {
@@ -3912,7 +3775,7 @@ impl Panel {
             loader().map(|(messages, images)| {
                 let times = history_tool_times(&messages);
                 let codemode: Vec<_> = codemode_card::history_summaries(&messages).collect();
-                (Self::history_items(messages, images), times, codemode)
+                (crate::panel::history_items::build(messages, images), times, codemode)
             })
         });
         self.provisional_task = Some(cx.spawn(async move |this, cx| {
@@ -4064,7 +3927,7 @@ impl Panel {
         {
             self.startup_layout = None;
         }
-        let (mut items, history_times) = Self::history_items(messages, images);
+        let (mut items, history_times) = crate::panel::history_items::build(messages, images);
         if let Some(paging) = &mut self.history_paging {
             paging.set_anchor(&items);
         }
@@ -8213,21 +8076,23 @@ fn role_of(item: &Item) -> Option<&'static str> {
     }
 }
 
-/// Provider a bare `/reset` targets: Claude for Anthropic sessions, otherwise
-/// OpenAI, which matches the TUI default.
-fn reset_provider_for(panel: &Panel) -> crate::accounts::ResetProvider {
-    let is_claude = |value: Option<&str>| {
-        value.is_some_and(|value| {
-            let value = value.to_ascii_lowercase();
-            value.contains("anthropic") || value.contains("claude")
-        })
-    };
-    if is_claude(panel.provider.as_deref())
-        || (panel.provider.is_none() && is_claude(panel.model.as_deref()))
-    {
-        crate::accounts::ResetProvider::Claude
-    } else {
-        crate::accounts::ResetProvider::OpenAi
+impl Panel {
+    /// Provider a bare `/reset` targets: Claude for Anthropic sessions,
+    /// otherwise OpenAI, which matches the TUI default.
+    fn reset_provider(&self) -> crate::accounts::ResetProvider {
+        let is_claude = |value: Option<&str>| {
+            value.is_some_and(|value| {
+                let value = value.to_ascii_lowercase();
+                value.contains("anthropic") || value.contains("claude")
+            })
+        };
+        if is_claude(self.provider.as_deref())
+            || (self.provider.is_none() && is_claude(self.model.as_deref()))
+        {
+            crate::accounts::ResetProvider::Claude
+        } else {
+            crate::accounts::ResetProvider::OpenAi
+        }
     }
 }
 
@@ -9341,7 +9206,7 @@ fn history_tool_times_reconstruct_start_and_preserve_missing_data() {
          "tool":{"id":"b", "name":"read", "input":{}}}
     ]))
     .unwrap();
-    let (items, _) = Panel::history_items(rows.clone(), Vec::new());
+    let (items, _) = crate::panel::history_items::build(rows.clone(), Vec::new());
     assert!(matches!(&items[0], Item::Tool { name, .. } if name == "bash"));
     assert!(matches!(&items[1], Item::Tool { name, .. } if name == "read"));
     let times = history_tool_times(&rows);

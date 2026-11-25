@@ -1,3 +1,4 @@
+use super::live::Live;
 use super::{Panel, chrome, meter, *};
 use jcode_desktop_openrig::fleet::Fleet;
 
@@ -50,16 +51,18 @@ fn in_progress_label(count: u64) -> String {
     format!("{count} {}", if count == 1 { "item" } else { "items" })
 }
 
+/// The seat's identity and the model it runs, as the hover card draws them.
+struct Seat {
+    identity: Identity,
+    model: Option<String>,
+}
+
 struct Tooltip {
-    panel: gpui::WeakEntity<Panel>,
+    seat: Live<Option<Seat>>,
 }
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(panel) = self.panel.upgrade() else {
-            return div();
-        };
-        let panel = panel.read(cx);
-        let Some(identity) = panel.rig_identity.clone() else {
+        let Some(Some(Seat { identity, model })) = self.seat.get(cx) else {
             return div();
         };
         let theme = Theme::global();
@@ -96,7 +99,7 @@ impl Render for Tooltip {
             )
             .children(identity.activity.map(|v| row("Activity", v)))
             .child(row("Runtime", "Jcode".into()))
-            .children(panel.model.as_ref().map(|v| row("Model", v.clone())))
+            .children(model.map(|v| row("Model", v)))
             .children(
                 identity
                     .work
@@ -137,7 +140,12 @@ impl Panel {
 
     pub(super) fn render_rig_hud(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let action = self.rig_identity.as_ref()?.action.clone();
-        let panel = cx.entity().downgrade();
+        let seat = Live::of(&cx.entity(), |panel: &Panel, _| {
+            panel.rig_identity.clone().map(|identity| Seat {
+                identity,
+                model: panel.model.clone(),
+            })
+        });
         let theme = Theme::global();
         let selector = format!("panel-openrig:{}", self.session_id);
         Some(
@@ -162,12 +170,8 @@ impl Panel {
                 )
                 .tooltip(move |_, cx| {
                     cx.new(|cx| {
-                        if let Some(panel) = panel.upgrade() {
-                            cx.observe(&panel, |_, _, cx| cx.notify()).detach();
-                        }
-                        Tooltip {
-                            panel: panel.clone(),
-                        }
+                        seat.follow(cx);
+                        Tooltip { seat: seat.clone() }
                     })
                     .into()
                 })

@@ -1,5 +1,6 @@
 //! Prompt-cache status for the composer bar: a short retention countdown or
 //! the latest completed request's cache hit rate.
+use super::live::Live;
 use super::*;
 
 #[path = "panel_cache_card.rs"]
@@ -126,7 +127,11 @@ impl Panel {
     /// Without it, restored turns and in-flight usage can still seed retention.
     pub(super) fn cache_facts(&self) -> Option<CacheFacts> {
         if self.cache_telemetry.has_requests() {
-            return self.cache_telemetry.retention(self);
+            let on_route = self
+                .cache_telemetry
+                .is_on_route(self.provider.as_deref(), self.model.as_deref());
+            let live = on_route.then(|| self.response_stats.cache_touch()).flatten();
+            return self.cache_telemetry.retention(live);
         }
         let (provider, ttl_secs) = self.cache_retention()?;
         let latest = self.last_cache_touch();
@@ -160,10 +165,8 @@ impl Panel {
 
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let value = self.cache_pill_value()?;
-        Some(
-            self.swarm_marks
-                .cache_pill(value, cx.entity().downgrade(), cx),
-        )
+        let source = CacheSource::of(&cx.entity());
+        Some(self.swarm_marks.cache_pill(value, source, cx))
     }
 }
 
@@ -221,11 +224,27 @@ pub(super) fn tone(facts: &CacheFacts, theme: &Palette) -> gpui::Rgba {
     }
 }
 
+/// What the pill and its hover card read of the panel that owns them.
+#[derive(Clone)]
+pub(crate) struct CacheSource {
+    session: Live<String>,
+    card: Live<card::CacheView>,
+}
+
+impl CacheSource {
+    pub(crate) fn of(panel: &Entity<Panel>) -> Self {
+        Self {
+            session: Live::of(panel, |panel: &Panel, _| panel.session_id.clone()),
+            card: Live::of(panel, |panel: &Panel, _| panel.cache_view()),
+        }
+    }
+}
+
 /// A leaf view that wakes at the warning boundary, then ticks only while
 /// displaying a live countdown.
 pub(crate) struct CachePill {
     value: CachePillValue,
-    panel: gpui::WeakEntity<Panel>,
+    source: CacheSource,
     anchor: Instant,
     tick: Option<Task<()>>,
 }
@@ -233,12 +252,12 @@ pub(crate) struct CachePill {
 impl CachePill {
     pub(crate) fn new(
         value: CachePillValue,
-        panel: gpui::WeakEntity<Panel>,
+        source: CacheSource,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             value,
-            panel,
+            source,
             anchor: cx.background_executor().now(),
             tick: None,
         }
@@ -290,7 +309,7 @@ impl Render for CachePill {
         }
         let metric = value.metric();
         let theme = Theme::global();
-        let panel = self.panel.clone();
+        let source = self.source.clone();
         let pill = cx.entity().downgrade();
         use crate::swarm_glyph::Icon;
         let (icon, ink) = match metric {
@@ -328,22 +347,16 @@ impl Render for CachePill {
             )
             .children(crate::fixture_control_targets::marker(
                 || "hover:panel-cache".into(),
-                || {
-                    panel
-                        .upgrade()
-                        .map(|panel| panel.read(cx).session_id.clone())
-                },
+                || source.session.get(cx),
             ))
             .tooltip(move |_, cx| {
                 cx.new(|cx| {
-                    if let Some(panel) = panel.upgrade() {
-                        cx.observe(&panel, |_, _, cx| cx.notify()).detach();
-                    }
+                    source.card.follow(cx);
                     if let Some(pill) = pill.upgrade() {
                         cx.observe(&pill, |_, _, cx| cx.notify()).detach();
                     }
                     card::CacheTooltip {
-                        panel: panel.clone(),
+                        view: source.card.clone(),
                         pill: pill.clone(),
                     }
                 })
@@ -467,7 +480,7 @@ mod tests {
                     )),
                     hit_rate: Some(98.0),
                 };
-                CachePill::new(value, panel.downgrade(), cx)
+                CachePill::new(value, CacheSource::of(&panel), cx)
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds(before).is_some(), "missing {before}");

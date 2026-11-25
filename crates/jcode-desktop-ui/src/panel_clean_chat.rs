@@ -118,7 +118,7 @@ pub(super) fn screenshot_fixture() -> Vec<Item> {
         {"role": "tool", "content": "Internal tool output", "tool": {"id": "audit", "name": "read", "input": {}}},
         {"role": "assistant", "response_stats": {"output_tokens": 64}, "content": "The import passed. Every source record appears once, and the second run produced the same output.\n\nNo records were dropped. The exported report matches the source totals."}
     ])).expect("valid clean chat history fixture");
-    Panel::history_items(history, vec![]).0
+    crate::panel::history_items::build(history, vec![]).0
 }
 
 pub(super) fn remap_anchor(

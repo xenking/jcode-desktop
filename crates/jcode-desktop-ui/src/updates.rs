@@ -337,14 +337,25 @@ fn spawn_release_check() {
     }
 }
 
+/// Whether this build updates together with its CLI, so every update control
+/// opens the one paired review dialog.
+pub fn paired_configured() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        jcode_desktop_updater::paired::configured()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// On local macOS packages, all update controls enter the same review dialog.
 pub fn request_paired(cx: &mut gpui::App) -> bool {
-    #[cfg(target_os = "macos")]
-    if jcode_desktop_updater::paired::configured() {
+    if paired_configured() {
         paired::request(cx);
         return true;
     }
-    let _ = cx;
     false
 }
 

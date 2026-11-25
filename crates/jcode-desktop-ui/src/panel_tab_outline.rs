@@ -15,6 +15,7 @@
 //!
 //! Like the orb spinner, a painted fill arms at most one pending tick, so
 //! clipped tabs stop animating on their own.
+use crate::panel::live::Live;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -151,7 +152,7 @@ impl TabRing {
 }
 
 pub(super) struct TabOutline {
-    panel: gpui::WeakEntity<super::Panel>,
+    ring: Live<Option<TabRing>>,
     tick: Option<Task<()>>,
     /// Displayed fill, eased toward the todo progress target.
     shown_progress: Option<f32>,
@@ -159,10 +160,10 @@ pub(super) struct TabOutline {
 }
 
 impl TabOutline {
-    pub(super) fn new(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&panel, |_, _, cx| cx.notify()).detach();
+    pub(super) fn new(ring: Live<Option<TabRing>>, cx: &mut Context<Self>) -> Self {
+        ring.follow(cx);
         Self {
-            panel: panel.downgrade(),
+            ring,
             tick: None,
             shown_progress: None,
             eased_at: None,
@@ -363,10 +364,7 @@ fn paint(
 impl Render for TabOutline {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("TabOutline");
-        let ring = self
-            .panel
-            .upgrade()
-            .and_then(|panel| panel.read(cx).tab_ring());
+        let ring = self.ring.get(cx).flatten();
         let outline = cx.entity().downgrade();
         div().size_full().when_some(ring, |el, ring| {
             el.child(
@@ -464,7 +462,7 @@ mod tests {
     #[test]
     fn fresh_todo_progress_grows_in_from_empty() {
         let mut outline = TabOutline {
-            panel: gpui::WeakEntity::new_invalid(),
+            ring: Live::gone(),
             tick: None,
             shown_progress: None,
             eased_at: None,

@@ -164,7 +164,7 @@ impl Panel {
         }
         self.codemode_summaries
             .extend(super::codemode_card::history_summaries(&messages));
-        let (mut expanded, new_times) = Self::history_items(messages, images);
+        let (mut expanded, new_times) = crate::panel::history_items::build(messages, images);
         let Some(prefix_len) = paging.prefix_len(&expanded) else {
             // A rewind, clear, or changed snapshot must never duplicate or
             // overwrite the live suffix. A later reconnect can resynchronise.
@@ -273,7 +273,7 @@ impl Panel {
         self.codemode_summaries
             .extend(super::codemode_card::history_summaries(&page.messages));
         if let Some(mut recovery) = paging.recovery.take() {
-            let (mut items, mut times) = Self::history_items(page.messages, page.images);
+            let (mut items, mut times) = crate::panel::history_items::build(page.messages, page.images);
             let added = items.len();
             times.extend(
                 recovery
@@ -318,7 +318,7 @@ impl Panel {
             .prompt_offset
             .or_else(|| page.before.is_none().then_some(0));
         paging.cursor = page.before;
-        let (items, times) = Self::history_items(page.messages, page.images);
+        let (items, times) = crate::panel::history_items::build(page.messages, page.images);
         if items.is_empty() {
             if paging.cursor.is_some() && paging.cursor != previous_cursor {
                 self.request_older_history();
@@ -982,7 +982,7 @@ mod tests {
             panic!("expected page")
         };
         assert_eq!(*compacted_remaining, 0);
-        let (expected, _) = Panel::history_items(messages.clone(), images.clone());
+        let (expected, _) = crate::panel::history_items::build(messages.clone(), images.clone());
         panel.update(cx, |panel, cx| panel.load_older_history(Ok(full), cx));
         panel.read_with(cx, |panel, _| {
             assert!(
@@ -1037,7 +1037,7 @@ mod tests {
         let (messages, images, _) = render(64);
         panel.update(cx, |panel, cx| panel.load_history(messages, images, cx));
         let (full_messages, full_images, full_info) = render(usize::MAX);
-        let (expected, _) = Panel::history_items(full_messages.clone(), full_images.clone());
+        let (expected, _) = crate::panel::history_items::build(full_messages.clone(), full_images.clone());
         for window in [192, usize::MAX] {
             let (messages, images, info) = if window == usize::MAX {
                 (
