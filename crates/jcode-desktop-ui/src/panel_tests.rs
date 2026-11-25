@@ -1229,9 +1229,6 @@ fn account_label_follows_the_serving_credential_not_the_first_route() {
         auth_method_for_model(Some("claude-opus-5-5"), &no_login).as_deref(),
         Some("api key")
     );
-    assert_eq!(human_auth_method("oauth"), "oauth");
-    assert_eq!(human_auth_method("api_key"), "api key");
-    assert_eq!(human_auth_method("claude-api"), "api key");
 }
 
 #[gpui::test]

@@ -1,5 +1,5 @@
 //! Highlight complete, independent old/new hunk sources, then project onto display rows.
-use crate::markdown::highlight_code;
+use crate::code_block::highlight_code;
 use gpui::HighlightStyle;
 use std::ops::Range;
 

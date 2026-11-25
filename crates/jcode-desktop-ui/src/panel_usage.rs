@@ -2,10 +2,7 @@
 use super::*;
 use super::meter::{MeterIds, MeterTooltip, RowsTooltip, meter_card, meter_row, usage_color};
 use crate::accounts::{Account, UsageLimit};
-
-#[derive(Default)]
-pub(crate) struct StatusAccounts(pub Vec<Account>);
-impl gpui::Global for StatusAccounts {}
+pub(crate) use crate::account_status::StatusAccounts;
 
 
 /// Subscription quota shown when hovering the composer's method pill.

@@ -118,7 +118,7 @@ impl ToolDetail {
             );
         }
         highlights.extend(selection);
-        markdown::flatten_highlights(&highlights)
+        crate::code_block::flatten_highlights(&highlights)
     }
 }
 
@@ -405,7 +405,7 @@ fn syntax_ranges(name: &str, input: &str, output: &str) -> Vec<(Range<usize>, Hi
             })
             .collect();
     }
-    markdown::highlight_code(output, &lang).1
+    crate::code_block::highlight_code(output, &lang).1
 }
 
 pub(super) fn selectable_detail(

@@ -83,19 +83,6 @@ pub(super) fn auth_method_for_model(
     Some(human_auth_method(&route.api_method))
 }
 
-/// `oauth`, `api_key`, or a route id such as `claude-oauth`, phrased for the
-/// account label.
-pub(crate) fn human_auth_method(method: &str) -> String {
-    let method = method.to_lowercase();
-    if method.contains("oauth") {
-        "oauth".to_string()
-    } else if method.contains("api-key") || method.contains("api_key") || method.ends_with("-api") {
-        "api key".to_string()
-    } else {
-        method
-    }
-}
-
 pub(super) fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
     let mut models: Vec<String> = routes
         .iter()

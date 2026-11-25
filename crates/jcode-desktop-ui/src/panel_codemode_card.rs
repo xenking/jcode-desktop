@@ -351,7 +351,7 @@ impl Panel {
                         .text_color(Theme::global().TEXT_DIM)
                         .child("Source"),
                 )
-                .child(markdown::code_block_with_selection(
+                .child(crate::code_block::code_block_with_selection(
                     "typescript",
                     &code,
                     window,

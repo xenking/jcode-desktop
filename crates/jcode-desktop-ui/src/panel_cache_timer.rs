@@ -174,7 +174,11 @@ impl Panel {
     pub(super) fn render_cache_pill(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let value = self.cache_pill_value()?;
         let source = Self::cache_source(&cx.entity());
-        Some(self.swarm_marks.cache_pill(value, source, cx))
+        Some(self.swarm_marks.pinned(
+            |cx| CachePill::new(value, source, cx),
+            |view, cx| view.set(value, cx),
+            cx,
+        ))
     }
 }
 

@@ -1,7 +1,6 @@
 //! Panel-owned helpers for workspace commands. This module never imports workspace.
 use super::*;
-#[path = "workspace_command_parse.rs"]
-pub(crate) mod parse;
+pub(crate) use crate::workspace_command_parse as parse;
 use crate::ui_actions::WorkspaceSlashCommand;
 use jcode_sdk::SidePanelPage;
 

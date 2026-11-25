@@ -61,7 +61,8 @@ mod labels;
 mod todo_card;
 #[path = "panel_tool_summary.rs"]
 mod tool_summary;
-pub(crate) use labels::{human_auth_method, tool_card_token_pill};
+pub(crate) use labels::tool_card_token_pill;
+pub(crate) use crate::provider_mark::human_auth_method;
 use labels::*;
 use todo_card::*;
 use tool_summary::*;
@@ -688,15 +689,6 @@ impl gpui::Global for LocalDraftModels {}
 struct RememberedDraftModel(crate::config::DraftModelDefaults);
 
 impl gpui::Global for RememberedDraftModel {}
-
-/// `/model` and `/effort` only record a choice, so a draft answers them
-/// without a runtime session.
-pub(crate) fn is_draft_config_command(content: &str) -> bool {
-    matches!(
-        content.split_whitespace().next(),
-        Some("/model" | "/models" | "/effort" | "/mode" | "/speed")
-    )
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PickerKind {
