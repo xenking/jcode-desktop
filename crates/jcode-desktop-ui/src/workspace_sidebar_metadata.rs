@@ -30,25 +30,6 @@ pub(super) struct SidebarPanelMetadata {
 }
 
 impl SidebarPanelMetadata {
-    fn overview_preview(panel: &Panel) -> &str {
-        let text = panel
-            .items
-            .iter()
-            .rev()
-            .find_map(|item| match item {
-                crate::panel::Item::Assistant(text) | crate::panel::Item::User(text) => {
-                    Some(text.as_str())
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
-        let end = text
-            .char_indices()
-            .nth(220)
-            .map_or(text.len(), |(offset, _)| offset);
-        &text[..end]
-    }
-
     fn from_panel(panel: &Panel, cx: &App) -> Self {
         let (keyboard_focus, panel_focus) = panel.workspace_focus_handles(cx);
         let (surface_focused, finished_unseen, openrig) = panel.workspace_surface_state();
@@ -57,7 +38,7 @@ impl SidebarPanelMetadata {
             title: panel.title.clone(),
             working_dir: panel.working_dir.clone(),
             status: panel.status.clone(),
-            overview_preview: Self::overview_preview(panel).into(),
+            overview_preview: panel.overview_preview().into(),
             listable: panel.listable_conversation(cx),
             voice: panel.supports_voice(),
             activity: panel.sidebar_activity(),
@@ -195,7 +176,7 @@ impl SidebarPanelMetadata {
             && self.title == panel.title
             && self.working_dir == panel.working_dir
             && self.status == panel.status
-            && self.overview_preview == Self::overview_preview(panel)
+            && self.overview_preview == panel.overview_preview()
             && self.listable == panel.listable_conversation(cx)
             && self.voice == panel.supports_voice()
             && self.activity == panel.sidebar_activity()
