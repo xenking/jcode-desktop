@@ -64,8 +64,9 @@ impl<K: Hash + Eq + Clone, V: PartialEq> ProbeCache<K, V> {
     }
 
     /// Keys to probe now. Each is returned once until it is filled.
+    #[allow(clippy::drain_collect, reason = "Keep queue capacity for the next render pass")]
     pub fn take_queued(&mut self) -> Vec<K> {
-        std::mem::take(&mut self.queued)
+        self.queued.drain(..).collect()
     }
 
     /// Record a probe result. Returns whether the visible answer changed, so
