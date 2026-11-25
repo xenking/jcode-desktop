@@ -485,7 +485,7 @@ fn transcript_chip_survives_wrap_boundaries(cx: &mut gpui::TestAppContext) {
     for n in 1..50 {
         panel.update(vcx, |panel, cx| {
             *panel.items = vec![Item::User(format!("{}[#image 1]more", "x".repeat(n)))];
-            panel.transcript_measurements.dirty = true;
+            panel.transcript_measurements.invalidate();
             cx.notify();
         });
         vcx.run_until_parked();

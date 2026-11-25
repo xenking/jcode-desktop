@@ -12,6 +12,7 @@ use jcode_desktop_model::markdown_file::{self, LinkTarget};
 
 use crate::code_editor::CodeEditor;
 use crate::markdown;
+use crate::panel::PanelSnapshot;
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Ink, Theme};
 
@@ -126,6 +127,11 @@ impl FilePanel {
 
     pub(crate) fn title(&self) -> &SharedString {
         &self.title
+    }
+
+    /// What a reload keeps of this panel: where it points, never its text.
+    pub(crate) fn snapshot(&self) -> PanelSnapshot {
+        PanelSnapshot::bare(&self.session_id, &self.title, self.working_dir.as_deref())
     }
 
     pub(crate) fn working_dir(&self) -> Option<&str> {

@@ -485,7 +485,7 @@ fn render_misses(misses: &Misses, theme: &Palette) -> gpui::Div {
                 ),
         )
         .children(misses.recent.iter().enumerate().map(|(index, miss)| {
-            let reason = miss.reason.replace('_', " ");
+            let reason = miss.reason_label();
             meter::meter_detail(
                 format!(
                     "{} · {}",

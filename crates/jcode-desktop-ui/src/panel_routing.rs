@@ -69,7 +69,7 @@ impl Panel {
             reason.to_owned(),
             options.to_vec(),
         ));
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 
@@ -87,7 +87,7 @@ impl Panel {
     /// A finished turn cannot still be waiting on a gate.
     pub(super) fn dismiss_routing_gate(&mut self, cx: &mut Context<Self>) {
         if self.routing_gate.take().is_some() {
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             cx.notify();
         }
     }
@@ -237,7 +237,7 @@ impl Panel {
             Err(error) => Item::Error(error),
         });
         self.stick_to_bottom = true;
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 

@@ -39,7 +39,7 @@ impl Panel {
             notice.title = "Force stop requested".into();
             notice.detail = "Waiting for the runtime to confirm the turn has stopped.".into();
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 
@@ -55,7 +55,7 @@ impl Panel {
                 {
                     notice.title = "Stop not confirmed".into();
                     notice.detail = "The runtime did not confirm cancellation. The turn may still be running; check the connection and try again.".into();
-                    panel.transcript_measurements.dirty = true;
+                    panel.transcript_measurements.invalidate();
                     cx.notify();
                 }
             });
@@ -79,7 +79,7 @@ impl Panel {
             && (retry == AutoRetry::Pending || notice.retry == AutoRetry::Pending)
         {
             notice.retry = retry;
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
         }
     }
 

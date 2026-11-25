@@ -15,6 +15,15 @@ impl WheelGlide {
     const PRECISE_DECAY_SECONDS: f32 = 0.025;
     pub(super) const SETTLE: f32 = 0.1;
 
+    /// Drops all queued travel, e.g. when the user grabs the scrollbar.
+    pub(super) fn cancel(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(super) fn is_gliding(&self) -> bool {
+        self.remaining != 0.0
+    }
+
     pub(super) fn push(&mut self, pixels: f32) {
         self.push_input(pixels, false);
     }

@@ -16,6 +16,11 @@ pub struct CacheMissNotice {
 }
 
 impl CacheMissNotice {
+    /// The runtime's snake_case reason, spelled for reading.
+    pub(super) fn reason_label(&self) -> String {
+        self.reason.replace('_', " ")
+    }
+
     pub(super) fn from_event(event: &ApiEvent) -> Option<Self> {
         let ApiEvent::KvCacheMiss {
             reason,

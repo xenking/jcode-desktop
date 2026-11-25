@@ -39,7 +39,7 @@ impl Panel {
         if !self.activity_active() {
             self.status = "running".into();
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 }

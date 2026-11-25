@@ -59,6 +59,39 @@ pub(super) struct TailGlide {
     header: u64,
 }
 
+/// What the transcript list looks like this frame, for [`TailGlide::follow`].
+#[derive(Clone, Copy)]
+pub(super) struct Frame {
+    /// Reduced motion, or a structural change: jump, do not ease.
+    pub(super) snap: bool,
+    /// The user has not scrolled away from the end.
+    pub(super) following: bool,
+    /// Fingerprint of the chrome pinned above the transcript.
+    pub(super) header: u64,
+    pub(super) now: Instant,
+    pub(super) viewport: f32,
+    /// The furthest the list can scroll.
+    pub(super) max: f32,
+    /// Where it is scrolled to now.
+    pub(super) listed: f32,
+    /// A turn is producing output.
+    pub(super) producing: bool,
+    /// Text or reasoning is streaming in.
+    pub(super) streaming: bool,
+    /// Device pixels per logical pixel.
+    pub(super) scale: f32,
+}
+
+/// What the list should do for this frame.
+pub(super) enum Motion {
+    /// Layout pins the end.
+    Pin { next_frame: bool },
+    /// Hold still at `at` so growth is measured before it is eased in.
+    Hold { at: f32, next_frame: bool },
+    /// Move to `to`, a whole device pixel, and keep animating.
+    Ease { to: f32 },
+}
+
 impl TailGlide {
     pub(super) fn active(&self) -> bool {
         self.at.is_some()
@@ -71,6 +104,109 @@ impl TailGlide {
             header: self.header,
             ..Self::default()
         };
+    }
+
+    /// Decides what the transcript list does this frame. The panel only
+    /// applies the answer, so how a follow is paced stays here.
+    pub(super) fn follow(&mut self, frame: &Frame) -> Motion {
+        let Frame {
+            snap,
+            following,
+            header,
+            now,
+            viewport,
+            max,
+            listed,
+            producing,
+            streaming,
+            scale,
+        } = *frame;
+        // The viewport itself changing height (the pinned todo card appearing
+        // or growing after a todo call, a window resize) moves the end of the
+        // scroll range without adding anything to read. Easing toward it
+        // would drop the whole transcript and float it back up, so a resting
+        // tail stays pinned to the end through the resize instead.
+        let header_changed = std::mem::replace(&mut self.header, header) != header;
+        let previous_viewport = std::mem::replace(&mut self.viewport, viewport);
+        let resized = previous_viewport > 0.0 && (viewport - previous_viewport).abs() > 0.5;
+        if following && !snap && viewport > 0.0 && (header_changed || resized) && self.held {
+            // Layout pins the end whatever height the viewport turns out to
+            // have. The next frame resumes holding from there.
+            if producing {
+                self.live_at = Some(now);
+            }
+            return Motion::Pin { next_frame: true };
+        }
+        if producing {
+            self.live_at = Some(now);
+        }
+        let live = self
+            .live_at
+            .is_some_and(|at| now.saturating_duration_since(at) < LIVE_GRACE);
+        // Resume from the unrounded position unless something else moved the list.
+        let current = if self.active() && (self.position - listed).abs() <= 1.0 {
+            self.position
+        } else {
+            listed
+        };
+        let gap = max - current;
+        let limit = (viewport * 3.0).max(MAX_GLIDE_PX);
+        if snap
+            || !following
+            || viewport <= 0.0
+            // Shrinking (a live row settling, the activity row leaving) is
+            // held at the new end below, the same as layout would clamp it.
+            || gap > limit
+        {
+            self.reset();
+            return Motion::Pin { next_frame: false };
+        }
+        if gap <= 0.5 {
+            if !live {
+                // Idle: let layout pin the end without scheduling frames.
+                self.reset();
+                return Motion::Pin { next_frame: false };
+            }
+            // Hold this position so growth measured in the coming layout
+            // pass is eased in next frame instead of jumping.
+            self.held = true;
+            self.position = max;
+            self.at = Some(now);
+            // Streamed text grows every frame. Other growth (tool cards,
+            // tool output) is noticed after paint by `tail_growth_observer`,
+            // so a long tool run does not redraw the panel every frame while
+            // nothing changes.
+            return Motion::Hold {
+                at: max,
+                next_frame: streaming,
+            };
+        }
+        // After holding still, the previous timestamp only says when the
+        // tail was last checked, not a frame interval.
+        let dt = self
+            .at
+            .filter(|_| !self.held)
+            .map(|last| now.saturating_duration_since(last).min(MAX_STEP))
+            .unwrap_or(FIRST_STEP)
+            .as_secs_f32();
+        self.held = false;
+        self.at = Some(now);
+        let max_lag = (viewport * 0.6).max(MAX_LAG_PX);
+        let next = self.step(current, max, dt, max_lag);
+        self.position = next;
+        Motion::Ease {
+            to: if next >= max {
+                max
+            } else {
+                ((next * scale).round() / scale).min(max)
+            },
+        }
+    }
+
+    /// Where the tail rests at the end of the list, when it does. A resting
+    /// tail is the one layout growth must wake.
+    pub(super) fn resting_position(&self) -> Option<f32> {
+        (self.active() && self.held).then_some(self.position)
     }
 
     /// Advance one frame toward `target` from `current` after `dt` seconds.
@@ -134,107 +270,38 @@ impl Panel {
         now: Instant,
         window: &mut Window,
     ) {
-        let bounds = self.transcript_list.viewport_bounds();
-        let viewport = f32::from(bounds.size.height);
-        // The viewport itself changing height (the pinned todo card appearing
-        // or growing after a todo call, a window resize) moves the end of the
-        // scroll range without adding anything to read. Easing toward it
-        // would drop the whole transcript and float it back up, so a resting
-        // tail stays pinned to the end through the resize instead.
-        let header_changed = std::mem::replace(&mut self.tail_glide.header, header) != header;
-        let previous_viewport = std::mem::replace(&mut self.tail_glide.viewport, viewport);
-        let resized = previous_viewport > 0.0 && (viewport - previous_viewport).abs() > 0.5;
-        if self.stick_to_bottom
-            && !snap
-            && viewport > 0.0
-            && (header_changed || resized)
-            && self.tail_glide.held
-        {
-            // Layout pins the end whatever height the viewport turns out to
-            // have. The next frame resumes holding from there.
-            self.transcript_list.scroll_to_end();
-            if self.tail_live() {
-                self.tail_glide.live_at = Some(now);
-            }
-            window.request_animation_frame();
-            return;
-        }
-        let max = f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0);
-        let listed = -f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y);
-        if self.tail_live() {
-            self.tail_glide.live_at = Some(now);
-        }
-        let live = self
-            .tail_glide
-            .live_at
-            .is_some_and(|at| now.saturating_duration_since(at) < LIVE_GRACE);
-        // Resume from the unrounded position unless something else moved the list.
-        let current =
-            if self.tail_glide.active() && (self.tail_glide.position - listed).abs() <= 1.0 {
-                self.tail_glide.position
-            } else {
-                listed
-            };
-        let gap = max - current;
-        let limit = (viewport * 3.0).max(MAX_GLIDE_PX);
-        if snap
-            || !self.stick_to_bottom
-            || viewport <= 0.0
-            // Shrinking (a live row settling, the activity row leaving) is
-            // held at the new end below, the same as layout would clamp it.
-            || gap > limit
-        {
-            self.tail_glide.reset();
-            self.transcript_list.scroll_to_end();
-            return;
-        }
-        if gap <= 0.5 {
-            if live {
-                // Hold this position so growth measured in the coming layout
-                // pass is eased in next frame instead of jumping.
-                self.transcript_list
-                    .set_offset_from_scrollbar(point(px(0.), px(-max)));
-                let glide = &mut self.tail_glide;
-                glide.held = true;
-                glide.position = max;
-                glide.at = Some(now);
-                // Streamed text grows every frame. Other growth (tool cards,
-                // tool output) is noticed after paint by
-                // `tail_growth_observer`, so a long tool run does not redraw
-                // the panel every frame while nothing changes.
-                if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
+        let frame = Frame {
+            snap,
+            following: self.stick_to_bottom,
+            header,
+            now,
+            viewport: f32::from(self.transcript_list.viewport_bounds().size.height),
+            max: f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0),
+            listed: -f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y),
+            producing: self.tail_live(),
+            streaming: !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty(),
+            scale: window.scale_factor().max(1.0),
+        };
+        match self.tail_glide.follow(&frame) {
+            Motion::Pin { next_frame } => {
+                self.transcript_list.scroll_to_end();
+                if next_frame {
                     window.request_animation_frame();
                 }
-            } else {
-                // Idle: let layout pin the end without scheduling frames.
-                self.tail_glide.reset();
-                self.transcript_list.scroll_to_end();
             }
-            return;
+            Motion::Hold { at, next_frame } => {
+                self.transcript_list
+                    .set_offset_from_scrollbar(point(px(0.), px(-at)));
+                if next_frame {
+                    window.request_animation_frame();
+                }
+            }
+            Motion::Ease { to } => {
+                self.transcript_list
+                    .set_offset_from_scrollbar(point(px(0.), px(-to)));
+                window.request_animation_frame();
+            }
         }
-        // After holding still, the previous timestamp only says when the
-        // tail was last checked, not a frame interval.
-        let dt = self
-            .tail_glide
-            .at
-            .filter(|_| !self.tail_glide.held)
-            .map(|last| now.saturating_duration_since(last).min(MAX_STEP))
-            .unwrap_or(FIRST_STEP)
-            .as_secs_f32();
-        self.tail_glide.held = false;
-        self.tail_glide.at = Some(now);
-        let max_lag = (viewport * 0.6).max(MAX_LAG_PX);
-        let next = self.tail_glide.step(current, max, dt, max_lag);
-        self.tail_glide.position = next;
-        let scale = window.scale_factor().max(1.0);
-        let painted = if next >= max {
-            max
-        } else {
-            ((next * scale).round() / scale).min(max)
-        };
-        self.transcript_list
-            .set_offset_from_scrollbar(point(px(0.), px(-painted)));
-        window.request_animation_frame();
     }
 }
 
@@ -247,16 +314,15 @@ impl Panel {
         let panel = cx.entity().downgrade();
         let list = self.transcript_list.clone();
         let following = self.stick_to_bottom;
-        let held = self.tail_glide.position;
         // Mid-glide the follower already schedules its own frames. Only a
         // tail resting at the end needs waking when layout grows it.
-        let resting = self.tail_glide.active() && self.tail_glide.held;
+        let resting = self.tail_glide.resting_position();
         gpui::canvas(
             |_, _, _| (),
             move |_, _, _, cx| {
-                if !following || !resting {
+                let Some(held) = resting.filter(|_| following) else {
                     return;
-                }
+                };
                 let max = f32::from(list.max_offset_for_scrollbar().y);
                 if max <= held + 0.5 {
                     return;

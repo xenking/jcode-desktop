@@ -283,7 +283,7 @@ fn segments_with_regions(
                 if let Some((args, result)) =
                     tool_output::bash_sections(name, input, output, error.as_deref())
                 {
-                    push(format!("tool-detail-{index}"), args.text);
+                    push(format!("tool-detail-{index}"), args.into_text());
                     push(format!("tool-bash-output-{index}"), result);
                 } else if let Some(result) = tool_output::background_output(name, output) {
                     if let Some(preview) = result.preview {
@@ -327,7 +327,7 @@ fn segments_with_regions(
                 } else {
                     push(
                         format!("tool-detail-{index}"),
-                        tool_output::ToolDetail::new(name, input, output, error.as_deref()).text,
+                        tool_output::ToolDetail::new(name, input, output, error.as_deref()).into_text(),
                     );
                 }
             }

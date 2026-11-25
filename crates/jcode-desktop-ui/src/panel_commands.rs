@@ -91,7 +91,7 @@ impl Panel {
                     setting_choices(key)
                 ))),
             }
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             cx.refresh_windows();
             cx.notify();
             return true;
@@ -118,7 +118,7 @@ impl Panel {
                                 Ok(text) => Item::Assistant(text),
                                 Err(error) => Item::Error(error),
                             });
-                            panel.transcript_measurements.dirty = true;
+                            panel.transcript_measurements.invalidate();
                             cx.notify();
                         });
                     }).detach();
@@ -189,7 +189,7 @@ impl Panel {
             "/version" | "/transcript" | "/config" | "/log" | "/hotkeys" | "/keys" | "/keybindings" | "/terminal-setup" => self.items.push(Item::Error(format!("Unexpected arguments for `{command}`."))),
             _ => return false,
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
         true
     }
@@ -299,7 +299,7 @@ impl Panel {
                     Ok((samples, bytes)) => Item::Assistant(format!("Saved debug-demo recording: `{}` ({samples} snapshots, {bytes} bytes). This is JSONL debug state, not a screen recording.", path.display())),
                     Err(error) => Item::Error(format!("Debug-demo recording failed: {error}. Partial file: `{}`.", path.display())),
                 });
-                panel.transcript_measurements.dirty = true;
+                panel.transcript_measurements.invalidate();
                 cx.notify();
             });
         }).detach();
@@ -349,7 +349,7 @@ impl Panel {
                     Ok(path) => Item::Assistant(format!("Captured Desktop debug state: `{}`. This is a JSON snapshot, not a screen image. It contains the current session transcript and draft, so review it before sharing.", path.display())),
                     Err(error) => Item::Error(format!("Could not capture Desktop debug state: {error}")),
                 });
-                panel.transcript_measurements.dirty = true;
+                panel.transcript_measurements.invalidate();
                 cx.notify();
             });
         }).detach();
@@ -381,7 +381,7 @@ impl Panel {
                     }
                     Err(error) => panel.items.push(Item::Error(error)),
                 }
-                panel.transcript_measurements.dirty = true;
+                panel.transcript_measurements.invalidate();
                 cx.notify();
             });
         })

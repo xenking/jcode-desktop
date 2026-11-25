@@ -36,6 +36,15 @@ pub(super) struct Detector {
 }
 
 impl Detector {
+    pub(super) fn paint_scroll(
+        &mut self,
+        list: &gpui::ListState,
+        viewport: Rect,
+        entity_id: gpui::EntityId,
+    ) {
+        self.scroll.paint(list, viewport, entity_id);
+    }
+
     pub(super) fn scroll_input(&mut self, pixels: f32, precise: bool) {
         self.scroll.input(pixels, precise, Instant::now());
     }
@@ -102,7 +111,7 @@ pub(super) fn observer(
                 input: input.get().map(|bounds| relative_rect(bounds, panel_bounds)),
                 pinned_prompt,
             };
-            detector.borrow_mut().scroll.paint(&list, geometry.viewport, entity_id);
+            detector.borrow_mut().paint_scroll(&list, geometry.viewport, entity_id);
             if let Some([a, b]) = detector.borrow_mut().observe(geometry, Instant::now()) {
                 let timestamp_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

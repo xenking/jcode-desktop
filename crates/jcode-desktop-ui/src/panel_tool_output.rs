@@ -4,12 +4,33 @@ use gpui::{HighlightStyle, StyledText};
 use std::ops::Range;
 
 pub(super) struct ToolDetail {
-    pub text: String,
+    text: String,
     argument_keys: Vec<Range<usize>>,
     output: Range<usize>,
 }
 
 impl ToolDetail {
+    pub(super) fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// Closes the last line so another block can follow it.
+    pub(super) fn end_line(&mut self) {
+        self.text.push('\n');
+    }
+
+    pub(super) fn clone_text(&self) -> String {
+        self.text.clone()
+    }
+
+    pub(super) fn into_text(self) -> String {
+        self.text
+    }
+
     pub(super) fn arguments(input: &str) -> Self {
         let mut text = String::new();
         let mut argument_keys = Vec::new();
@@ -176,7 +197,7 @@ pub(super) fn bash_sections(
         result.push_str(&strip_ansi(error));
     }
     if !result.is_empty() {
-        args.text.push('\n');
+        args.end_line();
     }
     Some((args, result))
 }
@@ -396,14 +417,14 @@ pub(super) fn selectable_detail(
     window: &Window,
     cx: &App,
 ) -> gpui::AnyElement {
-    let selected = selection.read(cx).highlight(&key, detail.text.len());
+    let selected = selection.read(cx).highlight(&key, detail.len());
     let highlights = detail.highlights(name, input, selected);
     let mut style = window.text_style();
     style.font_family = Theme::global().mono_family();
     style.color = crate::theme::to_hsla(Theme::global().CODE_TEXT);
-    let styled = StyledText::new(detail.text.clone()).with_default_highlights(&style, highlights);
+    let styled = StyledText::new(detail.clone_text()).with_default_highlights(&style, highlights);
     let layout = styled.layout().clone();
-    text_selection::selectable(selection, key, detail.text, layout, styled, cx)
+    text_selection::selectable(selection, key, detail.into_text(), layout, styled, cx)
 }
 
 pub(super) fn selectable_arguments(

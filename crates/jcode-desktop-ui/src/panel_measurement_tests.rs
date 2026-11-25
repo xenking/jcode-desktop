@@ -26,7 +26,7 @@ fn measurement_plan_reuses_history_and_bounds_streaming_work() {
 fn measurement_plan_invalidates_structure_fonts_and_explicit_changes() {
     let mut measurements = TranscriptMeasurements::default();
     measurements.take_range(10, 12, (10, 20), FONTS);
-    measurements.dirty = true;
+    measurements.invalidate();
     assert_eq!(
         measurements.take_range(10, 12, (10, 20), FONTS),
         Some(0..12)
@@ -179,10 +179,11 @@ fn tools_selection_and_recovery_still_invalidate_existing_rows(cx: &mut gpui::Te
         assert!(panel.transcript_measurements.remeasured_rows >= after_tool + 101)
     });
     panel.update(vcx, |panel, _| {
-        panel.transcript_measurements.dirty = false;
+        let settled = panel.transcript_measurements.revision;
+        panel.transcript_measurements.measured = settled;
         panel.recover_response("History 99\n\nSecond paragraph. More restored text.");
         assert!(
-            panel.transcript_measurements.dirty,
+            panel.transcript_measurements.revision != panel.transcript_measurements.measured,
             "same-count recovery must invalidate old heights"
         );
     });

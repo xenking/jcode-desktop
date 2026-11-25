@@ -30,7 +30,7 @@ impl Panel {
                 image.provisional_image_ordinal = None;
             }
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
     }
 
     pub(super) fn reconcile_history_images(
@@ -203,7 +203,7 @@ impl Panel {
             self.pending_history_image = None;
         }
         self.cancel_transcript_momentum();
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 
@@ -323,7 +323,7 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         if !self.draft_has_images
             && self.selected_session_image_index().is_none()
-            && !self.session_image_gallery.listing().has_images()
+            && !self.session_image_gallery.has_images()
         {
             return None;
         }
@@ -408,7 +408,7 @@ impl Panel {
         let theme = Theme::global();
         let indices = self.session_image_indices();
         let selected = self.selected_session_image_index();
-        let gallery = self.session_image_gallery.listing().clone();
+        let gallery = self.session_image_gallery.snapshot();
         let gallery_has_images = gallery.has_images();
         let image = selected.and_then(|index| match &self.items[index] {
             Item::Image(image) => Some(image),

@@ -1092,7 +1092,10 @@ pub(super) enum PickerKind {
 /// changes. Only its offscreen measurements need explicit content invalidation.
 #[derive(Default)]
 struct TranscriptMeasurements {
-    dirty: bool,
+    /// Advances on every content invalidation; rows are remeasured until
+    /// `measured` has caught up with it.
+    revision: u64,
+    measured: u64,
     item_count: usize,
     row_count: usize,
     streaming_lengths: (usize, usize),
@@ -1102,6 +1105,11 @@ struct TranscriptMeasurements {
 }
 
 impl TranscriptMeasurements {
+    /// Settled content changed height somewhere: remeasure every row.
+    fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     fn take_range(
         &mut self,
         item_count: usize,
@@ -1109,7 +1117,7 @@ impl TranscriptMeasurements {
         streaming_lengths: (usize, usize),
         fonts: (&'static str, &'static str, &'static str),
     ) -> Option<std::ops::Range<usize>> {
-        let range = if self.dirty
+        let range = if self.revision != self.measured
             || self.item_count != item_count
             || self.row_count != row_count
             || self.fonts != Some(fonts)
@@ -1122,7 +1130,7 @@ impl TranscriptMeasurements {
         } else {
             None
         };
-        self.dirty = false;
+        self.measured = self.revision;
         self.item_count = item_count;
         self.row_count = row_count;
         self.streaming_lengths = streaming_lengths;
@@ -1653,7 +1661,7 @@ impl Panel {
                 panel.release_startup_preview();
             }
             panel.transcript_dragging = dragging;
-            panel.transcript_measurements.dirty = true;
+            panel.transcript_measurements.invalidate();
             cx.notify();
         })
         .detach();
@@ -2032,7 +2040,7 @@ impl Panel {
     }
 
     fn cancel_transcript_momentum(&mut self) {
-        self.transcript_wheel_glide.remaining = 0.0;
+        self.transcript_wheel_glide.cancel();
         self.transcript_wheel_frame = None;
     }
 
@@ -2114,10 +2122,10 @@ impl Panel {
             .scroll_applied(f32::from(current.y) - target);
         // Discard travel into an edge instead of accumulating invisible debt.
         if (step < 0.0 && target >= 0.0) || (step > 0.0 && target <= -max) {
-            self.transcript_wheel_glide.remaining = 0.0;
+            self.transcript_wheel_glide.cancel();
         }
         cx.notify();
-        self.transcript_wheel_glide.remaining != 0.0
+        self.transcript_wheel_glide.is_gliding()
     }
 
     pub(crate) fn new_accounts(
@@ -2971,7 +2979,7 @@ impl Panel {
         if self.is_side_document() {
             return true;
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         if self.preview_state.is_some() {
             return self.handle_preview_command(content, cx);
         }
@@ -3935,7 +3943,7 @@ impl Panel {
                     }
                 }
                 *panel.items = items;
-                panel.transcript_measurements.dirty = true;
+                panel.transcript_measurements.invalidate();
                 if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
                     panel.startup_layout = None;
                 }
@@ -4020,7 +4028,7 @@ impl Panel {
                 paging.set_anchor(&self.items);
             }
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         if self.restored_transcript {
             self.hydrate_restored_prefix(&messages);
             // An empty/behind reply still completes the connection handshake.
@@ -4097,7 +4105,7 @@ impl Panel {
     }
 
     fn recover_response(&mut self, response: &str) {
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         if self.streaming_text == response {
             return;
         }
@@ -4191,7 +4199,7 @@ impl Panel {
                 | ApiEvent::RuntimeInfo { .. }
                 | ApiEvent::SessionRenamed { .. }
         ) {
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
         }
         // Any event from the session proves the stream is back. A reattach
         // may resume events without a SessionConnected update, so the
@@ -4297,7 +4305,7 @@ impl Panel {
                                 _ => {}
                             }
                         }
-                        self.transcript_measurements.dirty = true;
+                        self.transcript_measurements.invalidate();
                         cx.notify();
                     }
                     return;
@@ -4976,7 +4984,7 @@ impl Panel {
     fn finish_response(&mut self) {
         self.continuing_after_reload = false;
         self.pending_approval = None;
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         self.flush_reasoning();
         self.flush_streaming();
         if let Some(stats) = self.response_stats.finish() {
@@ -5109,7 +5117,7 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             append_reasoning(
                 &mut self.items,
                 std::mem::take(&mut self.streaming_reasoning),
@@ -5388,7 +5396,7 @@ impl Panel {
             return;
         }
         // Any card change (mount, patch, close) can change row heights.
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         self.applet_rows = rows;
         self.applet_rows_version = self.applet_rows_version.wrapping_add(1);
     }
@@ -5465,7 +5473,7 @@ impl Panel {
             if self.transcript_derived.as_ref().is_some_and(|derived| {
                 derived.key.display != key.display || derived.key.clean_chat != clean_chat
             }) {
-                self.transcript_measurements.dirty = true;
+                self.transcript_measurements.invalidate();
             }
             let rows = Arc::new(self.transcript_render_rows_with_display(&key.display));
             if let Some(document) = self.transcript_text_document.sync(
@@ -6712,7 +6720,7 @@ impl Panel {
                                                         div().flex().child(toggle).child(text_selection::plain(self.transcript_selection.clone(), format!("tool-json-{index}-{line_index}"), line.text, window, cx)).into_any_element()
                                                     }).collect::<Vec<_>>();
                                                     div().debug_selector(|| "tool-detail-json".into()).font_family(Theme::global().FONT_MONO).flex().flex_col()
-                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .children(rows)
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
@@ -6720,7 +6728,7 @@ impl Panel {
                                                     let args = tool_output::ToolDetail::arguments(input);
                                                     div().debug_selector(|| "tool-detail-markdown".into())
                                                         .flex().flex_col().gap_2()
-                                                        .when(!args.text.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
+                                                        .when(!args.is_empty(), |el| el.child(tool_output::selectable_arguments(args, index, self.transcript_selection.clone(), window, cx)))
                                                         .child(div().font_family(Theme::global().FONT_AI).child(markdown::render(&markdown, tool_output::markdown_row(index), &self.transcript_selection, window, cx)))
                                                         .when_some(error.as_ref(), |el, error| el.child(text_selection::plain(self.transcript_selection.clone(), format!("tool-detail-error-{index}"), format!("Error\n{}", strip_ansi(error)), window, cx)))
                                                         .into_any_element()
@@ -6778,7 +6786,7 @@ impl Panel {
                 })
                 .set(if was_expanded { 0.0 } else { 1.0 }, Instant::now());
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 
@@ -6798,7 +6806,7 @@ impl Panel {
         if !self.expanded_regions.remove(key) {
             self.expanded_regions.insert(key.to_owned());
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 
@@ -7011,7 +7019,7 @@ impl Render for Panel {
             });
             // Virtualized rows cache their geometry. Repaint during motion and
             // remeasure once more when the exiting card is finally removed.
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             if !self.tool_detail_motion.is_empty() {
                 window.request_animation_frame();
             }
@@ -7245,7 +7253,7 @@ impl Render for Panel {
                 )
             });
         if projection_changed {
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             self.cancel_transcript_momentum();
             self.tail_glide.reset();
         }
@@ -9269,7 +9277,7 @@ fn tool_argument_visible(key: &str) -> bool {
 
 /// Expanded tool detail: the invocation and complete ANSI-free output.
 fn tool_detail(name: &str, input: &str, output: &str) -> String {
-    tool_output::ToolDetail::new(name, input, output, None).text
+    tool_output::ToolDetail::new(name, input, output, None).into_text()
 }
 
 type HistoryToolTimes = HashMap<String, (Option<i64>, Option<i64>, Option<Duration>)>;

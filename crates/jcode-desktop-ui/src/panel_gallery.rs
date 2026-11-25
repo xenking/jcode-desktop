@@ -90,8 +90,13 @@ impl Gallery {
         !std::mem::replace(&mut self.loading, true)
     }
 
-    pub(super) fn listing(&self) -> &Listing {
-        &self.listing
+    pub(super) fn has_images(&self) -> bool {
+        self.listing.has_images()
+    }
+
+    /// The list as last answered, for a view that outlives this borrow.
+    pub(super) fn snapshot(&self) -> Listing {
+        self.listing.clone()
     }
 
     pub(super) fn loaded_image(&self, image_id: &str, data: &str) -> Option<TranscriptImage> {

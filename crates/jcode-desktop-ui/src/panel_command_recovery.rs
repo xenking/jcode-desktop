@@ -55,7 +55,7 @@ impl Panel {
             }
             _ => return false,
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
         true
     }

@@ -375,7 +375,7 @@ impl Panel {
         self.applet_rows_version = self.applet_rows_version.wrapping_add(1);
         expanded.append(&mut self.items);
         *self.items = expanded;
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         let new_rows = self.transcript_render_rows().len();
         let added_rows = new_rows.saturating_sub(old_rows);
         self.shift_rewind_selection(prefix_len, added_rows);

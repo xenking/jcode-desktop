@@ -204,7 +204,7 @@ impl Panel {
             self.expanded_regions.insert(key)
         };
         if changed {
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
         }
     }
 }

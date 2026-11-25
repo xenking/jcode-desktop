@@ -148,7 +148,7 @@ impl Panel {
         self.flush_reasoning();
         self.flush_streaming();
         self.items.push(Item::SideQuestion(Box::new(question)));
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
     }
 
     pub(in crate::panel) fn render_inline_side_question(

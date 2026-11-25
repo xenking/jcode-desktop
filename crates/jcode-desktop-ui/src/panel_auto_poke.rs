@@ -63,6 +63,38 @@ impl AutoPoke {
         self.awaiting_state = None;
     }
 
+    /// A manual `/poke`: start a cycle at `index` that is already due.
+    pub(super) fn trigger(&mut self, index: usize) {
+        self.start(index);
+        self.ready = true;
+    }
+
+    /// At a turn boundary: whether to ask the harness for todo state. When it
+    /// does, the cycle waits for the answer and keeps the finished turn's
+    /// evidence of a delivered final response. `blocked` is the user having
+    /// work of their own queued or running.
+    pub(super) fn request_state(&mut self, blocked: bool, turn_done: bool) -> bool {
+        if !std::mem::take(&mut self.ready)
+            || self.start_index.is_none()
+            || self.awaiting_state.is_some()
+        {
+            return false;
+        }
+        if blocked || !self.policy().is_enabled() {
+            return false;
+        }
+        let tail = std::mem::take(&mut self.assistant_tail);
+        self.awaiting_state = Some(tail == AssistantTail::Complete && turn_done);
+        true
+    }
+
+    /// The todo-state answer arrived: the delivered-response evidence kept
+    /// at the boundary, and the transcript index where this cycle began.
+    pub(super) fn take_awaiting_state(&mut self) -> Option<(bool, usize)> {
+        let delivered = self.awaiting_state.take()?;
+        Some((delivered, self.start_index?))
+    }
+
     pub(super) fn observe(&mut self, event: &ApiEvent) {
         match event {
             ApiEvent::TurnDone { .. } => self.ready = self.start_index.is_some(),
@@ -167,21 +199,11 @@ impl Panel {
 
     /// Turn boundary: ask the harness for the session's todo state.
     pub(super) fn send_auto_poke(&mut self, _cx: &mut Context<Self>) {
-        let poke = &mut self.prompt_queue.auto_poke;
-        if !std::mem::take(&mut poke.ready)
-            || poke.start_index.is_none()
-            || poke.awaiting_state.is_some()
-        {
+        let blocked = self.auto_poke_blocked();
+        let turn_done = self.turn_outcome == Some(turn::TurnOutcome::Done);
+        if !self.prompt_queue.auto_poke.request_state(blocked, turn_done) {
             return;
         }
-        if self.auto_poke_blocked() || !self.prompt_queue.auto_poke.policy().is_enabled() {
-            return;
-        }
-        let tail = std::mem::take(&mut self.prompt_queue.auto_poke.assistant_tail);
-        self.prompt_queue.auto_poke.awaiting_state = Some(
-            tail == AssistantTail::Complete
-                && self.turn_outcome == Some(turn::TurnOutcome::Done),
-        );
         self.bridge.send(Command::TodoState {
             session_id: self.session_id.clone(),
         });
@@ -193,11 +215,9 @@ impl Panel {
         state: Option<TodoSnapshot>,
         cx: &mut Context<Self>,
     ) {
-        let poke = &mut self.prompt_queue.auto_poke;
-        let Some(final_response_delivered) = poke.awaiting_state.take() else {
-            return;
-        };
-        let Some(start) = poke.start_index else {
+        let Some((final_response_delivered, start)) =
+            self.prompt_queue.auto_poke.take_awaiting_state()
+        else {
             return;
         };
         // The user typed, queued, or restarted work while the state was in
@@ -286,8 +306,7 @@ impl Panel {
             PokeCommand::On | PokeCommand::Trigger => {
                 self.prompt_queue.auto_poke.policy().enable();
                 if matches!(command, PokeCommand::Trigger) && !self.auto_poke_blocked() {
-                    self.prompt_queue.auto_poke.start(self.items.len());
-                    self.prompt_queue.auto_poke.ready = true;
+                    self.prompt_queue.auto_poke.trigger(self.items.len());
                     self.send_auto_poke(cx);
                     "Auto-poke on. Checking todos now.".to_string()
                 } else {

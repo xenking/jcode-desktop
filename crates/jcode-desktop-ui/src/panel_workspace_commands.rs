@@ -36,7 +36,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.items.push(Item::Assistant(message.into()));
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
         cx.notify();
     }
 

@@ -195,7 +195,7 @@ pub(super) fn detail(name: &str, input: &str, output: &str, error: Option<&str>)
         Some(error) if output.trim() == error.trim() => "",
         _ => output,
     };
-    tool_output::ToolDetail::new(name, input, output, error).text
+    tool_output::ToolDetail::new(name, input, output, error).into_text()
 }
 
 fn action_icon(action: &str) -> &'static [u8] {
@@ -416,7 +416,7 @@ impl Panel {
     ) {
         if self.swarm_usage != usage {
             self.swarm_usage = usage;
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             cx.notify();
         }
     }
@@ -515,7 +515,7 @@ impl Panel {
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if event.keystroke.key == "enter" && !event.is_held {
                                 expandable::flip(&mut this.expanded_regions, &key_for_enter);
-                                this.transcript_measurements.dirty = true;
+                                this.transcript_measurements.invalidate();
                                 cx.stop_propagation();
                                 cx.notify();
                             }
@@ -523,7 +523,7 @@ impl Panel {
                         .on_click(cx.listener(move |this, _, window, cx| {
                             window.focus(&click_focus, cx);
                             expandable::flip(&mut this.expanded_regions, &key);
-                            this.transcript_measurements.dirty = true;
+                            this.transcript_measurements.invalidate();
                             cx.notify();
                         })),
                     Some(expanded),

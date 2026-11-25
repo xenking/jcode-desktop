@@ -119,10 +119,7 @@ impl PanelItem {
                     )
                 }
             }
-            Self::File(file) => {
-                let file = file.read(cx);
-                PanelSnapshot::bare(file.session_id(), file.title(), file.working_dir())
-            }
+            Self::File(file) => file.read(cx).snapshot(),
             // Notes are offered again after a reload, so the workspace never saves them.
             Self::Changelog(_) => {
                 PanelSnapshot::bare(ChangelogPanel::SESSION_ID, ChangelogPanel::TITLE, None)

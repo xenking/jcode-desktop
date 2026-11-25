@@ -103,7 +103,7 @@ impl Panel {
         self.status = snapshot.status;
         self.connection_phase = snapshot.connection_phase;
         self.turn_outcome = snapshot.turn_outcome;
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
     }
 
     // A reload can precede the first history reply. Preserve the local suffix

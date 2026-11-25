@@ -125,7 +125,7 @@ pub(crate) fn run_showcase(
                         panel.title = title.clone().into();
                     }
                     panel.items.clear();
-                    panel.transcript_measurements.dirty = true;
+                    panel.transcript_measurements.invalidate();
                     cx.notify();
                     panel.session_id.clone()
                 })
@@ -153,7 +153,7 @@ pub(crate) fn run_showcase(
                         panel
                             .update(cx, |panel, cx| {
                                 panel.items.push(Item::User(text.clone()));
-                                panel.transcript_measurements.dirty = true;
+                                panel.transcript_measurements.invalidate();
                                 panel.demo_event(
                                     ApiEvent::SessionStatus {
                                         session_id: session_id.clone(),

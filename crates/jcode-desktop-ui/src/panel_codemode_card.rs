@@ -122,7 +122,7 @@ impl Panel {
                 self.render_codemode_source(index, input, window, cx)
                     .or_else(|| {
                         let arguments = tool_output::ToolDetail::arguments(input);
-                        (!arguments.text.is_empty()).then(|| {
+                        (!arguments.is_empty()).then(|| {
                             tool_output::selectable_arguments(
                                 arguments,
                                 index,

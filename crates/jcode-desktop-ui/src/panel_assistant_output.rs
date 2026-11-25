@@ -46,7 +46,7 @@ impl Panel {
             && let Item::AssistantOutput { text: anchored, .. } = &mut self.items[index]
         {
             anchored.push_str(text);
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             return;
         }
         if self
@@ -138,7 +138,7 @@ impl Panel {
                 *current = phase;
             }
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
     }
 
     pub(super) fn replace_assistant_output(&mut self, id: Option<&str>, text: &str) {
@@ -148,7 +148,7 @@ impl Panel {
         {
             existing.clear();
             existing.push_str(text);
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
             return;
         }
         let live = self
@@ -159,7 +159,7 @@ impl Panel {
             self.streaming_text.clear();
             self.streaming_text.push_str(text);
             self.text_reveal.snap(text.len());
-            self.transcript_measurements.dirty = true;
+            self.transcript_measurements.invalidate();
         } else if !text.is_empty() {
             self.append_assistant_delta(text, Some(id));
         }
@@ -194,7 +194,7 @@ impl Panel {
             let item = self.assistant_output_item(text);
             self.items.push(item);
         }
-        self.transcript_measurements.dirty = true;
+        self.transcript_measurements.invalidate();
     }
 
     pub(super) fn recover_history_assistant(&mut self, response: &jcode_sdk::HistoryMessage) {

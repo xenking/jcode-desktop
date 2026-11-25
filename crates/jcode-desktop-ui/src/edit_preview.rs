@@ -91,18 +91,7 @@ impl EditPreviews {
             })
             .clone();
         view.update(cx, |view, cx| {
-            let changed_files = !Arc::ptr_eq(&view.files, &files) && view.files != files;
-            let mode = crate::config::display().diff_display;
-            let changed =
-                changed_files || view.done != done || view.header != header || view.mode != mode;
-            view.mode = mode;
-            if changed_files {
-                view.files = files;
-                view.prepare_rows();
-            }
-            view.done = done;
-            view.header = header;
-            if changed {
+            if view.sync(files, done, header) {
                 cx.notify();
             }
         });
@@ -132,6 +121,23 @@ pub(crate) struct TimedPreview {
 }
 
 impl TimedPreview {
+    /// Brings the preview up to date with the tool call it shows. `true` when
+    /// anything it draws changed.
+    fn sync(&mut self, files: Arc<Vec<FileDiff>>, done: bool, header: PreviewHeader) -> bool {
+        let changed_files = !Arc::ptr_eq(&self.files, &files) && self.files != files;
+        let mode = crate::config::display().diff_display;
+        let changed =
+            changed_files || self.done != done || self.header != header || self.mode != mode;
+        self.mode = mode;
+        if changed_files {
+            self.files = files;
+            self.prepare_rows();
+        }
+        self.done = done;
+        self.header = header;
+        changed
+    }
+
     fn new(files: Arc<Vec<FileDiff>>, index: usize, done: bool, header: PreviewHeader) -> Self {
         let mut this = Self {
             files,
