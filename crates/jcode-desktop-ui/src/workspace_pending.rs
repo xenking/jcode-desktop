@@ -350,7 +350,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some(panel) = self.slots[index].panel.chat().cloned() else {
-            return self.slots[index].panel.view().into_any_element();
+            return self.slots[index].panel.surface().view().into_any_element();
         };
         if panel.read(cx).session_deferred() {
             return panel.into_any_element();
@@ -592,7 +592,7 @@ impl Workspace {
                 self.slots
                     .iter()
                     .find(|slot| !slot.closing && slot.panel.session_id(cx) == request_id)
-                    .and_then(|slot| slot.panel.working_dir(cx).map(str::to_owned))
+                    .and_then(|slot| slot.panel.profile().working_dir(cx).map(str::to_owned))
             } else {
                 None
             };
