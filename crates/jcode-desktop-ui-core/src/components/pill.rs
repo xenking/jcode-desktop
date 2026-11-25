@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, FocusHandle, FontWeight, MouseButton, Role,
-    SharedString, StyleRefinement, Window, div, px, svg,
+    AnyElement, App, ClickEvent, ElementId, FocusHandle, MouseButton, Role, SharedString,
+    StyleRefinement, Window, div, px, svg,
 };
 
 use super::{Tooltip, focus_ring};
@@ -300,9 +300,6 @@ impl RenderOnce for Pill {
             .py(px(if small { 2. } else { 5. }))
             .rounded_full()
             .text_size(px(if small { 11. } else { 13. }))
-            .when(matches!(variant, PillVariant::Primary), |el| {
-                el.font_weight(FontWeight::SEMIBOLD)
-            })
             .when_some(bg, |el, bg| el.bg(bg))
             .text_color(fg);
         if let Some(selector) = self.selector {

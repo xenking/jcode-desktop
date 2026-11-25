@@ -923,6 +923,9 @@ fn button(
     };
     Pill::new(variant, id, label.to_owned())
         .debug_selector("applet-action")
+        .when(variant == PillVariant::Primary, |pill| {
+            pill.font_weight(FontWeight::SEMIBOLD)
+        })
         .disabled(disabled)
         .on_click(on_click)
         .when_some(
