@@ -37,7 +37,7 @@ impl Workspace {
             );
             // Use the panel's actual input handle for every existing focus path,
             // including live tabs, overview, navigation diagnostics and reload.
-            panel.input = search;
+            panel.replace_input(search, cx);
             panel
         });
         let width_fraction = 0.5;
