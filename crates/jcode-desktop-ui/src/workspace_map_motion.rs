@@ -32,46 +32,6 @@ impl Workspace {
         self.row_progress.set(1.0, now);
     }
 
-    pub(super) fn render_map_trip(
-        &mut self,
-        progress: f32,
-        width: f32,
-        height: f32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let y = self.map_row_position(progress);
-        let mut scene = div().relative().size_full().overflow_hidden();
-        for row in 0..STRIP_COUNT {
-            let top = (row as f32 - y) * height;
-            // Keep the destination mounted even before the camera reaches it.
-            // Its input owns keyboard focus during rapid successive shortcuts.
-            if top.abs() > height && row != self.active_row {
-                continue;
-            }
-            let outgoing = self.outgoing_row == Some(row);
-            let incoming = self.active_row == row;
-            let content = self.render_row(row, width, height, window, cx);
-            scene = scene.child(
-                div()
-                    .debug_selector(move || {
-                        if incoming {
-                            "row-transition-incoming".into()
-                        } else if outgoing {
-                            "row-transition-outgoing".into()
-                        } else {
-                            format!("row-transition-through-{row}")
-                        }
-                    })
-                    .absolute()
-                    .top(px(top))
-                    .left_0()
-                    .size_full()
-                    .child(content),
-            );
-        }
-        scene.into_any_element()
-    }
 }
 
 #[cfg(test)]

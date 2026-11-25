@@ -655,3 +655,156 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+impl Workspace {
+    pub(super) fn file_browser_root(&self, cx: &App) -> PathBuf {
+        if let Some(root) = self.open_files_root(cx) {
+            return root;
+        }
+        self.slots
+            .get(self.active)
+            .map(|slot| self.panel_metadata(slot, cx))
+            .filter(|panel| !harness::is_remote_session(&panel.session_id))
+            .and_then(|panel| panel.working_dir.as_deref().map(PathBuf::from))
+            .unwrap_or_else(|| self.file_tree.borrow().fallback.clone())
+    }
+
+    pub(super) fn file_entries(&self, directory: &Path, cx: &mut Context<Self>) -> std::sync::Arc<[FileRow]> {
+        let mut tree = self.file_tree.borrow_mut();
+        let cached = tree.rows.get(directory);
+        let rows = cached.map(|(_, rows)| rows.clone()).unwrap_or_default();
+        if !tree.dirty.contains(directory)
+            && cached.is_some_and(|(loaded, _)| {
+                self.files_pane.open || loaded.elapsed() < Duration::from_secs(2)
+            })
+        {
+            return rows;
+        }
+        if let Some(reading) = &tree.reading {
+            tree.needs_frame |= reading != directory;
+            return rows;
+        }
+        let root = tree.root.clone();
+        let directory = directory.to_path_buf();
+        tree.dirty.remove(&directory);
+        tree.reading = Some(directory.clone());
+        drop(tree);
+        let read = cx.background_spawn({
+            let directory = directory.clone();
+            async move { read_file_rows(&directory) }
+        });
+        cx.spawn(async move |workspace, cx| {
+            let rows = read.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                let mut tree = workspace.file_tree.borrow_mut();
+                tree.reading = None;
+                let mut redraw = std::mem::take(&mut tree.needs_frame);
+                if tree.root == root
+                    && (root.as_ref() == Some(&directory)
+                        || workspace.expanded_directories.contains(&directory))
+                {
+                    if tree.rows.get(&directory).is_none_or(|(_, old)| old != &rows) {
+                        tree.revision += 1;
+                        redraw = true;
+                    }
+                    tree.rows.insert(directory, (Instant::now(), rows));
+                } else {
+                    redraw = true;
+                }
+                if redraw {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        rows
+    }
+
+    pub(super) fn set_file_tree_root(&self, root: &Path) {
+        let mut tree = self.file_tree.borrow_mut();
+        if tree.root.as_deref() != Some(root) {
+            tree.rows.clear();
+            tree.dirty.clear();
+            tree.root = Some(root.to_path_buf());
+            tree.revision += 1;
+        }
+    }
+
+    pub(super) fn toggle_file_directory(&mut self, path: &Path) {
+        let mut tree = self.file_tree.borrow_mut();
+        tree.revision += 1;
+        if !self.expanded_directories.remove(path) {
+            self.expanded_directories.insert(path.to_path_buf());
+        } else {
+            tree.rows.retain(|directory, _| !directory.starts_with(path));
+            tree.dirty.retain(|directory| !directory.starts_with(path));
+        }
+    }
+
+    pub(super) fn render_file_entries(
+        &self,
+        directory: &Path,
+        depth: usize,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let entries = self.file_entries(directory, cx);
+        let mut rows = Vec::new();
+        for FileRow { path, label, is_dir } in entries.iter().take(500) {
+            let is_dir = *is_dir;
+            let expanded = is_dir && self.expanded_directories.contains(path);
+            let row_path = path.clone();
+            let selector = label.clone();
+            rows.push(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "file-tree-row:{}",
+                        path.display()
+                    )))
+                    .debug_selector(move || format!("file-tree-{selector}"))
+                    .pl(px(10.0 + depth as f32 * 14.0))
+                    .pr_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .hover(|el| el.bg(Theme::global().HEADER_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, window, cx| {
+                            if is_dir {
+                                this.toggle_file_directory(&row_path);
+                                cx.notify();
+                            } else {
+                                this.open_code_file(row_path.clone(), window, cx);
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(12.0))
+                            .flex_none()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(if is_dir {
+                                if expanded { "▾" } else { "▸" }
+                            } else {
+                                "·"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(label.clone()),
+                    )
+                    .into_any_element(),
+            );
+            if expanded {
+                rows.extend(self.render_file_entries(path, depth + 1, cx));
+            }
+        }
+        rows
+    }
+}

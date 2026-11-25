@@ -467,6 +467,39 @@ pub(crate) fn showcase_messages() -> Vec<ProviderMessage> {
     ]
 }
 
+impl Workspace {
+    /// Super+Shift+G and the sidebar inbox entry open the bundled Gmail
+    /// applet. An open Gmail panel is focused instead of duplicated.
+    pub(super) fn open_gmail(&mut self, _: &OpenGmail, window: &mut Window, cx: &mut Context<Self>) {
+        let prefix = format!(
+            "{}{GMAIL_APPLET}#",
+            crate::panel::applet_panel::APPLET_PREFIX
+        );
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.session_id(cx).starts_with(&prefix))
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let launched = crate::applet_runtime::get(cx)
+            .launch_trigger(GMAIL_APPLET, jcode_applet_types::manifest::Trigger::Sidebar);
+        match launched {
+            Ok(Some(instance)) => self.open_applet_instance(&instance, window, cx),
+            // The provider mounts shortly and the applet loop opens its panel.
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("jcode desktop: {error}");
+                self.applet_toast =
+                    Some((format!("Could not open Gmail: {error}"), Instant::now()));
+            }
+        }
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

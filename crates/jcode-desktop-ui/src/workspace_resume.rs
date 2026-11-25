@@ -13,7 +13,6 @@ use std::time::Instant;
 
 #[path = "workspace_resume_view.rs"]
 mod view;
-use view::*;
 
 const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
 const RESUME_STACKED_WIDTH: f32 = 640.;

@@ -98,26 +98,6 @@ impl Workspace {
             )
             .into_any_element()
     }
-    /// Toggle the visible sidebar surface, not the hidden column preference.
-    /// Narrow windows use a drawer and keep sessions at full width. Wide
-    /// windows toggle the persistent column without changing panel slots.
-    pub(super) fn toggle_sidebar(
-        &mut self,
-        _: &ToggleSidebar,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if is_compact(f32::from(window.viewport_size().width)) {
-            self.compact_sidebar_open = !self.compact_sidebar_open;
-            if self.compact_sidebar_open {
-                self.show_sidebar = true;
-            }
-        } else {
-            self.compact_sidebar_open = false;
-            self.show_sidebar = !self.show_sidebar;
-        }
-        cx.notify();
-    }
 
     /// Keep sidebar access in compact windows without adding another column.
     pub(super) fn render_compact_menu_button(
