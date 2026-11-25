@@ -53,9 +53,7 @@ impl SidebarPanelMetadata {
             openrig,
             terminal: false,
             pending: panel.is_pending_session(),
-            can_rename: panel.can_fork()
-                && (!panel.session_id.contains("://")
-                    || harness::is_remote_session(&panel.session_id)),
+            can_rename: panel.can_rename(),
         }
     }
 
@@ -188,10 +186,7 @@ impl SidebarPanelMetadata {
             && (self.surface_focused, self.finished_unseen, self.openrig)
                 == panel.workspace_surface_state()
             && self.pending == panel.is_pending_session()
-            && self.can_rename
-                == (panel.can_fork()
-                    && (!panel.session_id.contains("://")
-                        || harness::is_remote_session(&panel.session_id)))
+            && self.can_rename == panel.can_rename()
     }
 
     pub fn supports_voice(&self) -> bool {
