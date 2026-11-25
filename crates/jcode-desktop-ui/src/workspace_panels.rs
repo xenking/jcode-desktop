@@ -317,7 +317,7 @@ impl Workspace {
             .iter()
             .position(|slot| slot.panel.session_id(cx) == session_id)
         {
-            if let Some(file) = self.slots[index].panel.file() {
+            if let Some(file) = self.slots[index].panel.profile().file() {
                 show_heading(file, cx);
             }
             self.set_active(index, cx);
@@ -621,7 +621,7 @@ impl Workspace {
 
     pub(super) fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing)
-            && !slot.panel.confirm_close(cx)
+            && !slot.panel.surface().confirm_close(cx)
         {
             cx.stop_propagation();
             return;
@@ -704,7 +704,7 @@ impl Workspace {
         }
         self.active = if self.single_panel {
             0
-        } else if self.slots[closed].panel.is_changelog() {
+        } else if self.slots[closed].panel.profile().is_changelog() {
             self.previous
                 .and_then(|id| {
                     remaining
