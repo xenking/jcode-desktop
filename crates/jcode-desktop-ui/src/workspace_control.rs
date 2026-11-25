@@ -432,7 +432,7 @@ impl Workspace {
                     Ok(index) => index,
                     Err(response) => return response,
                 };
-                if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
+                if self.account_sign_in_visible || self.onboarding_launch.error.is_some() {
                     return error(
                         "window_busy",
                         "dismiss the current dialog before focusing a session",

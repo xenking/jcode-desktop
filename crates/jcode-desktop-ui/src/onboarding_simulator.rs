@@ -3,15 +3,6 @@
 use super::*;
 use std::process::Command;
 
-#[derive(Default)]
-pub(super) struct LaunchState {
-    #[cfg(not(test))]
-    pending: bool,
-    pub(super) error: Option<String>,
-    #[cfg(test)]
-    requests: Vec<PathBuf>,
-}
-
 fn launcher_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/onboarding-desktop.py")
 }

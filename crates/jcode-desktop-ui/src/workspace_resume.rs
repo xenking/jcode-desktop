@@ -6,6 +6,7 @@
 //! asks the daemon's full-text index for matching messages. Message hits are
 //! listed under their session, the preview scrolls to the selected hit with
 //! the query marked, and opening a hit lands the session on that message.
+use super::screens::{Filter, Snapshot, State};
 use super::*;
 use crate::global_search::{self, Effect, PickRow};
 use crate::panel::PreviewScroll;
@@ -13,60 +14,6 @@ use std::time::Instant;
 
 pub(super) const RESUME_ARROW: &[u8] = include_bytes!("../../../assets/icons/arrow-up.svg");
 pub(super) const RESUME_STACKED_WIDTH: f32 = 640.;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-pub(super) enum Filter {
-    #[default]
-    All,
-    Active,
-    Saved,
-    /// Sessions whose process died mid-work, so they can be recovered.
-    Crashed,
-}
-
-/// Legacy is only a decode fallback. Every new snapshot explicitly records
-/// Closed or Open so --resume cannot reopen a deliberately dismissed picker.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-pub(super) enum Snapshot {
-    #[default]
-    Legacy,
-    Closed,
-    Open {
-        search: PromptInputSnapshot,
-        query: String,
-        selected: Option<String>,
-        filter: Filter,
-        start_on_close: bool,
-    },
-}
-
-pub(super) struct State {
-    pub(super) search: Entity<PromptInput>,
-    pub(super) query: String,
-    pub(super) selected: Option<String>,
-    pub(super) filter: Filter,
-    pub(super) scroll: ScrollHandle,
-    pub(super) focus: FocusHandle,
-    pub(super) preview_focus: FocusHandle,
-    pub(super) start_on_close: bool,
-    pub(super) preview_id: Option<String>,
-    /// The real chat panel in transcript-only mode, hydrated through the same
-    /// `load_history` path a resumed session uses, so the preview is identical.
-    pub(super) preview: Option<Result<Entity<Panel>, String>>,
-    pub(super) preview_task: Option<gpui::Task<()>>,
-    /// Sessions the daemon is generating for right now, from its streaming
-    /// markers. Refreshed off the UI thread while the picker is open.
-    pub(super) streaming: HashSet<String>,
-    pub(super) _presence_task: Option<gpui::Task<()>>,
-    /// The selected message hit inside `selected`, if a hit row is selected.
-    pub(super) selected_hit: Option<usize>,
-    /// Conversation search through the daemon's full-text index.
-    pub(super) daemon: global_search::Search,
-    pub(super) _debounce: Option<gpui::Task<()>>,
-    /// The row the preview was last scrolled to, so it scrolls once per
-    /// selection instead of fighting the user's own scrolling.
-    pub(super) preview_revealed: Option<PickRow>,
-}
 
 /// How long an opened session's transcript is polled for the message to
 /// reveal. History arrives asynchronously; this covers a slow daemon without

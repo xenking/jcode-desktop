@@ -104,7 +104,7 @@ impl Workspace {
             }
             WorkspaceCommand::Resume { active, query } => {
                 self.open_resume(&OpenResume, window, cx);
-                if let resume::Snapshot::Open {
+                if let screens::Snapshot::Open {
                     search,
                     selected,
                     start_on_close,
@@ -116,14 +116,14 @@ impl Workspace {
                     search.selection_start = query.len();
                     search.selection_end = query.len();
                     self.restore_resume(
-                        Some(resume::Snapshot::Open {
+                        Some(screens::Snapshot::Open {
                             search,
                             query,
                             selected,
                             filter: if active {
-                                resume::Filter::Active
+                                screens::Filter::Active
                             } else {
-                                resume::Filter::All
+                                screens::Filter::All
                             },
                             start_on_close,
                         }),

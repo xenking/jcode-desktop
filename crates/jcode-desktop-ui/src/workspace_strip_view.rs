@@ -964,4 +964,90 @@ impl Workspace {
         }
         scene.into_any_element()
     }
+
+    pub(super) fn render_workspace_pull(
+        &mut self,
+        pull: f32,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let source = self.active_row;
+        let entity = cx.entity();
+        let total_width = self
+            .row_indices(source)
+            .map(|index| self.slot_width(index, width) + GAP)
+            .sum::<f32>()
+            + STRUT * 2.0;
+        let mut scene = div().relative().size_full().overflow_hidden().child(
+            gpui::canvas(
+                move |bounds, window, _| {
+                    (
+                        bounds,
+                        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+                    )
+                },
+                move |_, (bounds, hitbox), window, _| {
+                    window.on_mouse_event(
+                        move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                            if phase != gpui::DispatchPhase::Capture
+                                || !hitbox.should_handle_scroll(window)
+                            {
+                                return;
+                            }
+                            let y = f32::from(event.position.y - bounds.origin.y);
+                            // The source row's router owns its visible region.
+                            // Capture only the sliver uncovered by the preview,
+                            // before its transcript can receive this gesture.
+                            if y >= -pull * height && y < (1.0 - pull) * height {
+                                return;
+                            }
+                            entity.update(cx, |this, cx| {
+                                if this.active_row == source
+                                    && this.route_strip_scroll(
+                                        source,
+                                        None,
+                                        event,
+                                        total_width,
+                                        width,
+                                        window,
+                                        cx,
+                                    )
+                                {
+                                    cx.stop_propagation();
+                                }
+                            });
+                        },
+                    );
+                },
+            )
+            .absolute()
+            .size_full(),
+        );
+        for row in 0..STRIP_COUNT {
+            let top = (row as f32 - self.active_row as f32 - pull) * height;
+            if top.abs() >= height {
+                continue;
+            }
+            let active = row == self.active_row;
+            let content = self.render_row(row, width, height, window, cx);
+            scene = scene.child(
+                div()
+                    .debug_selector(move || {
+                        if active {
+                            "row-pull-active".into()
+                        } else {
+                            "row-pull-neighbor".into()
+                        }
+                    })
+                    .absolute()
+                    .top(px(top))
+                    .left_0()
+                    .size_full()
+                    .child(content),
+            );
+        }
+        scene.into_any_element()
+    }
 }

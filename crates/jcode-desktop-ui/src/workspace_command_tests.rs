@@ -223,7 +223,7 @@ fn workspace_resume_preserves_search_and_active_filter(cx: &mut gpui::TestAppCon
                 cx,
             );
             match workspace.resume_snapshot(cx) {
-                resume::Snapshot::Open {
+                screens::Snapshot::Open {
                     query,
                     search,
                     filter,
@@ -231,7 +231,7 @@ fn workspace_resume_preserves_search_and_active_filter(cx: &mut gpui::TestAppCon
                 } => {
                     assert_eq!(query, "exact query");
                     assert_eq!(search.content, "exact query");
-                    assert_eq!(filter, resume::Filter::Active);
+                    assert_eq!(filter, screens::Filter::Active);
                 }
                 _ => panic!("active opens the native session picker"),
             }

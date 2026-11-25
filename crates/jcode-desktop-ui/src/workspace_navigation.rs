@@ -709,7 +709,7 @@ impl Workspace {
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates must not move focus behind a launch-only modal.
-        if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
+        if self.account_sign_in_visible || self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }

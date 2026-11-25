@@ -208,7 +208,7 @@ fn restore(checkpoint: &Checkpoint, alive: bool) -> Option<WorkspaceSnapshot> {
     // Validate the workspace schema as strictly as the hot-reload boundary.
     let mut snapshot = WorkspaceSnapshot::decode(&checkpoint.snapshot.encode().ok()?).ok()?;
     if !checkpoint.clean {
-        snapshot.resume = super::resume::Snapshot::Closed;
+        snapshot.resume = super::screens::Snapshot::Closed;
     }
     for slot in &mut snapshot.slots {
         // PTY resource handles and output cursors belong to the dead host.
@@ -392,7 +392,7 @@ fn crash_snapshot(
     let mut snapshot = workspace.snapshot(window, app)?;
     // Picker edits and keyboard focus are transient. A crash returns to the
     // saved active panel, while a clean quit saves the full final UI state.
-    snapshot.resume = super::resume::Snapshot::Closed;
+    snapshot.resume = super::screens::Snapshot::Closed;
     snapshot.focus = super::FocusSnapshot::Workspace;
     settle_motion(&mut snapshot);
     Ok(snapshot)

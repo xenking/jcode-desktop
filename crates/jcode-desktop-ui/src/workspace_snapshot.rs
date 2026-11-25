@@ -398,7 +398,7 @@ impl Workspace {
             window.focus(&state.search.focus_handle(cx), cx);
             return;
         }
-        if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
+        if self.account_sign_in_visible || self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -475,7 +475,7 @@ pub(super) enum FocusSnapshot {
 pub struct WorkspaceSnapshot {
     pub(super) format_version: u32,
     #[serde(default)]
-    pub(super) resume: resume::Snapshot,
+    pub(super) resume: screens::Snapshot,
     #[serde(default)]
     pub(super) side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
     #[serde(default)]

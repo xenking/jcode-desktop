@@ -3,6 +3,7 @@
 //! It sits above the resume state it reads: the logic never calls into it,
 //! and it reaches back for rows, selection and preview.
 use super::resume::*;
+use super::screens::{Filter, Snapshot, State};
 use super::*;
 use crate::components::Tooltip;
 use crate::global_search::{self, PickRow};

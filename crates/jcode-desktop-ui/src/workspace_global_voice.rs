@@ -278,7 +278,7 @@ impl Workspace {
         self.global_voice.set_active(window.is_window_active());
         #[cfg(target_os = "linux")]
         {
-            let eligible = !self.account_sign_in.visible && self.voice_target(cx).is_some();
+            let eligible = !self.account_sign_in_visible && self.voice_target(cx).is_some();
             if let Some(listener) = self.global_voice.listener.as_mut() {
                 listener.set_eligible(eligible);
             }
@@ -506,7 +506,7 @@ impl Workspace {
     }
 
     fn begin_global_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.account_sign_in.visible {
+        if self.account_sign_in_visible {
             return;
         }
         if let Some(owner) = self

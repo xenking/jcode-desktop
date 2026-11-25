@@ -156,7 +156,7 @@ impl Workspace {
         let Some(panel) = self.slots[index].panel.chat().cloned() else {
             return;
         };
-        if !panel.read(cx).voice_active() && self.account_sign_in.visible {
+        if !panel.read(cx).voice_active() && self.account_sign_in_visible {
             return;
         }
         self.set_active(index, cx);
@@ -193,7 +193,7 @@ impl Workspace {
              window,
              cx| {
                 // A closed recording owner must not navigate the workspace later.
-                if !workspace.account_sign_in.visible
+                if !workspace.account_sign_in_visible
                     && workspace
                         .slots
                         .iter()
@@ -210,7 +210,7 @@ impl Workspace {
             panel,
             window,
             |workspace, source, request: &crate::panel::voice::VoiceActionRequested, window, cx| {
-                if workspace.account_sign_in.visible
+                if workspace.account_sign_in_visible
                     || !workspace
                         .slots
                         .iter()
@@ -322,7 +322,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        if self.account_sign_in.visible {
+        if self.account_sign_in_visible {
             return;
         }
         let Some(index) = self.voice_target(cx) else {
@@ -582,7 +582,7 @@ mod tests {
                         let owner = workspace.slots[0].panel.clone();
                         workspace.configure_voice_navigation(owner.chat().unwrap(), window, cx);
                         match blocked {
-                            "account" => workspace.account_sign_in.visible = true,
+                            "account" => workspace.account_sign_in_visible = true,
                             "closing" => workspace.slots[0].closing = true,
                             "removed" => {
                                 workspace.slots.remove(0);
@@ -946,7 +946,7 @@ mod tests {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("recording-owner", cx);
             disable_test_microphones(&mut workspace, cx);
-            workspace.account_sign_in.visible = true;
+            workspace.account_sign_in_visible = true;
             workspace
         });
         vcx.update(|window, cx| {
@@ -966,7 +966,7 @@ mod tests {
             });
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, cx| {
-                assert!(workspace.account_sign_in.visible);
+                assert!(workspace.account_sign_in_visible);
                 assert!(
                     !workspace.slots[0]
                         .panel

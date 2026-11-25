@@ -2,22 +2,6 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn toggle_overview(&mut self, _: &ToggleOverview, window: &mut Window, cx: &mut Context<Self>) {
-        self.tutorial_cue("O", "Toggle overview", "overview", cx);
-        self.learned("overview", cx);
-        self.overview = !self.overview;
-        self.map_gesture.reset_view();
-        if self.overview {
-            self.map_gesture
-                .focus_session(self.active_position_in_row(), self.active_row);
-        }
-        self.overview_progress
-            .set(if self.overview { 1.0 } else { 0.0 }, Instant::now());
-        self.hints_overlay = false;
-        self.hints_progress.set(0.0, Instant::now());
-        self.focus_active(window, cx);
-        cx.notify();
-    }
 
     pub(super) fn toggle_hints(&mut self, _: &ToggleHints, _: &mut Window, cx: &mut Context<Self>) {
         self.tutorial_cue("/", "Show all shortcuts", "help", cx);

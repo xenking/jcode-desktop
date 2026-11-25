@@ -33,6 +33,8 @@ mod applet_surfaces;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
+#[path = "workspace_screens.rs"]
+pub(crate) mod screens;
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
 #[path = "workspace_resume_view.rs"]
@@ -625,7 +627,7 @@ pub struct Workspace {
     /// Arguments and forwarded environment of the launch that opened this
     /// window. A shared single-panel host has one per window.
     launch: jcode_desktop_api::WindowLaunch,
-    resume: Option<resume::State>,
+    resume: Option<screens::State>,
     /// Full-height global search over every stored session. Transient by
     /// design: relaunching the app lands on the workspace, not on a query.
     show_sidebar: bool,
@@ -633,6 +635,8 @@ pub struct Workspace {
     sidebar_resizing: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     account_sign_in: account_sign_in::State,
+    /// The launch-only sign-in page is on screen, taking the keyboard.
+    account_sign_in_visible: bool,
     account_menu: account_menu::State,
     compact_sidebar_open: bool,
     compact_sidebar_motion: responsive::VisibilityMotion,
@@ -650,7 +654,7 @@ pub struct Workspace {
     /// Drafts started inside a collection: (draft request id, collection id).
     pending_collection_drafts: Vec<(String, String)>,
     tutorial_page: usize,
-    onboarding_launch: onboarding_simulator::LaunchState,
+    onboarding_launch: screens::LaunchState,
     expanded_directories: HashSet<PathBuf>,
     file_tree: std::cell::RefCell<FileTree>,
     files_pane: files::FilesPane,
@@ -878,7 +882,7 @@ impl Render for Workspace {
                 true,
             );
         }
-        if self.account_sign_in.visible {
+        if self.account_sign_in_visible {
             self.dump_state(window, cx);
             let content = self.render_account_sign_in(window, cx);
             let root = self.voice_modal_root(content, cx);
@@ -1171,7 +1175,7 @@ impl Render for Workspace {
                 if this.focus_handle.is_focused(window)
                     && !this.overview
                     && !this.overview_progress.is_animating()
-                    && !this.account_sign_in.visible
+                    && !this.account_sign_in_visible
                     && this.onboarding_launch.error.is_none()
                     && !this.modal_layer.read(cx).has_active()
                     && this.default_directory_picker.is_none()

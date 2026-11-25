@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct State {
-    pub visible: bool,
     connected: bool,
     /// Offer the email sign-in field. Off while `EMAIL_SIGN_IN` is paused.
     email: bool,
@@ -165,15 +164,20 @@ fn should_offer(handled: bool, connected: bool, fixture: bool) -> bool {
     !handled && !connected && !fixture
 }
 
+/// Whether the sign-in page greets this launch.
+pub(super) fn offered_at_startup() -> bool {
+    let fixture = harness::screenshot_mode();
+    let connected = !fixture && auth::has_credentials();
+    let preview = fixture
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN").as_deref() == Ok("1");
+    preview || should_offer(crate::config::account_sign_in_handled(), connected, fixture)
+}
+
 impl State {
     pub(super) fn startup() -> Self {
         let fixture = harness::screenshot_mode();
         let connected = !fixture && auth::has_credentials();
-        let preview = fixture
-            && std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN").as_deref() == Ok("1");
         Self {
-            visible: preview
-                || should_offer(crate::config::account_sign_in_handled(), connected, fixture),
             connected,
             email: EMAIL_SIGN_IN,
             ..Self::default()
@@ -271,8 +275,8 @@ async fn network<T: Send + 'static>(
 
 impl Workspace {
     pub(super) fn open_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_sign_in_visible = true;
         self.account_sign_in = State {
-            visible: true,
             connected: self.account_sign_in.connected,
             email: self.account_sign_in.email,
             import_task: self.account_sign_in.import_task.take(),
@@ -285,7 +289,7 @@ impl Workspace {
 
     /// Discover reusable logins from other tools without reading their secrets.
     pub(super) fn detect_account_imports(&mut self, cx: &mut Context<Self>) {
-        if !self.account_sign_in.visible || cfg!(test) {
+        if !self.account_sign_in_visible || cfg!(test) {
             return;
         }
         if harness::screenshot_mode() {
@@ -641,7 +645,7 @@ impl Workspace {
             self.status =
                 "Could not save the welcome preference. Sign-in may be offered next launch.".into();
         }
-        self.account_sign_in.visible = false;
+        self.account_sign_in_visible = false;
         self.restore_account_theme(cx);
         self.account_sign_in.task = None;
         self.account_sign_in.detect_task = None;

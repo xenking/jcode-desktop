@@ -37,7 +37,7 @@ fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
 fn assert_draft_and_focus(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) {
     vcx.update(|window, cx| {
         let w = workspace.read(cx);
-        assert!(!w.account_sign_in.visible);
+        assert!(!w.account_sign_in_visible);
         assert!(w.account_sign_in.task.is_none());
         let panel = w.slots[w.active].panel.read(cx);
         assert_eq!(panel.input.read(cx).content, DRAFT);
@@ -388,7 +388,7 @@ fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
     // Telemetry keeps its default, and there is no Subscribe upsell here.
     assert!(vcx.debug_bounds("account-telemetry-menu").is_none());
     assert!(vcx.debug_bounds("account-sign-in-subscribe").is_none());
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.visible));
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in_visible));
     Theme::select(original);
 }
 
@@ -616,7 +616,7 @@ fn settings_can_reopen_skipped_account_onboarding(cx: &mut gpui::TestAppContext)
     click(vcx, "settings-account-sign-in");
     assert!(vcx.debug_bounds("account-sign-in-card").is_some());
     workspace.read_with(vcx, |w, _| {
-        assert!(w.account_sign_in.visible);
+        assert!(w.account_sign_in_visible);
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
     });
 }
@@ -717,7 +717,7 @@ fn snapshots_exclude_all_transient_account_state(cx: &mut gpui::TestAppContext) 
             serde_json::to_value(workspace.read(cx).snapshot(window, cx).unwrap()).unwrap()
         })
     };
-    workspace.update(vcx, |w, _| w.account_sign_in.visible = false);
+    workspace.update(vcx, |w, _| w.account_sign_in_visible = false);
     let baseline = snapshot(vcx);
     for stage in [
         Stage::Code {
@@ -730,7 +730,7 @@ fn snapshots_exclude_all_transient_account_state(cx: &mut gpui::TestAppContext) 
     ] {
         workspace.update(vcx, |w, cx| {
             w.account_sign_in.stage = stage;
-            w.account_sign_in.visible = true;
+            w.account_sign_in_visible = true;
             w.account_sign_in.error = Some("FAKE_ACCESS_TOKEN FAKE_REFRESH_TOKEN".into());
             w.account_sign_in.connected = true;
             w.account_sign_in.keyboard_choice = Some(1);
@@ -1047,7 +1047,7 @@ fn paused_email_shows_only_finish_and_typing_forwards_to_a_panel(cx: &mut gpui::
     vcx.run_until_parked();
     vcx.update(|window, cx| {
         let w = workspace.read(cx);
-        assert!(!w.account_sign_in.visible);
+        assert!(!w.account_sign_in_visible);
         let panel = w.slots[w.active].panel.read(cx);
         assert_eq!(
             panel.input.read(cx).content,
