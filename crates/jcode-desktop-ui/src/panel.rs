@@ -496,7 +496,7 @@ fn transcript_tail_headers(payload: Option<&TodoCardPayload>) -> [u64; 2] {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         publish_tracker.hash(&mut hasher);
         if !publish_tracker && let Some(payload) = payload.filter(|p| !p.todos.is_empty()) {
-            format!("{payload:?}").hash(&mut hasher);
+            payload.hash(&mut hasher);
         }
         hasher.finish()
     })
@@ -522,7 +522,7 @@ struct TranscriptRenderRow {
     show_label: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
 pub struct TodoCardPayload {
     #[serde(default)]
     todos: Vec<TodoCardItem>,
@@ -559,7 +559,7 @@ impl From<jcode_sdk::todo::TodoSnapshot> for TodoCardPayload {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
 struct TodoCardPlan {
     #[serde(default)]
     user_intention: Option<String>,
@@ -567,7 +567,7 @@ struct TodoCardPlan {
     understands_user_intent: Option<jcode_base::todo::IntentUnderstanding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 struct TodoCardItem {
     content: String,
     status: String,

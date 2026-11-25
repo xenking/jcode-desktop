@@ -121,19 +121,26 @@ fn lowercase_activity_status_borrows_normal_snapshots(cx: &mut gpui::TestAppCont
 }
 
 #[test]
-fn cached_tail_headers_match_existing_chrome_fingerprints() {
-    use std::hash::{Hash, Hasher};
+fn tail_header_fingerprints_follow_the_visible_todo_state() {
     let filled = payload();
     let empty = TodoCardPayload::default();
-    for payload in [None, Some(&empty), Some(&filled)] {
-        let headers = transcript_tail_headers(payload);
-        for publish_tracker in [false, true] {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            publish_tracker.hash(&mut hasher);
-            if let Some(payload) = payload.filter(|p| !p.todos.is_empty() && !publish_tracker) {
-                format!("{payload:?}").hash(&mut hasher);
-            }
-            assert_eq!(headers[usize::from(publish_tracker)], hasher.finish());
-        }
-    }
+    let header = |payload: Option<&TodoCardPayload>| transcript_tail_headers(payload);
+    // The tracker header never shows todos, and an empty list shows none.
+    assert_eq!(header(None), header(Some(&empty)));
+    assert_eq!(header(None)[1], header(Some(&filled))[1]);
+    assert_ne!(header(None)[0], header(Some(&filled))[0]);
+    assert_eq!(header(Some(&filled)), header(Some(&filled.clone())));
+
+    let mut changed = filled.clone();
+    changed.todos[0].status = "completed".into();
+    assert_ne!(header(Some(&filled))[0], header(Some(&changed))[0]);
+    let mut changed = filled.clone();
+    changed.plan.user_intention = Some("a different outcome".into());
+    assert_ne!(header(Some(&filled))[0], header(Some(&changed))[0]);
+    let mut changed = filled.clone();
+    changed.goals.push(jcode_base::todo::TodoGoal {
+        group: Some("lane".into()),
+        ..Default::default()
+    });
+    assert_ne!(header(Some(&filled))[0], header(Some(&changed))[0]);
 }
