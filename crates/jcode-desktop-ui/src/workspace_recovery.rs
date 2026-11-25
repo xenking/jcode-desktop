@@ -260,11 +260,13 @@ struct QuitObservers(std::collections::HashMap<PathBuf, gpui::Subscription>);
 
 impl gpui::Global for QuitObservers {}
 
+type CaptureClosingSnapshot = dyn Fn(&Window, &App) -> Option<WorkspaceSnapshot>;
+
 struct SuspendedSnapshot {
     window_id: gpui::WindowId,
     snapshot: Rc<RefCell<Option<WorkspaceSnapshot>>>,
     writer: Writer,
-    workspace: gpui::WeakEntity<Workspace>,
+    capture_closing: Box<CaptureClosingSnapshot>,
 }
 
 impl gpui::Global for SuspendedSnapshot {}
@@ -277,10 +279,7 @@ pub(crate) fn clean_window(window: &Window, app: &App) {
     if state.window_id != window.window_handle().window_id() {
         return;
     }
-    let snapshot = state
-        .workspace
-        .upgrade()
-        .and_then(|workspace| workspace.read(app).snapshot(window, app).ok());
+    let snapshot = (state.capture_closing)(window, app);
     if let Err(error) = state.writer.clean_quit(snapshot) {
         eprintln!("failed to save closing desktop workspace: {error:#}");
     }
@@ -476,11 +475,16 @@ fn install_at_path(
         previous.snapshot.borrow_mut().take();
     }
     let suspended_snapshot = Rc::new(RefCell::new(None));
+    let closing_workspace = workspace.downgrade();
     app.set_global(SuspendedSnapshot {
         window_id: quit_window.window_id(),
         snapshot: suspended_snapshot.clone(),
         writer: writer.clone(),
-        workspace: workspace.downgrade(),
+        capture_closing: Box::new(move |window, app| {
+            closing_workspace
+                .upgrade()
+                .and_then(|workspace| workspace.read(app).snapshot(window, app).ok())
+        }),
     });
     if jcode_desktop_api::WindowLaunches::shared(app) {
         // Unlike the spatial host, this host does not install a suspend
@@ -779,6 +783,25 @@ mod tests {
         }
         cx.quit();
         assert_eq!(QUIT_OBSERVER_RUNS.with(|runs| runs.get()), 1);
+    }
+
+    #[gpui::test]
+    fn closing_checkpoint_restores_the_latest_session(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recovery.json");
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("original-session", cx);
+            workspace
+        });
+        vcx.update(|window, app| {
+            install_at_path(&workspace, window, app, path.clone(), Claim::Fresh);
+        });
+        workspace.update(vcx, |workspace, cx| workspace.push_test_panel("new-session", cx));
+        vcx.update(|window, app| clean_window(window, app));
+        let record = read(&path).unwrap();
+        let restored = restore(&record, false).unwrap();
+        assert!(restored.slots.iter().any(|slot| slot.panel.session_id == "new-session"));
     }
 
     #[gpui::test]
