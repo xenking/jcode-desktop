@@ -262,7 +262,13 @@ impl Panel {
 
 pub(in crate::panel) struct CacheTooltip {
     pub(in crate::panel) view: Live<CacheView>,
-    pub(in crate::panel) pill: gpui::WeakEntity<cache_timer::CachePill>,
+    pub(in crate::panel) pill: Live<PillReading>,
+}
+
+/// What the footer pill says about the cache right now.
+pub(in crate::panel) struct PillReading {
+    pub(in crate::panel) caption: &'static str,
+    pub(in crate::panel) facts: Option<CacheFacts>,
 }
 
 impl Render for CacheTooltip {
@@ -280,8 +286,7 @@ impl Render for CacheTooltip {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
-        let pill = self.pill.upgrade().map(|pill| pill.read(cx));
-        let now = cx.background_executor().now();
+        let pill = self.pill.get(cx);
         let theme = Theme::global();
         meter::meter_card(theme)
             .debug_selector(|| "panel-cache-tooltip".into())
@@ -297,8 +302,8 @@ impl Render for CacheTooltip {
                 meter::meter_detail(format!("Figures below are from {route}").into(), theme)
                     .debug_selector(|| "panel-cache-previous-route".into())
             }))
-            .children(pill.map(|pill| {
-                meter::meter_detail(pill.caption(now).into(), theme)
+            .children(pill.as_ref().map(|pill| {
+                meter::meter_detail(pill.caption.into(), theme)
                     .debug_selector(|| "panel-cache-footer-metric".into())
             }))
             .child(usage_row(
@@ -316,7 +321,7 @@ impl Render for CacheTooltip {
                 theme,
             ))
             .child(retention_row(
-                pill.map_or(view.facts, |pill| pill.retention(now)),
+                pill.map_or(view.facts, |pill| pill.facts),
                 theme,
             ))
             .children(keepalive_label(&telemetry.keepalive).map(|text| {

@@ -315,7 +315,13 @@ impl Render for CachePill {
         let metric = value.metric();
         let theme = Theme::global();
         let source = self.source.clone();
-        let pill = cx.entity().downgrade();
+        let reading = Live::of(&cx.entity(), |pill: &CachePill, cx| {
+            let now = cx.background_executor().now();
+            card::PillReading {
+                caption: pill.caption(now),
+                facts: pill.retention(now),
+            }
+        });
         use crate::swarm_glyph::Icon;
         let (icon, ink) = match metric {
             CacheMetric::Countdown(Some(facts)) => (
@@ -357,12 +363,10 @@ impl Render for CachePill {
             .tooltip(move |_, cx| {
                 cx.new(|cx| {
                     source.card.follow(cx);
-                    if let Some(pill) = pill.upgrade() {
-                        cx.observe(&pill, |_, _, cx| cx.notify()).detach();
-                    }
+                    reading.follow(cx);
                     card::CacheTooltip {
                         view: source.card.clone(),
-                        pill: pill.clone(),
+                        pill: reading.clone(),
                     }
                 })
                 .into()

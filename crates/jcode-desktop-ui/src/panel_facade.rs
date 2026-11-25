@@ -90,6 +90,57 @@ impl Panel {
         self.input.read(cx).focus_handle.is_focused(window)
     }
 
+    /// The composer's draft, and the revision of its text that automation
+    /// compares to tell whether the agent wrote it.
+    pub(crate) fn draft_fingerprint(&self, cx: &App) -> (PromptInputSnapshot, u64) {
+        let input = self.input.read(cx);
+        (input.snapshot(), input.control_revision())
+    }
+
+    /// Whether the session can be renamed: it is a conversation of this
+    /// computer or a remote one, not a built-in panel.
+    pub(crate) fn can_rename(&self) -> bool {
+        self.can_fork()
+            && (!self.session_id.contains("://")
+                || crate::harness::is_remote_session(&self.session_id))
+    }
+
+    /// The session's title with its folder, as the rename dialog starts it.
+    pub(crate) fn folder_title(&self) -> String {
+        folder_session_title(&self.session_id, self.title.as_ref()).to_string()
+    }
+
+    /// Whether creating this draft's session already failed.
+    pub(crate) fn creation_failed(&self) -> bool {
+        self.status.starts_with("Session creation failed")
+    }
+
+    /// A progress message or failure for a draft that is connecting. A
+    /// buffered success must not erase an earlier failure, so a retry, which
+    /// gets a fresh request id, is what clears one.
+    pub(crate) fn note_connection_phase(
+        &mut self,
+        message: &str,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !failed && self.status.starts_with("Session creation failed:") {
+            return;
+        }
+        self.status = if failed {
+            format!("Session creation failed: {message}")
+        } else {
+            message.to_owned()
+        };
+        cx.notify();
+    }
+
+    /// The draft now waits on the session created under `request_id`.
+    pub(crate) fn adopt_request(&mut self, request_id: String, cx: &mut Context<Self>) {
+        self.session_id = request_id;
+        cx.notify();
+    }
+
     pub(crate) fn set_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.title = title.into();
         cx.notify();
