@@ -113,6 +113,38 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn install_panel_window_origin(cx: &mut App) {
+        cx.set_global(panel_window::OriginRoutes {
+            restore: |session, fallback, refresh, choose_model, window, cx| {
+                let Some(Some(root)) = window.root::<Self>() else { return false };
+                root.update(cx, |workspace, cx| {
+                    let source = workspace.slots.iter()
+                        .find(|slot| !slot.closing && session == Some(slot.panel.session_id(cx)))
+                        .and_then(|slot| slot.panel.chat().cloned())
+                        .or(fallback);
+                    let Some(source) = source else { return };
+                    if refresh && source.read(cx).can_refresh_account_runtime() {
+                        workspace.bridge.send(Command::RefreshRuntime {
+                            session_id: source.read(cx).session_id.clone(),
+                        });
+                    }
+                    if choose_model {
+                        workspace.open_model_window_or_picker(&OpenModelPicker { source: source.entity_id() }, window, cx);
+                    }
+                    source.update(cx, |panel, cx| panel.focus_input(window, cx));
+                    window.activate_window();
+                });
+                true
+            },
+            fleet: |action, window, cx| {
+                if let Some(Some(root)) = window.root::<Self>() {
+                    root.update(cx, |workspace, cx| workspace.open_fleet_session(action, window, cx));
+                    window.activate_window();
+                }
+            },
+        });
+    }
+
     pub(super) fn open_model_window_or_picker(
         &mut self,
         request: &OpenModelPicker,

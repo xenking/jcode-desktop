@@ -12,12 +12,11 @@ pub(crate) fn open_terminal_window(
         let handle = handle.downcast::<PanelWindow>()?;
         handle
             .read(cx)
-            .is_ok_and(|root| root.item.profile().terminal().is_some())
+            .is_ok_and(PanelWindow::is_terminal)
             .then_some(handle)
     }) {
         return handle.update(cx, |root, window, cx| {
-            root.item.surface().focus_input(window, cx);
-            window.activate_window();
+            root.activate(window, cx);
         });
     }
     cx.open_window(
@@ -39,8 +38,15 @@ pub(crate) fn open_terminal_window(
     Ok(())
 }
 
+type RestoreOrigin = fn(Option<&str>, Option<Entity<Panel>>, bool, bool, &mut Window, &mut App) -> bool;
+pub(super) struct OriginRoutes {
+    pub(super) restore: RestoreOrigin,
+    pub(super) fleet: fn(&crate::ui_actions::OpenFleetSession, &mut Window, &mut App),
+}
+impl gpui::Global for OriginRoutes {}
+
 pub(crate) struct PanelWindow {
-    pub(crate) item: PanelItem,
+    item: PanelItem,
     source: Option<WeakEntity<Panel>>,
     source_session: Option<String>,
     source_window: AnyWindowHandle,
@@ -207,6 +213,24 @@ impl PanelWindow {
         self.item.chat()
     }
 
+    #[cfg(test)]
+    pub(super) fn hosted_item(&self) -> &PanelItem {
+        &self.item
+    }
+
+    pub(super) fn is_chat(&self, session: &str, cx: &App) -> bool {
+        self.chat().is_some_and(|chat| chat.read(cx).session_id == session)
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.item.profile().terminal().is_some()
+    }
+
+    fn activate(&self, window: &mut Window, cx: &mut App) {
+        self.item.surface().focus_input(window, cx);
+        window.activate_window();
+    }
+
     /// Unsaved edits may veto the close. Other kinds never do.
     fn confirm_close(&self, cx: &mut App) -> bool {
         self.item.surface().confirm_close(cx)
@@ -231,43 +255,17 @@ impl PanelWindow {
             .is_some_and(Panel::is_accounts_panel);
         // Release the child window update before focusing its originating window.
         cx.defer(move |cx| {
-            let _ = origin.update(cx, |root, window, cx| {
-                let workspace = root.downcast::<Workspace>().ok();
-                let source = workspace
-                    .as_ref()
-                    .and_then(|workspace| {
-                        workspace
-                            .read(cx)
-                            .slots
-                            .iter()
-                            .find(|slot| {
-                                !slot.closing
-                                    && source_session.as_deref() == Some(slot.panel.session_id(cx))
-                            })
-                            .and_then(|slot| slot.panel.chat().cloned())
-                    })
-                    .or_else(|| source.and_then(|source| source.upgrade()));
-                let Some(source) = source else {
-                    return;
-                };
-                if accounts
-                    && source.read(cx).can_refresh_account_runtime()
-                    && let Some(workspace) = workspace
+            let _ = origin.update(cx, |_, window, cx| {
+                let fallback = source.and_then(|source| source.upgrade());
+                if let Some(restore) = cx.try_global::<OriginRoutes>().map(|routes| routes.restore)
+                    && restore(source_session.as_deref(), fallback.clone(), accounts, choose_model, window, cx)
                 {
-                    workspace.read(cx).bridge.send(Command::RefreshRuntime {
-                        session_id: source.read(cx).session_id.clone(),
-                    });
+                    return;
                 }
-                if choose_model {
-                    window.dispatch_action(
-                        Box::new(OpenModelPicker {
-                            source: source.entity_id(),
-                        }),
-                        cx,
-                    );
+                if let Some(source) = fallback {
+                    source.update(cx, |panel, cx| panel.focus_input(window, cx));
+                    window.activate_window();
                 }
-                source.update(cx, |panel, cx| panel.focus_input(window, cx));
-                window.activate_window();
             });
         });
     }
@@ -307,12 +305,9 @@ impl Render for PanelWindow {
                     let origin = this.source_window;
                     let action = action.clone();
                     cx.defer(move |cx| {
-                        let _ = origin.update(cx, |root, window, cx| {
-                            if let Ok(workspace) = root.downcast::<Workspace>() {
-                                workspace.update(cx, |workspace, cx| {
-                                    workspace.open_fleet_session(&action, window, cx);
-                                });
-                                window.activate_window();
+                        let _ = origin.update(cx, |_, window, cx| {
+                            if let Some(fleet) = cx.try_global::<OriginRoutes>().map(|routes| routes.fleet) {
+                                fleet(&action, window, cx);
                             }
                         });
                     });

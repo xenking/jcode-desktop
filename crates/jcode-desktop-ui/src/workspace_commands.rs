@@ -413,7 +413,8 @@ impl Workspace {
             .filter_map(|handle| handle.downcast::<panel_window::PanelWindow>())
             .find(|handle| {
                 handle.read(cx).is_ok_and(|root| {
-                    root.item.read_chat(cx).is_some_and(|panel| {
+                    root.chat().is_some_and(|panel| {
+                        let panel = panel.read(cx);
                         panel.side_document_owner() == Some(owner.as_str())
                             && panel.side_document_page_id() == Some(page.id.as_str())
                     })

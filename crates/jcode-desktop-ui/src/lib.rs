@@ -146,6 +146,7 @@ const WORKSPACE: Option<&str> = Some(workspace::KEY_CONTEXT);
 
 /// Replace the UI keymap without changing the host's reload and rollback shortcuts.
 pub fn bind_workspace_keys(cx: &mut App) {
+    workspace::Workspace::install_panel_window_origin(cx);
     let host_bindings: Vec<_> = cx
         .key_bindings()
         .borrow()

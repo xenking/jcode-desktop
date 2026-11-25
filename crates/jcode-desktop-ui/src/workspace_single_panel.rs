@@ -359,7 +359,7 @@ mod tests {
         });
         let hosted = vcx.update(|_, cx| {
             let root = child.downcast::<panel_window::PanelWindow>().unwrap();
-            let item = root.read(cx).unwrap().item.clone();
+            let item = root.read(cx).unwrap().hosted_item().clone();
             assert!(match utility {
                 Utility::Accounts => item.read_chat(cx).is_some_and(Panel::is_accounts_panel),
                 Utility::Review => item.read_chat(cx).is_some_and(Panel::is_change_review),
@@ -372,7 +372,7 @@ mod tests {
             assert_eq!(cx.windows().len(), 2, "repeated open must reuse the child");
             assert!(cx.windows().contains(&child));
             let root = child.downcast::<panel_window::PanelWindow>().unwrap();
-            assert_eq!(root.read(cx).unwrap().item, hosted);
+            assert_eq!(root.read(cx).unwrap().hosted_item(), &hosted);
         });
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 1);

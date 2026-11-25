@@ -33,14 +33,10 @@ impl Workspace {
                     }
                 } else if let Some(handle) = handle.downcast::<panel_window::PanelWindow>() {
                     if handle.read(cx).is_ok_and(|other| {
-                        other.item.read_chat(cx).is_some_and(|panel| {
-                            panel.session_id == crate::panel::openrig::SESSION_ID
-                        })
+                        other.is_chat(crate::panel::openrig::SESSION_ID, cx)
                     }) {
                         let _ = handle.update(cx, |other, window, cx| {
-                            other
-                                .item
-                                .update_chat(cx, |panel, cx| panel.inspect_fleet_seat(action, cx));
+                            if let Some(panel) = other.chat() { panel.update(cx, |panel, cx| panel.inspect_fleet_seat(action, cx)); }
                             window.activate_window();
                         });
                         return;
