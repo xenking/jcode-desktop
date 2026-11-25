@@ -102,11 +102,6 @@ pub struct WindowLaunches {
 impl Global for WindowLaunches {}
 
 impl WindowLaunches {
-    /// Mark this App as a shared single-panel host.
-    pub fn install(cx: &mut App) {
-        cx.default_global::<Self>().shared = true;
-    }
-
     pub fn shared(cx: &App) -> bool {
         cx.try_global::<Self>().is_some_and(|state| state.shared)
     }
@@ -135,11 +130,16 @@ impl WindowLaunches {
             .unwrap_or_else(WindowLaunch::current_process)
     }
 
-    pub fn set_background_opener(
+    /// The host's window facilities: whether this App is a shared single-panel
+    /// host, and the native factory that opens another window.
+    pub fn install(
         cx: &mut App,
+        shared: bool,
         open: impl Fn(WindowLaunch, &mut App) -> Result<u64, String> + 'static,
     ) {
-        cx.default_global::<Self>().background_opener = Some(Rc::new(open));
+        let launches = cx.default_global::<Self>();
+        launches.shared = shared;
+        launches.background_opener = Some(Rc::new(open));
     }
 
     pub fn open_in_background(cx: &mut App, launch: WindowLaunch) -> Result<u64, String> {

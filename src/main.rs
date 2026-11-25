@@ -758,12 +758,9 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
-        if shared_single_panel {
-            // Marks the App as a shared host for the UI. Later windows
-            // register their own launch arguments under their window ID.
-            jcode_desktop_api::WindowLaunches::install(cx);
-        }
-        jcode_desktop_api::WindowLaunches::set_background_opener(cx, {
+        // A shared host marks the App for the UI. Later windows register
+        // their own launch arguments under their window ID.
+        jcode_desktop_api::WindowLaunches::install(cx, shared_single_panel, {
             let manager = manager.clone();
             move |launch, cx| {
                 open_shared_window(&manager, launch, !control_fixture, false, cx)

@@ -340,17 +340,17 @@ fn default_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jcode_desktop_api::HostHandle;
+    use jcode_desktop_api::{HostHandle, Terminals};
     use std::time::{Duration, Instant};
 
     #[test]
     fn terminal_engine_reply_probe_does_not_create_a_resource() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
-        assert!(host.terminal_engine_replies());
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
+        assert!(host.engine_replies());
         assert!(state.terminals.lock().unwrap().resources.is_empty());
-        let missing = host.terminal_read(999, 0, &mut []);
+        let missing = host.read(999, 0, &mut []);
         assert_eq!(missing.closed, 1);
         assert_eq!(missing.next_cursor, 0);
         assert_eq!(missing.copied, 0);
@@ -369,13 +369,13 @@ mod tests {
         id
     }
 
-    fn collect_until_closed(host: HostHandle, id: u64, capacity: usize) -> Vec<u8> {
+    fn collect_until_closed(host: Terminals, id: u64, capacity: usize) -> Vec<u8> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut cursor = 0;
         let mut bytes = Vec::new();
         let mut buffer = vec![0; capacity];
         loop {
-            let read = host.terminal_read(id, cursor, &mut buffer);
+            let read = host.read(id, cursor, &mut buffer);
             cursor = read.next_cursor;
             bytes.extend_from_slice(&buffer[..read.copied]);
             if read.closed != 0 {
@@ -393,7 +393,7 @@ mod tests {
     fn terminal_queries_are_forwarded_without_host_replies() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
         // In noncanonical mode dd times out if the host correctly leaves query
         // handling to the UI. An unsolicited host reply appears in the output.
         let id = scripted_terminal(
@@ -401,7 +401,7 @@ mod tests {
             r"stty -echo -icanon min 0 time 2; printf '\033[?u\033[>0q\033]11;?\033\\\033[c'; dd bs=256 count=1 2>/dev/null; printf done",
         );
         let bytes = collect_until_closed(host, id, 4096);
-        host.terminal_release(id);
+        host.release(id);
         assert_eq!(bytes, b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[cdone");
     }
 
@@ -410,13 +410,13 @@ mod tests {
     fn terminal_eof_waits_for_descendants_and_buffered_tail() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
         let id = scripted_terminal(
             &state,
             "trap '' HUP; (sleep 0.3; printf trailing-output-after-shell-exit) & exit 0",
         );
         let bytes = collect_until_closed(host, id, 3);
-        host.terminal_release(id);
+        host.release(id);
         assert_eq!(bytes, b"trailing-output-after-shell-exit");
     }
 
@@ -425,7 +425,7 @@ mod tests {
     fn terminal_eof_waits_for_descendants_and_buffered_tail() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
         // Darwin revokes the controlling terminal when its session leader exits,
         // even if a descendant still has the slave open. Keep the leader alive
         // while exercising the descendant's output and the buffered tail.
@@ -434,7 +434,7 @@ mod tests {
             "(sleep 0.3; printf trailing-output-from-descendant) & wait",
         );
         let bytes = collect_until_closed(host, id, 3);
-        host.terminal_release(id);
+        host.release(id);
         assert_eq!(bytes, b"trailing-output-from-descendant");
     }
 
@@ -443,7 +443,7 @@ mod tests {
     fn terminal_closed_is_reported_only_after_retained_tail_is_delivered() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
         let id = scripted_terminal(&state, "printf buffered-tail");
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -459,14 +459,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         // A zero-capacity read must not announce EOF with unread bytes pending.
-        assert_eq!(host.terminal_read(id, 0, &mut []).closed, 0);
+        assert_eq!(host.read(id, 0, &mut []).closed, 0);
         let bytes = collect_until_closed(host, id, 2);
         assert_eq!(bytes, b"buffered-tail");
         assert_ne!(
-            host.terminal_read(id, bytes.len() as u64, &mut []).closed,
+            host.read(id, bytes.len() as u64, &mut []).closed,
             0
         );
-        host.terminal_release(id);
+        host.release(id);
     }
 
     #[test]
@@ -484,23 +484,23 @@ mod tests {
     fn terminal_resource_survives_generation_handoff() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
-        let id = host.terminal_create(None, None).expect("create PTY");
-        let same = host.terminal_create(Some(id), None).expect("reattach PTY");
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
+        let id = host.create(None, None).expect("create PTY");
+        let same = host.create(Some(id), None).expect("reattach PTY");
         assert_eq!(same, id);
-        host.terminal_release(id);
-        assert!(host.terminal_write(same, b"printf '%s%s\\n' jcode-pty- preserved\r"));
+        host.release(id);
+        assert!(host.write(same, b"printf '%s%s\\n' jcode-pty- preserved\r"));
 
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut cursor = 0;
         let mut parser = handterm_common::terminal::Terminal::new(COLS, ROWS);
         while Instant::now() < deadline {
             let mut buffer = [0; 4096];
-            let read = host.terminal_read(same, cursor, &mut buffer);
+            let read = host.read(same, cursor, &mut buffer);
             cursor = read.next_cursor;
             parser.process(&buffer[..read.copied]);
             if let Some(responses) = parser.drain_responses() {
-                assert!(host.terminal_write(same, &responses));
+                assert!(host.write(same, &responses));
             }
             if parser.grid.get_all_text().contains("jcode-pty-preserved") {
                 break;
@@ -508,17 +508,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(parser.grid.get_all_text().contains("jcode-pty-preserved"));
-        host.terminal_release(same);
+        host.release(same);
     }
 
     #[test]
     fn terminal_resizes_and_reports_shell_exit() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
-        let id = host.terminal_create(None, None).expect("create PTY");
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
+        let id = host.create(None, None).expect("create PTY");
 
-        assert!(host.terminal_resize(id, 24, 80));
+        assert!(host.resize(id, 24, 80));
         state
             .terminals
             .lock()
@@ -534,7 +534,7 @@ mod tests {
         let mut cursor = 0;
         let closed = loop {
             let mut buffer = [0; 4096];
-            let read = host.terminal_read(id, cursor, &mut buffer);
+            let read = host.read(id, cursor, &mut buffer);
             cursor = read.next_cursor;
             if read.closed != 0 {
                 break true;
@@ -545,7 +545,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(closed, "PTY did not report the exited shell as closed");
-        host.terminal_release(id);
+        host.release(id);
     }
 
     #[test]
@@ -565,18 +565,18 @@ mod tests {
     fn terminal_startup_has_no_visible_error() {
         let state = HostState::default();
         let api = state.api();
-        let host = unsafe { HostHandle::new(&api) }.unwrap();
-        let id = host.terminal_create(None, None).expect("create PTY");
+        let host = unsafe { HostHandle::new(&api) }.unwrap().terminals();
+        let id = host.create(None, None).expect("create PTY");
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut cursor = 0;
         let mut parser = handterm_common::terminal::Terminal::new(COLS, ROWS);
         while Instant::now() < deadline {
             let mut buffer = [0; 4096];
-            let read = host.terminal_read(id, cursor, &mut buffer);
+            let read = host.read(id, cursor, &mut buffer);
             cursor = read.next_cursor;
             parser.process(&buffer[..read.copied]);
             if let Some(responses) = parser.drain_responses() {
-                assert!(host.terminal_write(id, &responses));
+                assert!(host.write(id, &responses));
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -590,7 +590,7 @@ mod tests {
             !contents.to_ascii_lowercase().contains("error"),
             "shell startup rendered an error: {contents}"
         );
-        assert!(host.terminal_write(
+        assert!(host.write(
             id,
             b"printf '%s%s %s|%s\\n' jcode-terminal- ready \"$TERM_PROGRAM\" \"$COLORTERM\"\r",
         ));
@@ -598,11 +598,11 @@ mod tests {
         let mut command_ran = false;
         while Instant::now() < command_deadline {
             let mut buffer = [0; 4096];
-            let read = host.terminal_read(id, cursor, &mut buffer);
+            let read = host.read(id, cursor, &mut buffer);
             cursor = read.next_cursor;
             parser.process(&buffer[..read.copied]);
             if let Some(responses) = parser.drain_responses() {
-                assert!(host.terminal_write(id, &responses));
+                assert!(host.write(id, &responses));
             }
             if parser
                 .grid
@@ -619,6 +619,6 @@ mod tests {
             "shell did not execute terminal input with Desktop's terminal identity: {}",
             parser.grid.get_all_text(),
         );
-        host.terminal_release(id);
+        host.release(id);
     }
 }

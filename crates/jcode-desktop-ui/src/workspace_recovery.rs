@@ -688,7 +688,9 @@ mod tests {
 
     #[gpui::test]
     fn single_panel_native_close_saves_latest_state(cx: &mut gpui::TestAppContext) {
-        cx.update(jcode_desktop_api::WindowLaunches::install);
+        cx.update(|cx| {
+            jcode_desktop_api::WindowLaunches::install(cx, true, |_, _| Err("test host".into()))
+        });
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("single.json");
         let (workspace, vcx) = cx.add_window_view(|_, cx| {

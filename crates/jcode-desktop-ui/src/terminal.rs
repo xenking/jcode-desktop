@@ -103,8 +103,9 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         // Probe before spawning: protocol replies belong to exactly one layer.
-        let engine_replies = host.terminal_engine_replies();
-        let resource_id = host.terminal_create(requested_id, working_dir.as_deref());
+        let terminals = host.terminals();
+        let engine_replies = terminals.engine_replies();
+        let resource_id = terminals.create(requested_id, working_dir.as_deref());
         let status = match (resource_id, requested_id) {
             (Some(_), _) => String::new(),
             (None, Some(_)) => "terminal session is no longer available".into(),
@@ -125,7 +126,7 @@ impl TerminalPanel {
                 let mut output_start = cursor;
                 let mut drained = false;
                 while output.len() < POLL_BUDGET {
-                    let read = host.terminal_read(id, cursor, &mut buffer);
+                    let read = host.terminals().read(id, cursor, &mut buffer);
                     if output.is_empty() {
                         output_start = cursor.max(read.available_from);
                     }
@@ -262,7 +263,7 @@ impl TerminalPanel {
     fn send(&self, bytes: &[u8]) {
         if !bytes.is_empty() && !self.exited
             && let Some(id) = self.resource_id {
-                let _ = self.host.terminal_write(id, bytes);
+                let _ = self.host.terminals().write(id, bytes);
             }
     }
 
@@ -304,7 +305,7 @@ impl TerminalPanel {
             self.terminal.resize(cols, rows);
             self.terminal.grid.selection = None;
             if let Some(id) = self.resource_id {
-                let _ = self.host.terminal_resize(id, rows, cols);
+                let _ = self.host.terminals().resize(id, rows, cols);
             }
             cx.notify();
         }
@@ -706,7 +707,7 @@ impl EntityInputHandler for TerminalPanel {
 impl Drop for TerminalPanel {
     fn drop(&mut self) {
         if let Some(resource_id) = self.resource_id {
-            self.host.terminal_release(resource_id);
+            self.host.terminals().release(resource_id);
         }
     }
 }

@@ -15,7 +15,8 @@ use gpui::{
     size,
 };
 use jcode_desktop_model::text_buffer::{
-    self, BufferSnapshot, FileStamp, LoadError, OpenTextFile, Selection, TextBuffer,
+    self, BufferSnapshot, Command, FileStamp, LoadError, Motion, OpenTextFile, Selection,
+    TextBuffer,
 };
 use std::{ops::Range, path::PathBuf};
 
@@ -624,14 +625,12 @@ impl CodeEditor {
 }
 
 macro_rules! movement {
-    ($($name:ident => $action:ident, $body:expr;)*) => {
+    ($($name:ident => $action:ident, $command:expr;)*) => {
         impl CodeEditor {
             $(
                 fn $name(&mut self, _: &$action, _: &mut Window, cx: &mut Context<Self>) {
                     let page = self.page_lines();
-                    let _ = page;
-                    let f: &dyn Fn(&mut TextBuffer, isize) = &$body;
-                    self.edit(cx, |buffer| f(buffer, page));
+                    self.edit(cx, |buffer| buffer.apply($command, page));
                 }
             )*
         }
@@ -641,42 +640,56 @@ macro_rules! movement {
     };
 }
 
+const fn go(motion: Motion) -> Command {
+    Command::Move {
+        motion,
+        extend: false,
+    }
+}
+
+const fn grow(motion: Motion) -> Command {
+    Command::Move {
+        motion,
+        extend: true,
+    }
+}
+
 movement! {
-    undo => Undo, |b, _| { b.undo(); };
-    redo => Redo, |b, _| { b.redo(); };
-    select_all => SelectAll, |b, _| b.select_all();
-    backspace => Backspace, |b, _| b.backspace();
-    delete => Delete, |b, _| b.delete_forward();
-    delete_word_left => DeleteWordLeft, |b, _| b.delete_word_left();
-    delete_word_right => DeleteWordRight, |b, _| b.delete_word_right();
-    delete_to_line_start => DeleteToLineStart, |b, _| b.delete_to_line_start();
-    newline => Newline, |b, _| b.newline();
-    indent => Indent, |b, _| b.indent();
-    outdent => Outdent, |b, _| b.outdent();
-    move_left => MoveLeft, |b, _| b.move_left(false);
-    move_right => MoveRight, |b, _| b.move_right(false);
-    move_up => MoveUp, |b, _| b.move_up(false);
-    move_down => MoveDown, |b, _| b.move_down(false);
-    select_left => SelectLeft, |b, _| b.move_left(true);
-    select_right => SelectRight, |b, _| b.move_right(true);
-    select_up => SelectUp, |b, _| b.move_up(true);
-    select_down => SelectDown, |b, _| b.move_down(true);
-    move_word_left => MoveWordLeft, |b, _| b.move_word_left(false);
-    move_word_right => MoveWordRight, |b, _| b.move_word_right(false);
-    select_word_left => SelectWordLeft, |b, _| b.move_word_left(true);
-    select_word_right => SelectWordRight, |b, _| b.move_word_right(true);
-    move_line_start => MoveLineStart, |b, _| b.move_line_start(false);
-    move_line_end => MoveLineEnd, |b, _| b.move_line_end(false);
-    select_line_start => SelectLineStart, |b, _| b.move_line_start(true);
-    select_line_end => SelectLineEnd, |b, _| b.move_line_end(true);
-    move_doc_start => MoveDocStart, |b, _| b.move_doc_start(false);
-    move_doc_end => MoveDocEnd, |b, _| b.move_doc_end(false);
-    select_doc_start => SelectDocStart, |b, _| b.move_doc_start(true);
-    select_doc_end => SelectDocEnd, |b, _| b.move_doc_end(true);
-    page_up => PageUp, |b, page| b.move_vertically(-page, false);
-    page_down => PageDown, |b, page| b.move_vertically(page, false);
-    select_page_up => SelectPageUp, |b, page| b.move_vertically(-page, true);
-    select_page_down => SelectPageDown, |b, page| b.move_vertically(page, true);
+    undo => Undo, Command::Undo;
+    redo => Redo, Command::Redo;
+    select_all => SelectAll, Command::SelectAll;
+    backspace => Backspace, Command::Backspace;
+    delete => Delete, Command::Delete;
+    delete_word_left => DeleteWordLeft, Command::DeleteWordLeft;
+    delete_word_right => DeleteWordRight, Command::DeleteWordRight;
+    delete_to_line_start => DeleteToLineStart, Command::DeleteToLineStart;
+    newline => Newline, Command::Newline;
+    indent => Indent, Command::Indent;
+    outdent => Outdent, Command::Outdent;
+    move_left => MoveLeft, go(Motion::Left);
+    move_right => MoveRight, go(Motion::Right);
+    move_up => MoveUp, go(Motion::Up);
+    move_down => MoveDown, go(Motion::Down);
+    select_left => SelectLeft, grow(Motion::Left);
+    select_right => SelectRight, grow(Motion::Right);
+    select_up => SelectUp, grow(Motion::Up);
+    select_down => SelectDown, grow(Motion::Down);
+    move_word_left => MoveWordLeft, go(Motion::WordLeft);
+    move_word_right => MoveWordRight, go(Motion::WordRight);
+    select_word_left => SelectWordLeft, grow(Motion::WordLeft);
+    select_word_right => SelectWordRight, grow(Motion::WordRight);
+    move_line_start => MoveLineStart, go(Motion::LineStart);
+    move_line_end => MoveLineEnd, go(Motion::LineEnd);
+    select_line_start => SelectLineStart, grow(Motion::LineStart);
+    select_line_end => SelectLineEnd, grow(Motion::LineEnd);
+    move_doc_start => MoveDocStart, go(Motion::DocStart);
+    move_doc_end => MoveDocEnd, go(Motion::DocEnd);
+    select_doc_start => SelectDocStart, grow(Motion::DocStart);
+    select_doc_end => SelectDocEnd, grow(Motion::DocEnd);
+    page_up => PageUp, go(Motion::PageUp);
+    page_down => PageDown, go(Motion::PageDown);
+    select_page_up => SelectPageUp, grow(Motion::PageUp);
+    select_page_down => SelectPageDown, grow(Motion::PageDown);
 }
 
 impl Focusable for CodeEditor {

@@ -130,7 +130,19 @@ impl HostHandle {
         }
     }
 
-    pub fn terminal_create(
+    /// The host's terminals.
+    pub fn terminals(self) -> Terminals {
+        Terminals(self.0)
+    }
+}
+
+/// Terminal resources the host owns for the UI: PTYs that outlive any one UI
+/// generation.
+#[derive(Clone, Copy)]
+pub struct Terminals(HostApi);
+
+impl Terminals {
+    pub fn create(
         self,
         requested_id: Option<u64>,
         working_dir: Option<&str>,
@@ -147,13 +159,13 @@ impl HostHandle {
         (id != 0).then_some(id)
     }
 
-    pub fn terminal_write(self, id: u64, bytes: &[u8]) -> bool {
+    pub fn write(self, id: u64, bytes: &[u8]) -> bool {
         unsafe {
             (self.0.terminal_write)(self.0.context, id, bytes.as_ptr(), bytes.len()) == HOST_OK
         }
     }
 
-    pub fn terminal_read(self, id: u64, cursor: u64, output: &mut [u8]) -> TerminalRead {
+    pub fn read(self, id: u64, cursor: u64, output: &mut [u8]) -> TerminalRead {
         unsafe {
             (self.0.terminal_read)(
                 self.0.context,
@@ -165,15 +177,15 @@ impl HostHandle {
         }
     }
 
-    pub fn terminal_engine_replies(self) -> bool {
-        self.terminal_read(0, 0, &mut []).next_cursor == TERMINAL_ENGINE_REPLIES
+    pub fn engine_replies(self) -> bool {
+        self.read(0, 0, &mut []).next_cursor == TERMINAL_ENGINE_REPLIES
     }
 
-    pub fn terminal_resize(self, id: u64, rows: u16, cols: u16) -> bool {
+    pub fn resize(self, id: u64, rows: u16, cols: u16) -> bool {
         unsafe { (self.0.terminal_resize)(self.0.context, id, rows, cols) == HOST_OK }
     }
 
-    pub fn terminal_release(self, id: u64) {
+    pub fn release(self, id: u64) {
         unsafe { (self.0.terminal_release)(self.0.context, id) }
     }
 }

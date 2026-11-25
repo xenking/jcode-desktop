@@ -452,7 +452,7 @@ impl TextBuffer {
         };
     }
 
-    pub fn select_all(&mut self) {
+    fn select_all(&mut self) {
         self.selection = Selection {
             anchor: 0,
             head: self.len_chars(),
@@ -506,7 +506,7 @@ impl TextBuffer {
 
     // ---- Movement --------------------------------------------------------
 
-    pub fn move_left(&mut self, extend: bool) {
+    fn move_left(&mut self, extend: bool) {
         self.goal_column = None;
         let selection = self.selection;
         if !extend && !selection.is_empty() {
@@ -515,7 +515,7 @@ impl TextBuffer {
         self.move_to(selection.head.saturating_sub(1), extend);
     }
 
-    pub fn move_right(&mut self, extend: bool) {
+    fn move_right(&mut self, extend: bool) {
         self.goal_column = None;
         let selection = self.selection;
         if !extend && !selection.is_empty() {
@@ -524,7 +524,7 @@ impl TextBuffer {
         self.move_to(selection.head + 1, extend);
     }
 
-    pub fn move_vertically(&mut self, lines: isize, extend: bool) {
+    fn move_vertically(&mut self, lines: isize, extend: bool) {
         let (line, column) = self.position(self.selection.head);
         let goal = *self.goal_column.get_or_insert(column);
         let target = line as isize + lines;
@@ -538,16 +538,16 @@ impl TextBuffer {
         self.move_to(offset, extend);
     }
 
-    pub fn move_up(&mut self, extend: bool) {
+    fn move_up(&mut self, extend: bool) {
         self.move_vertically(-1, extend);
     }
 
-    pub fn move_down(&mut self, extend: bool) {
+    fn move_down(&mut self, extend: bool) {
         self.move_vertically(1, extend);
     }
 
     /// Home: first non-blank column, or column 0 when already there.
-    pub fn move_line_start(&mut self, extend: bool) {
+    fn move_line_start(&mut self, extend: bool) {
         self.goal_column = None;
         let (line, column) = self.position(self.selection.head);
         let start = self.line_start(line);
@@ -560,18 +560,18 @@ impl TextBuffer {
         self.move_to(start + target, extend);
     }
 
-    pub fn move_line_end(&mut self, extend: bool) {
+    fn move_line_end(&mut self, extend: bool) {
         self.goal_column = None;
         let (line, _) = self.position(self.selection.head);
         self.move_to(self.line_start(line) + self.line_len(line), extend);
     }
 
-    pub fn move_doc_start(&mut self, extend: bool) {
+    fn move_doc_start(&mut self, extend: bool) {
         self.goal_column = None;
         self.move_to(0, extend);
     }
 
-    pub fn move_doc_end(&mut self, extend: bool) {
+    fn move_doc_end(&mut self, extend: bool) {
         self.goal_column = None;
         self.move_to(self.len_chars(), extend);
     }
@@ -617,12 +617,12 @@ impl TextBuffer {
         offset
     }
 
-    pub fn move_word_left(&mut self, extend: bool) {
+    fn move_word_left(&mut self, extend: bool) {
         self.goal_column = None;
         self.move_to(self.word_left_of(self.selection.head), extend);
     }
 
-    pub fn move_word_right(&mut self, extend: bool) {
+    fn move_word_right(&mut self, extend: bool) {
         self.goal_column = None;
         self.move_to(self.word_right_of(self.selection.head), extend);
     }
@@ -717,7 +717,7 @@ impl TextBuffer {
 
     /// Enter: keep the current line's indentation, one level deeper after an
     /// opening bracket.
-    pub fn newline(&mut self) {
+    fn newline(&mut self) {
         let range = self.selection.range();
         let (line, column) = self.position(range.start);
         let text = self.line(line);
@@ -743,7 +743,7 @@ impl TextBuffer {
         );
     }
 
-    pub fn backspace(&mut self) {
+    fn backspace(&mut self) {
         let selection = self.selection;
         if !selection.is_empty() {
             return self.delete_selection();
@@ -776,7 +776,7 @@ impl TextBuffer {
         );
     }
 
-    pub fn delete_forward(&mut self) {
+    fn delete_forward(&mut self) {
         let selection = self.selection;
         if !selection.is_empty() {
             return self.delete_selection();
@@ -792,7 +792,7 @@ impl TextBuffer {
         );
     }
 
-    pub fn delete_word_left(&mut self) {
+    fn delete_word_left(&mut self) {
         if !self.selection.is_empty() {
             return self.delete_selection();
         }
@@ -805,7 +805,7 @@ impl TextBuffer {
         );
     }
 
-    pub fn delete_word_right(&mut self) {
+    fn delete_word_right(&mut self) {
         if !self.selection.is_empty() {
             return self.delete_selection();
         }
@@ -818,7 +818,7 @@ impl TextBuffer {
         );
     }
 
-    pub fn delete_to_line_start(&mut self) {
+    fn delete_to_line_start(&mut self) {
         if !self.selection.is_empty() {
             return self.delete_selection();
         }
@@ -858,7 +858,7 @@ impl TextBuffer {
     }
 
     /// Tab: indent the selected lines, or insert one indent unit.
-    pub fn indent(&mut self) {
+    fn indent(&mut self) {
         let selection = self.selection;
         let lines = self.selected_lines();
         if selection.is_empty() || lines.len() == 1 && !self.spans_whole_line(selection) {
@@ -906,7 +906,7 @@ impl TextBuffer {
     }
 
     /// Shift+Tab: remove one indent level from the selected lines.
-    pub fn outdent(&mut self) {
+    fn outdent(&mut self) {
         let selection = self.selection;
         let width = if self.indent_unit == "\t" {
             1
@@ -984,7 +984,7 @@ impl TextBuffer {
         text
     }
 
-    pub fn undo(&mut self) -> bool {
+    fn undo(&mut self) -> bool {
         let Some(transaction) = self.undo.pop() else {
             return false;
         };
@@ -1001,7 +1001,7 @@ impl TextBuffer {
         true
     }
 
-    pub fn redo(&mut self) -> bool {
+    fn redo(&mut self) -> bool {
         let Some(mut transaction) = self.redo.pop() else {
             return false;
         };
@@ -1019,6 +1019,79 @@ impl TextBuffer {
         self.undo.push(transaction);
         true
     }
+
+    /// Run one editing command. `page` is how many lines a page spans.
+    pub fn apply(&mut self, command: Command, page: isize) {
+        match command {
+            Command::Undo => {
+                self.undo();
+            }
+            Command::Redo => {
+                self.redo();
+            }
+            Command::SelectAll => self.select_all(),
+            Command::Backspace => self.backspace(),
+            Command::Delete => self.delete_forward(),
+            Command::DeleteWordLeft => self.delete_word_left(),
+            Command::DeleteWordRight => self.delete_word_right(),
+            Command::DeleteToLineStart => self.delete_to_line_start(),
+            Command::Newline => self.newline(),
+            Command::Indent => self.indent(),
+            Command::Outdent => self.outdent(),
+            Command::Move { motion, extend } => match motion {
+                Motion::Left => self.move_left(extend),
+                Motion::Right => self.move_right(extend),
+                Motion::Up => self.move_up(extend),
+                Motion::Down => self.move_down(extend),
+                Motion::WordLeft => self.move_word_left(extend),
+                Motion::WordRight => self.move_word_right(extend),
+                Motion::LineStart => self.move_line_start(extend),
+                Motion::LineEnd => self.move_line_end(extend),
+                Motion::DocStart => self.move_doc_start(extend),
+                Motion::DocEnd => self.move_doc_end(extend),
+                Motion::PageUp => self.move_vertically(-page, extend),
+                Motion::PageDown => self.move_vertically(page, extend),
+            },
+        }
+    }
+}
+
+/// Where a cursor movement goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Left,
+    Right,
+    Up,
+    Down,
+    WordLeft,
+    WordRight,
+    LineStart,
+    LineEnd,
+    DocStart,
+    DocEnd,
+    PageUp,
+    PageDown,
+}
+
+/// A keyboard command the buffer carries out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Undo,
+    Redo,
+    SelectAll,
+    Backspace,
+    Delete,
+    DeleteWordLeft,
+    DeleteWordRight,
+    DeleteToLineStart,
+    Newline,
+    Indent,
+    Outdent,
+    /// Move the caret, or grow the selection when `extend` is set.
+    Move {
+        motion: Motion,
+        extend: bool,
+    },
 }
 
 /// Tabs when most indented lines use them, otherwise the smallest common

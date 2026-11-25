@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn masked_markers_preserve_offsets_without_visible_marker_glyphs() {
         let source = "café [#image 1] and [#image 22]";
-        let ranges = image_marker_ranges(source);
+        let ranges = super::image_marker_ranges(source);
         let masked = super::mask_markers(source, ranges.clone());
         assert_eq!(masked.len(), source.len());
         assert!(!masked.contains("[#image"));
