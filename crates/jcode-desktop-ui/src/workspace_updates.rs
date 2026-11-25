@@ -55,7 +55,7 @@ impl Workspace {
                 let Some(panel) = slot.panel.read_chat(cx) else {
                     continue;
                 };
-                if !panel.session_id.starts_with("session_")
+                if !panel.is_persisted_session()
                     || sessions
                         .iter()
                         .any(|session| session.session_id == panel.session_id)
@@ -682,10 +682,8 @@ impl Workspace {
                 if saved && let Some(label) = &label {
                     for slot in &self.slots {
                         if slot.panel.session_id(cx) == session_id {
-                            slot.panel.update_chat(cx, |panel, cx| {
-                                panel.title = label.clone().into();
-                                cx.notify();
-                            });
+                            slot.panel
+                                .update_chat(cx, |panel, cx| panel.set_title(label.clone(), cx));
                         }
                     }
                 }
@@ -938,8 +936,7 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.session_id(cx) == session_id {
                         slot.panel.update_chat(cx, |panel, cx| {
-                            panel.status = "attaching…".into();
-                            cx.notify();
+                            panel.set_status("attaching…", cx);
                         });
                         break;
                     }
@@ -964,7 +961,7 @@ impl Workspace {
                         slot.panel.update_chat(cx, |panel, cx| {
                             // A subsequent SessionStatus event will replace this
                             // with idle/running. Clear the stale lost banner now.
-                            panel.status = "connected".into();
+                            panel.set_status("connected", cx);
                             panel.refresh_local_pending_awaits(cx);
                             panel.prime_context_meter(cx);
                             cx.notify();
