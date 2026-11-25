@@ -358,3 +358,81 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     });
     assert_eq!(branches, 2);
 }
+
+/// Main-thread filesystem probes while drawing frames, and how many frames
+/// the Workspace rebuilt.
+fn frame_probes(
+    workspace: &Entity<Workspace>,
+    vcx: &mut gpui::VisualTestContext,
+    frames: usize,
+) -> (u64, u64, u64) {
+    let renders = || {
+        crate::render_stats::snapshot()
+            .into_iter()
+            .find(|(name, _)| *name == "Workspace")
+            .map_or(0, |(_, stat)| stat.renders)
+    };
+    let (main, background, drawn) = (
+        jcode_desktop_model::fs_probe::count(),
+        jcode_desktop_model::fs_probe::background_count(),
+        renders(),
+    );
+    for _ in 0..frames {
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+    }
+    (
+        jcode_desktop_model::fs_probe::count() - main,
+        jcode_desktop_model::fs_probe::background_count() - background,
+        renders() - drawn,
+    )
+}
+
+#[gpui::test]
+fn render_frames_probe_filesystem_counts(cx: &mut gpui::TestAppContext) {
+    use jcode_desktop_model::fs_probe;
+    let f = fixture();
+    let docs = Path::new(&f.main).join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("report.md"), "# Report\n").unwrap();
+    std::fs::write(docs.join("notes.txt"), "notes\n").unwrap();
+    cx.update(crate::bind_workspace_keys);
+    let sessions = vec![
+        session("main-chat", &f.main),
+        session("search-chat", &format!("{}/crates/ui", f.search)),
+        session("src-chat", &format!("{}/src", f.main)),
+    ];
+    let main = f.main.clone();
+    let (main_probes, background, cold_renders) = {
+        let (m0, b0) = (fs_probe::count(), fs_probe::background_count());
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.sidebar_closed_sessions
+                .extend(sessions.iter().map(|session| session.session_id.clone()));
+            w.sessions = sessions.clone();
+            w.push_test_panel("source", cx);
+            w.slots[0].panel.update(cx, |panel, cx| {
+                panel.working_dir = Some(main.clone());
+                panel.items.push(crate::panel::Item::Assistant(
+                    "The report is in `docs/report.md`. A draft `docs/draft.md` is gone.\n\n\
+                     See docs/notes.txt:12, src/lib.rs, README.md and ./Cargo.toml too."
+                        .into(),
+                ));
+                cx.notify();
+            });
+            w
+        });
+        vcx.run_until_parked();
+        let cold = (fs_probe::count() - m0, fs_probe::background_count() - b0);
+        let warm = frame_probes(&workspace, vcx, 3);
+        fs_probe::advance_clock(Duration::from_secs(10));
+        let expired = frame_probes(&workspace, vcx, 1);
+        let after_expiry = frame_probes(&workspace, vcx, 3);
+        eprintln!(
+            "FS-PROBES cold(window+settle): main={} background={} | warm 3 frames: main={} bg={} renders={} | ttl-expired 1 frame: main={} bg={} renders={} | next 3 frames: main={} bg={} renders={}",
+            cold.0, cold.1, warm.0, warm.1, warm.2, expired.0, expired.1, expired.2, after_expiry.0, after_expiry.1, after_expiry.2
+        );
+        (cold.0, cold.1, 0)
+    };
+    let _ = (main_probes, background, cold_renders);
+}

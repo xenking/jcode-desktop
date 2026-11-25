@@ -2,6 +2,7 @@
 //! spawned in, or its working directory outside Git. Grouping is presentation
 //! only. It never closes, moves, or reorders panels.
 use super::*;
+use jcode_desktop_model::fs_probe;
 
 /// Key for sessions without any working directory.
 pub(super) const OTHER: &str = "";
@@ -72,13 +73,13 @@ impl State {
             .map(str::trim)
             .filter(|d| !d.is_empty())?;
         if let Some((cached, read)) = self.checkouts.get(directory)
-            && read.elapsed() < CHECKOUT_TTL
+            && fs_probe::now().duration_since(*read) < CHECKOUT_TTL
         {
             return cached.clone();
         }
         let value = probe_checkout(Path::new(directory));
         self.checkouts
-            .insert(directory.to_owned(), (value.clone(), Instant::now()));
+            .insert(directory.to_owned(), (value.clone(), fs_probe::now()));
         value
     }
 
@@ -178,10 +179,10 @@ fn path_label(path: &str) -> String {
 pub(super) fn git_root(directory: &Path) -> Option<PathBuf> {
     for ancestor in directory.ancestors() {
         let marker = ancestor.join(".git");
-        if marker.is_dir() {
+        if fs_probe::is_dir(&marker) {
             return Some(ancestor.to_path_buf());
         }
-        if marker.is_file() {
+        if fs_probe::is_file(&marker) {
             return Some(linked_worktree_main(ancestor, &marker).unwrap_or(ancestor.to_path_buf()));
         }
     }
@@ -193,18 +194,18 @@ pub(super) fn git_root(directory: &Path) -> Option<PathBuf> {
 pub(super) fn probe_checkout(directory: &Path) -> Option<Checkout> {
     for ancestor in directory.ancestors() {
         let marker = ancestor.join(".git");
-        let (gitdir, linked) = if marker.is_dir() {
+        let (gitdir, linked) = if fs_probe::is_dir(&marker) {
             (marker, false)
-        } else if marker.is_file() {
-            let contents = std::fs::read_to_string(&marker).ok()?;
+        } else if fs_probe::is_file(&marker) {
+            let contents = fs_probe::read_to_string(&marker).ok()?;
             let gitdir = ancestor.join(contents.trim().strip_prefix("gitdir:")?.trim());
             // Submodules have a gitdir file but no commondir.
-            let linked = gitdir.join("commondir").is_file();
+            let linked = fs_probe::is_file(&gitdir.join("commondir"));
             (gitdir, linked)
         } else {
             continue;
         };
-        let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+        let head = fs_probe::read_to_string(&gitdir.join("HEAD")).ok()?;
         let head = head.trim();
         let branch = match head.strip_prefix("ref:") {
             Some(reference) => {
@@ -226,12 +227,12 @@ pub(super) fn probe_checkout(directory: &Path) -> Option<Checkout> {
 }
 
 fn linked_worktree_main(worktree: &Path, marker: &Path) -> Option<PathBuf> {
-    let contents = std::fs::read_to_string(marker).ok()?;
+    let contents = fs_probe::read_to_string(marker).ok()?;
     let gitdir = contents.trim().strip_prefix("gitdir:")?.trim();
     let gitdir = worktree.join(gitdir);
     // Submodules have no commondir and remain their own project.
-    let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
-    let common = std::fs::canonicalize(gitdir.join(common.trim())).ok()?;
+    let common = fs_probe::read_to_string(&gitdir.join("commondir")).ok()?;
+    let common = fs_probe::canonicalize(&gitdir.join(common.trim())).ok()?;
     (common.file_name()? == ".git").then(|| common.parent().map(Path::to_path_buf))?
 }
 
@@ -261,7 +262,7 @@ impl Workspace {
             .then(|| project.key.clone());
         let git = local
             .as_deref()
-            .is_some_and(|dir| Path::new(dir).join(".git").exists());
+            .is_some_and(|dir| fs_probe::exists(&Path::new(dir).join(".git")));
         let group: &'static str = "sidebar-project-header";
         div()
             .id(("sidebar-project", index))

@@ -47,7 +47,7 @@ impl FileReferenceCache {
     /// Transcript paths are literal filenames, not URL-encoded destinations.
     pub fn resolve(&mut self, base_dir: &Path, mention: &str) -> Option<PathBuf> {
         let path = reference_path(base_dir, mention, crate::platform_dirs::home_dir)?;
-        let now = Instant::now();
+        let now = crate::fs_probe::now();
         let freshness = Duration::from_secs(5);
         if let Some(&(checked, exists)) = self.files.get(&path)
             && now.duration_since(checked) < freshness
@@ -63,7 +63,7 @@ impl FileReferenceCache {
                 .retain(|_, (checked, _)| now.duration_since(*checked) < freshness);
             self.last_prune = Some(now);
         }
-        let exists = path.is_file();
+        let exists = crate::fs_probe::is_file(&path);
         self.files.insert(path.clone(), (now, exists));
         exists.then_some(path)
     }

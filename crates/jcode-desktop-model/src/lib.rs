@@ -9,6 +9,7 @@ pub mod context_files;
 pub mod diff;
 pub mod diff_model;
 pub mod friendly_error;
+pub mod fs_probe;
 pub mod global_search;
 pub mod learning;
 pub mod markdown_file;
