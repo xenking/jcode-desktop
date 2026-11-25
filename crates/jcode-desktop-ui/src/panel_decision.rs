@@ -1,5 +1,6 @@
 //! Completed ask results are user decisions, not tool output.
 use super::*;
+use super::classify::answered;
 
 struct DecisionQuestion {
     title: String,
@@ -7,9 +8,6 @@ struct DecisionQuestion {
     choices: Vec<String>,
 }
 
-pub(super) fn answered(output: &str, error: Option<&str>) -> bool {
-    error.is_none() && (output.starts_with("User answers:") || output.contains(" -> "))
-}
 
 fn questions(input: &str, output: &str, error: Option<&str>) -> Vec<DecisionQuestion> {
     let parsed = serde_json::from_str::<serde_json::Value>(input).ok();

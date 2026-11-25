@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn conversation_item(item: &Item) -> bool {
     match item {
-        Item::User(_) => prompt::is_pinnable_prompt(item),
+        Item::User(_) => classify::is_pinnable_prompt(item),
         Item::Assistant(text) | Item::AssistantOutput { text, .. } => !text.trim().is_empty(),
         Item::Image(image) => match &image.source {
             jcode_sdk::RenderedImageSource::UserInput => true,
@@ -11,7 +11,7 @@ pub(super) fn conversation_item(item: &Item) -> bool {
         },
         Item::Applet(_) => true,
         Item::Tool { name, done, .. } => name == "ask" && *done,
-        Item::AgentMessage { message, .. } => agent_message::is_external(message),
+        Item::AgentMessage { message, .. } => classify::is_external(message),
         Item::SideQuestion(_) => true,
         Item::Reasoning(_)
         | Item::BackgroundTask { .. }
@@ -55,7 +55,7 @@ pub(super) fn message_heading(item: &Item, previous: Option<&Item>) -> Option<gp
             output,
             error,
             ..
-        } if name == "ask" && decision::answered(output, error.as_deref()) => {
+        } if name == "ask" && classify::answered(output, error.as_deref()) => {
             ("You", "clean-chat-user", previous.is_some(), true)
         }
         Item::AssistantOutput {
@@ -402,7 +402,7 @@ mod tests {
         assert!(vcx.debug_bounds("recovery-error").is_some());
         panel.update(vcx, |panel, cx| {
             panel.items.push(Item::User("Retry".into()));
-            let mut notice = stop_reason::StopNotice::cancel_requested();
+            let mut notice = turn::StopNotice::cancel_requested();
             notice.title = "Stop not confirmed".into();
             panel.items.push(Item::Stopped(notice));
             cx.notify();

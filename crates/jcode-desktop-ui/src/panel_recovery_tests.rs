@@ -233,7 +233,7 @@ fn recovery_resume_never_bypasses_active_retry_or_queued_user_requests(
     for provisional in [false, true] {
         panel.update(vcx, |panel, cx| {
             panel.items.clear();
-            let mut notice = stop_reason::StopNotice::from_event(
+            let mut notice = turn::StopNotice::from_event(
                 if provisional {
                     &jcode_sdk::TurnStopReason::Failure
                 } else {

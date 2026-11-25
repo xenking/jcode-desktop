@@ -1,5 +1,6 @@
 //! Compact, expandable transcript rows for swarm calls.
 use super::*;
+use super::classify::is_swarm;
 use crate::swarm_view::friendly_name;
 use jcode_desktop_harness::swarm_usage::WorkerUsage;
 use jcode_sdk::api::{CodemodeCall, CodemodeCallStatus, CodemodeDirection, CodemodeSummary};
@@ -47,9 +48,6 @@ fn row_preview(text: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn is_swarm(name: &str) -> bool {
-    name.trim_start_matches("functions.") == "swarm"
-}
 
 fn external_target(output: &str) -> Option<&str> {
     let receipt = output
@@ -490,7 +488,7 @@ impl Panel {
             done,
             failed: error.is_some()
                 || codemode.is_some_and(|(summary, call)| {
-                    codemode_card::wrapper_failed(Some(summary), None, output)
+                    classify::wrapper_failed(Some(summary), None, output)
                         || call.status != CodemodeCallStatus::Success
                 }),
         };

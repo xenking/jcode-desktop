@@ -19,7 +19,7 @@ enum Target {
 
 impl Target {
     fn matches(self, item: &Item) -> bool {
-        prompt::is_pinnable_prompt(item)
+        classify::is_pinnable_prompt(item)
             || matches!(self, Self::Message)
                 && item
                     .assistant_text()

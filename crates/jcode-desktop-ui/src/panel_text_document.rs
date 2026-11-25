@@ -252,7 +252,7 @@ fn segments_with_regions(
                 tool_row_summary(name, input),
             );
             if open.card {
-                if swarm_card::is_swarm(name) {
+                if classify::is_swarm(name) {
                     push(
                         format!("tool-detail-{index}"),
                         swarm_card::detail(name, input, output, error.as_deref()),

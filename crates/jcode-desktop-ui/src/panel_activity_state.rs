@@ -2,6 +2,7 @@
 //! a tool completing is not a turn completion. Keep the latest semantic state
 //! until a real terminal event settles it in `Panel::finish_response`.
 use super::*;
+use super::classify::is_retry_phase;
 
 impl Panel {
     pub(super) fn observe_activity_state(&mut self, event: &ApiEvent) {
@@ -14,12 +15,12 @@ impl Panel {
             && is_retry_phase(&self.connection_phase)
         {
             // Cancelled or exhausted: the failure is final after all.
-            self.set_auto_retry(stop_reason::AutoRetry::None);
+            self.set_auto_retry(turn::AutoRetry::None);
             self.finish_response();
         }
         if matches!(event, ApiEvent::ConnectionPhase { phase, .. } if is_retry_phase(phase)) {
             // "Response stopped" beside a retry countdown is a contradiction.
-            self.set_auto_retry(stop_reason::AutoRetry::Pending);
+            self.set_auto_retry(turn::AutoRetry::Pending);
         }
         if matches!(event, ApiEvent::Error { .. }) {
             // A rejected send never receives MessageAccepted. Keep its text in
@@ -65,7 +66,7 @@ impl Panel {
         if let Some(status) = status {
             if !matches!(event, ApiEvent::ConnectionPhase { .. }) {
                 self.continuing_after_reload = false;
-                self.set_auto_retry(stop_reason::AutoRetry::Recovered);
+                self.set_auto_retry(turn::AutoRetry::Recovered);
             }
             self.status = status.into();
             // Actual output supersedes a stale waiting/auth/retry transport
@@ -75,9 +76,6 @@ impl Panel {
     }
 }
 
-pub(super) fn is_retry_phase(phase: &str) -> bool {
-    phase.trim().to_ascii_lowercase().starts_with("retrying")
-}
 
 pub(super) fn is_request_phase(phase: &str) -> bool {
     let phase = phase.trim().replace('_', " ").to_ascii_lowercase();

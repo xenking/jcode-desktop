@@ -180,7 +180,7 @@ impl Panel {
         let tail = std::mem::take(&mut self.prompt_queue.auto_poke.assistant_tail);
         self.prompt_queue.auto_poke.awaiting_state = Some(
             tail == AssistantTail::Complete
-                && self.turn_outcome == Some(session_status::TurnOutcome::Done),
+                && self.turn_outcome == Some(turn::TurnOutcome::Done),
         );
         self.bridge.send(Command::TodoState {
             session_id: self.session_id.clone(),

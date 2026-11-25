@@ -1,10 +1,6 @@
 use super::*;
+use super::classify::{EXTERNAL_DM, is_external};
 
-const EXTERNAL_DM: &str = "Cross-swarm DM from ";
-
-pub(super) fn is_external(message: &str) -> bool {
-    message.starts_with(EXTERNAL_DM)
-}
 
 fn split_dm(message: &str) -> Option<(&str, &str)> {
     let (sender, body) = if let Some(envelope) = message.strip_prefix(EXTERNAL_DM) {

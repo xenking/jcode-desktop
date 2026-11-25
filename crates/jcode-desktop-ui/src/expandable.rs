@@ -85,7 +85,7 @@ impl Open {
     /// The disclosure state a row paints from the region keys the panel holds.
     pub(crate) fn for_row(regions: &HashSet<String>, item: &Item, index: usize) -> Self {
         let details = (regions.contains(&key::details(index))
-            ^ matches!(item, Item::AgentMessage { message, .. } if super::agent_message::is_external(message)))
+            ^ matches!(item, Item::AgentMessage { message, .. } if super::classify::is_external(message)))
             || matches!(item, Item::BackgroundTask { task_id, .. } if regions.contains(&key::task(task_id)));
         Self {
             card: match item {
@@ -144,7 +144,7 @@ pub(crate) fn all_regions(items: &[Item]) -> HashSet<String> {
             Item::Tool { call_id, .. } => {
                 keys.insert(call_id.clone());
             }
-            Item::AgentMessage { message, .. } if super::agent_message::is_external(message) => {}
+            Item::AgentMessage { message, .. } if super::classify::is_external(message) => {}
             Item::Error(_)
             | Item::RuntimeError { .. }
             | Item::AgentMessage { .. }

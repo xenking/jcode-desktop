@@ -29,7 +29,7 @@ fn screenshot_selection_excludes_tool_metadata_but_keeps_user_content() {
 
 #[test]
 fn compact_notification_selection_preserves_full_detail() {
-    let notice = Item::Stopped(stop_reason::StopNotice::cancel_requested());
+    let notice = Item::Stopped(turn::StopNotice::cancel_requested());
     let display = crate::config::DisplayConfig::default();
     let collapsed =
         text_document::segments_with_display(&notice, 0, expandable::Open::default(), &display);

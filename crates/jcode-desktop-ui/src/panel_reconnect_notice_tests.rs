@@ -1,4 +1,5 @@
 use super::*;
+use jcode_sdk::TurnStopReason;
 
 fn active_panel(cx: &mut Context<Panel>) -> Panel {
     let mut panel = Panel::new(

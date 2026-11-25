@@ -1,4 +1,5 @@
 use super::*;
+use super::classify::{is_pinnable_prompt, is_user_turn};
 use std::{cell::Cell, rc::Rc};
 
 // The card sits below the row's inter-message gap. The sticky boundary is
@@ -98,26 +99,6 @@ fn prompt_for_viewport(
         .map(|(_, index)| *index)
 }
 
-pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
-    let Item::User(text) = item else {
-        return false;
-    };
-    let text = text.trim();
-    // Background notifications can arrive in restored history as user-role
-    // markdown. Keep them in the transcript, never in the pinned reminder.
-    // Auto-poke and quality-gate continuations are not prompts either.
-    !text.is_empty()
-        && !jcode_sdk::todo::is_auto_poke_message(text)
-        && ![
-            "**Background task** `",
-            "**Background task started** `",
-            "**Background task progress** `",
-            "**Background task stalled** `",
-        ]
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
-}
-
 /// Count user turns rather than transcript rows. Tool output, assistant text,
 /// todo snapshots and restored background notices must not age prompt colors.
 fn prompt_distance(items: &[Item], index: usize) -> Option<usize> {
@@ -142,10 +123,6 @@ pub(super) fn prompt_number(items: &[Item], index: usize) -> Option<usize> {
     )
 }
 
-pub(super) fn is_user_turn(item: &Item) -> bool {
-    is_pinnable_prompt(item) || matches!(item, Item::Tool { name, done: true, output, error, .. }
-        if name == "ask" && (super::decision::answered(output, error.as_deref()) || output.contains("declined")))
-}
 
 impl Panel {
     pub(super) fn clear_pinned_prompt(&mut self) {

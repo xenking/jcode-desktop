@@ -79,7 +79,7 @@ fn reload_snapshot_roundtrips_rich_transcript_without_checkpoint_payload(
                 done: false,
                 error: None,
             },
-            Item::Stopped(stop_reason::StopNotice::cancel_requested()),
+            Item::Stopped(turn::StopNotice::cancel_requested()),
         ];
         panel.streaming_text = "partial answer".into();
         panel.streaming_reasoning = "partial reasoning".into();

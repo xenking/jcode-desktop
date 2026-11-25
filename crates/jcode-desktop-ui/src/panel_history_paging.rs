@@ -178,7 +178,7 @@ impl Panel {
             *offset = offset.saturating_sub(
                 expanded
                     .iter()
-                    .filter(|item| super::prompt::is_user_turn(item))
+                    .filter(|item| super::classify::is_user_turn(item))
                     .count(),
             );
         }

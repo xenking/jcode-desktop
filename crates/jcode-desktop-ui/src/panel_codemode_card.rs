@@ -1,9 +1,7 @@
 use super::*;
-use jcode_sdk::api::{CodemodeCall, CodemodeCallStatus, CodemodeStatus, CodemodeSummary};
+use super::classify::{is_codemode, wrapper_failed};
+use jcode_sdk::api::{CodemodeCall, CodemodeCallStatus, CodemodeSummary};
 
-pub(super) fn is_codemode(name: &str) -> bool {
-    name.trim_start_matches("functions.") == "codemode"
-}
 
 pub(super) fn history_summaries(
     messages: &[jcode_sdk::HistoryMessage],
@@ -22,23 +20,12 @@ pub(super) fn single_swarm(summary: &CodemodeSummary) -> Option<&CodemodeCall> {
         return None;
     };
     (summary.calls_omitted == 0
-        && swarm_card::is_swarm(&call.tool)
+        && classify::is_swarm(&call.tool)
         && call.action.is_some()
         && call.status != CodemodeCallStatus::Interrupted)
         .then_some(call)
 }
 
-pub(super) fn wrapper_failed(
-    summary: Option<&CodemodeSummary>,
-    error: Option<&str>,
-    output: &str,
-) -> bool {
-    error.is_some()
-        || summary.map_or_else(
-            || output.starts_with("error: "),
-            |summary| summary.status == CodemodeStatus::Error,
-        )
-}
 
 fn source(input: &str) -> Option<String> {
     let args: serde_json::Value = serde_json::from_str(input).ok()?;
@@ -415,6 +402,7 @@ pub(super) fn screenshot_history() -> Vec<jcode_sdk::HistoryMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_sdk::api::CodemodeStatus;
 
     fn test_panel(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
         cx.add_window_view(|_, cx| {

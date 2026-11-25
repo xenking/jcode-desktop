@@ -363,8 +363,8 @@ fn poke_messages_render_as_short_notices_not_prompts() {
         auto_poke_notice_text(jcode_sdk::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE),
         "✅ Preparing the final response..."
     );
-    assert!(!super::super::prompt::is_pinnable_prompt(&Item::User(poke)));
-    assert!(super::super::prompt::is_pinnable_prompt(&Item::User(
+    assert!(!super::super::classify::is_pinnable_prompt(&Item::User(poke)));
+    assert!(super::super::classify::is_pinnable_prompt(&Item::User(
         "real prompt".into()
     )));
 }

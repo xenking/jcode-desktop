@@ -1,13 +1,8 @@
 use super::chrome::{BAR_ICON, TAB_HEIGHT};
+use super::turn::TurnOutcome;
 use super::*;
 use crate::swarm_glyph::{Icon, Mark, Motion};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum TurnOutcome {
-    Done,
-    Stopped,
-    Error,
-}
 
 struct FooterStatus {
     selector: &'static str,

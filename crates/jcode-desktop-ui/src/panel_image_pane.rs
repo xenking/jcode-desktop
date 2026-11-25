@@ -132,7 +132,7 @@ impl Panel {
             // unambiguous text match (normally including stable image IDs).
             let mut matches = self.items.iter().enumerate().filter_map(|(index, item)| {
                 let Item::User(text) = item else { return None };
-                (text == &prompt.content && prompt::is_pinnable_prompt(item)).then_some(index)
+                (text == &prompt.content && classify::is_pinnable_prompt(item)).then_some(index)
             });
             let Some(first) = matches.next() else { continue };
             let owner = if let Some(second) = matches.next() {

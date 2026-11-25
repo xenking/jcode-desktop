@@ -1446,7 +1446,7 @@ impl Panel {
                 self.prompt_queue.resume_after_retry = false;
             }
             ApiEvent::ConnectionPhase { phase, .. }
-                if activity_state::is_retry_phase(phase) && self.prompt_queue.paused =>
+                if classify::is_retry_phase(phase) && self.prompt_queue.paused =>
             {
                 self.prompt_queue.resume_after_retry = true;
             }

@@ -43,6 +43,11 @@ mod desktop_commands;
 
 #[path = "panel_chrome.rs"]
 mod chrome;
+#[path = "panel_classify.rs"]
+mod classify;
+#[path = "panel_turn.rs"]
+mod turn;
+use turn::{AutoRetry, StopNotice};
 #[path = "panel_meter.rs"]
 pub(crate) mod meter;
 #[path = "panel_clean_chat.rs"]
@@ -455,7 +460,7 @@ pub enum Item {
         code: jcode_sdk::api::ErrorCode,
         message: String,
     },
-    Stopped(stop_reason::StopNotice),
+    Stopped(turn::StopNotice),
     SwarmWorkerNotice(String),
     ProviderGuardrailRetry {
         turn_id: String,
@@ -733,7 +738,7 @@ pub struct PanelSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) turn_outcome: Option<session_status::TurnOutcome>,
+    pub(crate) turn_outcome: Option<turn::TurnOutcome>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) finished_unseen: bool,
     #[serde(default)]
@@ -783,7 +788,7 @@ pub struct Panel {
     pub status: String,
     pub connection_phase: String,
     continuing_after_reload: bool,
-    turn_outcome: Option<session_status::TurnOutcome>,
+    turn_outcome: Option<turn::TurnOutcome>,
     /// Model id serving this session, e.g. `gpt-5.6-sol`.
     pub model: Option<String>,
     /// Provider display name, e.g. `openai` or `anthropic`.
@@ -3741,7 +3746,7 @@ impl Panel {
                     {
                         user_times.insert(items.len(), at);
                     }
-                    let is_prompt = prompt::is_pinnable_prompt(&prompt);
+                    let is_prompt = classify::is_pinnable_prompt(&prompt);
                     items.push(prompt);
                     if let Some(images) = images_by_prompt.remove(&user_ordinal)
                         && is_prompt
@@ -4138,7 +4143,7 @@ impl Panel {
         }
         let was_active = self.activity_active();
         self.apply_event(event, cx);
-        if self.activity_active() && !activity_state::is_retry_phase(&self.connection_phase) {
+        if self.activity_active() && !classify::is_retry_phase(&self.connection_phase) {
             self.turn_outcome = None;
         }
         self.note_turn_transition(was_active, cx);
@@ -4477,7 +4482,7 @@ impl Panel {
                 codemode,
                 ..
             } => {
-                if codemode_card::is_codemode(name) && let Some(summary) = codemode {
+                if classify::is_codemode(name) && let Some(summary) = codemode {
                     self.codemode_summaries
                         .insert(call_id.clone(), summary.clone());
                 }
@@ -4688,7 +4693,7 @@ impl Panel {
                 self.flush_reasoning();
                 self.flush_streaming();
                 let outcome = self.finished_turn_outcome();
-                self.settle_assistant_output(if outcome == session_status::TurnOutcome::Done {
+                self.settle_assistant_output(if outcome == turn::TurnOutcome::Done {
                     AssistantOutputPhase::Final
                 } else {
                     AssistantOutputPhase::Update
@@ -4726,7 +4731,7 @@ impl Panel {
                 provider_stop_reason,
                 ..
             } => {
-                self.record_stop(stop_reason::StopNotice::from_event(
+                self.record_stop(turn::StopNotice::from_event(
                     reason,
                     message,
                     provider_stop_reason.as_deref(),
@@ -4740,7 +4745,7 @@ impl Panel {
                 // a late attach notification must not resurrect a completed turn.
             }
             ApiEvent::SessionStatus { status, .. } => {
-                if let Some(notice) = stop_reason::StopNotice::from_status(status) {
+                if let Some(notice) = turn::StopNotice::from_status(status) {
                     // New runtimes send a richer event before their legacy status.
                     if !matches!(self.items.last(), Some(Item::Stopped(notice)) if !notice.provisional)
                     {
@@ -4950,7 +4955,7 @@ impl Panel {
                 self.flush_reasoning();
                 self.settle_assistant_output(AssistantOutputPhase::Update);
                 self.finish_response();
-                self.turn_outcome = Some(session_status::TurnOutcome::Error);
+                self.turn_outcome = Some(turn::TurnOutcome::Error);
                 if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
                 {
                     self.items.push(Item::RuntimeError {
@@ -5189,7 +5194,7 @@ impl Panel {
             crate::sounds::play(crate::sounds::Cue::Error, cx);
         }
         self.finish_response();
-        self.turn_outcome = Some(session_status::TurnOutcome::Error);
+        self.turn_outcome = Some(turn::TurnOutcome::Error);
         self.items.push(Item::Error(message));
         self.status = "idle".into();
         self.connection_phase.clear();
@@ -5493,7 +5498,7 @@ impl Panel {
                             .enumerate()
                             .filter_map(|(row, entry)| match entry.source {
                                 TranscriptRowSource::Settled(index)
-                                    if prompt::is_pinnable_prompt(&self.items[index]) =>
+                                    if classify::is_pinnable_prompt(&self.items[index]) =>
                                 {
                                     Some((row, index))
                                 }
@@ -5672,7 +5677,7 @@ impl Panel {
                 }
             }
             if matches!(item, Item::User(_)) {
-                user_attachments_end = if prompt::is_pinnable_prompt(item) {
+                user_attachments_end = if classify::is_pinnable_prompt(item) {
                     self.user_attachment_range(index).end
                 } else {
                     index + 1
@@ -6320,12 +6325,12 @@ impl Panel {
                 if animating {
                     window.request_animation_frame();
                 }
-                let is_codemode = codemode_card::is_codemode(name);
+                let is_codemode = classify::is_codemode(name);
                 let codemode = (is_codemode && *done)
                     .then(|| self.codemode_summaries.get(call_id).map(Box::as_ref))
                     .flatten();
                 let failed = error.is_some()
-                    || (is_codemode && codemode_card::wrapper_failed(codemode, None, output));
+                    || (is_codemode && classify::wrapper_failed(codemode, None, output));
                 let nested = codemode.and_then(|summary| {
                     codemode_card::single_swarm(summary).map(|call| (summary, call))
                 });
@@ -7582,7 +7587,7 @@ impl Render for Panel {
                                     )
                                     .child(prompt::visibility_marker(
                                         row_index,
-                                        prompt::is_pinnable_prompt(item),
+                                        classify::is_pinnable_prompt(item),
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
                                     ));

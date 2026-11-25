@@ -14,7 +14,7 @@ pub struct TranscriptSnapshot {
     status: String,
     connection_phase: String,
     #[serde(default)]
-    turn_outcome: Option<session_status::TurnOutcome>,
+    turn_outcome: Option<turn::TurnOutcome>,
     #[serde(default)]
     expanded_regions: HashSet<String>,
     #[serde(default)]
