@@ -136,10 +136,10 @@ fn opened_source_file_takes_focus_and_is_listed_once(cx: &mut gpui::TestAppConte
             let slot = &workspace.slots[workspace.active];
             assert_eq!(slot.panel.session_id(cx), id);
             assert_eq!(
-                slot.panel.working_dir(cx),
+                slot.panel.profile().working_dir(cx),
                 path.parent().and_then(|dir| dir.to_str())
             );
-            assert!(slot.panel.input_focus_handle(cx).is_focused(window));
+            assert!(slot.panel.surface().input_focus_handle(cx).is_focused(window));
         });
         // Opening the same file again activates the open panel.
         workspace.update(cx, |workspace, cx| {
@@ -188,7 +188,7 @@ fn opened_file_survives_hot_reload_snapshot(cx: &mut gpui::TestAppContext) {
             .find(|slot| slot.panel.session_id(cx) == id)
             .expect("file panel restored");
         assert_eq!(
-            restored.panel.working_dir(cx),
+            restored.panel.profile().working_dir(cx),
             path.parent().and_then(|dir| dir.to_str())
         );
     });
