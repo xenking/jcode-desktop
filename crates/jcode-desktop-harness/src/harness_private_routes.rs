@@ -161,6 +161,11 @@ impl PrivateBridge {
         })
     }
 
+    /// Whether this bridge is still running for exactly `route`.
+    fn serves(&mut self, route: &Route) -> io::Result<bool> {
+        Ok(self.route == *route && self.child.try_wait()?.is_none())
+    }
+
     fn client(&self) -> jcode_sdk::Result<JcodeClient> {
         let socket = self.directory.path().join("api.sock");
         jcode_sdk::wait_for_socket(
@@ -218,8 +223,7 @@ impl PrivateRoute {
         };
         self.was_configured = true;
         if let Some(existing) = &mut self.bridge
-            && existing.route == route
-            && existing.child.try_wait().map_err(route_error)?.is_none()
+            && existing.serves(&route).map_err(route_error)?
         {
             return existing.client().map(Some);
         }

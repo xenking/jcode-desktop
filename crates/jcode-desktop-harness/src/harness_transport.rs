@@ -140,12 +140,7 @@ impl RemoteTransports {
             .lock()
             .unwrap()
             .target(Destination::parse(managed_cloud::HOST).unwrap());
-        state
-            .lock()
-            .unwrap()
-            .spare
-            .as_ref()
-            .is_some_and(|(client, deadline)| Instant::now() < *deadline && !client.is_closed())
+        state.lock().unwrap().spare_ready(Instant::now())
     }
 
     fn connect_cloud(
@@ -166,10 +161,10 @@ impl RemoteTransports {
             .filter(|client| !client.is_closed())
         {
             progress("Reusing ready Jcode Cloud connection…");
-            Ok((client, cloud.self_hosted))
+            Ok((client, cloud.self_hosted()))
         } else if let Some(owner) = cloud.reserve(WeakSharedSshTransport::upgrade) {
             progress("Reusing your Jcode Cloud connection…");
-            owner.connect().map(|client| (client, cloud.self_hosted))
+            owner.connect().map(|client| (client, cloud.self_hosted()))
         } else {
             crate::managed_cloud::connect_with_sync_status(
                 progress,
@@ -190,8 +185,7 @@ impl RemoteTransports {
                     // still owns the ephemeral private key and pinned hosts.
                     let client = owner.connect()?;
                     if synchronized {
-                        cloud.publish(owner.downgrade());
-                        cloud.self_hosted = self_hosted;
+                        cloud.publish(owner.downgrade(), self_hosted);
                     }
                     Ok(client)
                 },
@@ -395,10 +389,30 @@ impl<W, S> CloudTransport<W, S> {
         }
     }
 
-    fn publish(&mut self, owner: W) {
+    fn publish(&mut self, owner: W, self_hosted: bool) {
         self.invalidate();
         self.owner = Some(owner);
         self.reservations = 1;
+        self.self_hosted = self_hosted;
+    }
+
+    /// Whether the machine behind the published master is the user's own.
+    fn self_hosted(&self) -> bool {
+        self.self_hosted
+    }
+
+    #[cfg(test)]
+    fn has_spare(&self) -> bool {
+        self.spare.is_some()
+    }
+}
+
+#[cfg(test)]
+impl<W> CloudTransport<W, JcodeClient> {
+    fn spare_ready(&self, now: Instant) -> bool {
+        self.spare
+            .as_ref()
+            .is_some_and(|(client, deadline)| now < *deadline && !client.is_closed())
     }
 }
 

@@ -2,6 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+/// Whether the offline screenshot harness is driving this process. Network,
+/// updater and cloud side effects are suppressed so fixtures stay hermetic.
+pub fn screenshot_mode() -> bool {
+    std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
+}
+
 /// Locate a companion executable shipped inside the app bundle, then fall back
 /// to PATH for source builds. macOS GUI apps inherit a deliberately small PATH,
 /// so depending on shell startup files would make Finder launches unreliable.

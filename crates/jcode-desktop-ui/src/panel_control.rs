@@ -231,9 +231,9 @@ impl Panel {
             })),
             "gate": self.routing_gate.as_ref().map(|gate| serde_json::json!({
                 "gate_id": gate.gate_id(),
-                "reason": gate.model.reason,
-                "rows": gate.model.rows(),
-                "cursor": gate.model.cursor,
+                "reason": gate.reason(),
+                "rows": gate.rows(),
+                "cursor": gate.cursor(),
                 "submitting": gate.submitting(),
                 "error": gate.error,
             })),

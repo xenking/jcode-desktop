@@ -86,7 +86,7 @@ fn clean(text: &str) -> String {
 /// An open gate: the shared state machine plus the answer in flight.
 #[derive(Debug, Clone)]
 pub struct GateCard {
-    pub model: RoutingGateModel,
+    model: RoutingGateModel,
     /// Attempt number of the answer sent and not yet settled.
     pub attempt: Option<u64>,
     /// Why the last answer failed, shown on the card.
@@ -104,6 +104,24 @@ impl GateCard {
 
     pub fn gate_id(&self) -> &str {
         &self.model.gate_id
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.model.reason
+    }
+
+    /// Display text of each answer row, the cancel row last.
+    pub fn rows(&self) -> Vec<String> {
+        self.model.rows()
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.model.row_count()
+    }
+
+    /// The focused row.
+    pub fn cursor(&self) -> usize {
+        self.model.cursor
     }
 
     pub fn submitting(&self) -> bool {
@@ -218,7 +236,7 @@ impl Feed {
 /// one short connection per poll.
 pub fn spawn() -> Feed {
     let (tx, rx) = channel();
-    if crate::harness::screenshot_mode() {
+    if crate::platform::screenshot_mode() {
         let _ = tx.send(fixture());
     } else {
         shared_poller().subscribe(tx);

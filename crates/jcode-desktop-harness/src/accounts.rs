@@ -464,7 +464,7 @@ impl Feed {
 /// data. The poller survives hot reload only as long as this UI generation.
 pub fn spawn() -> Feed {
     let (tx, rx) = channel();
-    if crate::harness::screenshot_mode() {
+    if crate::platform::screenshot_mode() {
         let accounts = [
             ("openai", "OpenAI", "available", "OAuth"),
             ("claude", "Claude", "available", "OAuth"),

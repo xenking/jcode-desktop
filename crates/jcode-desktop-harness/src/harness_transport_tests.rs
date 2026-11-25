@@ -14,7 +14,7 @@ fn managed_cloud_reuses_only_exact_authenticated_account() {
     let account = cloud_account("first", "https://api.example/v1");
     cloud.select_account(Some(&account), 1);
     let owner = Arc::new(1);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     cloud.select_account(Some(&account), 1);
     assert!(Arc::ptr_eq(&owner, &cloud.reserve(Weak::upgrade).unwrap()));
     for changed in [
@@ -23,7 +23,7 @@ fn managed_cloud_reuses_only_exact_authenticated_account() {
     ] {
         cloud.select_account(Some(&changed), 1);
         assert!(cloud.reserve(Weak::upgrade).is_none());
-        cloud.publish(Arc::downgrade(&owner));
+        cloud.publish(Arc::downgrade(&owner), false);
     }
     cloud.select_account(None, 1);
     assert!(cloud.reserve(Weak::upgrade).is_none());
@@ -39,13 +39,13 @@ fn managed_cloud_changed_parity_fingerprint_invalidates_live_master() {
     let account = cloud_account("first", "https://api.example/v1");
     let owner = Arc::new(1);
     cloud.select_account(Some(&account), 10);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     cloud.select_account(Some(&account), 10);
     assert!(cloud.reserve(Weak::upgrade).is_some());
     cloud.select_account(Some(&account), 11);
     assert!(cloud.reserve(Weak::upgrade).is_none());
     assert_eq!(cloud.reservations, 0);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     cloud.select_account(Some(&account), 10);
     assert!(cloud.reserve(Weak::upgrade).is_none());
     // Existing clients remain alive even when defaults change.
@@ -56,14 +56,14 @@ fn managed_cloud_changed_parity_fingerprint_invalidates_live_master() {
 fn managed_cloud_reservations_are_bounded_and_new_master_resets_budget() {
     let mut cloud = CloudTransport::<_, ()>::default();
     let owner = Arc::new(1);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     for _ in 1..CHANNELS_PER_MASTER {
         assert!(Arc::ptr_eq(&owner, &cloud.reserve(Weak::upgrade).unwrap()));
     }
     assert!(cloud.reserve(Weak::upgrade).is_none());
     assert!(cloud.owner.is_none());
     let replacement = Arc::new(2);
-    cloud.publish(Arc::downgrade(&replacement));
+    cloud.publish(Arc::downgrade(&replacement), false);
     assert_eq!(cloud.reservations, 1);
     assert!(Arc::ptr_eq(
         &replacement,
@@ -76,10 +76,10 @@ fn managed_cloud_reservations_are_bounded_and_new_master_resets_budget() {
 fn managed_cloud_failure_and_expired_owner_require_fresh_initialization() {
     let mut cloud = CloudTransport::<_, ()>::default();
     let owner = Arc::new(1);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     cloud.invalidate();
     assert!(cloud.reserve(Weak::upgrade).is_none());
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     let weak = Arc::downgrade(&owner);
     drop(owner);
     assert!(weak.upgrade().is_none());
@@ -109,7 +109,7 @@ fn cloud_masters_and_prepared_clients_are_only_reused_on_the_same_machine() {
     let owner = Arc::new("master:ai-core");
     let mut first_state = state.lock().unwrap();
     first_state.select_account(Some(&account), 1);
-    first_state.publish(Arc::downgrade(&owner));
+    first_state.publish(Arc::downgrade(&owner), false);
     let (generation, _) = first_state.begin_prepare(Weak::upgrade, now).unwrap();
     for other in [
         Destination::named("studio").unwrap(),
@@ -136,7 +136,7 @@ fn spare_cache() -> (CloudTransport<Weak<usize>, Arc<usize>>, Arc<usize>) {
     let owner = Arc::new(1);
     let mut cloud = CloudTransport::default();
     cloud.select_account(Some(&cloud_account("first", "https://api.example/v1")), 10);
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     (cloud, owner)
 }
 
@@ -211,7 +211,7 @@ fn cloud_spare_stale_completion_and_timer_cannot_touch_replacement() {
     let (mut cloud, owner) = spare_cache();
     let now = Instant::now();
     let (old, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
-    cloud.publish(Arc::downgrade(&owner));
+    cloud.publish(Arc::downgrade(&owner), false);
     let (new, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
     assert!(!cloud.finish_prepare(old, Some(owner.clone()), now));
     assert!(cloud.preparing);
@@ -227,7 +227,7 @@ fn cloud_spare_failed_background_does_not_retry_or_refund_budget() {
     let (generation, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
     assert!(!cloud.finish_prepare(generation, None, now));
     assert!(!cloud.preparing);
-    assert!(cloud.spare.is_none());
+    assert!(!cloud.has_spare());
     assert_eq!(cloud.reservations, 2);
     assert!(!cloud.finish_prepare(generation, Some(Arc::new(9)), now));
     assert!(cloud.take_spare(now).is_none());

@@ -79,7 +79,7 @@ fn card() -> GateCard {
 #[test]
 fn keys_answer_like_the_terminal_and_click_answers_its_row() {
     let mut card = card();
-    assert_eq!(card.model.cursor, 1, "focus starts on the first switch");
+    assert_eq!(card.cursor(), 1, "focus starts on the first switch");
     assert_eq!(
         card.press(GateKey::Enter),
         Some(C::Switch {
@@ -89,9 +89,9 @@ fn keys_answer_like_the_terminal_and_click_answers_its_row() {
     assert_eq!(card.press(GateKey::Digit(1)), Some(C::Wait));
     assert_eq!(card.press(GateKey::Esc), Some(C::Cancel));
     assert_eq!(card.press(GateKey::Down), None);
-    assert_eq!(card.model.cursor, 2);
+    assert_eq!(card.cursor(), 2);
     assert_eq!(card.choose_row(3), Some(C::Cancel));
-    assert_eq!(card.model.cursor, 3);
+    assert_eq!(card.cursor(), 3);
     assert_eq!(card.choose_row(4), None, "no such row");
 }
 

@@ -373,7 +373,7 @@ fn sync(
     options: &SshConnectOptions,
     snapshot: &crate::managed_cloud_parity::Snapshot,
 ) -> Result<(), String> {
-    if cfg!(any(test, feature = "test-support")) || crate::harness::screenshot_mode() {
+    if cfg!(any(test, feature = "test-support")) || crate::platform::screenshot_mode() {
         return Ok(());
     }
     crate::managed_cloud_parity::apply(options, snapshot)

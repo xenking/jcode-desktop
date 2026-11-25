@@ -313,9 +313,9 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_1();
-        for (index, text) in gate.model.rows().into_iter().enumerate() {
-            let selected = gate.model.cursor == index;
-            let cancel = index + 1 == gate.model.row_count();
+        for (index, text) in gate.rows().into_iter().enumerate() {
+            let selected = gate.cursor() == index;
+            let cancel = index + 1 == gate.row_count();
             rows = rows.child(
                 crate::keyboard::button(div().id(("routing-gate-row", index)))
                     .debug_selector(move || format!("routing-gate-row-{index}"))
@@ -418,7 +418,7 @@ impl Panel {
                     div()
                         .debug_selector(|| "routing-gate-reason".into())
                         .min_w_0()
-                        .child(gate.model.reason.clone()),
+                        .child(gate.reason().to_owned()),
                 )
                 .child(rows)
                 .children(gate.error.as_ref().map(|error| {

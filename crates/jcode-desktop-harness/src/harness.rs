@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, SessionInfo};
 
+pub use crate::platform::screenshot_mode;
 pub use jcode_sdk::HistoryPage as BoundedHistoryPage;
 
 /// Internal key for a gallery metadata reply carried over the image update path.
@@ -1453,10 +1454,6 @@ pub fn spawn_inert() -> Bridge {
         commands: command_tx,
         updates: update_rx,
     }
-}
-
-pub fn screenshot_mode() -> bool {
-    std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
 }
 
 /// A runtime-free bridge whose commands can be asserted by UI acceptance tests.
