@@ -45,7 +45,7 @@ impl Workspace {
         }
         for slot in &self.slots {
             slot.panel
-                .update_chat(cx, |panel, _| panel.working_dir = Some(main.clone()));
+                .update_chat(cx, |panel, cx| panel.set_working_dir(Some(main.clone()), cx));
         }
         let mut session = self.sessions[0].clone();
         session.session_id = "worktree-fixture-search".into();
