@@ -151,7 +151,7 @@ pub(super) fn live_swarm_roots(
 pub(super) fn layout_key(workers: &[(usize, crate::swarm_view::Worker)], folded: usize) -> String {
     workers
         .iter()
-        .map(|(depth, w)| format!("{depth}:{}:{}", w.name, w.state.label()))
+        .map(|(depth, w)| format!("{depth}:{}:{}", w.name, w.state_label()))
         .chain((folded > 0).then(|| format!("+{folded}")))
         .collect::<Vec<_>>()
         .join(",")
@@ -213,18 +213,16 @@ pub(super) fn render_workers(
                 .label
                 .as_deref()
                 .is_some_and(|label| expandable::preview(label, expandable::LABEL).is_some());
-            let mark = worker.state.glyph().map(|glyph| {
+            let mark = worker.glyph().map(|glyph| {
                 let mut mark = crate::swarm_glyph::Mark::glyph(glyph, 11.0);
-                if worker.state == crate::swarm_view::WorkerState::Running {
-                    if worker.meta.tool.as_deref() == Some("bg") {
-                        mark = crate::swarm_glyph::Mark::still(
-                            crate::swarm_glyph::Icon::Background,
-                            theme.ACCENT,
-                            11.0,
-                        );
-                    } else if worker.meta.phase == Some(jcode_sdk::WorkerPhase::Thinking) {
-                        mark = crate::swarm_glyph::Mark::thinking(11.0);
-                    }
+                if worker.is_running_background() {
+                    mark = crate::swarm_glyph::Mark::still(
+                        crate::swarm_glyph::Icon::Background,
+                        theme.ACCENT,
+                        11.0,
+                    );
+                } else if worker.is_thinking() {
+                    mark = crate::swarm_glyph::Mark::thinking(11.0);
                 }
                 mark
             });
@@ -239,12 +237,7 @@ pub(super) fn render_workers(
             let effort = worker
                 .effort_level()
                 .and_then(|effort| crate::effort_icon::icon(&effort, 10.0));
-            let provider = crate::provider_mark::render(
-                worker.meta.provider.as_deref(),
-                worker.meta.model.as_deref(),
-                10.0,
-                theme.TEXT_FAINT,
-            );
+            let provider = worker.provider_mark(10.0, theme.TEXT_FAINT);
             // Unknown model prices are not free: fall back to the recorded
             // token spend rather than inventing a dollar amount.
             let spend = (width >= 360.0)
@@ -309,7 +302,7 @@ pub(super) fn render_workers(
                         .flex_none()
                         .text_size(px(11.0))
                         .debug_selector(move || identity_selector.clone())
-                        .children(worker.icon.map(|icon| icon.to_owned())),
+                        .children(worker.icon_text()),
                 )
                 .child({
                     div()

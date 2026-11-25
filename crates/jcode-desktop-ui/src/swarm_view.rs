@@ -175,6 +175,64 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// See [`WorkerState::is_live`].
+    pub fn is_live(&self) -> bool {
+        self.state.is_live()
+    }
+
+    /// A worker whose work is over, however it ended.
+    pub fn is_finished(&self) -> bool {
+        self.state.is_finished()
+    }
+
+    /// A worker that is doing something rather than waiting.
+    pub fn is_active(&self) -> bool {
+        self.state.is_active()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state == WorkerState::Running
+    }
+
+    /// Running a background job rather than a foreground turn.
+    pub fn is_running_background(&self) -> bool {
+        self.is_running() && self.meta.tool.as_deref() == Some("bg")
+    }
+
+    pub fn is_thinking(&self) -> bool {
+        self.is_running() && self.meta.phase == Some(WorkerPhase::Thinking)
+    }
+
+    /// The status mark beside the worker, if its state is known.
+    pub fn glyph(&self) -> Option<Glyph> {
+        self.state.glyph()
+    }
+
+    /// The lifecycle word: `running`, `ready`, `failed`.
+    pub fn state_label(&self) -> &'static str {
+        self.state.label()
+    }
+
+    /// The animal emoji for the worker's name, as an owned string.
+    pub fn icon_text(&self) -> Option<String> {
+        self.icon.map(str::to_owned)
+    }
+
+    /// A finished worker still recent enough to keep listed.
+    fn is_recently_finished(&self) -> bool {
+        !self.is_live() && self.age_ms.is_none_or(|age| age < 3_600_000)
+    }
+
+    /// The provider's mark, falling back to the model's maker.
+    pub fn provider_mark(&self, size: f32, color: gpui::Rgba) -> gpui::AnyElement {
+        crate::provider_mark::render(
+            self.meta.provider.as_deref(),
+            self.meta.model.as_deref(),
+            size,
+            color,
+        )
+    }
+
     /// The strip displays rounded ages, not a new value every millisecond.
     pub fn same_strip_row(&self, other: &Self) -> bool {
         fn age_key(worker: &Worker) -> Option<u64> {
@@ -601,7 +659,7 @@ pub fn visible_workers<T: Clone>(rows: &[T], worker: impl Fn(&T) -> &Worker) -> 
         .rev()
         .filter(|(_, row)| {
             let worker = worker(row);
-            !worker.state.is_live() && worker.age_ms.is_none_or(|age| age < 3_600_000)
+            worker.is_recently_finished()
         })
         .take(FINISHED_VISIBLE)
         .map(|(index, _)| index)
@@ -609,7 +667,7 @@ pub fn visible_workers<T: Clone>(rows: &[T], worker: impl Fn(&T) -> &Worker) -> 
     let shown = rows
         .iter()
         .enumerate()
-        .filter(|(index, row)| worker(row).state.is_live() || recent_finished.contains(index))
+        .filter(|(index, row)| worker(row).is_live() || recent_finished.contains(index))
         .map(|(_, row)| row.clone())
         .collect::<Vec<_>>();
     let hidden = rows.len().saturating_sub(shown.len());
@@ -678,14 +736,14 @@ impl Indicator {
     pub fn from_workers(workers: &[Worker]) -> Option<Self> {
         let mut live = workers
             .iter()
-            .filter(|w| w.state.is_live())
+            .filter(|w| w.is_live())
             .cloned()
             .collect::<Vec<_>>();
         if live.is_empty() {
             return None;
         }
         // Stable: catalog order is kept inside each group.
-        live.sort_by_key(|w| !w.state.is_active());
+        live.sort_by_key(|w| !w.is_active());
         Some(Self { workers: live })
     }
 
@@ -698,7 +756,7 @@ impl Indicator {
     /// composer pill draws its own segmented bar instead.
     #[allow(dead_code)]
     pub fn glyph(&self) -> Glyph {
-        if self.workers.iter().any(|w| w.state.is_active()) {
+        if self.workers.iter().any(|w| w.is_active()) {
             Glyph::Spinner
         } else {
             Glyph::Pause

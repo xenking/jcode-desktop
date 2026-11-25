@@ -352,7 +352,7 @@ impl Workspace {
                     swarm_now,
                 );
                 let separate_checkout = own.is_some() && own != root_checkout;
-                if separate_checkout && !worker.state.is_live() {
+                if separate_checkout && !worker.is_live() {
                     continue;
                 }
                 // Live worktree agents remain visible under their coordinator
@@ -360,7 +360,7 @@ impl Workspace {
                 if !separate_checkout {
                     nested.insert(child.session.session_id.clone());
                 }
-                let running = worker.state == crate::swarm_view::WorkerState::Running;
+                let running = worker.is_running();
                 nested_workers
                     .entry(root.clone())
                     .or_default()
@@ -859,7 +859,7 @@ impl Workspace {
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
                             let (_, agent_working) = row.agents;
                             let running_workers = nested_workers.get(&session.session_id).into_iter().flatten()
-                                .filter(|(_, worker)| worker.state == crate::swarm_view::WorkerState::Running)
+                                .filter(|(_, worker)| worker.is_running())
                                 .map(|(_, worker)| worker.clone()).collect::<Vec<_>>();
                             let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
