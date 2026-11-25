@@ -32,7 +32,7 @@ impl Workspace {
             .iter()
             .filter(|slot| {
                 !slot.closing
-                    && !slot.panel.is_changelog()
+                    && !slot.panel.profile().is_changelog()
                     && slot.panel.read_chat(cx).is_none_or(|panel| {
                         !panel.is_change_review()
                             && !panel.is_accounts_panel()
@@ -43,7 +43,7 @@ impl Workspace {
         let index_for_id =
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
-            if slot.panel.is_changelog() {
+            if slot.panel.profile().is_changelog() {
                 return self.previous.and_then(index_for_id);
             }
             let panel = slot.panel.read_chat(cx)?;
@@ -66,7 +66,7 @@ impl Workspace {
             FocusSnapshot::FolderSearch
         } else if let Some(index) = slots
             .iter()
-            .position(|slot| slot.panel.input_focus_handle(cx).is_focused(window))
+            .position(|slot| slot.panel.surface().input_focus_handle(cx).is_focused(window))
         {
             FocusSnapshot::Panel(index)
         } else if let Some(index) = review_source {
@@ -92,7 +92,7 @@ impl Workspace {
             slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
-                    panel: slot.panel.snapshot(for_reload, cx),
+                    panel: slot.panel.profile().snapshot(for_reload, cx),
                     row: slot.row,
                     width_fraction: slot.width_fraction,
                     restore_fraction: slot.restore_fraction,
@@ -402,7 +402,7 @@ impl Workspace {
             }
             FocusSnapshot::Panel(index) => {
                 if let Some(slot) = self.slots.get(index) {
-                    let handle = slot.panel.input_focus_handle(cx);
+                    let handle = slot.panel.surface().input_focus_handle(cx);
                     window.focus(&handle, cx);
                 } else {
                     window.focus(&self.focus_handle, cx);
