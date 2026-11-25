@@ -38,7 +38,7 @@ pub struct Snapshot {
     /// Visible status, including connecting, listening, transcribing or an error.
     pub title: String,
     /// The same 24 chronological RMS samples used by the panel voice meter.
-    pub levels: Option<[f32; 24]>,
+    pub levels: Option<[f32; crate::meter::BARS]>,
     /// The hold finished and `title` states what Jev decided (or why it did
     /// not act), so it reads as a result rather than a progress status.
     pub decided: bool,
@@ -222,9 +222,9 @@ fn layer_shell_options() -> anyhow::Result<WindowOptions> {
 }
 
 const METER_MAX: f32 = 16.;
-// The panel_voice_overlay RMS curve, scaled to the compact pill: 2px silence.
+// The panel's RMS curve, scaled to the compact pill: 2px silence.
 fn meter_height(level: f32) -> f32 {
-    2.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * (METER_MAX - 2.0)
+    crate::meter::bar_height(level, METER_MAX)
 }
 
 impl VoiceOverlay {
