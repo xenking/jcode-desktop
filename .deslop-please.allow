@@ -35,7 +35,6 @@ field-leak jcode_desktop_ui_core::text_selection::TextSelection::pointer
 shallow-module jcode_desktop_api
 shallow-module jcode_desktop_model
 shallow-module jcode_desktop_ui::panel::login
-shallow-module jcode_desktop_ui::panel::queue
 shallow-module jcode_desktop_ui::panel_item
 shallow-module jcode_desktop_ui::workspace::global_voice
 wide-directory crates/jcode-desktop-model/src/
@@ -43,4 +42,3 @@ wide-directory crates/jcode-desktop-ui/src/
 long-file crates/jcode-desktop-model/src/diff_model.rs
 long-file crates/jcode-desktop-ui/src/input.rs
 long-file crates/jcode-desktop-ui/src/markdown.rs
-long-file crates/jcode-desktop-ui/src/panel.rs
